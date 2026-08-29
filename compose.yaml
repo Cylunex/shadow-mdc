@@ -1,0 +1,14 @@
+services:
+  shadow-mdc:
+    build: .
+    container_name: shadow-mdc
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      SHADOW_MDC_DATA_DIR: /app/data
+      SHADOW_MDC_DATABASE_URL: sqlite:////app/data/shadow-mdc.db
+      SHADOW_MDC_THEPORNDB_TOKEN: ${SHADOW_MDC_THEPORNDB_TOKEN:-}
+    volumes:
+      - ./data:/app/data
+      - ${MEDIA_PATH:-./media}:/media
