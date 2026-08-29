@@ -6,7 +6,7 @@ from sqlalchemy import Engine, create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..domain import IdentityHints, ProviderRecord, ScoredCandidate
-from ..enums import AssetState, CandidateState, IdentityKind
+from ..enums import AssetState, CandidateState, IdentityKind, MediaCategory
 from ..identity import normalize_identity_value
 from .models import Base, ExternalIdentity, Library, MatchCandidateRow, MediaAsset, SourceSnapshot, Work
 
@@ -19,6 +19,57 @@ class Database:
 
     def initialize(self) -> None:
         Base.metadata.create_all(self.engine)
+        if self.engine.dialect.name == "sqlite":
+            self._migrate_sqlite()
+
+    def _migrate_sqlite(self) -> None:
+        with self.engine.begin() as connection:
+            library_columns = {
+                str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(libraries)")
+            }
+            if "category" not in library_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE libraries ADD COLUMN category VARCHAR(30) NOT NULL DEFAULT 'Other'"
+                )
+                connection.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_libraries_category ON libraries (category)"
+                )
+            work_columns = {
+                str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(works)")
+            }
+            if "category" not in work_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE works ADD COLUMN category VARCHAR(30) NOT NULL DEFAULT 'Other'"
+                )
+                connection.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_works_category ON works (category)"
+                )
+            connection.exec_driver_sql(
+                """
+                UPDATE libraries
+                SET category = CASE
+                    WHEN name LIKE '%国产%' OR lower(name) LIKE '%china%' THEN 'China'
+                    WHEN name LIKE '%韩国%' OR name LIKE '%韓國%' OR lower(name) LIKE '%korea%' THEN 'Korea'
+                    WHEN name LIKE '%欧美%' OR lower(name) LIKE '%europe%' THEN 'Europe'
+                    WHEN name LIKE '%日本%' OR lower(name) LIKE '%japan%' OR lower(name) = 'jav' THEN 'Japan'
+                    ELSE category
+                END
+                WHERE category = 'Other'
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                UPDATE works
+                SET category = CASE family
+                    WHEN 'jav' THEN 'Japan'
+                    WHEN 'chinese' THEN 'China'
+                    WHEN 'korean' THEN 'Korea'
+                    WHEN 'western' THEN 'Europe'
+                    ELSE category
+                END
+                WHERE category = 'Other'
+                """
+            )
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -42,12 +93,14 @@ class Repository:
         *,
         name: str,
         root_path: str,
+        category: MediaCategory = MediaCategory.OTHER,
         recursive: bool,
         organize_template: str,
     ) -> Library:
         library = Library(
             name=name,
             root_path=str(Path(root_path).resolve()),
+            category=category.value,
             recursive=recursive,
             organize_template=organize_template,
         )
@@ -78,6 +131,9 @@ class Repository:
             existing.duration_seconds = duration_seconds
             existing.oshash = oshash
             existing.hints = hints.model_dump(mode="json")
+            if existing.state == AssetState.IGNORED.value:
+                existing.state = AssetState.NEW.value
+                existing.error = None
             return existing, False
         asset = MediaAsset(
             library_id=library_id,
@@ -98,7 +154,19 @@ class Repository:
         statement = select(MediaAsset)
         if state is not None:
             statement = statement.where(MediaAsset.state == state)
+        else:
+            statement = statement.where(MediaAsset.state != AssetState.IGNORED.value)
         return list(self._session.scalars(statement.order_by(MediaAsset.created_at.desc())))
+
+    def ignore_asset_by_path(self, path: str, reason: str) -> bool:
+        absolute = str(Path(path).resolve())
+        asset = self._session.scalar(select(MediaAsset).where(MediaAsset.path == absolute))
+        if asset is None:
+            return False
+        asset.state = AssetState.IGNORED.value
+        asset.error = reason
+        self._session.flush()
+        return True
 
     def update_asset_path(self, asset: MediaAsset, path: str) -> None:
         asset.path = str(Path(path).resolve())
@@ -139,8 +207,12 @@ class Repository:
                 row.record = record.model_dump(mode="json")
                 row.evidence = [item.model_dump(mode="json") for item in candidate.evidence]
             saved.append(row)
-        asset.state = AssetState.REVIEW.value if saved else AssetState.ERROR.value
-        asset.error = None if saved else "no candidates"
+        if asset.work_id is not None:
+            asset.state = AssetState.IDENTIFIED.value
+            asset.error = None if saved else "no remote candidates"
+        else:
+            asset.state = AssetState.REVIEW.value if saved else AssetState.ERROR.value
+            asset.error = None if saved else "no candidates"
         self._session.flush()
         return saved
 
@@ -166,6 +238,8 @@ class Repository:
         work = self._resolve_existing_work(record)
         if work is None:
             work = self._create_work(record)
+        else:
+            self._merge_provider_record(work, record)
         self._add_record_identities(work, record)
         self._upsert_snapshot(work, record)
         asset.work_id = work.id
@@ -178,8 +252,32 @@ class Repository:
         self._session.flush()
         return work
 
+    def catalog_asset(self, asset: MediaAsset, record: ProviderRecord) -> Work:
+        work = self.get_work(asset.work_id) if asset.work_id is not None else None
+        if work is None:
+            work = self._resolve_existing_work(record)
+        if work is None:
+            work = self._create_work(record)
+        else:
+            self._merge_local_record(work, record)
+        self._add_record_identities(work, record)
+        self._upsert_snapshot(work, record)
+        asset.work_id = work.id
+        asset.state = AssetState.IDENTIFIED.value
+        asset.error = None
+        self._session.flush()
+        return work
+
     def list_works(self) -> list[Work]:
         return list(self._session.scalars(select(Work).order_by(Work.created_at.desc())))
+
+    def first_asset_for_work(self, work_id: str) -> MediaAsset | None:
+        return self._session.scalar(
+            select(MediaAsset)
+            .where(MediaAsset.work_id == work_id)
+            .order_by(MediaAsset.created_at)
+            .limit(1)
+        )
 
     def get_work(self, work_id: str) -> Work | None:
         return self._session.get(Work, work_id)
@@ -207,11 +305,15 @@ class Repository:
         return None
 
     def _create_work(self, record: ProviderRecord) -> Work:
+        category = record.category
+        if category is MediaCategory.OTHER:
+            category = _category_for_family(record.family.value)
         work = Work(
             title=record.title,
             original_title=record.original_title,
             primary_code=record.code,
             family=record.family.value,
+            category=category.value,
             release_date=record.release_date,
             runtime_seconds=record.runtime_seconds,
             studio=record.studio,
@@ -226,6 +328,54 @@ class Repository:
         self._session.add(work)
         self._session.flush()
         return work
+
+    def _merge_local_record(self, work: Work, record: ProviderRecord) -> None:
+        if record.category is not MediaCategory.OTHER:
+            work.category = record.category.value
+        if work.family == "unknown" and record.family.value != "unknown":
+            work.family = record.family.value
+        if not work.actors and record.actors:
+            work.actors = list(record.actors)
+        if work.studio is None and record.studio:
+            work.studio = record.studio
+        if work.series is None and record.series:
+            work.series = record.series
+        if not work.tags and record.tags:
+            work.tags = list(record.tags)
+
+    def _merge_provider_record(self, work: Work, record: ProviderRecord) -> None:
+        work.title = record.title
+        if record.original_title:
+            work.original_title = record.original_title
+        if record.code:
+            work.primary_code = record.code
+        if record.family.value != "unknown":
+            work.family = record.family.value
+        if work.category == MediaCategory.OTHER.value:
+            category = record.category
+            if category is MediaCategory.OTHER:
+                category = _category_for_family(record.family.value)
+            work.category = category.value
+        if record.release_date:
+            work.release_date = record.release_date
+        if record.runtime_seconds:
+            work.runtime_seconds = record.runtime_seconds
+        if record.studio:
+            work.studio = record.studio
+        if record.label:
+            work.label = record.label
+        if record.series:
+            work.series = record.series
+        if record.plot:
+            work.plot = record.plot
+        if record.actors:
+            work.actors = list(record.actors)
+        if record.directors:
+            work.directors = list(record.directors)
+        if record.tags:
+            work.tags = list(record.tags)
+        if record.artwork:
+            work.artwork = [item.model_dump(mode="json") for item in record.artwork]
 
     def _add_identity(
         self,
@@ -297,3 +447,12 @@ class Repository:
             )
         else:
             snapshot.payload = payload
+
+
+def _category_for_family(family: str) -> MediaCategory:
+    return {
+        "jav": MediaCategory.JAPAN,
+        "chinese": MediaCategory.CHINA,
+        "korean": MediaCategory.KOREA,
+        "western": MediaCategory.EUROPE,
+    }.get(family, MediaCategory.OTHER)

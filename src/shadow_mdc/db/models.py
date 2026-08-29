@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from ..enums import AssetState, CandidateState, ContentFamily, IdentityKind
+from ..enums import AssetState, CandidateState, ContentFamily, IdentityKind, MediaCategory
 
 
 def new_id() -> str:
@@ -25,6 +25,7 @@ class Library(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(200), unique=True)
     root_path: Mapped[str] = mapped_column(Text, unique=True)
+    category: Mapped[str] = mapped_column(String(30), default=MediaCategory.OTHER.value, index=True)
     recursive: Mapped[bool] = mapped_column(default=True)
     organize_template: Mapped[str] = mapped_column(
         Text,
@@ -41,6 +42,7 @@ class Work(Base):
     original_title: Mapped[str | None] = mapped_column(Text)
     primary_code: Mapped[str | None] = mapped_column(String(100), index=True)
     family: Mapped[str] = mapped_column(String(30), default=ContentFamily.UNKNOWN.value, index=True)
+    category: Mapped[str] = mapped_column(String(30), default=MediaCategory.OTHER.value, index=True)
     release_date: Mapped[date | None] = mapped_column(Date)
     runtime_seconds: Mapped[int | None] = mapped_column(Integer)
     studio: Mapped[str | None] = mapped_column(String(300), index=True)

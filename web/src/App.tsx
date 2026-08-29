@@ -128,7 +128,21 @@ export function App() {
             accept={accept}
           />
         )}
-        {view === "works" && <Works works={works} />}
+        {view === "works" && (
+          <Works
+            works={works}
+            busy={busy}
+            refreshMetadata={(work) => run(`work-${work.id}`, async () => {
+              const result = await api.refreshWork(work.id);
+              const failures = result.failures.map((failure) => failure.provider).join("、");
+              setMessage(
+                result.accepted_work_id
+                  ? `已更新 ${work.primary_code ?? work.title} 的在线元数据`
+                  : `未找到可自动接受的在线结果${failures ? `；失败来源：${failures}` : ""}`
+              );
+            })}
+          />
+        )}
         {view === "libraries" && (
           <Libraries libraries={libraries} busy={busy} run={run} report={setMessage} />
         )}
@@ -239,24 +253,44 @@ function AssetReview(props: {
   );
 }
 
-function Works({ works }: { works: Work[] }) {
+function Works(props: {
+  works: Work[];
+  busy: string | null;
+  refreshMetadata: (work: Work) => Promise<void>;
+}) {
+  const { works } = props;
   if (works.length === 0) {
     return <Empty title="作品库为空" detail="接受候选后，逻辑作品会显示在这里。" />;
   }
-  return <div className="work-grid">{works.map((work) => {
+  const categories = ["Japan", "China", "Korea", "Europe", "Other"] as const;
+  return <div className="work-sections">{categories.map((category) => {
+    const categoryWorks = works.filter((work) => work.category === category);
+    if (categoryWorks.length === 0) return null;
+    return <section className="work-section" key={category}>
+      <div className="work-section-title"><h2>{category}</h2><span>{categoryWorks.length}</span></div>
+      <div className="work-grid">{categoryWorks.map((work) => {
     const image = work.artwork.find((item) => typeof item.url === "string");
     const imageUrl = image && typeof image.url === "string" ? image.url : null;
     return (
       <article className="work" key={work.id}>
         <div className="poster" style={imageUrl ? { backgroundImage: `url("${imageUrl}")` } : undefined} />
         <div>
-          <span className="pill">{work.family}</span>
+          <span className="pill">{work.category}</span>
           <h2>{work.title}</h2>
           <p>{[work.primary_code, work.studio, work.release_date].filter(Boolean).join(" · ")}</p>
           <div className="tags">{work.actors.slice(0, 4).map((actor) => <span key={actor}>{actor}</span>)}</div>
+          {work.primary_code && (
+            <button
+              className="secondary work-refresh"
+              disabled={props.busy === `work-${work.id}`}
+              onClick={() => void props.refreshMetadata(work)}
+            >刷新元数据</button>
+          )}
         </div>
       </article>
     );
+      })}</div>
+    </section>;
   })}</div>;
 }
 
@@ -268,12 +302,14 @@ function Libraries(props: {
 }) {
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
+  const [category, setCategory] = useState("Other");
   function submit(event: FormEvent) {
     event.preventDefault();
     void props.run("create-library", async () => {
-      await api.createLibrary({ name, root_path: path });
+      await api.createLibrary({ name, root_path: path, category });
       setName("");
       setPath("");
+      setCategory("Other");
     });
   }
   return (
@@ -286,12 +322,19 @@ function Libraries(props: {
           placeholder="本地路径、Z:\\媒体 或 \\\\server\\share"
           required
         />
+        <select value={category} onChange={(event) => setCategory(event.target.value)}>
+          <option value="Japan">Japan / 日本</option>
+          <option value="China">China / 国产</option>
+          <option value="Korea">Korea / 韩国</option>
+          <option value="Europe">Europe / 欧美</option>
+          <option value="Other">Other / 其他</option>
+        </select>
         <button disabled={props.busy === "create-library"}>添加媒体库</button>
       </form>
       <p className="library-note">支持已挂载的网络磁盘和 UNC 共享；只读共享可以扫描，整理和写 NFO 需要写权限。</p>
       <div className="library-list">{props.libraries.map((library) => (
         <article key={library.id}>
-          <div><h2>{library.name}</h2><p>{library.root_path}</p></div>
+          <div><h2>{library.name} · {library.category}</h2><p>{library.root_path}</p></div>
           <button
             disabled={props.busy === `scan-${library.id}`}
             onClick={() => void props.run(`scan-${library.id}`, async () => {
@@ -300,7 +343,8 @@ function Libraries(props: {
                 ? `；${result.errors.length} 个路径失败：${result.errors.slice(0, 2).join("；")}`
                 : "";
               props.report(
-                `新增 ${result.discovered}，更新 ${result.updated}，过滤 ${result.filtered}，` +
+                `新增 ${result.discovered}，更新 ${result.updated}，自动建档 ${result.cataloged}，` +
+                `过滤 ${result.filtered}，` +
                 `跳过 ${result.skipped}${errorSummary}`
               );
             })}

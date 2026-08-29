@@ -13,7 +13,7 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; }
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 button {
   border: 0;
   border-radius: 10px;
@@ -88,6 +88,10 @@ input {
   background: #0b1012; border: 1px solid var(--line); border-radius: 10px; color: white;
   min-width: 0; outline: none; padding: 11px 13px;
 }
+select {
+  background: #0b1012; border: 1px solid var(--line); border-radius: 10px; color: white;
+  min-width: 0; outline: none; padding: 11px 13px;
+}
 input:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
 .candidate-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); margin-top: 16px; }
 .candidate { background: #0c1214; border: 1px solid #243035; border-radius: 14px; padding: 15px; }
@@ -97,14 +101,20 @@ input:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
 .candidate button { margin-top: 14px; width: 100%; }
 
 .work-grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); }
+.work-sections { display: grid; gap: 28px; }
+.work-section { display: grid; gap: 12px; }
+.work-section-title { align-items: center; display: flex; gap: 10px; }
+.work-section-title h2 { font-size: 22px; margin: 0; }
+.work-section-title span { background: var(--accent-dark); border-radius: 20px; color: var(--accent); padding: 3px 9px; }
 .work { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; display: grid; grid-template-columns: 112px 1fr; min-height: 170px; overflow: hidden; }
 .poster { background: linear-gradient(145deg, #1e2c31, #101719); background-position: center; background-size: cover; }
 .work > div:last-child { padding: 18px; }
 .work h2 { font-size: 17px; line-height: 1.35; margin: 10px 0 8px; }
 .tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 14px; }
 .tags span { background: #202a2e; border-radius: 5px; color: #b9c4c8; font-size: 11px; padding: 4px 7px; }
+.work-refresh { font-size: 12px; margin-top: 14px; padding: 7px 10px; }
 
-.library-form { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; display: grid; gap: 10px; grid-template-columns: .7fr 1.5fr auto; padding: 16px; }
+.library-form { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; display: grid; gap: 10px; grid-template-columns: .7fr 1.5fr .6fr auto; padding: 16px; }
 .library-list { display: grid; gap: 10px; margin-top: 18px; }
 .library-list article { align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; display: flex; justify-content: space-between; padding: 18px; }
 .library-list h2 { font-size: 17px; margin-bottom: 5px; }

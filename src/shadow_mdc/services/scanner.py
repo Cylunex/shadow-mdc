@@ -6,10 +6,12 @@ from pydantic import BaseModel, ConfigDict
 
 from ..db.models import Library
 from ..db.repository import Repository
+from ..enums import AssetState, MediaCategory
 from ..identity import IdentityAliasRules, build_identity_hints
 from ..media.oshash import compute_oshash
 from ..media.probe import probe_duration
 from ..media.strm import read_strm_locator, redact_media_locator
+from .local_catalog import build_local_catalog_record
 from .path_filter import MediaPathFilter
 
 VIDEO_EXTENSIONS = frozenset({".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".webm"})
@@ -21,6 +23,7 @@ class ScanResult(BaseModel):
 
     discovered: int
     updated: int
+    cataloged: int
     filtered: int
     skipped: int
     errors: tuple[str, ...]
@@ -41,6 +44,7 @@ class Scanner:
         root = _resolve_library_root(library.root_path)
         discovered = 0
         updated = 0
+        cataloged = 0
         filtered = 0
         skipped = 0
         errors: list[str] = []
@@ -48,24 +52,31 @@ class Scanner:
             if path.suffix.casefold() not in MEDIA_EXTENSIONS:
                 skipped += 1
                 continue
-            if self._path_filter.match(path, root) is not None:
+            filter_match = self._path_filter.match(path, root)
+            if filter_match is not None:
+                self._repository.ignore_asset_by_path(
+                    str(path),
+                    f"filtered by path rule: {filter_match.word}",
+                )
                 filtered += 1
                 continue
             try:
-                created = self._scan_asset(library, root, path)
+                created, newly_cataloged = self._scan_asset(library, root, path)
                 discovered += int(created)
                 updated += int(not created)
+                cataloged += int(newly_cataloged)
             except (OSError, ValueError) as exc:
                 errors.append(f"{path}: {exc}")
         return ScanResult(
             discovered=discovered,
             updated=updated,
+            cataloged=cataloged,
             filtered=filtered,
             skipped=skipped,
             errors=tuple(errors),
         )
 
-    def _scan_asset(self, library: Library, root: Path, path: Path) -> bool:
+    def _scan_asset(self, library: Library, root: Path, path: Path) -> tuple[bool, bool]:
         stat = path.stat()
         is_strm = path.suffix.casefold() == ".strm"
         raw_media_locator = read_strm_locator(path) if is_strm else None
@@ -79,12 +90,13 @@ class Scanner:
             media_locator=raw_media_locator,
             context_names=_context_names(path, root),
             alias_rules=self._alias_rules,
+            category=MediaCategory(library.category),
         )
         if raw_media_locator is not None:
             hints = hints.model_copy(
                 update={"media_locator": redact_media_locator(raw_media_locator)}
             )
-        _, created = self._repository.upsert_asset(
+        asset, created = self._repository.upsert_asset(
             library_id=library.id,
             path=str(path),
             size=stat.st_size,
@@ -92,7 +104,17 @@ class Scanner:
             oshash=oshash,
             hints=hints,
         )
-        return created
+        newly_cataloged = asset.state != AssetState.IDENTIFIED.value
+        self._repository.catalog_asset(
+            asset,
+            build_local_catalog_record(
+                library_id=library.id,
+                root=root,
+                path=path,
+                hints=hints,
+            ),
+        )
+        return created, newly_cataloged
 
 
 def _resolve_library_root(value: str) -> Path:

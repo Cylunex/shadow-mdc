@@ -35,13 +35,14 @@ from .config import Settings
 from .db.models import Library, MatchCandidateRow, MediaAsset, Work
 from .db.repository import Database, Repository
 from .domain import IdentityHints, MatchEvidence, ProviderRecord, ScoredCandidate
-from .enums import MatchDecision, QueryMode
+from .enums import MatchDecision, MediaCategory, QueryMode
 from .identity import IdentityAliasRules
 from .media.nfo import build_nfo
 from .media.organizer import Organizer
 from .providers import JavBusProvider, JavDBProvider, JsonLdProvider, ProviderRegistry, ThePornDBProvider
 from .services.alias_store import IdentityAliasStore
 from .services.identify import IdentifyService
+from .services.local_catalog import infer_media_category
 from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
 from .services.scanner import Scanner
 
@@ -173,6 +174,7 @@ def create_library(payload: LibraryCreate, repo: Repo) -> LibraryOut:
         library = repo.create_library(
             name=payload.name,
             root_path=str(root),
+            category=payload.category or infer_media_category(payload.name, root.name),
             recursive=payload.recursive,
             organize_template=payload.organize_template,
         )
@@ -268,6 +270,7 @@ def create_manual_candidate(
         code=hints.code,
         title=title,
         family=hints.family,
+        category=hints.category,
         studio=payload.studio or hints.studio,
         series=payload.series or hints.series,
         plot=payload.plot,
@@ -308,6 +311,18 @@ def get_work(work_id: str, repo: Repo) -> WorkOut:
     if work is None:
         raise HTTPException(status_code=404, detail="work not found")
     return _work_out(repo, work)
+
+
+@app.post("/api/works/{work_id}/refresh", response_model=IdentifyOut)
+async def refresh_work_metadata(work_id: str, request: Request, repo: Repo) -> IdentifyOut:
+    work = repo.get_work(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    asset = repo.first_asset_for_work(work.id)
+    if asset is None:
+        raise HTTPException(status_code=409, detail="work has no media asset")
+    result = await IdentifyService(repo, runtime(request).providers).identify(asset.id)
+    return IdentifyOut.model_validate(result.model_dump())
 
 
 @app.get("/api/works/{work_id}/nfo", response_class=PlainTextResponse)
@@ -395,6 +410,7 @@ def _work_out(repo: Repository, work: Work) -> WorkOut:
         original_title=work.original_title,
         primary_code=work.primary_code,
         family=work.family,
+        category=MediaCategory(work.category),
         release_date=work.release_date,
         runtime_seconds=work.runtime_seconds,
         studio=work.studio,

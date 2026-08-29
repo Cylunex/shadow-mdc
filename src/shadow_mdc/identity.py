@@ -6,7 +6,7 @@ from urllib.parse import unquote, urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .domain import IdentityHints
-from .enums import ContentFamily, QueryMode
+from .enums import ContentFamily, MediaCategory, QueryMode
 
 _NOISE = re.compile(
     r"(?ix)(?:^|[._\-\s])("
@@ -14,12 +14,12 @@ _NOISE = re.compile(
     r"h[._-]?26[45]|x26[45]|av1|aac|uncensored|leaked|chinese|subtitle|中文字幕|中字|字幕|中文"
     r")(?=$|[._\-\s])"
 )
-_DOMAIN = re.compile(r"(?i)(?:www\.)?[a-z0-9-]+\.(?:com|net|org|tv|cc|me|xyz|top)")
+_DOMAIN = re.compile(r"(?i)(?:www\.)?[a-z0-9-]+\.(?:com|net|org|tv|cc|me|xyz|top|vip)")
 _BRACKETS = re.compile(r"[\[【(\uFF08].*?[\]】)\uFF09]")
 _SEPARATORS = re.compile(r"[._\s]+")
 _GENERIC_STEM = re.compile(
     r"(?ix)^(?:\d{1,4}|cd\s*\d+|disc\s*\d+|part\s*\d+|ep\s*\d+|"
-    r"video|movie|影片|视频|完整(?:版)?|full)$"
+    r"[vp]\s*(?:\d+|[\(\uFF08]\d+[\)\uFF09])?|video|movie|影片|视频|完整(?:版)?|full)$"
 )
 
 _FC2 = re.compile(r"(?i)\bFC2(?:[-_. ]?PPV)?[-_. ]?(\d{5,9})\b")
@@ -70,7 +70,10 @@ def clean_stem(path_or_name: str | Path) -> str:
     return " ".join(normalized.split()).strip(" -_.")
 
 
-def extract_code(text: str) -> tuple[str | None, ContentFamily]:
+def extract_code(
+    text: str,
+    category: MediaCategory = MediaCategory.OTHER,
+) -> tuple[str | None, ContentFamily]:
     normalized = unicodedata.normalize("NFKC", text)
 
     if match := _FC2.search(normalized):
@@ -85,7 +88,7 @@ def extract_code(text: str) -> tuple[str | None, ContentFamily]:
     if match := _WESTERN_DATE.search(normalized):
         studio, year, month, day = match.groups()
         return f"{studio.lower()}.{year}.{month}.{day}", ContentFamily.WESTERN
-    if match := _JAV.search(normalized):
+    if category is not MediaCategory.CHINA and (match := _JAV.search(normalized)):
         prefix, digits = match.groups()
         prefix = prefix.upper()
         if prefix in _DISALLOWED_PREFIXES:
@@ -104,15 +107,18 @@ def build_identity_hints(
     media_locator: str | None = None,
     context_names: tuple[str, ...] = (),
     alias_rules: IdentityAliasRules | None = None,
+    category: MediaCategory = MediaCategory.OTHER,
 ) -> IdentityHints:
     clean = clean_stem(path_or_name)
     context = tuple(value for value in (clean, *context_names) if value)
     locator_name = _locator_name(media_locator)
-    code, family = _first_code((*context, locator_name))
+    code, family = _first_code((*context, locator_name), category)
     title = _select_title(clean, context_names, locator_name, code)
     alias_match = match_aliases(" ".join((*context, locator_name)), alias_rules)
     if family is ContentFamily.UNKNOWN and alias_match.evidence:
         family = ContentFamily.CHINESE
+    if family is ContentFamily.UNKNOWN:
+        family = _family_for_category(category)
     known_ids = external_ids or {}
     known_fingerprints = fingerprints or {}
 
@@ -136,6 +142,7 @@ def build_identity_hints(
         term=term,
         mode=mode,
         family=family,
+        category=category,
         code=code,
         title=title if title != code else None,
         source_url=source_url,
@@ -192,14 +199,27 @@ def _contains_alias(text: str, alias: str) -> bool:
     return alias in text
 
 
-def _first_code(values: tuple[str, ...]) -> tuple[str | None, ContentFamily]:
+def _first_code(
+    values: tuple[str, ...],
+    category: MediaCategory,
+) -> tuple[str | None, ContentFamily]:
     for value in values:
         if not value:
             continue
-        code, family = extract_code(value)
+        code, family = extract_code(value, category)
         if code:
             return code, family
     return None, ContentFamily.UNKNOWN
+
+
+def _family_for_category(category: MediaCategory) -> ContentFamily:
+    return {
+        MediaCategory.JAPAN: ContentFamily.JAV,
+        MediaCategory.CHINA: ContentFamily.CHINESE,
+        MediaCategory.KOREA: ContentFamily.KOREAN,
+        MediaCategory.EUROPE: ContentFamily.WESTERN,
+        MediaCategory.OTHER: ContentFamily.UNKNOWN,
+    }[category]
 
 
 def _select_title(

@@ -22,6 +22,8 @@ def build_nfo(work: Work, identities: list[ExternalIdentity]) -> str:
         SubElement(movie, "runtime").text = str(round(work.runtime_seconds / 60))
     if work.studio:
         SubElement(movie, "studio").text = work.studio
+    if work.category and work.category != "Other":
+        SubElement(movie, "country").text = work.category
     if work.series:
         SubElement(movie, "set").text = work.series
     for actor_name in work.actors:

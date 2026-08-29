@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 from .enums import (
     ContentFamily,
     MatchDecision,
+    MediaCategory,
     OperationKind,
     ProviderRequirement,
     QueryMode,
@@ -18,6 +19,7 @@ class IdentityHints(BaseModel):
     term: str = Field(min_length=1)
     mode: QueryMode
     family: ContentFamily = ContentFamily.UNKNOWN
+    category: MediaCategory = MediaCategory.OTHER
     code: str | None = None
     title: str | None = None
     source_url: str | None = None
@@ -63,6 +65,7 @@ class ProviderRecord(BaseModel):
     title: str = Field(min_length=1)
     original_title: str | None = None
     family: ContentFamily = ContentFamily.UNKNOWN
+    category: MediaCategory = MediaCategory.OTHER
     release_date: date | None = None
     runtime_seconds: int | None = Field(default=None, ge=0)
     studio: str | None = None

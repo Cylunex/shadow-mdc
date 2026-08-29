@@ -13,9 +13,18 @@ class QueryMode(StrEnum):
 class ContentFamily(StrEnum):
     JAV = "jav"
     CHINESE = "chinese"
+    KOREAN = "korean"
     WESTERN = "western"
     ANIMATION = "animation"
     UNKNOWN = "unknown"
+
+
+class MediaCategory(StrEnum):
+    JAPAN = "Japan"
+    CHINA = "China"
+    KOREA = "Korea"
+    EUROPE = "Europe"
+    OTHER = "Other"
 
 
 class IdentityKind(StrEnum):
@@ -37,6 +46,7 @@ class AssetState(StrEnum):
     REVIEW = "review"
     IDENTIFIED = "identified"
     ERROR = "error"
+    IGNORED = "ignored"
 
 
 class MatchDecision(StrEnum):

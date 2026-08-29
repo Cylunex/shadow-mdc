@@ -16,7 +16,8 @@
 
 ```text
 文件扫描
-  → 提取 code / title / URL / hash / duration / 目录别名线索
+  → 提取 code / title / URL / hash / duration / 主分类 / 目录别名线索
+  → 创建 local-path 本地作品，通用文件名按最近有效目录生成分集标题
   → 根据内容族与查询能力选择 providers
   → 并发获取候选
   → 确定性证据和相似度评分
@@ -26,6 +27,11 @@
 ```
 
 内容族只决定路由，不决定身份。国产内容不假定有稳定番号；欧美内容优先指纹、provider ID 和 URL；JAV 优先规范化番号。
+主分类是独立维度，由媒体库明确指定为 Japan、China、Korea、Europe 或 Other。目录分类优先于文件名猜测，
+因此国产账号名里的字母数字不会被通用 JAV 正则改写主分类。
+
+`local-path` 使用媒体库 ID 与相对路径哈希作为 provider identity：它只声明“这个本地资产已有可展示的目录记录”，
+不声明已匹配某个在线作品。相同标准番号仍通过全局 code identity 合并；在线精确候选随后更新同一 Work 的丰富字段。
 
 `.strm` 是本地 sidecar 资产：扫描器只读取首个有效媒体定位符，不请求远程媒体，也不对其执行
 ffprobe 或 oshash。定位符只用于补充文件名线索；持久化前移除 URI 用户信息、查询参数和片段，原始内容仍只存在于用户的 `.strm` 文件中。

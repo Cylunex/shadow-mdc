@@ -91,6 +91,66 @@ def test_same_code_from_different_providers_resolves_one_work(
     }
 
 
+def test_remote_record_enriches_existing_local_work(
+    repository: Repository,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "enrich"
+    root.mkdir()
+    _, asset = _asset(repository, root, name="SONE-118.mp4")
+    local_record = ProviderRecord(
+        provider="local-path",
+        external_id="local-1",
+        code="SONE-118",
+        title="SONE-118",
+        family=ContentFamily.JAV,
+    )
+    work = repository.catalog_asset(asset, local_record)
+    remote_record = ProviderRecord(
+        provider="fixture-remote",
+        external_id="remote-118",
+        code="SONE-118",
+        title="Remote official title",
+        family=ContentFamily.JAV,
+        studio="Official Studio",
+        actors=("河北彩花",),
+        tags=("Drama",),
+    )
+    row = repository.save_candidates(asset, [_candidate(remote_record)])[0]
+
+    enriched = repository.accept_candidate(row.id)
+
+    assert enriched.id == work.id
+    assert enriched.title == "Remote official title"
+    assert enriched.studio == "Official Studio"
+    assert enriched.actors == ["河北彩花"]
+    assert enriched.tags == ["Drama"]
+
+
+def test_failed_remote_refresh_keeps_local_work_identified(
+    repository: Repository,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "refresh"
+    root.mkdir()
+    _, asset = _asset(repository, root, name="ABP-123.mp4")
+    repository.catalog_asset(
+        asset,
+        ProviderRecord(
+            provider="local-path",
+            external_id="local-abp",
+            code="ABP-123",
+            title="ABP-123",
+            family=ContentFamily.JAV,
+        ),
+    )
+
+    repository.save_candidates(asset, [])
+
+    assert asset.state == "identified"
+    assert asset.error == "no remote candidates"
+
+
 def test_organizer_requires_current_plan_and_writes_nfo(
     repository: Repository,
     tmp_path: Path,

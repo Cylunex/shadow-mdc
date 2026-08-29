@@ -34,7 +34,7 @@ async function request<T>(schema: z.ZodType<T>, path: string, init?: RequestInit
 
 export const api = {
   libraries: () => request(librariesSchema, "/api/libraries"),
-  createLibrary: (payload: { name: string; root_path: string }) =>
+  createLibrary: (payload: { name: string; root_path: string; category: string }) =>
     request(librarySchema, "/api/libraries", { method: "POST", body: JSON.stringify(payload) }),
   scan: (libraryId: string) =>
     request(scanSchema, `/api/libraries/${libraryId}/scan`, { method: "POST" }),
@@ -53,6 +53,8 @@ export const api = {
   accept: (candidateId: string) =>
     request(workSchema, `/api/candidates/${candidateId}/accept`, { method: "POST" }),
   works: () => request(worksSchema, "/api/works"),
+  refreshWork: (workId: string) =>
+    request(identifySchema, `/api/works/${workId}/refresh`, { method: "POST" }),
   providers: () => request(providerListSchema, "/api/providers"),
   identityAliases: () => request(identityAliasesSchema, "/api/settings/identity-aliases"),
   saveIdentityAliases: (payload: IdentityAliases) =>

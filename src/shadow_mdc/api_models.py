@@ -3,13 +3,14 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from .domain import IdentityHints, OperationPlan, ProviderDescriptor, ProviderRecord
-from .enums import OperationKind
+from .enums import MediaCategory, OperationKind
 from .providers.base import ProviderFailure
 
 
 class LibraryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     root_path: str = Field(min_length=1)
+    category: MediaCategory | None = None
     recursive: bool = True
     organize_template: str = "{studio}/{code_or_title}/{code_or_title}.{ext}"
 
@@ -20,6 +21,7 @@ class LibraryOut(BaseModel):
     id: str
     name: str
     root_path: str
+    category: MediaCategory
     recursive: bool
     organize_template: str
     created_at: datetime
@@ -68,6 +70,7 @@ class WorkOut(BaseModel):
     original_title: str | None
     primary_code: str | None
     family: str
+    category: MediaCategory
     release_date: date | None
     runtime_seconds: int | None
     studio: str | None
@@ -126,6 +129,7 @@ class ProviderListOut(BaseModel):
 class ScanOut(BaseModel):
     discovered: int
     updated: int
+    cataloged: int
     filtered: int
     skipped: int
     errors: tuple[str, ...]

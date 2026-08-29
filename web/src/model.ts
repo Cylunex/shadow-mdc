@@ -4,6 +4,7 @@ export const librarySchema = z.object({
   id: z.string(),
   name: z.string(),
   root_path: z.string(),
+  category: z.enum(["Japan", "China", "Korea", "Europe", "Other"]),
   recursive: z.boolean(),
   organize_template: z.string(),
   created_at: z.string()
@@ -21,6 +22,7 @@ export const hintsSchema = z.object({
   term: z.string(),
   mode: z.string(),
   family: z.string(),
+  category: z.enum(["Japan", "China", "Korea", "Europe", "Other"]),
   code: z.string().nullable(),
   title: z.string().nullable(),
   source_url: z.string().nullable(),
@@ -65,6 +67,7 @@ export const providerRecordSchema = z.object({
   title: z.string(),
   original_title: z.string().nullable(),
   family: z.string(),
+  category: z.enum(["Japan", "China", "Korea", "Europe", "Other"]),
   release_date: z.string().nullable(),
   runtime_seconds: z.number().nullable(),
   studio: z.string().nullable(),
@@ -106,6 +109,7 @@ export const workSchema = z.object({
   original_title: z.string().nullable(),
   primary_code: z.string().nullable(),
   family: z.string(),
+  category: z.enum(["Japan", "China", "Korea", "Europe", "Other"]),
   release_date: z.string().nullable(),
   runtime_seconds: z.number().nullable(),
   studio: z.string().nullable(),
@@ -136,6 +140,7 @@ export const providerListSchema = z.object({
 export const scanSchema = z.object({
   discovered: z.number(),
   updated: z.number(),
+  cataloged: z.number(),
   filtered: z.number(),
   skipped: z.number(),
   errors: z.array(z.string())
