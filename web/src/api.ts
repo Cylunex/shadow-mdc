@@ -4,6 +4,7 @@ import {
   assetsSchema,
   candidateSchema,
   candidatesSchema,
+  filterWordsSchema,
   identifySchema,
   identityAliasesSchema,
   librariesSchema,
@@ -13,7 +14,7 @@ import {
   workSchema,
   worksSchema
 } from "./model";
-import type { IdentityAliases } from "./model";
+import type { FilterWords, IdentityAliases } from "./model";
 
 async function request<T>(schema: z.ZodType<T>, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -56,6 +57,12 @@ export const api = {
   identityAliases: () => request(identityAliasesSchema, "/api/settings/identity-aliases"),
   saveIdentityAliases: (payload: IdentityAliases) =>
     request(identityAliasesSchema, "/api/settings/identity-aliases", {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    }),
+  filterWords: () => request(filterWordsSchema, "/api/settings/filter-words"),
+  saveFilterWords: (payload: FilterWords) =>
+    request(filterWordsSchema, "/api/settings/filter-words", {
       method: "PUT",
       body: JSON.stringify(payload)
     })

@@ -136,8 +136,13 @@ export const providerListSchema = z.object({
 export const scanSchema = z.object({
   discovered: z.number(),
   updated: z.number(),
+  filtered: z.number(),
   skipped: z.number(),
   errors: z.array(z.string())
+});
+
+export const filterWordsSchema = z.object({
+  words: z.array(z.string())
 });
 
 export const identifySchema = z.object({
@@ -156,3 +161,4 @@ export type Asset = z.infer<typeof assetSchema>;
 export type Candidate = z.infer<typeof candidateSchema>;
 export type Work = z.infer<typeof workSchema>;
 export type IdentityAliases = z.infer<typeof identityAliasesSchema>;
+export type FilterWords = z.infer<typeof filterWordsSchema>;

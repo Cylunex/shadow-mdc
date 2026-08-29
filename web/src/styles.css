@@ -127,6 +127,7 @@ input:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
 }
 .alias-editor textarea:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
 .alias-editor button { justify-self: end; }
+.filter-editor textarea { min-height: 330px; }
 
 
 @media (max-width: 760px) {

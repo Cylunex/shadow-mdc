@@ -16,6 +16,7 @@ from . import __version__
 from .api_models import (
     AssetOut,
     CandidateOut,
+    FilterWordsPayload,
     HealthOut,
     IdentifyOut,
     IdentifyRequest,
@@ -41,6 +42,7 @@ from .media.organizer import Organizer
 from .providers import JavBusProvider, JavDBProvider, JsonLdProvider, ProviderRegistry, ThePornDBProvider
 from .services.alias_store import IdentityAliasStore
 from .services.identify import IdentifyService
+from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
 from .services.scanner import Scanner
 
 
@@ -51,6 +53,7 @@ class Runtime:
     http: httpx.AsyncClient
     providers: ProviderRegistry
     alias_store: IdentityAliasStore
+    filter_words_store: FilterWordsStore
 
 
 @asynccontextmanager
@@ -73,12 +76,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ]
     )
     alias_store = IdentityAliasStore(settings.data_dir / "identity-aliases.json")
+    filter_words_store = FilterWordsStore(settings.data_dir / "filter-words.txt")
     app.state.runtime = Runtime(
         settings=settings,
         database=database,
         http=client,
         providers=providers,
         alias_store=alias_store,
+        filter_words_store=filter_words_store,
     )
     try:
         yield
@@ -128,6 +133,24 @@ def update_identity_aliases(payload: IdentityAliasRules, request: Request) -> Id
     return payload
 
 
+@app.get("/api/settings/filter-words", response_model=FilterWordsPayload)
+def get_filter_words(request: Request) -> FilterWordsPayload:
+    try:
+        rules = runtime(request).filter_words_store.load()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return FilterWordsPayload(words=rules.words)
+
+
+@app.put("/api/settings/filter-words", response_model=FilterWordsPayload)
+def update_filter_words(payload: FilterWordsPayload, request: Request) -> FilterWordsPayload:
+    try:
+        saved = runtime(request).filter_words_store.save(FilterWords(words=payload.words))
+    except OSError as exc:
+        raise HTTPException(status_code=409, detail=f"cannot save filter words: {exc}") from exc
+    return FilterWordsPayload(words=saved.words)
+
+
 @app.get("/api/health", response_model=HealthOut)
 def health() -> HealthOut:
     return HealthOut(version=__version__)
@@ -169,7 +192,12 @@ def scan_library(library_id: str, request: Request, repo: Repo) -> ScanOut:
     if library is None:
         raise HTTPException(status_code=404, detail="library not found")
     try:
-        result = Scanner(repo, runtime(request).alias_store.load()).scan(library)
+        app_runtime = runtime(request)
+        result = Scanner(
+            repo,
+            app_runtime.alias_store.load(),
+            MediaPathFilter(app_runtime.filter_words_store.load().words),
+        ).scan(library)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return ScanOut.model_validate(result.model_dump())

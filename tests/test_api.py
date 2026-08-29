@@ -67,6 +67,31 @@ def test_identity_alias_settings_round_trip(
     assert (data_dir / "identity-aliases.json").is_file()
 
 
+def test_filter_words_settings_round_trip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{data_dir / 'api.db'}")
+
+    with TestClient(app) as client:
+        defaults = client.get("/api/settings/filter-words")
+        assert defaults.status_code == 200
+        assert "社 區 最 新 情 報" in defaults.json()["words"]
+        assert "sample" in defaults.json()["words"]
+
+        saved = client.put(
+            "/api/settings/filter-words",
+            json={"words": ["自定义广告", "自定义广告", " trailer "]},
+        )
+        assert saved.status_code == 200
+        assert saved.json() == {"words": ["自定义广告", "trailer"]}
+        assert client.get("/api/settings/filter-words").json() == saved.json()
+
+    assert (data_dir / "filter-words.txt").read_text(encoding="utf-8") == "自定义广告\ntrailer\n"
+
+
 def test_no_code_asset_can_create_and_accept_local_candidate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -299,15 +299,65 @@ function Libraries(props: {
               const errorSummary = result.errors.length > 0
                 ? `；${result.errors.length} 个路径失败：${result.errors.slice(0, 2).join("；")}`
                 : "";
-              props.report(`新增 ${result.discovered}，更新 ${result.updated}，跳过 ${result.skipped}${errorSummary}`);
+              props.report(
+                `新增 ${result.discovered}，更新 ${result.updated}，过滤 ${result.filtered}，` +
+                `跳过 ${result.skipped}${errorSummary}`
+              );
             })}
           >扫描</button>
         </article>
       ))}</div>
+      <FilterWordsEditor />
       <AliasEditor />
     </>
   );
 }
+
+function FilterWordsEditor() {
+  const [value, setValue] = useState("");
+  const [status, setStatus] = useState("正在读取规则…");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    void api.filterWords()
+      .then((rules) => {
+        setValue(rules.words.join("\n"));
+        setStatus("每行一个普通关键词；匹配相对路径，不支持正则，空行会被忽略。");
+      })
+      .catch((error: unknown) => setStatus(errorMessage(error)));
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    try {
+      const words = value.split(/\r?\n/).map((word) => word.trim()).filter(Boolean);
+      const saved = await api.saveFilterWords({ words });
+      setValue(saved.words.join("\n"));
+      setStatus(`已保存 ${saved.words.length} 条规则，下一次扫描时生效。`);
+    } catch (error) {
+      setStatus(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="alias-editor filter-editor">
+      <div>
+        <h2>垃圾文件过滤词</h2>
+        <p>{status}</p>
+      </div>
+      <textarea
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        spellCheck={false}
+        aria-label="垃圾文件过滤词"
+      />
+      <button disabled={saving} onClick={() => void save()}>保存规则</button>
+    </section>
+  );
+}
+
 function AliasEditor() {
   const [value, setValue] = useState("");
   const [status, setStatus] = useState("正在读取规则…");

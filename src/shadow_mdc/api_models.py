@@ -126,8 +126,13 @@ class ProviderListOut(BaseModel):
 class ScanOut(BaseModel):
     discovered: int
     updated: int
+    filtered: int
     skipped: int
     errors: tuple[str, ...]
+
+
+class FilterWordsPayload(BaseModel):
+    words: tuple[str, ...] = Field(default_factory=tuple, max_length=5000)
 
 
 class PlanOut(OperationPlan):

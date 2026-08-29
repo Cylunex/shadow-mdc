@@ -10,6 +10,7 @@ from ..identity import IdentityAliasRules, build_identity_hints
 from ..media.oshash import compute_oshash
 from ..media.probe import probe_duration
 from ..media.strm import read_strm_locator, redact_media_locator
+from .path_filter import MediaPathFilter
 
 VIDEO_EXTENSIONS = frozenset({".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".webm"})
 MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | {".strm"}
@@ -20,24 +21,35 @@ class ScanResult(BaseModel):
 
     discovered: int
     updated: int
+    filtered: int
     skipped: int
     errors: tuple[str, ...]
 
 
 class Scanner:
-    def __init__(self, repository: Repository, alias_rules: IdentityAliasRules | None = None):
+    def __init__(
+        self,
+        repository: Repository,
+        alias_rules: IdentityAliasRules | None = None,
+        path_filter: MediaPathFilter | None = None,
+    ):
         self._repository = repository
         self._alias_rules = alias_rules or IdentityAliasRules()
+        self._path_filter = path_filter or MediaPathFilter()
 
     def scan(self, library: Library) -> ScanResult:
         root = _resolve_library_root(library.root_path)
         discovered = 0
         updated = 0
+        filtered = 0
         skipped = 0
         errors: list[str] = []
         for path in _walk_files(root, recursive=library.recursive, errors=errors):
             if path.suffix.casefold() not in MEDIA_EXTENSIONS:
                 skipped += 1
+                continue
+            if self._path_filter.match(path, root) is not None:
+                filtered += 1
                 continue
             try:
                 created = self._scan_asset(library, root, path)
@@ -45,7 +57,13 @@ class Scanner:
                 updated += int(not created)
             except (OSError, ValueError) as exc:
                 errors.append(f"{path}: {exc}")
-        return ScanResult(discovered=discovered, updated=updated, skipped=skipped, errors=tuple(errors))
+        return ScanResult(
+            discovered=discovered,
+            updated=updated,
+            filtered=filtered,
+            skipped=skipped,
+            errors=tuple(errors),
+        )
 
     def _scan_asset(self, library: Library, root: Path, path: Path) -> bool:
         stat = path.stat()
