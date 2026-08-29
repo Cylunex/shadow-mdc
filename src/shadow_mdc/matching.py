@@ -95,6 +95,34 @@ def score_candidate(hints: IdentityHints, record: ProviderRecord) -> ScoredCandi
                 )
             )
 
+    if hints.studio and record.studio and _title_similarity(hints.studio, record.studio) >= 0.9:
+        contribution = 0.1
+        score += contribution
+        evidence.append(
+            MatchEvidence(kind="studio", contribution=contribution, detail="alias-normalized studio exact")
+        )
+
+    if hints.series and record.series and _title_similarity(hints.series, record.series) >= 0.9:
+        contribution = 0.1
+        score += contribution
+        evidence.append(
+            MatchEvidence(kind="series", contribution=contribution, detail="alias-normalized series exact")
+        )
+
+    hinted_actors = {normalize_title(actor) for actor in hints.actors if normalize_title(actor)}
+    record_actors = {normalize_title(actor) for actor in record.actors if normalize_title(actor)}
+    actor_overlap = hinted_actors & record_actors
+    if actor_overlap:
+        contribution = min(0.12, len(actor_overlap) * 0.06)
+        score += contribution
+        evidence.append(
+            MatchEvidence(
+                kind="actors",
+                contribution=contribution,
+                detail=f"overlap={','.join(sorted(actor_overlap))}",
+            )
+        )
+
     if hints.duration_seconds is not None and record.runtime_seconds is not None:
         similarity = _duration_similarity(hints.duration_seconds, record.runtime_seconds)
         if similarity > 0:

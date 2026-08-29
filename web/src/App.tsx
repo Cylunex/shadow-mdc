@@ -1,7 +1,8 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "./api";
-import type { Asset, Candidate, Library, Work } from "./model";
+import { identityAliasesSchema } from "./model";
+import type { Asset, Candidate, IdentityAliases, Library, Work } from "./model";
 
 type View = "inbox" | "works" | "libraries";
 
@@ -74,6 +75,15 @@ export function App() {
     });
   }
 
+  async function createManualCandidate(asset: Asset, title: string | undefined) {
+    await run(`manual-${asset.id}`, async () => {
+      const candidate = await api.manualCandidate(asset.id, title ? { title } : {});
+      const next = await api.candidates(asset.id);
+      setCandidates((current) => ({ ...current, [asset.id]: next }));
+      setMessage(`已生成本地候选：${candidate.record.title}`);
+    });
+  }
+
   async function accept(candidate: Candidate) {
     await run(candidate.id, async () => {
       await api.accept(candidate.id);
@@ -113,13 +123,14 @@ export function App() {
             candidates={candidates}
             busy={busy}
             identify={identify}
+            createManualCandidate={createManualCandidate}
             loadCandidates={loadCandidates}
             accept={accept}
           />
         )}
         {view === "works" && <Works works={works} />}
         {view === "libraries" && (
-          <Libraries libraries={libraries} busy={busy} run={run} />
+          <Libraries libraries={libraries} busy={busy} run={run} report={setMessage} />
         )}
       </main>
     </div>
@@ -139,6 +150,7 @@ function Inbox(props: {
   candidates: Record<string, Candidate[]>;
   busy: string | null;
   identify: (asset: Asset, payload: { title?: string; source_url?: string }) => Promise<void>;
+  createManualCandidate: (asset: Asset, title: string | undefined) => Promise<void>;
   loadCandidates: (assetId: string) => Promise<void>;
   accept: (candidate: Candidate) => Promise<void>;
 }) {
@@ -152,6 +164,7 @@ function Inbox(props: {
       candidates={props.candidates[asset.id] ?? []}
       busy={props.busy}
       identify={props.identify}
+      createManualCandidate={props.createManualCandidate}
       loadCandidates={props.loadCandidates}
       accept={props.accept}
     />
@@ -163,6 +176,7 @@ function AssetReview(props: {
   candidates: Candidate[];
   busy: string | null;
   identify: (asset: Asset, payload: { title?: string; source_url?: string }) => Promise<void>;
+  createManualCandidate: (asset: Asset, title: string | undefined) => Promise<void>;
   loadCandidates: (assetId: string) => Promise<void>;
   accept: (candidate: Candidate) => Promise<void>;
 }) {
@@ -175,6 +189,12 @@ function AssetReview(props: {
           <span className={`pill ${props.asset.hints.family}`}>{props.asset.hints.family}</span>
           <h2>{fileName(props.asset.path)}</h2>
           <p>{props.asset.hints.code ?? props.asset.hints.title ?? "未提取身份"}</p>
+          <div className="hint-line">
+            {props.asset.hints.media_locator && <span>STRM · {props.asset.hints.media_locator}</span>}
+            {props.asset.hints.studio && <span>片商 · {props.asset.hints.studio}</span>}
+            {props.asset.hints.series && <span>系列 · {props.asset.hints.series}</span>}
+            {props.asset.hints.actors.map((actor) => <span key={actor}>人物 · {actor}</span>)}
+          </div>
         </div>
         <button disabled={props.busy === props.asset.id} onClick={() => void props.identify(props.asset, {})}>
           自动识别
@@ -192,6 +212,13 @@ function AssetReview(props: {
           onClick={() => void props.identify(props.asset, isUrl ? { source_url: manual } : { title: manual })}
         >
           指定查询
+        </button>
+        <button
+          className="secondary"
+          disabled={props.busy === `manual-${props.asset.id}`}
+          onClick={() => void props.createManualCandidate(props.asset, manual.trim() || undefined)}
+        >
+          本地候选
         </button>
         <button className="ghost" onClick={() => void props.loadCandidates(props.asset.id)}>候选</button>
       </div>
@@ -237,6 +264,7 @@ function Libraries(props: {
   libraries: Library[];
   busy: string | null;
   run: (key: string, action: () => Promise<void>) => Promise<void>;
+  report: (message: string) => void;
 }) {
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
@@ -252,19 +280,77 @@ function Libraries(props: {
     <>
       <form className="library-form" onSubmit={submit}>
         <input value={name} onChange={(event) => setName(event.target.value)} placeholder="媒体库名称" required />
-        <input value={path} onChange={(event) => setPath(event.target.value)} placeholder="绝对目录路径" required />
+        <input
+          value={path}
+          onChange={(event) => setPath(event.target.value)}
+          placeholder="本地路径、Z:\\媒体 或 \\\\server\\share"
+          required
+        />
         <button disabled={props.busy === "create-library"}>添加媒体库</button>
       </form>
+      <p className="library-note">支持已挂载的网络磁盘和 UNC 共享；只读共享可以扫描，整理和写 NFO 需要写权限。</p>
       <div className="library-list">{props.libraries.map((library) => (
         <article key={library.id}>
           <div><h2>{library.name}</h2><p>{library.root_path}</p></div>
           <button
             disabled={props.busy === `scan-${library.id}`}
-            onClick={() => void props.run(`scan-${library.id}`, async () => { await api.scan(library.id); })}
+            onClick={() => void props.run(`scan-${library.id}`, async () => {
+              const result = await api.scan(library.id);
+              const errorSummary = result.errors.length > 0
+                ? `；${result.errors.length} 个路径失败：${result.errors.slice(0, 2).join("；")}`
+                : "";
+              props.report(`新增 ${result.discovered}，更新 ${result.updated}，跳过 ${result.skipped}${errorSummary}`);
+            })}
           >扫描</button>
         </article>
       ))}</div>
+      <AliasEditor />
     </>
+  );
+}
+function AliasEditor() {
+  const [value, setValue] = useState("");
+  const [status, setStatus] = useState("正在读取规则…");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    void api.identityAliases()
+      .then((rules) => {
+        setValue(JSON.stringify(rules, null, 2));
+        setStatus("文件名和最近三级目录会使用这些别名作为片商、系列和人物线索。");
+      })
+      .catch((error: unknown) => setStatus(errorMessage(error)));
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    try {
+      const parsed: unknown = JSON.parse(value);
+      const rules: IdentityAliases = identityAliasesSchema.parse(parsed);
+      const saved = await api.saveIdentityAliases(rules);
+      setValue(JSON.stringify(saved, null, 2));
+      setStatus("别名规则已保存，下一次扫描时生效。");
+    } catch (error) {
+      setStatus(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="alias-editor">
+      <div>
+        <h2>无番号别名规则</h2>
+        <p>{status}</p>
+      </div>
+      <textarea
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        spellCheck={false}
+        aria-label="无番号别名规则 JSON"
+      />
+      <button disabled={saving || !value.trim()} onClick={() => void save()}>保存规则</button>
+    </section>
   );
 }
 

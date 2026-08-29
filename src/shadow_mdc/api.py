@@ -1,3 +1,4 @@
+import hashlib
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from .api_models import (
     IdentityOut,
     LibraryCreate,
     LibraryOut,
+    ManualCandidateRequest,
     OrganizeApplyRequest,
     OrganizeRequest,
     PlanOut,
@@ -31,12 +33,13 @@ from .api_models import (
 from .config import Settings
 from .db.models import Library, MatchCandidateRow, MediaAsset, Work
 from .db.repository import Database, Repository
-from .domain import IdentityHints, ProviderRecord
-from .enums import QueryMode
-from .identity import build_identity_hints
+from .domain import IdentityHints, MatchEvidence, ProviderRecord, ScoredCandidate
+from .enums import MatchDecision, QueryMode
+from .identity import IdentityAliasRules
 from .media.nfo import build_nfo
 from .media.organizer import Organizer
 from .providers import JavBusProvider, JavDBProvider, JsonLdProvider, ProviderRegistry, ThePornDBProvider
+from .services.alias_store import IdentityAliasStore
 from .services.identify import IdentifyService
 from .services.scanner import Scanner
 
@@ -47,6 +50,7 @@ class Runtime:
     database: Database
     http: httpx.AsyncClient
     providers: ProviderRegistry
+    alias_store: IdentityAliasStore
 
 
 @asynccontextmanager
@@ -68,7 +72,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             JsonLdProvider(client),
         ]
     )
-    app.state.runtime = Runtime(settings=settings, database=database, http=client, providers=providers)
+    alias_store = IdentityAliasStore(settings.data_dir / "identity-aliases.json")
+    app.state.runtime = Runtime(
+        settings=settings,
+        database=database,
+        http=client,
+        providers=providers,
+        alias_store=alias_store,
+    )
     try:
         yield
     finally:
@@ -100,6 +111,23 @@ def repository(request: Request) -> Iterator[Repository]:
 Repo = Annotated[Repository, Depends(repository)]
 
 
+@app.get("/api/settings/identity-aliases", response_model=IdentityAliasRules)
+def get_identity_aliases(request: Request) -> IdentityAliasRules:
+    try:
+        return runtime(request).alias_store.load()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.put("/api/settings/identity-aliases", response_model=IdentityAliasRules)
+def update_identity_aliases(payload: IdentityAliasRules, request: Request) -> IdentityAliasRules:
+    try:
+        runtime(request).alias_store.save(payload)
+    except OSError as exc:
+        raise HTTPException(status_code=409, detail=f"cannot save identity alias rules: {exc}") from exc
+    return payload
+
+
 @app.get("/api/health", response_model=HealthOut)
 def health() -> HealthOut:
     return HealthOut(version=__version__)
@@ -112,7 +140,10 @@ def providers(request: Request) -> ProviderListOut:
 
 @app.post("/api/libraries", response_model=LibraryOut, status_code=status.HTTP_201_CREATED)
 def create_library(payload: LibraryCreate, repo: Repo) -> LibraryOut:
-    root = Path(payload.root_path).resolve()
+    try:
+        root = Path(payload.root_path).resolve()
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail=f"root_path is unavailable: {exc}") from exc
     if not root.is_dir():
         raise HTTPException(status_code=422, detail="root_path must be an existing directory")
     try:
@@ -133,12 +164,12 @@ def list_libraries(repo: Repo) -> list[LibraryOut]:
 
 
 @app.post("/api/libraries/{library_id}/scan", response_model=ScanOut)
-def scan_library(library_id: str, repo: Repo) -> ScanOut:
+def scan_library(library_id: str, request: Request, repo: Repo) -> ScanOut:
     library = repo.get_library(library_id)
     if library is None:
         raise HTTPException(status_code=404, detail="library not found")
     try:
-        result = Scanner(repo).scan(library)
+        result = Scanner(repo, runtime(request).alias_store.load()).scan(library)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return ScanOut.model_validate(result.model_dump())
@@ -168,7 +199,7 @@ async def identify_asset(
     if asset is None:
         raise HTTPException(status_code=404, detail="asset not found")
     if payload is not None and (payload.source_url or payload.title or payload.external_ids):
-        hints = _override_hints(asset.path, IdentityHints.model_validate(asset.hints), payload)
+        hints = _override_hints(IdentityHints.model_validate(asset.hints), payload)
         repo.update_asset_hints(asset, hints)
     try:
         result = await IdentifyService(repo, runtime(request).providers).identify(asset_id)
@@ -182,6 +213,51 @@ def list_candidates(asset_id: str, repo: Repo) -> list[CandidateOut]:
     if repo.get_asset(asset_id) is None:
         raise HTTPException(status_code=404, detail="asset not found")
     return [_candidate_out(item) for item in repo.list_candidates(asset_id)]
+
+
+@app.post(
+    "/api/assets/{asset_id}/manual-candidate",
+    response_model=CandidateOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_manual_candidate(
+    asset_id: str,
+    payload: ManualCandidateRequest,
+    repo: Repo,
+) -> CandidateOut:
+    asset = repo.get_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset not found")
+    hints = IdentityHints.model_validate(asset.hints)
+    title = (payload.title or hints.title or hints.term).strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="manual candidate requires a title")
+    identity_payload = payload.model_dump_json(exclude_none=True)
+    external_id = hashlib.sha256(f"{asset.id}:{identity_payload}".encode()).hexdigest()[:24]
+    record = ProviderRecord(
+        provider="local-manual",
+        external_id=external_id,
+        code=hints.code,
+        title=title,
+        family=hints.family,
+        studio=payload.studio or hints.studio,
+        series=payload.series or hints.series,
+        plot=payload.plot,
+        actors=payload.actors or hints.actors,
+        tags=payload.tags,
+        fingerprints=hints.fingerprints,
+        language="zh" if hints.family.value == "chinese" else None,
+    )
+    candidate = ScoredCandidate(
+        record=record,
+        score=1,
+        decision=MatchDecision.REVIEW,
+        evidence=(
+            MatchEvidence(kind="manual", contribution=1, detail="user-created local candidate"),
+        ),
+    )
+    row = repo.save_candidates(asset, [candidate])[0]
+    return _candidate_out(row)
 
 
 @app.post("/api/candidates/{candidate_id}/accept", response_model=WorkOut)
@@ -242,20 +318,22 @@ def organize_apply(asset_id: str, payload: OrganizeApplyRequest, repo: Repo) -> 
     return PlanOut.model_validate(plan.model_dump())
 
 
-def _override_hints(path: str, current: IdentityHints, payload: IdentifyRequest) -> IdentityHints:
-    if payload.source_url or payload.external_ids:
-        return build_identity_hints(
-            path,
-            source_url=payload.source_url,
-            external_ids=payload.external_ids,
-            fingerprints=current.fingerprints,
-            duration_seconds=current.duration_seconds,
-        )
+def _override_hints(current: IdentityHints, payload: IdentifyRequest) -> IdentityHints:
+    updates: dict[str, object] = {}
+    if payload.source_url:
+        updates.update(term=payload.source_url, source_url=payload.source_url, mode=QueryMode.URL)
+    if payload.external_ids:
+        updates["external_ids"] = payload.external_ids
+        if not payload.source_url:
+            updates.update(
+                term=next(iter(payload.external_ids.values())),
+                mode=QueryMode.EXTERNAL_ID,
+            )
     if payload.title:
-        return current.model_copy(
-            update={"term": payload.title, "title": payload.title, "mode": QueryMode.TEXT}
-        )
-    return current
+        updates["title"] = payload.title
+        if not payload.source_url and not payload.external_ids:
+            updates.update(term=payload.title, mode=QueryMode.TEXT)
+    return current.model_copy(update=updates)
 
 
 def _candidate_out(row: MatchCandidateRow) -> CandidateOut:

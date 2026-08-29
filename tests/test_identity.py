@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from shadow_mdc.enums import ContentFamily, QueryMode
-from shadow_mdc.identity import build_identity_hints, clean_stem, extract_code
+from shadow_mdc.identity import IdentityAliasRules, build_identity_hints, clean_stem, extract_code
 
 
 @pytest.mark.parametrize(
@@ -45,3 +45,18 @@ def test_url_and_external_id_take_precedence() -> None:
 
     assert by_url.mode is QueryMode.URL
     assert by_id.mode is QueryMode.EXTERNAL_ID
+
+
+def test_ascii_alias_requires_token_boundaries() -> None:
+    rules = IdentityAliasRules(studios={"xb": "杏吧传媒"})
+
+    matched = build_identity_hints("xb-title.mp4", alias_rules=rules)
+    unrelated = build_identity_hints("xbox-title.mp4", alias_rules=rules)
+
+    assert matched.studio == "杏吧传媒"
+    assert unrelated.studio is None
+
+
+def test_alias_rules_reject_blank_entries() -> None:
+    with pytest.raises(ValueError, match="must not be blank"):
+        IdentityAliasRules(series={"": "系列"})

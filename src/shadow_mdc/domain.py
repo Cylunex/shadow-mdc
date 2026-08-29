@@ -25,6 +25,11 @@ class IdentityHints(BaseModel):
     fingerprints: dict[str, str] = Field(default_factory=dict)
     duration_seconds: float | None = Field(default=None, ge=0)
     file_path: str | None = None
+    media_locator: str | None = None
+    studio: str | None = None
+    series: str | None = None
+    actors: tuple[str, ...] = ()
+    alias_evidence: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def validate_primary_hint(self) -> "IdentityHints":

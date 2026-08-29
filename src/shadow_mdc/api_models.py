@@ -89,6 +89,15 @@ class IdentifyRequest(BaseModel):
     external_ids: dict[str, str] = Field(default_factory=dict)
 
 
+class ManualCandidateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1)
+    studio: str | None = Field(default=None, min_length=1)
+    series: str | None = Field(default=None, min_length=1)
+    actors: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+    plot: str | None = None
+
+
 class IdentifyOut(BaseModel):
     asset_id: str
     candidate_ids: tuple[str, ...]

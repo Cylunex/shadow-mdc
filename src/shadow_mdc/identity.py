@@ -1,6 +1,9 @@
 import re
 import unicodedata
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .domain import IdentityHints
 from .enums import ContentFamily, QueryMode
@@ -14,6 +17,10 @@ _NOISE = re.compile(
 _DOMAIN = re.compile(r"(?i)(?:www\.)?[a-z0-9-]+\.(?:com|net|org|tv|cc|me|xyz|top)")
 _BRACKETS = re.compile(r"[\[【(\uFF08].*?[\]】)\uFF09]")
 _SEPARATORS = re.compile(r"[._\s]+")
+_GENERIC_STEM = re.compile(
+    r"(?ix)^(?:\d{1,4}|cd\s*\d+|disc\s*\d+|part\s*\d+|ep\s*\d+|"
+    r"video|movie|影片|视频|完整(?:版)?|full)$"
+)
 
 _FC2 = re.compile(r"(?i)\bFC2(?:[-_. ]?PPV)?[-_. ]?(\d{5,9})\b")
 _HEYZO = re.compile(r"(?i)\bHEYZO[-_. ]?(\d{3,5})\b")
@@ -25,6 +32,32 @@ _UNCENSORED = re.compile(r"(?i)\b(1PONDO|CARIB|CARIBPR|10MUSUME|PACOPACOMAMA)[-_
 _DISALLOWED_PREFIXES = frozenset(
     {"H264", "H265", "X264", "X265", "HEVC", "AVC", "AAC", "MP4", "MKV", "WEB", "FHD", "UHD"}
 )
+
+
+class IdentityAliasRules(BaseModel):
+    """User-maintained aliases used as hints, never as stable identities."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    studios: dict[str, str] = Field(default_factory=dict)
+    series: dict[str, str] = Field(default_factory=dict)
+    actors: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("studios", "series", "actors")
+    @classmethod
+    def validate_alias_map(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(not alias.strip() or not canonical.strip() for alias, canonical in value.items()):
+            raise ValueError("alias keys and canonical values must not be blank")
+        return value
+
+
+class AliasMatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    studio: str | None = None
+    series: str | None = None
+    actors: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
 
 
 def clean_stem(path_or_name: str | Path) -> str:
@@ -68,9 +101,18 @@ def build_identity_hints(
     external_ids: dict[str, str] | None = None,
     fingerprints: dict[str, str] | None = None,
     duration_seconds: float | None = None,
+    media_locator: str | None = None,
+    context_names: tuple[str, ...] = (),
+    alias_rules: IdentityAliasRules | None = None,
 ) -> IdentityHints:
     clean = clean_stem(path_or_name)
-    code, family = extract_code(clean)
+    context = tuple(value for value in (clean, *context_names) if value)
+    locator_name = _locator_name(media_locator)
+    code, family = _first_code((*context, locator_name))
+    title = _select_title(clean, context_names, locator_name, code)
+    alias_match = match_aliases(" ".join((*context, locator_name)), alias_rules)
+    if family is ContentFamily.UNKNOWN and alias_match.evidence:
+        family = ContentFamily.CHINESE
     known_ids = external_ids or {}
     known_fingerprints = fingerprints or {}
 
@@ -88,20 +130,99 @@ def build_identity_hints(
         term = next(iter(known_fingerprints.values()))
     else:
         mode = QueryMode.TEXT
-        term = clean
+        term = title
 
     return IdentityHints(
         term=term,
         mode=mode,
         family=family,
         code=code,
-        title=clean if clean != code else None,
+        title=title if title != code else None,
         source_url=source_url,
         external_ids=known_ids,
         fingerprints=known_fingerprints,
         duration_seconds=duration_seconds,
         file_path=str(path_or_name),
+        media_locator=media_locator,
+        studio=alias_match.studio,
+        series=alias_match.series,
+        actors=alias_match.actors,
+        alias_evidence=alias_match.evidence,
     )
+
+
+def match_aliases(text: str, rules: IdentityAliasRules | None) -> AliasMatch:
+    if rules is None:
+        return AliasMatch()
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    evidence: list[str] = []
+
+    studio = _first_alias(normalized, rules.studios)
+    if studio is not None:
+        evidence.append(f"studio:{studio}")
+    series = _first_alias(normalized, rules.series)
+    if series is not None:
+        evidence.append(f"series:{series}")
+    actors = _all_aliases(normalized, rules.actors)
+    evidence.extend(f"actor:{actor}" for actor in actors)
+    return AliasMatch(studio=studio, series=series, actors=actors, evidence=tuple(evidence))
+
+
+def _first_alias(text: str, aliases: dict[str, str]) -> str | None:
+    matches = _all_aliases(text, aliases)
+    return matches[0] if matches else None
+
+
+def _all_aliases(text: str, aliases: dict[str, str]) -> tuple[str, ...]:
+    matched: list[tuple[int, str]] = []
+    for alias, canonical in aliases.items():
+        normalized_alias = unicodedata.normalize("NFKC", alias).casefold().strip()
+        if normalized_alias and _contains_alias(text, normalized_alias):
+            matched.append((len(normalized_alias), canonical.strip()))
+    unique: list[str] = []
+    for _, canonical in sorted(matched, key=lambda item: (-item[0], item[1].casefold())):
+        if canonical and canonical not in unique:
+            unique.append(canonical)
+    return tuple(unique)
+
+
+def _contains_alias(text: str, alias: str) -> bool:
+    if alias.isascii() and re.fullmatch(r"[a-z0-9 ]+", alias):
+        return re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", text) is not None
+    return alias in text
+
+
+def _first_code(values: tuple[str, ...]) -> tuple[str | None, ContentFamily]:
+    for value in values:
+        if not value:
+            continue
+        code, family = extract_code(value)
+        if code:
+            return code, family
+    return None, ContentFamily.UNKNOWN
+
+
+def _select_title(
+    clean: str,
+    context_names: tuple[str, ...],
+    locator_name: str,
+    code: str | None,
+) -> str:
+    candidates = (clean, locator_name, *context_names)
+    for candidate in candidates:
+        value = clean_stem(candidate)
+        if value and value != code and not _GENERIC_STEM.fullmatch(value):
+            return value
+    return code or clean or next((value for value in candidates if value), "未命名影片")
+
+
+def _locator_name(locator: str | None) -> str:
+    if not locator:
+        return ""
+    parsed = urlsplit(locator)
+    if parsed.scheme and parsed.path:
+        return unquote(parsed.path.rstrip("/").rsplit("/", 1)[-1])
+    return Path(locator).name
 
 
 def normalize_identity_value(value: str) -> str:

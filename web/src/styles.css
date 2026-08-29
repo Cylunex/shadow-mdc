@@ -83,7 +83,7 @@ h2, h3, p { margin-top: 0; }
 .pill.jav { background: #172d25; color: #9fffc5; }
 .pill.chinese { background: #30251c; color: #ffd39c; }
 .pill.western { background: #1b2639; color: #a9c8ff; }
-.manual { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; margin-top: 18px; }
+.manual { display: grid; grid-template-columns: 1fr repeat(3, auto); gap: 8px; margin-top: 18px; }
 input {
   background: #0b1012; border: 1px solid var(--line); border-radius: 10px; color: white;
   min-width: 0; outline: none; padding: 11px 13px;
@@ -108,6 +108,26 @@ input:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
 .library-list { display: grid; gap: 10px; margin-top: 18px; }
 .library-list article { align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; display: flex; justify-content: space-between; padding: 18px; }
 .library-list h2 { font-size: 17px; margin-bottom: 5px; }
+.hint-line { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; max-width: min(780px, 70vw); }
+.hint-line span {
+  background: #172126; border: 1px solid #26363d; border-radius: 6px; color: #aebdc3;
+  font-size: 11px; max-width: 100%; overflow: hidden; padding: 4px 7px; text-overflow: ellipsis; white-space: nowrap;
+}
+.library-note { color: var(--muted); font-size: 12px; margin: 8px 4px 0; }
+.alias-editor {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+  display: grid; gap: 12px; margin-top: 24px; padding: 18px;
+}
+.alias-editor h2 { font-size: 17px; margin-bottom: 5px; }
+.alias-editor p { color: var(--muted); font-size: 12px; margin-bottom: 0; }
+.alias-editor textarea {
+  background: #0b1012; border: 1px solid var(--line); border-radius: 10px; color: #dfe8eb;
+  font: 12px/1.55 "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  min-height: 250px; outline: none; padding: 13px; resize: vertical;
+}
+.alias-editor textarea:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
+.alias-editor button { justify-self: end; }
+
 
 @media (max-width: 760px) {
   .shell { display: block; }

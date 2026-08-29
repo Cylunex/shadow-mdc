@@ -2,8 +2,10 @@ import { z } from "zod";
 
 import {
   assetsSchema,
+  candidateSchema,
   candidatesSchema,
   identifySchema,
+  identityAliasesSchema,
   librariesSchema,
   librarySchema,
   providerListSchema,
@@ -11,6 +13,7 @@ import {
   workSchema,
   worksSchema
 } from "./model";
+import type { IdentityAliases } from "./model";
 
 async function request<T>(schema: z.ZodType<T>, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -36,6 +39,11 @@ export const api = {
     request(scanSchema, `/api/libraries/${libraryId}/scan`, { method: "POST" }),
   assets: () => request(assetsSchema, "/api/assets"),
   candidates: (assetId: string) => request(candidatesSchema, `/api/assets/${assetId}/candidates`),
+  manualCandidate: (assetId: string, payload: { title?: string }) =>
+    request(candidateSchema, `/api/assets/${assetId}/manual-candidate`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
   identify: (assetId: string, payload: { title?: string; source_url?: string }) =>
     request(identifySchema, `/api/assets/${assetId}/identify`, {
       method: "POST",
@@ -44,5 +52,11 @@ export const api = {
   accept: (candidateId: string) =>
     request(workSchema, `/api/candidates/${candidateId}/accept`, { method: "POST" }),
   works: () => request(worksSchema, "/api/works"),
-  providers: () => request(providerListSchema, "/api/providers")
+  providers: () => request(providerListSchema, "/api/providers"),
+  identityAliases: () => request(identityAliasesSchema, "/api/settings/identity-aliases"),
+  saveIdentityAliases: (payload: IdentityAliases) =>
+    request(identityAliasesSchema, "/api/settings/identity-aliases", {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    })
 };

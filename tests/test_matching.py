@@ -79,3 +79,27 @@ def test_ranking_is_stable_for_equal_scores() -> None:
     ranked = rank_candidates(hints, candidates)
 
     assert [item.record.external_id for item in ranked] == ["a", "b"]
+
+
+def test_no_code_alias_fields_add_review_evidence_without_auto_accept() -> None:
+    hints = IdentityHints(
+        term="一段没有番号的标题",
+        mode=QueryMode.TEXT,
+        title="一段没有番号的标题",
+        studio="杏吧传媒",
+        series="小宝探花",
+        actors=("演员甲",),
+    )
+    candidate = ProviderRecord(
+        provider="fixture",
+        external_id="scene-1",
+        title="一段没有番号的标题",
+        studio="杏吧传媒",
+        series="小宝探花",
+        actors=("演员甲",),
+    )
+
+    result = score_candidate(hints, candidate)
+
+    assert result.decision is MatchDecision.REVIEW
+    assert {item.kind for item in result.evidence} == {"title", "studio", "series", "actors"}

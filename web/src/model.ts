@@ -27,7 +27,18 @@ export const hintsSchema = z.object({
   external_ids: z.record(z.string(), z.string()),
   fingerprints: z.record(z.string(), z.string()),
   duration_seconds: z.number().nullable(),
-  file_path: z.string().nullable()
+  file_path: z.string().nullable(),
+  media_locator: z.string().nullable(),
+  studio: z.string().nullable(),
+  series: z.string().nullable(),
+  actors: z.array(z.string()),
+  alias_evidence: z.array(z.string())
+});
+
+export const identityAliasesSchema = z.object({
+  studios: z.record(z.string(), z.string()),
+  series: z.record(z.string(), z.string()),
+  actors: z.record(z.string(), z.string())
 });
 
 export const assetSchema = z.object({
@@ -144,3 +155,4 @@ export type Library = z.infer<typeof librarySchema>;
 export type Asset = z.infer<typeof assetSchema>;
 export type Candidate = z.infer<typeof candidateSchema>;
 export type Work = z.infer<typeof workSchema>;
+export type IdentityAliases = z.infer<typeof identityAliasesSchema>;
