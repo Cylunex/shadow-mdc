@@ -158,6 +158,15 @@ class Repository:
             statement = statement.where(MediaAsset.state != AssetState.IGNORED.value)
         return list(self._session.scalars(statement.order_by(MediaAsset.created_at.desc())))
 
+    def list_library_assets(self, library_id: str, *, identified_only: bool = False) -> list[MediaAsset]:
+        statement = select(MediaAsset).where(
+            MediaAsset.library_id == library_id,
+            MediaAsset.state != AssetState.IGNORED.value,
+        )
+        if identified_only:
+            statement = statement.where(MediaAsset.work_id.is_not(None))
+        return list(self._session.scalars(statement.order_by(MediaAsset.path)))
+
     def ignore_asset_by_path(self, path: str, reason: str) -> bool:
         absolute = str(Path(path).resolve())
         asset = self._session.scalar(select(MediaAsset).where(MediaAsset.path == absolute))

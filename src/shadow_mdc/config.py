@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     theporndb_graphql_url: str = "https://theporndb.net/graphql"
     theporndb_token: str | None = None
     request_timeout_seconds: float = Field(default=20, ge=1, le=120)
+    request_retries: int = Field(default=1, ge=0, le=5)
+    proxy_url: str | None = None
     user_agent: str = "ShadowMDC/0.1 (+https://github.com/Cylunex/shadow-mdc)"
 
     def ensure_directories(self) -> None:

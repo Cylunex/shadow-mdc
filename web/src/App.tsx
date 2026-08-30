@@ -1,8 +1,9 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "./api";
+import type { OrganizePayload } from "./api";
 import { identityAliasesSchema } from "./model";
-import type { Asset, Candidate, IdentityAliases, Library, Work } from "./model";
+import type { Asset, BatchPlan, Candidate, IdentityAliases, Library, Work } from "./model";
 
 type View = "inbox" | "works" | "libraries";
 
@@ -28,7 +29,7 @@ export function App() {
       setAssets(nextAssets);
       setWorks(nextWorks);
       setProviderStatus(
-        providers.providers.map((provider) => `${provider.name}: ${provider.configured ? "可用" : "未配置"}`)
+        providers.providers.map((provider) => `${provider.name}: ${provider.configured ? "已配置" : "未配置"}`)
       );
       setMessage("数据已同步");
     } catch (error) {
@@ -334,27 +335,152 @@ function Libraries(props: {
       <p className="library-note">支持已挂载的网络磁盘和 UNC 共享；只读共享可以扫描，整理和写 NFO 需要写权限。</p>
       <div className="library-list">{props.libraries.map((library) => (
         <article key={library.id}>
-          <div><h2>{library.name} · {library.category}</h2><p>{library.root_path}</p></div>
-          <button
-            disabled={props.busy === `scan-${library.id}`}
-            onClick={() => void props.run(`scan-${library.id}`, async () => {
-              const result = await api.scan(library.id);
-              const errorSummary = result.errors.length > 0
-                ? `；${result.errors.length} 个路径失败：${result.errors.slice(0, 2).join("；")}`
-                : "";
-              props.report(
-                `新增 ${result.discovered}，更新 ${result.updated}，自动建档 ${result.cataloged}，` +
-                `过滤 ${result.filtered}，` +
-                `跳过 ${result.skipped}${errorSummary}`
-              );
-            })}
-          >扫描</button>
+          <div className="library-head">
+            <div><h2>{library.name} · {library.category}</h2><p>{library.root_path}</p></div>
+            <button
+              disabled={props.busy === `scan-${library.id}`}
+              onClick={() => void props.run(`scan-${library.id}`, async () => {
+                const result = await api.scan(library.id);
+                const errorSummary = result.errors.length > 0
+                  ? `；${result.errors.length} 个路径失败：${result.errors.slice(0, 2).join("；")}`
+                  : "";
+                props.report(
+                  `新增 ${result.discovered}，更新 ${result.updated}，自动建档 ${result.cataloged}，` +
+                  `过滤 ${result.filtered}，` +
+                  `跳过 ${result.skipped}${errorSummary}`
+                );
+              })}
+            >扫描</button>
+          </div>
+          <LibraryOrganizer library={library} busy={props.busy} run={props.run} report={props.report} />
         </article>
       ))}</div>
+      <ProviderDiagnostics />
       <FilterWordsEditor />
       <AliasEditor />
     </>
   );
+}
+
+function LibraryOrganizer(props: {
+  library: Library;
+  busy: string | null;
+  run: (key: string, action: () => Promise<void>) => Promise<void>;
+  report: (message: string) => void;
+}) {
+  const [mode, setMode] = useState<OrganizePayload["mode"]>("sidecar");
+  const [targetRoot, setTargetRoot] = useState("");
+  const [template, setTemplate] = useState(props.library.organize_template);
+  const [nfoPolicy, setNfoPolicy] = useState<"error" | "skip" | "replace">("replace");
+  const [plan, setPlan] = useState<BatchPlan | null>(null);
+  const key = `organize-${props.library.id}`;
+  const payload: OrganizePayload = {
+    mode,
+    target_root: mode === "sidecar" ? null : targetRoot,
+    template: mode === "sidecar" ? null : template
+  };
+
+  function preview() {
+    setPlan(null);
+    void props.run(`${key}-plan`, async () => {
+      const next = await api.planLibrary(props.library.id, payload);
+      setPlan(next);
+      props.report(`整理预览完成：${next.asset_count} 个文件，${next.conflict_count} 个冲突`);
+    });
+  }
+
+  function apply() {
+    if (!plan || !window.confirm(`确认执行 ${plan.asset_count} 个文件的整理计划？`)) return;
+    void props.run(`${key}-apply`, async () => {
+      const result = await api.applyLibraryPlan(props.library.id, {
+        ...payload,
+        token: plan.token,
+        nfo_policy: nfoPolicy
+      });
+      setPlan(null);
+      props.report(`整理完成：成功 ${result.succeeded}，失败 ${result.failed}`);
+    });
+  }
+
+  return <section className="organizer">
+    <div className="organizer-grid">
+      <label><span>输出模式</span><select value={mode} onChange={(event) => {
+        setMode(event.target.value as OrganizePayload["mode"]);
+        setPlan(null);
+      }}>
+        <option value="sidecar">当前文件夹，仅写同名 NFO</option>
+        <option value="copy">复制到新路径 + NFO</option>
+        <option value="move">移动到新路径 + NFO</option>
+        <option value="hardlink">硬链接到新路径 + NFO</option>
+      </select></label>
+      {mode !== "sidecar" && <>
+        <label><span>目标根目录</span><input value={targetRoot} onChange={(event) => {
+          setTargetRoot(event.target.value);
+          setPlan(null);
+        }} placeholder="D:\\Media 或 \\\\server\\share\\Media" /></label>
+        <label className="template-field"><span>目录模板</span><input value={template} onChange={(event) => {
+          setTemplate(event.target.value);
+          setPlan(null);
+        }} /></label>
+      </>}
+      <label><span>已有 NFO</span><select value={nfoPolicy} onChange={(event) =>
+        setNfoPolicy(event.target.value as "error" | "skip" | "replace")
+      }>
+        <option value="replace">覆盖</option>
+        <option value="skip">跳过</option>
+        <option value="error">视为冲突</option>
+      </select></label>
+      <div className="organizer-actions">
+        <button className="secondary" disabled={props.busy !== null} onClick={preview}>预览计划</button>
+        <button disabled={props.busy !== null || plan === null} onClick={apply}>确认执行</button>
+      </div>
+    </div>
+    {plan && <div className="plan-preview">
+      <strong>{plan.asset_count} 个文件 / {plan.operation_count} 项操作 / {plan.conflict_count} 个现存目标</strong>
+      {plan.samples.flatMap((item) => item.operations).slice(0, 8).map((operation, index) =>
+        <p key={`${operation.destination}-${index}`} className={operation.conflict ? "conflict" : ""}>
+          {operation.kind} → {operation.destination}{operation.conflict ? "（已存在）" : ""}
+        </p>
+      )}
+      {plan.truncated && <small>这里只显示前 50 个文件的部分操作，执行仍覆盖完整计划。</small>}
+    </div>}
+  </section>;
+}
+
+function ProviderDiagnostics() {
+  const [code, setCode] = useState("SONE-118");
+  const [status, setStatus] = useState("输入一个已知番号，实际请求所有可用来源。这里只检测，不修改作品库。");
+  const [running, setRunning] = useState(false);
+
+  async function diagnose() {
+    setRunning(true);
+    try {
+      const result = await api.diagnoseProviders(code);
+      const items = result.diagnostics.map((item) => {
+        const state = item.status === "success"
+          ? `成功，命中 ${item.records} 条`
+          : item.status === "failed"
+            ? `失败 / ${item.reason ?? "未知原因"}`
+            : item.status === "no_result"
+              ? "可访问，但无结果"
+              : item.status === "not_configured"
+                ? "未配置"
+                : "不适用于番号";
+        return `${item.provider}: ${state}`;
+      });
+      setStatus(`${result.proxy_configured ? "已配置代理" : "未配置代理"}，重试 ${result.retries} 次；${items.join("；")}`);
+    } catch (error) {
+      setStatus(errorMessage(error));
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return <section className="provider-diagnostics">
+    <div><h2>在线来源诊断</h2><p>{status}</p></div>
+    <input value={code} onChange={(event) => setCode(event.target.value)} aria-label="诊断番号" />
+    <button disabled={running || !code.trim()} onClick={() => void diagnose()}>测试来源</button>
+  </section>;
 }
 
 function FilterWordsEditor() {

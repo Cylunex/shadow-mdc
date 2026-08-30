@@ -134,3 +134,40 @@ def test_no_code_asset_can_create_and_accept_local_candidate(
 
         missing = client.post("/api/assets/missing/manual-candidate", json={"title": "Title"})
         assert missing.status_code == 404
+
+
+def test_library_sidecar_batch_preview_and_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    source = media_dir / "SONE-118.strm"
+    source.write_text("https://media.example/SONE-118.mp4", encoding="utf-8")
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{data_dir / 'api.db'}")
+
+    with TestClient(app) as client:
+        library = client.post(
+            "/api/libraries",
+            json={"name": "JAV", "root_path": str(media_dir), "category": "Japan"},
+        ).json()
+        client.post(f"/api/libraries/{library['id']}/scan")
+
+        preview = client.post(
+            f"/api/libraries/{library['id']}/organize/plan",
+            json={"mode": "sidecar"},
+        )
+        assert preview.status_code == 200
+        plan = preview.json()
+        assert plan["asset_count"] == 1
+        assert plan["samples"][0]["operations"][0]["destination"].endswith("SONE-118.nfo")
+
+        applied = client.post(
+            f"/api/libraries/{library['id']}/organize/apply",
+            json={"mode": "sidecar", "token": plan["token"], "nfo_policy": "replace"},
+        )
+        assert applied.status_code == 200
+        assert applied.json()["succeeded"] == 1
+        assert "<uniqueid" in source.with_suffix(".nfo").read_text(encoding="utf-8")

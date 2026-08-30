@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import {
   assetsSchema,
+  batchApplySchema,
+  batchPlanSchema,
   candidateSchema,
   candidatesSchema,
   filterWordsSchema,
@@ -10,11 +12,18 @@ import {
   librariesSchema,
   librarySchema,
   providerListSchema,
+  providerDiagnoseSchema,
   scanSchema,
   workSchema,
   worksSchema
 } from "./model";
 import type { FilterWords, IdentityAliases } from "./model";
+
+export type OrganizePayload = {
+  mode: "sidecar" | "copy" | "move" | "hardlink";
+  target_root?: string | null;
+  template?: string | null;
+};
 
 async function request<T>(schema: z.ZodType<T>, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -56,6 +65,22 @@ export const api = {
   refreshWork: (workId: string) =>
     request(identifySchema, `/api/works/${workId}/refresh`, { method: "POST" }),
   providers: () => request(providerListSchema, "/api/providers"),
+  diagnoseProviders: (code: string) => request(providerDiagnoseSchema, "/api/providers/diagnose", {
+    method: "POST",
+    body: JSON.stringify({ code })
+  }),
+  planLibrary: (libraryId: string, payload: OrganizePayload) =>
+    request(batchPlanSchema, `/api/libraries/${libraryId}/organize/plan`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  applyLibraryPlan: (
+    libraryId: string,
+    payload: OrganizePayload & { token: string; nfo_policy: "error" | "skip" | "replace" }
+  ) => request(batchApplySchema, `/api/libraries/${libraryId}/organize/apply`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  }),
   identityAliases: () => request(identityAliasesSchema, "/api/settings/identity-aliases"),
   saveIdentityAliases: (payload: IdentityAliases) =>
     request(identityAliasesSchema, "/api/settings/identity-aliases", {

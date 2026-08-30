@@ -116,7 +116,8 @@ input:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
 
 .library-form { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; display: grid; gap: 10px; grid-template-columns: .7fr 1.5fr .6fr auto; padding: 16px; }
 .library-list { display: grid; gap: 10px; margin-top: 18px; }
-.library-list article { align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; display: flex; justify-content: space-between; padding: 18px; }
+.library-list article { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+.library-head { align-items: center; display: flex; justify-content: space-between; }
 .library-list h2 { font-size: 17px; margin-bottom: 5px; }
 .hint-line { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; max-width: min(780px, 70vw); }
 .hint-line span {
@@ -138,6 +139,20 @@ input:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
 .alias-editor textarea:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
 .alias-editor button { justify-self: end; }
 .filter-editor textarea { min-height: 330px; }
+.organizer { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
+.organizer-grid { align-items: end; display: grid; gap: 10px; grid-template-columns: minmax(190px, .7fr) minmax(240px, 1fr) minmax(150px, .45fr) auto; }
+.organizer-grid label { display: grid; gap: 6px; }
+.organizer-grid label > span { color: var(--muted); font-size: 11px; }
+.organizer-grid .template-field { grid-column: span 2; }
+.organizer-actions { display: flex; gap: 8px; }
+.plan-preview { background: #0b1012; border: 1px solid var(--line); border-radius: 10px; margin-top: 12px; padding: 12px; }
+.plan-preview strong { color: #dfe8eb; font-size: 13px; }
+.plan-preview p { color: var(--muted); font: 11px/1.4 "Cascadia Code", Consolas, monospace; margin: 7px 0 0; overflow-wrap: anywhere; }
+.plan-preview p.conflict { color: #ffc08a; }
+.plan-preview small { color: var(--muted); display: block; margin-top: 10px; }
+.provider-diagnostics { align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; display: grid; gap: 12px; grid-template-columns: 1fr 180px auto; margin-top: 24px; padding: 18px; }
+.provider-diagnostics h2 { font-size: 17px; margin-bottom: 5px; }
+.provider-diagnostics p { color: var(--muted); font-size: 12px; margin-bottom: 0; overflow-wrap: anywhere; }
 
 
 @media (max-width: 760px) {
@@ -148,6 +163,8 @@ input:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
   .nav { flex: 1; }
   .provider-list { display: none; }
   main { padding: 28px 16px 60px; }
-  .manual, .library-form { grid-template-columns: 1fr; }
+  .manual, .library-form, .organizer-grid, .provider-diagnostics { grid-template-columns: 1fr; }
+  .organizer-grid .template-field { grid-column: auto; }
+  .library-head { align-items: flex-start; gap: 12px; }
   .work-grid { grid-template-columns: 1fr; }
 }

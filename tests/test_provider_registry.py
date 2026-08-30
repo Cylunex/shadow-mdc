@@ -1,10 +1,11 @@
 from dataclasses import dataclass
 
+import httpx
 import pytest
 
 from shadow_mdc.domain import IdentityHints, ProviderDescriptor, ProviderRecord
 from shadow_mdc.enums import ContentFamily, QueryMode
-from shadow_mdc.providers.base import ProviderError, ProviderRegistry
+from shadow_mdc.providers.base import HttpProvider, ProviderError, ProviderRegistry
 
 
 @dataclass(frozen=True)
@@ -60,3 +61,33 @@ async def test_ineligible_provider_is_not_called() -> None:
 
     assert batch.records == ()
     assert batch.failures == ()
+
+
+@pytest.mark.asyncio
+async def test_http_provider_retries_transient_status() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(503 if attempts < 3 else 200, text="ready", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpProvider(client, retries=2)
+        assert await provider._get_text("fixture", "https://example.test") == "ready"
+
+    assert attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_http_provider_reports_connect_timeout_without_empty_detail() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpProvider(client, retries=0)
+        with pytest.raises(ProviderError) as captured:
+            await provider._get_text("fixture", "https://example.test")
+
+    assert captured.value.reason == "connect_timeout"
+    assert "ConnectTimeout" in captured.value.detail

@@ -15,6 +15,8 @@ from sqlalchemy.exc import IntegrityError
 from . import __version__
 from .api_models import (
     AssetOut,
+    BatchApplyOut,
+    BatchPlanOut,
     CandidateOut,
     FilterWordsPayload,
     HealthOut,
@@ -27,6 +29,9 @@ from .api_models import (
     OrganizeApplyRequest,
     OrganizeRequest,
     PlanOut,
+    ProviderDiagnoseOut,
+    ProviderDiagnoseRequest,
+    ProviderDiagnostic,
     ProviderListOut,
     ScanOut,
     WorkOut,
@@ -34,8 +39,8 @@ from .api_models import (
 from .config import Settings
 from .db.models import Library, MatchCandidateRow, MediaAsset, Work
 from .db.repository import Database, Repository
-from .domain import IdentityHints, MatchEvidence, ProviderRecord, ScoredCandidate
-from .enums import MatchDecision, MediaCategory, QueryMode
+from .domain import IdentityHints, MatchEvidence, OperationPlan, ProviderRecord, ScoredCandidate
+from .enums import ContentFamily, MatchDecision, MediaCategory, QueryMode
 from .identity import IdentityAliasRules
 from .media.nfo import build_nfo
 from .media.organizer import Organizer
@@ -67,13 +72,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         timeout=settings.request_timeout_seconds,
         follow_redirects=True,
         headers={"User-Agent": settings.user_agent},
+        proxy=settings.proxy_url,
     )
     providers = ProviderRegistry(
         [
-            JavDBProvider(client, settings.javdb_base_url),
-            JavBusProvider(client, settings.javbus_base_url),
+            JavDBProvider(client, settings.javdb_base_url, settings.request_retries),
+            JavBusProvider(client, settings.javbus_base_url, settings.request_retries),
             ThePornDBProvider(client, settings.theporndb_graphql_url, settings.theporndb_token),
-            JsonLdProvider(client),
+            JsonLdProvider(client, settings.request_retries),
         ]
     )
     alias_store = IdentityAliasStore(settings.data_dir / "identity-aliases.json")
@@ -160,6 +166,50 @@ def health() -> HealthOut:
 @app.get("/api/providers", response_model=ProviderListOut)
 def providers(request: Request) -> ProviderListOut:
     return ProviderListOut(providers=runtime(request).providers.descriptors())
+
+
+@app.post("/api/providers/diagnose", response_model=ProviderDiagnoseOut)
+async def diagnose_providers(payload: ProviderDiagnoseRequest, request: Request) -> ProviderDiagnoseOut:
+    app_runtime = runtime(request)
+    code = payload.code.strip().upper()
+    hints = IdentityHints(
+        term=code,
+        mode=QueryMode.CODE,
+        family=ContentFamily.JAV,
+        category=MediaCategory.JAPAN,
+        code=code,
+    )
+    batch = await app_runtime.providers.search(hints)
+    record_counts: dict[str, int] = {}
+    for record in batch.records:
+        record_counts[record.provider] = record_counts.get(record.provider, 0) + 1
+    failures = {failure.provider: failure for failure in batch.failures}
+    diagnostics: list[ProviderDiagnostic] = []
+    for descriptor in app_runtime.providers.descriptors():
+        failure = failures.get(descriptor.id)
+        count = record_counts.get(descriptor.id, 0)
+        if not descriptor.configured:
+            diagnostic = ProviderDiagnostic(provider=descriptor.id, status="not_configured")
+        elif QueryMode.CODE not in descriptor.query_modes:
+            diagnostic = ProviderDiagnostic(provider=descriptor.id, status="not_applicable")
+        elif failure is not None:
+            diagnostic = ProviderDiagnostic(
+                provider=descriptor.id,
+                status="failed",
+                reason=failure.reason,
+                detail=failure.detail,
+            )
+        elif count:
+            diagnostic = ProviderDiagnostic(provider=descriptor.id, status="success", records=count)
+        else:
+            diagnostic = ProviderDiagnostic(provider=descriptor.id, status="no_result")
+        diagnostics.append(diagnostic)
+    return ProviderDiagnoseOut(
+        code=code,
+        proxy_configured=bool(app_runtime.settings.proxy_url),
+        retries=app_runtime.settings.request_retries,
+        diagnostics=tuple(diagnostics),
+    )
 
 
 @app.post("/api/libraries", response_model=LibraryOut, status_code=status.HTTP_201_CREATED)
@@ -337,7 +387,14 @@ def work_nfo(work_id: str, repo: Repo) -> Response:
 def organize_plan(asset_id: str, payload: OrganizeRequest, repo: Repo) -> PlanOut:
     asset, work, library = _organize_entities(repo, asset_id)
     try:
-        plan = Organizer(repo).plan(asset=asset, work=work, library=library, mode=payload.mode)
+        plan = Organizer(repo).plan(
+            asset=asset,
+            work=work,
+            library=library,
+            mode=payload.mode,
+            target_root=payload.target_root,
+            template=payload.template,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return PlanOut.model_validate(plan.model_dump())
@@ -354,11 +411,84 @@ def organize_apply(asset_id: str, payload: OrganizeApplyRequest, repo: Repo) -> 
             identities=repo.identities_for_work(work.id),
             mode=payload.mode,
             token=payload.token,
-            replace_nfo=payload.replace_nfo,
+            target_root=payload.target_root,
+            template=payload.template,
+            nfo_policy=payload.nfo_policy,
         )
     except (ValueError, FileExistsError, OSError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return PlanOut.model_validate(plan.model_dump())
+
+
+@app.post("/api/libraries/{library_id}/organize/plan", response_model=BatchPlanOut)
+def organize_library_plan(library_id: str, payload: OrganizeRequest, repo: Repo) -> BatchPlanOut:
+    library = repo.get_library(library_id)
+    if library is None:
+        raise HTTPException(status_code=404, detail="library not found")
+    try:
+        plans = _library_plans(repo, library, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _batch_plan_out(plans)
+
+
+@app.post("/api/libraries/{library_id}/organize/apply", response_model=BatchApplyOut)
+def organize_library_apply(library_id: str, payload: OrganizeApplyRequest, repo: Repo) -> BatchApplyOut:
+    library = repo.get_library(library_id)
+    if library is None:
+        raise HTTPException(status_code=404, detail="library not found")
+    request_payload = OrganizeRequest(
+        mode=payload.mode,
+        target_root=payload.target_root,
+        template=payload.template,
+    )
+    try:
+        plans = _library_plans(repo, library, request_payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    current_token = _batch_token(plans)
+    if current_token != payload.token:
+        raise HTTPException(status_code=409, detail="batch plan changed; request a new preview")
+
+    organizer = Organizer(repo)
+    succeeded = 0
+    errors: list[str] = []
+    assets = repo.list_library_assets(library.id, identified_only=True)
+    for asset in assets:
+        if asset.work_id is None:
+            continue
+        work = repo.get_work(asset.work_id)
+        if work is None:
+            errors.append(f"{asset.path}: work not found")
+            continue
+        plan = next((item for item in plans if item.asset_id == asset.id), None)
+        if plan is None:
+            errors.append(f"{asset.path}: plan not found")
+            continue
+        try:
+            organizer.execute(
+                asset=asset,
+                work=work,
+                library=library,
+                identities=repo.identities_for_work(work.id),
+                mode=payload.mode,
+                token=plan.token,
+                target_root=payload.target_root,
+                template=payload.template,
+                nfo_policy=payload.nfo_policy,
+            )
+            succeeded += 1
+        except (ValueError, FileExistsError, OSError) as exc:
+            if len(errors) < 100:
+                errors.append(f"{asset.path}: {exc}")
+    attempted = len(plans)
+    return BatchApplyOut(
+        token=current_token,
+        attempted=attempted,
+        succeeded=succeeded,
+        failed=attempted - succeeded,
+        errors=tuple(errors),
+    )
 
 
 def _override_hints(current: IdentityHints, payload: IdentifyRequest) -> IdentityHints:
@@ -438,6 +568,53 @@ def _organize_entities(repo: Repository, asset_id: str) -> tuple[MediaAsset, Wor
     if work is None or library is None:
         raise HTTPException(status_code=409, detail="asset references missing work or library")
     return asset, work, library
+
+
+def _library_plans(
+    repo: Repository,
+    library: Library,
+    payload: OrganizeRequest,
+) -> list[OperationPlan]:
+    organizer = Organizer(repo)
+    plans: list[OperationPlan] = []
+    for asset in repo.list_library_assets(library.id, identified_only=True):
+        if asset.work_id is None:
+            continue
+        work = repo.get_work(asset.work_id)
+        if work is None:
+            continue
+        plans.append(
+            organizer.plan(
+                asset=asset,
+                work=work,
+                library=library,
+                mode=payload.mode,
+                target_root=payload.target_root,
+                template=payload.template,
+            )
+        )
+    return plans
+
+
+def _batch_token(plans: list[OperationPlan]) -> str:
+    encoded = "\n".join(f"{plan.asset_id}:{plan.token}" for plan in plans).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _batch_plan_out(plans: list[OperationPlan]) -> BatchPlanOut:
+    operation_count = sum(len(plan.operations) for plan in plans)
+    conflict_count = sum(
+        1 for plan in plans for operation in plan.operations if operation.conflict
+    )
+    sample_limit = 50
+    return BatchPlanOut(
+        token=_batch_token(plans),
+        asset_count=len(plans),
+        operation_count=operation_count,
+        conflict_count=conflict_count,
+        samples=tuple(plans[:sample_limit]),
+        truncated=len(plans) > sample_limit,
+    )
 
 
 source_web_dist = Path(__file__).resolve().parents[2] / "web" / "dist"

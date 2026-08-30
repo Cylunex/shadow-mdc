@@ -137,6 +137,47 @@ export const providerListSchema = z.object({
   }))
 });
 
+export const providerDiagnoseSchema = z.object({
+  code: z.string(),
+  proxy_configured: z.boolean(),
+  retries: z.number(),
+  diagnostics: z.array(z.object({
+    provider: z.string(),
+    status: z.string(),
+    records: z.number(),
+    reason: z.string().nullable(),
+    detail: z.string().nullable()
+  }))
+});
+
+export const operationSchema = z.object({
+  kind: z.string(),
+  source: z.string().nullable(),
+  destination: z.string(),
+  conflict: z.boolean(),
+  detail: z.string().nullable()
+});
+export const planSchema = z.object({
+  asset_id: z.string(),
+  token: z.string(),
+  operations: z.array(operationSchema)
+});
+export const batchPlanSchema = z.object({
+  token: z.string(),
+  asset_count: z.number(),
+  operation_count: z.number(),
+  conflict_count: z.number(),
+  samples: z.array(planSchema),
+  truncated: z.boolean()
+});
+export const batchApplySchema = z.object({
+  token: z.string(),
+  attempted: z.number(),
+  succeeded: z.number(),
+  failed: z.number(),
+  errors: z.array(z.string())
+});
+
 export const scanSchema = z.object({
   discovered: z.number(),
   updated: z.number(),
@@ -167,3 +208,4 @@ export type Candidate = z.infer<typeof candidateSchema>;
 export type Work = z.infer<typeof workSchema>;
 export type IdentityAliases = z.infer<typeof identityAliasesSchema>;
 export type FilterWords = z.infer<typeof filterWordsSchema>;
+export type BatchPlan = z.infer<typeof batchPlanSchema>;

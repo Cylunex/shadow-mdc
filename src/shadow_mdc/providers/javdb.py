@@ -12,8 +12,8 @@ from .html import first_text, image_artwork, link_texts, meta_content, parse_dat
 
 
 class JavDBProvider(HttpProvider):
-    def __init__(self, client: httpx.AsyncClient, base_url: str):
-        super().__init__(client)
+    def __init__(self, client: httpx.AsyncClient, base_url: str, retries: int = 1):
+        super().__init__(client, retries)
         self._base_url = base_url.rstrip("/")
 
     @property

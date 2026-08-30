@@ -62,6 +62,19 @@ class OperationKind(StrEnum):
     WRITE_NFO = "write_nfo"
 
 
+class OutputMode(StrEnum):
+    SIDECAR = "sidecar"
+    COPY = "copy"
+    MOVE = "move"
+    HARDLINK = "hardlink"
+
+
+class NfoPolicy(StrEnum):
+    ERROR = "error"
+    SKIP = "skip"
+    REPLACE = "replace"
+
+
 class ProviderRequirement(StrEnum):
     API_TOKEN = "api_token"
     COOKIE = "cookie"

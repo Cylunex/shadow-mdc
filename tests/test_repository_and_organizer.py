@@ -6,7 +6,7 @@ import pytest
 from shadow_mdc.db.models import Library, MediaAsset
 from shadow_mdc.db.repository import Database, Repository
 from shadow_mdc.domain import IdentityHints, ProviderRecord, ScoredCandidate
-from shadow_mdc.enums import ContentFamily, MatchDecision, OperationKind, QueryMode
+from shadow_mdc.enums import ContentFamily, MatchDecision, NfoPolicy, OutputMode, QueryMode
 from shadow_mdc.media.organizer import Organizer
 
 
@@ -171,7 +171,13 @@ def test_organizer_requires_current_plan_and_writes_nfo(
     row = repository.save_candidates(asset, [_candidate(record)])[0]
     work = repository.accept_candidate(row.id)
     organizer = Organizer(repository)
-    plan = organizer.plan(asset=asset, work=work, library=library, mode=OperationKind.COPY)
+    plan = organizer.plan(
+        asset=asset,
+        work=work,
+        library=library,
+        mode=OutputMode.COPY,
+        target_root=str(root),
+    )
 
     with pytest.raises(ValueError, match="plan changed"):
         organizer.execute(
@@ -179,8 +185,9 @@ def test_organizer_requires_current_plan_and_writes_nfo(
             work=work,
             library=library,
             identities=repository.identities_for_work(work.id),
-            mode=OperationKind.COPY,
+            mode=OutputMode.COPY,
             token="0" * 64,
+            target_root=str(root),
         )
 
     organizer.execute(
@@ -188,8 +195,9 @@ def test_organizer_requires_current_plan_and_writes_nfo(
         work=work,
         library=library,
         identities=repository.identities_for_work(work.id),
-        mode=OperationKind.COPY,
+        mode=OutputMode.COPY,
         token=plan.token,
+        target_root=str(root),
     )
 
     destination = root / "A Studio" / "ABP-123" / "ABP-123.mp4"
@@ -209,4 +217,43 @@ def test_organizer_rejects_absolute_template(repository: Repository, tmp_path: P
     work = repository.accept_candidate(row.id)
 
     with pytest.raises(ValueError, match="must be relative"):
-        Organizer(repository).plan(asset=asset, work=work, library=library, mode=OperationKind.MOVE)
+        Organizer(repository).plan(
+            asset=asset,
+            work=work,
+            library=library,
+            mode=OutputMode.MOVE,
+            target_root=str(root),
+        )
+
+
+def test_sidecar_mode_writes_nfo_without_moving_media(
+    repository: Repository,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sidecar"
+    root.mkdir()
+    library, asset = _asset(repository, root, name="SONE-118.strm")
+    record = ProviderRecord(
+        provider="fixture",
+        external_id="sone-118",
+        code="SONE-118",
+        title="Sidecar title",
+        family=ContentFamily.JAV,
+    )
+    work = repository.accept_candidate(repository.save_candidates(asset, [_candidate(record)])[0].id)
+    organizer = Organizer(repository)
+    plan = organizer.plan(asset=asset, work=work, library=library, mode=OutputMode.SIDECAR)
+
+    assert [operation.kind.value for operation in plan.operations] == ["write_nfo"]
+    organizer.execute(
+        asset=asset,
+        work=work,
+        library=library,
+        identities=repository.identities_for_work(work.id),
+        mode=OutputMode.SIDECAR,
+        token=plan.token,
+        nfo_policy=NfoPolicy.REPLACE,
+    )
+
+    assert (root / "SONE-118.strm").read_bytes() == b"fixture"
+    assert "<title>Sidecar title</title>" in (root / "SONE-118.nfo").read_text(encoding="utf-8")

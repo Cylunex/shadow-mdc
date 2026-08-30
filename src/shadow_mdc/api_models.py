@@ -3,7 +3,7 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from .domain import IdentityHints, OperationPlan, ProviderDescriptor, ProviderRecord
-from .enums import MediaCategory, OperationKind
+from .enums import MediaCategory, NfoPolicy, OutputMode
 from .providers.base import ProviderFailure
 
 
@@ -109,12 +109,31 @@ class IdentifyOut(BaseModel):
 
 
 class OrganizeRequest(BaseModel):
-    mode: OperationKind = OperationKind.MOVE
+    mode: OutputMode = OutputMode.SIDECAR
+    target_root: str | None = None
+    template: str | None = None
 
 
 class OrganizeApplyRequest(OrganizeRequest):
     token: str = Field(min_length=64, max_length=64)
-    replace_nfo: bool = True
+    nfo_policy: NfoPolicy = NfoPolicy.ERROR
+
+
+class BatchPlanOut(BaseModel):
+    token: str
+    asset_count: int
+    operation_count: int
+    conflict_count: int
+    samples: tuple[OperationPlan, ...]
+    truncated: bool
+
+
+class BatchApplyOut(BaseModel):
+    token: str
+    attempted: int
+    succeeded: int
+    failed: int
+    errors: tuple[str, ...]
 
 
 class HealthOut(BaseModel):
@@ -124,6 +143,25 @@ class HealthOut(BaseModel):
 
 class ProviderListOut(BaseModel):
     providers: tuple[ProviderDescriptor, ...]
+
+
+class ProviderDiagnoseRequest(BaseModel):
+    code: str = Field(default="SONE-118", min_length=2, max_length=100)
+
+
+class ProviderDiagnostic(BaseModel):
+    provider: str
+    status: str
+    records: int = 0
+    reason: str | None = None
+    detail: str | None = None
+
+
+class ProviderDiagnoseOut(BaseModel):
+    code: str
+    proxy_configured: bool
+    retries: int
+    diagnostics: tuple[ProviderDiagnostic, ...]
 
 
 class ScanOut(BaseModel):

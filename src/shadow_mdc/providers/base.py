@@ -39,8 +39,9 @@ class Provider(Protocol):
 
 
 class HttpProvider:
-    def __init__(self, client: httpx.AsyncClient):
+    def __init__(self, client: httpx.AsyncClient, retries: int = 1):
         self._client = client
+        self._retries = retries
 
     async def _get_text(
         self,
@@ -49,20 +50,45 @@ class HttpProvider:
         *,
         params: dict[str, str] | None = None,
     ) -> str:
-        try:
-            response = await self._client.get(url, params=params)
-            response.raise_for_status()
-        except httpx.TimeoutException as exc:
-            raise ProviderError(provider, "timeout", str(exc)) from exc
-        except httpx.HTTPStatusError as exc:
-            raise ProviderError(provider, "http", f"status={exc.response.status_code}") from exc
-        except httpx.HTTPError as exc:
-            raise ProviderError(provider, "network", str(exc)) from exc
+        response: httpx.Response | None = None
+        for attempt in range(self._retries + 1):
+            try:
+                response = await self._client.get(url, params=params)
+                response.raise_for_status()
+                break
+            except httpx.TimeoutException as exc:
+                if attempt < self._retries:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+                    continue
+                reason = "connect_timeout" if isinstance(exc, httpx.ConnectTimeout) else "timeout"
+                raise ProviderError(provider, reason, _http_error_detail(exc, attempt + 1)) from exc
+            except httpx.HTTPStatusError as exc:
+                code = exc.response.status_code
+                if attempt < self._retries and (code == 429 or code >= 500):
+                    await asyncio.sleep(0.25 * (attempt + 1))
+                    continue
+                raise ProviderError(
+                    provider,
+                    "blocked" if code in {403, 429} else "http",
+                    f"status={code}; attempts={attempt + 1}",
+                ) from exc
+            except httpx.HTTPError as exc:
+                if attempt < self._retries:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+                    continue
+                raise ProviderError(provider, "network", _http_error_detail(exc, attempt + 1)) from exc
+        if response is None:
+            raise ProviderError(provider, "network", "request did not produce a response")
         text = response.text
         lowered = text.casefold()
         if "cf-chl-" in lowered or "just a moment" in lowered:
             raise ProviderError(provider, "blocked", "Cloudflare challenge")
         return text
+
+
+def _http_error_detail(exc: httpx.HTTPError, attempts: int) -> str:
+    message = str(exc).strip() or type(exc).__name__
+    return f"{type(exc).__name__}: {message}; attempts={attempts}"
 
 
 class ProviderRegistry:
