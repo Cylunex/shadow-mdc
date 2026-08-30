@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 
 import httpx
@@ -27,6 +28,34 @@ class FixtureProvider:
         if self.failure is not None:
             raise self.failure
         return [self.result] if self.result is not None else []
+
+
+@dataclass
+class CallCounter:
+    active: int = 0
+    maximum: int = 0
+
+
+@dataclass(frozen=True)
+class LimitedProvider:
+    provider_id: str
+    counter: CallCounter
+
+    @property
+    def descriptor(self) -> ProviderDescriptor:
+        return ProviderDescriptor(
+            id=self.provider_id,
+            name=self.provider_id,
+            query_modes=frozenset({QueryMode.CODE}),
+            families=frozenset({ContentFamily.JAV}),
+        )
+
+    async def search(self, hints: IdentityHints) -> list[ProviderRecord]:
+        self.counter.active += 1
+        self.counter.maximum = max(self.counter.maximum, self.counter.active)
+        await asyncio.sleep(0.01)
+        self.counter.active -= 1
+        return []
 
 
 @pytest.mark.asyncio
@@ -61,6 +90,47 @@ async def test_ineligible_provider_is_not_called() -> None:
 
     assert batch.records == ()
     assert batch.failures == ()
+
+
+@pytest.mark.asyncio
+async def test_repeated_network_failure_enters_temporary_cooldown() -> None:
+    registry = ProviderRegistry(
+        [FixtureProvider("offline", failure=ProviderError("offline", "network", "down"))],
+        failure_threshold=1,
+        cooldown_seconds=60,
+    )
+    hints = IdentityHints(
+        term="SSIS-123",
+        mode=QueryMode.CODE,
+        family=ContentFamily.JAV,
+        code="SSIS-123",
+    )
+
+    first = await registry.search(hints)
+    second = await registry.search(hints)
+
+    assert first.failures[0].reason == "network"
+    assert second.failures[0].reason == "cooldown"
+
+
+@pytest.mark.asyncio
+async def test_provider_calls_are_globally_limited() -> None:
+    counter = CallCounter()
+    registry = ProviderRegistry(
+        [LimitedProvider(f"source-{index}", counter) for index in range(6)],
+        max_concurrent_calls=2,
+    )
+
+    await registry.search(
+        IdentityHints(
+            term="SSIS-123",
+            mode=QueryMode.CODE,
+            family=ContentFamily.JAV,
+            code="SSIS-123",
+        )
+    )
+
+    assert counter.maximum == 2
 
 
 @pytest.mark.asyncio

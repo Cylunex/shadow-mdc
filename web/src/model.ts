@@ -6,6 +6,7 @@ export const librarySchema = z.object({
   root_path: z.string(),
   category: z.enum(["Japan", "China", "Korea", "Europe", "Other"]),
   recursive: z.boolean(),
+  recognition_scope: z.enum(["all", "jav_only"]),
   organize_template: z.string(),
   created_at: z.string()
 });
@@ -43,6 +44,24 @@ export const identityAliasesSchema = z.object({
   actors: z.record(z.string(), z.string())
 });
 
+export const mediaTechnicalInfoSchema = z.object({
+  duration_seconds: z.number().nullable(),
+  container: z.string().nullable(),
+  video_codec: z.string().nullable(),
+  audio_codec: z.string().nullable(),
+  width: z.number().nullable(),
+  height: z.number().nullable(),
+  frame_rate: z.number().nullable(),
+  overall_bitrate: z.number().nullable(),
+  video_bitrate: z.number().nullable(),
+  audio_bitrate: z.number().nullable(),
+  bit_depth: z.number().nullable(),
+  audio_channels: z.number().nullable(),
+  audio_sample_rate: z.number().nullable(),
+  hdr_format: z.string().nullable(),
+  quality_label: z.string().nullable()
+});
+
 export const assetSchema = z.object({
   id: z.string(),
   library_id: z.string(),
@@ -51,6 +70,7 @@ export const assetSchema = z.object({
   size: z.number(),
   modified_ns: z.number(),
   duration_seconds: z.number().nullable(),
+  media_info: mediaTechnicalInfoSchema,
   oshash: z.string().nullable(),
   state: z.string(),
   hints: hintsSchema,
@@ -59,6 +79,30 @@ export const assetSchema = z.object({
   updated_at: z.string()
 });
 export const assetsSchema = z.array(assetSchema);
+
+export const assetInboxSchema = z.object({
+  id: z.string(),
+  library_id: z.string(),
+  path: z.string(),
+  state: z.string(),
+  hints: z.object({
+    family: z.string(),
+    category: z.enum(["Japan", "China", "Korea", "Europe", "Other"]),
+    code: z.string().nullable(),
+    title: z.string().nullable(),
+    media_locator: z.string().nullable(),
+    studio: z.string().nullable(),
+    series: z.string().nullable(),
+    actors: z.array(z.string())
+  }),
+  media_info: z.object({
+    video_codec: z.string().nullable(),
+    audio_codec: z.string().nullable(),
+    hdr_format: z.string().nullable(),
+    quality_label: z.string().nullable()
+  })
+});
+export const assetInboxListSchema = z.array(assetInboxSchema);
 
 export const providerRecordSchema = z.object({
   provider: z.string(),
@@ -104,6 +148,12 @@ export const identitySchema = z.object({
   source_url: z.string().nullable()
 });
 
+export const actorSummarySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  image_url: z.string().nullable()
+});
+
 export const workSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -118,15 +168,55 @@ export const workSchema = z.object({
   series: z.string().nullable(),
   plot: z.string().nullable(),
   actors: z.array(z.string()),
+  actor_entities: z.array(actorSummarySchema),
   directors: z.array(z.string()),
   tags: z.array(z.string()),
   artwork: z.array(z.record(z.string(), z.unknown())),
+  image_url: z.string().nullable(),
+  fanart_url: z.string().nullable(),
   field_sources: z.record(z.string(), z.string()),
   identities: z.array(identitySchema),
   created_at: z.string(),
   updated_at: z.string()
 });
 export const worksSchema = z.array(workSchema);
+
+export const actorProfileSchema = z.object({
+  id: z.string().nullable(),
+  name: z.string(),
+  aliases: z.array(z.string()),
+  categories: z.array(z.string()),
+  work_count: z.number(),
+  works: z.array(z.object({
+    id: z.string(),
+    title: z.string(),
+    code: z.string().nullable(),
+    category: z.string(),
+    image_url: z.string().nullable()
+  })),
+  image_url: z.string().nullable()
+});
+export const actorProfilesSchema = z.array(actorProfileSchema);
+
+export const nonJavActorSchema = z.object({
+  name: z.string(),
+  aliases: z.array(z.string()),
+  groups: z.array(z.string()),
+  categories: z.array(z.enum(["Japan", "China", "Korea", "Europe", "Other"])),
+  match_names: z.array(z.string()),
+  image_url: z.string().nullable(),
+  biography: z.string().nullable(),
+  notes: z.string().nullable()
+});
+export const nonJavActorsSchema = z.array(nonJavActorSchema);
+
+export const directoryActorAssignSchema = z.object({
+  directory: z.string(),
+  actor: z.string(),
+  matched_assets: z.number(),
+  cataloged: z.number(),
+  skipped: z.number()
+});
 
 export const workLookupSchema = z.object({
   work: workSchema.nullable(),
@@ -136,6 +226,15 @@ export const workLookupSchema = z.object({
     reason: z.string(),
     detail: z.string()
   }))
+});
+
+export const bulkTranslateSchema = z.object({
+  attempted: z.number(),
+  translated: z.number(),
+  skipped: z.number(),
+  failed: z.number(),
+  remaining: z.number(),
+  errors: z.array(z.string())
 });
 
 export const providerListSchema = z.object({
@@ -199,6 +298,16 @@ export const artworkDownloadSchema = z.object({
   errors: z.array(z.string())
 });
 
+export const screenshotGenerateSchema = z.object({
+  attempted: z.number(),
+  generated: z.number(),
+  skipped_strm: z.number(),
+  skipped_cached: z.number(),
+  skipped_untrusted: z.number(),
+  failed: z.number(),
+  errors: z.array(z.string())
+});
+
 export const taskRunSchema = z.object({
   id: z.string(),
   kind: z.string(),
@@ -214,10 +323,26 @@ export const taskRunsSchema = z.array(taskRunSchema);
 export const scanSchema = z.object({
   discovered: z.number(),
   updated: z.number(),
-  cataloged: z.number(),
+  queued: z.number(),
+  identified: z.number(),
   filtered: z.number(),
   skipped: z.number(),
   errors: z.array(z.string())
+});
+
+export const bulkIdentifySchema = z.object({
+  queried_identities: z.number(),
+  code_queries: z.number(),
+  title_queries: z.number(),
+  attempted_assets: z.number(),
+  identified: z.number(),
+  online_identified: z.number(),
+  catalog_reused: z.number(),
+  local_optimized: z.number(),
+  unresolved: z.number(),
+  provider_failures: z.number(),
+  remaining_identities: z.number(),
+  scope_skipped: z.number()
 });
 
 export const filterWordsSchema = z.object({
@@ -236,9 +361,11 @@ export const identifySchema = z.object({
 });
 
 export type Library = z.infer<typeof librarySchema>;
-export type Asset = z.infer<typeof assetSchema>;
+export type Asset = z.infer<typeof assetInboxSchema>;
 export type Candidate = z.infer<typeof candidateSchema>;
 export type Work = z.infer<typeof workSchema>;
+export type ActorProfile = z.infer<typeof actorProfileSchema>;
+export type NonJavActor = z.infer<typeof nonJavActorSchema>;
 export type IdentityAliases = z.infer<typeof identityAliasesSchema>;
 export type FilterWords = z.infer<typeof filterWordsSchema>;
 export type BatchPlan = z.infer<typeof batchPlanSchema>;

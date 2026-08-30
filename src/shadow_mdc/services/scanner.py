@@ -6,12 +6,20 @@ from pydantic import BaseModel, ConfigDict
 
 from ..db.models import Library
 from ..db.repository import Repository
-from ..enums import AssetState, MediaCategory
+from ..domain import MediaTechnicalInfo
+from ..enums import ContentFamily, MediaCategory, QueryMode, RecognitionScope
 from ..identity import IdentityAliasRules, build_identity_hints
 from ..media.oshash import compute_oshash
-from ..media.probe import probe_duration
+from ..media.probe import probe_media_info
 from ..media.strm import read_strm_locator, redact_media_locator
-from .local_catalog import build_local_catalog_record
+from .directory_actor_rules import DirectoryActorRules
+from .local_catalog import (
+    build_local_catalog_record,
+    is_generic_file_name,
+    is_video_part_name,
+    local_context_names,
+)
+from .non_jav_actor_catalog import NonJavActorCatalog, match_non_jav_actor_directory
 from .path_filter import MediaPathFilter
 
 VIDEO_EXTENSIONS = frozenset(
@@ -58,7 +66,8 @@ class ScanResult(BaseModel):
 
     discovered: int
     updated: int
-    cataloged: int
+    queued: int
+    identified: int
     filtered: int
     skipped: int
     errors: tuple[str, ...]
@@ -70,16 +79,21 @@ class Scanner:
         repository: Repository,
         alias_rules: IdentityAliasRules | None = None,
         path_filter: MediaPathFilter | None = None,
+        directory_actor_rules: DirectoryActorRules | None = None,
+        non_jav_actor_catalog: NonJavActorCatalog | None = None,
     ):
         self._repository = repository
         self._alias_rules = alias_rules or IdentityAliasRules()
         self._path_filter = path_filter or MediaPathFilter()
+        self._directory_actor_rules = directory_actor_rules or DirectoryActorRules()
+        self._non_jav_actor_catalog = non_jav_actor_catalog or NonJavActorCatalog()
 
     def scan(self, library: Library) -> ScanResult:
         root = _resolve_library_root(library.root_path)
         discovered = 0
         updated = 0
-        cataloged = 0
+        queued = 0
+        identified = 0
         filtered = 0
         skipped = 0
         errors: list[str] = []
@@ -96,16 +110,18 @@ class Scanner:
                 filtered += 1
                 continue
             try:
-                created, newly_cataloged = self._scan_asset(library, root, path)
+                created, newly_queued = self._scan_asset(library, root, path)
                 discovered += int(created)
                 updated += int(not created)
-                cataloged += int(newly_cataloged)
+                queued += int(newly_queued)
+                identified += int(not newly_queued)
             except (OSError, ValueError) as exc:
                 errors.append(f"{path}: {exc}")
         return ScanResult(
             discovered=discovered,
             updated=updated,
-            cataloged=cataloged,
+            queued=queued,
+            identified=identified,
             filtered=filtered,
             skipped=skipped,
             errors=tuple(errors),
@@ -116,34 +132,84 @@ class Scanner:
         is_strm = path.suffix.casefold() == ".strm"
         existing = self._repository.get_asset_by_path(str(path))
         unchanged = bool(
-            existing
-            and existing.size == stat.st_size
-            and existing.modified_ns == stat.st_mtime_ns
+            existing and existing.size == stat.st_size and existing.modified_ns == stat.st_mtime_ns
         )
         raw_media_locator = read_strm_locator(path) if is_strm else None
-        duration = (
-            existing.duration_seconds
-            if unchanged and existing is not None
-            else (None if is_strm else probe_duration(path))
+        existing_media_info = (
+            MediaTechnicalInfo.model_validate(existing.media_info)
+            if existing is not None and existing.media_info
+            else None
         )
+        media_info = (
+            existing_media_info
+            if unchanged and existing_media_info is not None
+            else (MediaTechnicalInfo() if is_strm else probe_media_info(path))
+        )
+        duration = media_info.duration_seconds
         oshash = (
             existing.oshash
             if unchanged and existing is not None
             else (None if is_strm else compute_oshash(path))
         )
         fingerprints = {"oshash": oshash} if oshash else {}
+        context_names = local_context_names(path, root)
         hints = build_identity_hints(
             path,
             fingerprints=fingerprints,
             duration_seconds=duration,
             media_locator=raw_media_locator,
-            context_names=_context_names(path, root),
+            context_names=context_names,
             alias_rules=self._alias_rules,
-            category=MediaCategory(library.category),
+            category=MediaCategory.OTHER,
         )
         if raw_media_locator is not None:
+            hints = hints.model_copy(update={"media_locator": redact_media_locator(raw_media_locator)})
+        directory_rule = self._directory_actor_rules.match(path, root)
+        directory_profile = match_non_jav_actor_directory(
+            context_names,
+            self._non_jav_actor_catalog,
+        )
+        confirmed_directory_actor = directory_rule is not None or (
+            directory_profile is not None and is_generic_file_name(path.stem)
+        )
+        if directory_rule is not None:
             hints = hints.model_copy(
-                update={"media_locator": redact_media_locator(raw_media_locator)}
+                update={
+                    "actors": (directory_rule.actor,),
+                    "category": directory_rule.category,
+                    "family": _family_for_category(directory_rule.category),
+                    "alias_evidence": (*hints.alias_evidence, "directory-actor:confirmed"),
+                }
+            )
+        elif directory_profile is not None and is_generic_file_name(path.stem):
+            category = directory_profile.categories[0] if directory_profile.categories else hints.category
+            hints = hints.model_copy(
+                update={
+                    "actors": (directory_profile.name,),
+                    "category": category,
+                    "family": _family_for_category(category),
+                    "alias_evidence": (*hints.alias_evidence, "directory-actor:catalog"),
+                }
+            )
+        local_record = build_local_catalog_record(
+            library_id=library.id,
+            root=root,
+            path=path,
+            hints=hints,
+            actor_directory=Path(directory_rule.directory) if directory_rule is not None else None,
+        )
+        if hints.code is None and is_video_part_name(path.stem):
+            hints = hints.model_copy(
+                update={
+                    "term": local_record.title,
+                    "mode": QueryMode.TEXT,
+                    "title": local_record.title,
+                    "family": local_record.family,
+                    "category": local_record.category,
+                    "studio": local_record.studio or hints.studio,
+                    "series": local_record.series or hints.series,
+                    "actors": local_record.actors or hints.actors,
+                }
             )
         asset, created = self._repository.upsert_asset(
             library_id=library.id,
@@ -153,18 +219,34 @@ class Scanner:
             duration_seconds=duration,
             oshash=oshash,
             hints=hints,
+            media_info=media_info,
         )
-        newly_cataloged = asset.state != AssetState.IDENTIFIED.value
-        self._repository.catalog_asset(
+        if asset.work_id is None and hints.code:
+            existing_work = self._repository.find_work_by_code(hints.code)
+            if existing_work is not None:
+                self._repository.attach_asset_to_work(asset, existing_work)
+        if (
+            hints.code is None
+            and confirmed_directory_actor
+            and library.recognition_scope != RecognitionScope.JAV_ONLY.value
+        ):
+            self._repository.catalog_asset(asset, local_record)
+            return created, False
+        newly_queued = self._repository.queue_local_candidate(
             asset,
-            build_local_catalog_record(
-                library_id=library.id,
-                root=root,
-                path=path,
-                hints=hints,
-            ),
+            local_record,
         )
-        return created, newly_cataloged
+        return created, newly_queued
+
+
+def _family_for_category(category: MediaCategory) -> ContentFamily:
+    return {
+        MediaCategory.JAPAN: ContentFamily.UNKNOWN,
+        MediaCategory.CHINA: ContentFamily.CHINESE,
+        MediaCategory.KOREA: ContentFamily.KOREAN,
+        MediaCategory.EUROPE: ContentFamily.WESTERN,
+        MediaCategory.OTHER: ContentFamily.UNKNOWN,
+    }[category]
 
 
 def _resolve_library_root(value: str) -> Path:
@@ -199,11 +281,3 @@ def _walk_files(root: Path, *, recursive: bool, errors: list[str]) -> Iterator[P
                     pending.append(Path(entry.path))
             except OSError as exc:
                 errors.append(f"{entry.path}: cannot inspect entry: {exc}")
-
-
-def _context_names(path: Path, root: Path) -> tuple[str, ...]:
-    try:
-        relative_parent = path.parent.relative_to(root)
-    except ValueError:
-        return ()
-    return tuple(reversed(relative_parent.parts[-3:]))

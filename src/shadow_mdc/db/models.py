@@ -1,10 +1,28 @@
 import uuid
 from datetime import UTC, date, datetime
 
-from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from ..enums import AssetState, CandidateState, ContentFamily, IdentityKind, MediaCategory
+from ..enums import (
+    AssetState,
+    CandidateState,
+    ContentFamily,
+    IdentityKind,
+    MediaCategory,
+    RecognitionScope,
+)
 
 
 def new_id() -> str:
@@ -27,9 +45,14 @@ class Library(Base):
     root_path: Mapped[str] = mapped_column(Text, unique=True)
     category: Mapped[str] = mapped_column(String(30), default=MediaCategory.OTHER.value, index=True)
     recursive: Mapped[bool] = mapped_column(default=True)
+    recognition_scope: Mapped[str] = mapped_column(
+        String(30),
+        default=RecognitionScope.ALL.value,
+        index=True,
+    )
     organize_template: Mapped[str] = mapped_column(
         Text,
-        default="{studio}/{code_or_title}/{code_or_title}.{ext}",
+        default="{group}/{subgroup}/{actor}/{folder_name}/{media_name}.{ext}",
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -58,6 +81,36 @@ class Work(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 
+class Actor(Base):
+    __tablename__ = "actors"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(300))
+    normalized_name: Mapped[str] = mapped_column(String(300), unique=True, index=True)
+    aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
+    image_url: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class WorkActor(Base):
+    __tablename__ = "work_actors"
+    __table_args__ = (
+        UniqueConstraint("work_id", "actor_id", name="uq_work_actor"),
+        Index("ix_work_actor_actor", "actor_id", "position"),
+    )
+
+    work_id: Mapped[str] = mapped_column(
+        ForeignKey("works.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    actor_id: Mapped[str] = mapped_column(
+        ForeignKey("actors.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class ExternalIdentity(Base):
     __tablename__ = "external_identities"
     __table_args__ = (
@@ -84,6 +137,7 @@ class MediaAsset(Base):
     size: Mapped[int] = mapped_column(Integer)
     modified_ns: Mapped[int] = mapped_column(Integer, default=0)
     duration_seconds: Mapped[float | None] = mapped_column(Float)
+    media_info: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     oshash: Mapped[str | None] = mapped_column(String(16), index=True)
     state: Mapped[str] = mapped_column(String(30), default=AssetState.NEW.value, index=True)
     hints: Mapped[dict[str, object]] = mapped_column(JSON)

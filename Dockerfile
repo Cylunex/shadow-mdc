@@ -11,6 +11,9 @@ ENV PYTHONPATH=/app/src \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md ./
 COPY src/ src/
 COPY --from=web /build/web/dist/ src/shadow_mdc/static/

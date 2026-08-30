@@ -1,5 +1,7 @@
 import asyncio
+import time
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Protocol
 
 import httpx
@@ -49,11 +51,49 @@ class HttpProvider:
         url: str,
         *,
         params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+    ) -> str:
+        return await self._request_text(
+            provider,
+            "GET",
+            url,
+            params=params,
+            headers=headers,
+            cookies=cookies,
+        )
+
+    async def _post_text(
+        self,
+        provider: str,
+        url: str,
+        *,
+        data: dict[str, str],
+    ) -> str:
+        return await self._request_text(provider, "POST", url, data=data)
+
+    async def _request_text(
+        self,
+        provider: str,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        data: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
     ) -> str:
         response: httpx.Response | None = None
         for attempt in range(self._retries + 1):
             try:
-                response = await self._client.get(url, params=params)
+                response = await self._client.request(
+                    method,
+                    url,
+                    params=params,
+                    data=data,
+                    headers=headers,
+                    cookies=cookies,
+                )
                 response.raise_for_status()
                 break
             except httpx.TimeoutException as exc:
@@ -92,8 +132,19 @@ def _http_error_detail(exc: httpx.HTTPError, attempts: int) -> str:
 
 
 class ProviderRegistry:
-    def __init__(self, providers: Iterable[Provider]):
+    def __init__(
+        self,
+        providers: Iterable[Provider],
+        *,
+        failure_threshold: int = 4,
+        cooldown_seconds: float = 300,
+        max_concurrent_calls: int = 16,
+    ):
         self._providers = {provider.descriptor.id: provider for provider in providers}
+        self._failure_threshold = failure_threshold
+        self._cooldown_seconds = cooldown_seconds
+        self._call_slots = asyncio.Semaphore(max_concurrent_calls)
+        self._health: dict[str, _ProviderHealth] = {}
 
     def descriptors(self) -> tuple[ProviderDescriptor, ...]:
         return tuple(
@@ -112,11 +163,30 @@ class ProviderRegistry:
                 or hints.family.value == "unknown"
             )
         ]
+        now = time.monotonic()
+        active: list[Provider] = []
+        failures: list[ProviderFailure] = []
+        for provider in eligible:
+            health = self._health.get(provider.descriptor.id)
+            if health is not None and health.retry_after > now:
+                failures.append(
+                    ProviderFailure(
+                        provider=provider.descriptor.id,
+                        reason="cooldown",
+                        detail=f"retry_in={max(1, round(health.retry_after - now))}s",
+                    )
+                )
+            else:
+                active.append(provider)
 
         async def invoke(provider: Provider) -> tuple[list[ProviderRecord], ProviderFailure | None]:
             try:
-                return await provider.search(hints), None
+                async with self._call_slots:
+                    records = await provider.search(hints)
+                self._health.pop(provider.descriptor.id, None)
+                return records, None
             except ProviderError as exc:
+                self._record_failure(exc)
                 return [], ProviderFailure(provider=exc.provider, reason=exc.reason, detail=exc.detail)
             except Exception as exc:
                 return [], ProviderFailure(
@@ -125,9 +195,8 @@ class ProviderRegistry:
                     detail=f"{type(exc).__name__}: {exc}",
                 )
 
-        results = await asyncio.gather(*(invoke(provider) for provider in eligible))
+        results = await asyncio.gather(*(invoke(provider) for provider in active))
         records: list[ProviderRecord] = []
-        failures: list[ProviderFailure] = []
         seen: set[tuple[str, str]] = set()
         for provider_records, failure in results:
             if failure is not None:
@@ -138,3 +207,17 @@ class ProviderRegistry:
                     seen.add(key)
                     records.append(record)
         return SearchBatch(records=tuple(records), failures=tuple(failures))
+
+    def _record_failure(self, error: ProviderError) -> None:
+        if error.reason not in {"blocked", "connect_timeout", "network", "timeout"}:
+            return
+        health = self._health.setdefault(error.provider, _ProviderHealth())
+        health.failures += 1
+        if health.failures >= self._failure_threshold:
+            health.retry_after = time.monotonic() + self._cooldown_seconds
+
+
+@dataclass
+class _ProviderHealth:
+    failures: int = 0
+    retry_after: float = 0

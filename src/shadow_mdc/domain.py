@@ -46,6 +46,28 @@ class IdentityHints(BaseModel):
         return self
 
 
+class MediaTechnicalInfo(BaseModel):
+    """Technical properties of one concrete media file, never of the abstract work."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    duration_seconds: float | None = Field(default=None, ge=0)
+    container: str | None = None
+    video_codec: str | None = None
+    audio_codec: str | None = None
+    width: int | None = Field(default=None, ge=1)
+    height: int | None = Field(default=None, ge=1)
+    frame_rate: float | None = Field(default=None, ge=0)
+    overall_bitrate: int | None = Field(default=None, ge=0)
+    video_bitrate: int | None = Field(default=None, ge=0)
+    audio_bitrate: int | None = Field(default=None, ge=0)
+    bit_depth: int | None = Field(default=None, ge=1)
+    audio_channels: int | None = Field(default=None, ge=1)
+    audio_sample_rate: int | None = Field(default=None, ge=1)
+    hdr_format: str | None = None
+    quality_label: str | None = None
+
+
 class Artwork(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

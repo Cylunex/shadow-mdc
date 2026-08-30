@@ -107,3 +107,28 @@ async def test_exact_code_sources_merge_fields_and_keep_provenance(
         "a-primary",
         "b-supplemental",
     }
+
+
+def test_repair_jav_actors_prefers_structured_provider_snapshot(repository: Repository) -> None:
+    noisy = ProviderRecord(
+        provider="freejavbt",
+        external_id="mida-008",
+        code="MIDA-008",
+        title="Title",
+        family=ContentFamily.JAV,
+        actors=("Director-like credit", "Reina Miyashita"),
+    )
+    stored = repository._create_work(noisy)
+    repository._upsert_snapshot(stored, noisy)
+    reliable = noisy.model_copy(
+        update={
+            "provider": "jav321",
+            "external_id": "mida00008",
+            "actors": ("Reina Miyashita",),
+        }
+    )
+    repository._upsert_snapshot(stored, reliable)
+
+    assert repository.repair_jav_actor_sources() == 1
+    assert stored.actors == ["Reina Miyashita"]
+    assert stored.field_sources["actors"] == "jav321"

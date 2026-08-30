@@ -1,20 +1,27 @@
 import { z } from "zod";
 
 import {
-  assetsSchema,
+  actorProfilesSchema,
+  assetInboxListSchema,
   artworkDownloadSchema,
   batchApplySchema,
   batchPlanSchema,
+  bulkIdentifySchema,
+  bulkTranslateSchema,
   candidateSchema,
   candidatesSchema,
+  directoryActorAssignSchema,
   filterWordsSchema,
   identifySchema,
   identityAliasesSchema,
   librariesSchema,
   librarySchema,
+  nonJavActorSchema,
+  nonJavActorsSchema,
   providerListSchema,
   providerDiagnoseSchema,
   scanSchema,
+  screenshotGenerateSchema,
   taskRunsSchema,
   workSchema,
   workLookupSchema,
@@ -22,14 +29,32 @@ import {
 } from "./model";
 import type { FilterWords, IdentityAliases } from "./model";
 
+export type DisplayMediaCategory = "Japan" | "China" | "Korea" | "Europe" | "Other";
+
+export type NonJavActorEditPayload = {
+  name: string;
+  aliases: string[];
+  groups: string[];
+  categories: DisplayMediaCategory[];
+  biography: string | null;
+  notes: string | null;
+};
+
 export type OrganizePayload = {
   mode: "sidecar" | "copy" | "move" | "hardlink" | "symlink";
   target_root?: string | null;
   template?: string | null;
 };
 
+const appBaseUrl = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+export function appUrl(path: string | null): string | null {
+  if (path === null || !path.startsWith("/")) return path;
+  return `${appBaseUrl}${path}`;
+}
+
 async function request<T>(schema: z.ZodType<T>, path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(appUrl(path) ?? path, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -46,12 +71,31 @@ async function request<T>(schema: z.ZodType<T>, path: string, init?: RequestInit
 
 export const api = {
   libraries: () => request(librariesSchema, "/api/libraries"),
-  createLibrary: (payload: { name: string; root_path: string; category: string }) =>
+  createLibrary: (payload: {
+    name: string;
+    root_path: string;
+    recognition_scope: "all" | "jav_only";
+  }) =>
     request(librarySchema, "/api/libraries", { method: "POST", body: JSON.stringify(payload) }),
+  updateLibrary: (libraryId: string, payload: { recognition_scope: "all" | "jav_only" }) =>
+    request(librarySchema, `/api/libraries/${libraryId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
   scan: (libraryId: string) =>
     request(scanSchema, `/api/libraries/${libraryId}/scan`, { method: "POST" }),
+  generateScreenshots: (libraryId: string, limit = 50) =>
+    request(screenshotGenerateSchema, `/api/libraries/${libraryId}/screenshots`, {
+      method: "POST",
+      body: JSON.stringify({ limit })
+    }),
+  identifyLibrary: (libraryId: string, limit = 20) =>
+    request(bulkIdentifySchema, `/api/libraries/${libraryId}/identify`, {
+      method: "POST",
+      body: JSON.stringify({ limit })
+    }),
   tasks: () => request(taskRunsSchema, "/api/tasks"),
-  assets: () => request(assetsSchema, "/api/assets"),
+  assets: () => request(assetInboxListSchema, "/api/inbox"),
   candidates: (assetId: string) => request(candidatesSchema, `/api/assets/${assetId}/candidates`),
   manualCandidate: (assetId: string, payload: { title?: string }) =>
     request(candidateSchema, `/api/assets/${assetId}/manual-candidate`, {
@@ -66,6 +110,45 @@ export const api = {
   accept: (candidateId: string) =>
     request(workSchema, `/api/candidates/${candidateId}/accept`, { method: "POST" }),
   works: () => request(worksSchema, "/api/works"),
+  actors: () => request(actorProfilesSchema, "/api/actors"),
+  nonJavActors: () => request(nonJavActorsSchema, "/api/non-jav-actors"),
+  createNonJavActor: (payload: NonJavActorEditPayload) =>
+    request(nonJavActorSchema, "/api/non-jav-actors", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  updateNonJavActor: (actorName: string, payload: NonJavActorEditPayload) =>
+    request(nonJavActorSchema, `/api/non-jav-actors/${encodeURIComponent(actorName)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  deleteNonJavActor: async (actorName: string): Promise<void> => {
+    const path = `/api/non-jav-actors/${encodeURIComponent(actorName)}`;
+    const response = await fetch(appUrl(path) ?? path, {
+      method: "DELETE"
+    });
+    if (!response.ok) throw new Error(await response.text());
+  },
+  uploadNonJavActorImage: (actorName: string, file: File) =>
+    request(nonJavActorSchema, `/api/non-jav-actors/${encodeURIComponent(actorName)}/image`, {
+      method: "POST",
+      body: file,
+      headers: { "Content-Type": file.type || "application/octet-stream" }
+    }),
+  assignDirectoryActor: (
+    assetId: string,
+    actor: string,
+    category: DisplayMediaCategory,
+    directory: string
+  ) =>
+    request(directoryActorAssignSchema, `/api/assets/${assetId}/directory-actor`, {
+      method: "POST",
+      body: JSON.stringify({ actor, category, directory })
+    }),
+  translateWorks: (limit = 200) => request(bulkTranslateSchema, "/api/works/translate", {
+    method: "POST",
+    body: JSON.stringify({ limit })
+  }),
   lookupWork: (code: string) => request(workLookupSchema, "/api/works/lookup", {
     method: "POST",
     body: JSON.stringify({ code })

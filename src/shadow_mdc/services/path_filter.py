@@ -26,9 +26,7 @@ class FilterMatch:
 class MediaPathFilter:
     def __init__(self, words: Iterable[str] = ()):
         self._rules = tuple(
-            (word, _normalize(word), _compact(word))
-            for word in _deduplicate(words)
-            if _compact(word)
+            (word, _normalize(word), _compact(word)) for word in _deduplicate(words) if _compact(word)
         )
 
     def match(self, path: Path, root: Path) -> FilterMatch | None:
@@ -126,6 +124,10 @@ def default_filter_words() -> tuple[str, ...]:
         "18+遊戲大全",
         "新 片 首 發 每 天 更 新 同 步 日 韓",
         "直播大秀",
+        "xuu62.com",
+        "有趣的台湾妹妹直播",
+        "有趣的臺灣妹妹直播",
+        "有趣的小视频",
         "uur9 3.com",
         "妹妹在精彩表演 哥哥快来大饱眼福",
         "千部好片盡在",
@@ -143,9 +145,7 @@ def default_filter_words() -> tuple[str, ...]:
 
 def _parse_filter_words(content: str) -> tuple[str, ...]:
     return _deduplicate(
-        line.strip()
-        for line in content.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
+        line.strip() for line in content.splitlines() if line.strip() and not line.lstrip().startswith("#")
     )
 
 

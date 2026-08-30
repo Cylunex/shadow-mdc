@@ -27,6 +27,11 @@ class MediaCategory(StrEnum):
     OTHER = "Other"
 
 
+class RecognitionScope(StrEnum):
+    ALL = "all"
+    JAV_ONLY = "jav_only"
+
+
 class IdentityKind(StrEnum):
     CODE = "code"
     PROVIDER_ID = "provider_id"
@@ -61,6 +66,8 @@ class OperationKind(StrEnum):
     HARDLINK = "hardlink"
     SYMLINK = "symlink"
     WRITE_NFO = "write_nfo"
+    DELETE_FILTERED_FILE = "delete_filtered_file"
+    REMOVE_DIRECTORY = "remove_directory"
 
 
 class OutputMode(StrEnum):

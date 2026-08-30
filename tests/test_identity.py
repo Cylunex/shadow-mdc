@@ -10,6 +10,8 @@ from shadow_mdc.identity import IdentityAliasRules, build_identity_hints, clean_
     ("value", "expected_code", "expected_family"),
     [
         ("SSIS-123-C.mp4", "SSIS-123", ContentFamily.JAV),
+        ("SONE-118A.mp4", "SONE-118", ContentFamily.JAV),
+        ("SONE-118-partB.mp4", "SONE-118", ContentFamily.JAV),
         ("FC2 PPV 1234567.mkv", "FC2-1234567", ContentFamily.JAV),
         ("HEYZO_1234_1080p.mp4", "HEYZO-1234", ContentFamily.JAV),
         ("1pondo-012345_678.mp4", "1PONDO-012345-678", ContentFamily.JAV),

@@ -35,7 +35,9 @@ async def test_artwork_store_downloads_once_and_reuses_hash_cache(tmp_path: Path
     assert second.cached == 1
     assert requests == 1
     assert paths == second_paths
-    assert Path(next(iter(paths.values()))).read_bytes() == b"jpeg-fixture"
+    cached_path = Path(next(iter(paths.values())))
+    assert cached_path == tmp_path / "work-id" / "poster.jpg"
+    assert cached_path.read_bytes() == b"jpeg-fixture"
 
 
 @pytest.mark.asyncio

@@ -3,11 +3,12 @@ from pathlib import Path
 import pytest
 
 from shadow_mdc.db.repository import Database, Repository
-from shadow_mdc.domain import IdentityHints
-from shadow_mdc.enums import ContentFamily, QueryMode
+from shadow_mdc.domain import IdentityHints, MediaTechnicalInfo, ProviderRecord
+from shadow_mdc.enums import ContentFamily, MediaCategory, QueryMode
 from shadow_mdc.media.strm import read_strm_locator, redact_media_locator
 from shadow_mdc.services import scanner as scanner_module
 from shadow_mdc.services.alias_store import default_alias_rules
+from shadow_mdc.services.non_jav_actor_catalog import parse_non_jav_actor_text
 from shadow_mdc.services.scanner import Scanner
 
 
@@ -115,6 +116,44 @@ def test_scanner_uses_parent_for_generic_no_code_filename(tmp_path: Path) -> Non
     assert hints.family is ContentFamily.CHINESE
 
 
+def test_scanner_auto_catalogs_numbered_files_in_known_non_jav_actor_directory(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "library"
+    folder = root / "Europe" / "Abella Danger"
+    folder.mkdir(parents=True)
+    (folder / "1.mp4").write_bytes(b"fixture")
+    catalog = parse_non_jav_actor_text(
+        "**欧美热门女优**\nAbella Danger,Abella Danger",
+        source="fixture.txt",
+    )
+
+    database = Database(f"sqlite:///{tmp_path / 'known-actor.db'}")
+    database.initialize()
+    with database.session() as session:
+        repository = Repository(session)
+        library = repository.create_library(
+            name="Known actor",
+            root_path=str(root),
+            recursive=True,
+            organize_template="{actor}/{code_or_title}.{ext}",
+        )
+        result = Scanner(
+            repository,
+            default_alias_rules(),
+            non_jav_actor_catalog=catalog,
+        ).scan(library)
+        assets = repository.list_assets()
+        work = repository.get_work(assets[0].work_id or "")
+
+    assert result.queued == 0
+    assert result.identified == 1
+    assert work is not None
+    assert work.title == "Abella Danger_1"
+    assert work.actors == ["Abella Danger"]
+    assert work.category == MediaCategory.EUROPE.value
+
+
 def test_bad_strm_is_reported_without_stopping_scan(tmp_path: Path) -> None:
     root = tmp_path / "library"
     root.mkdir()
@@ -149,17 +188,17 @@ def test_unchanged_video_reuses_probe_and_hash(
     probes = 0
     hashes = 0
 
-    def probe(path: Path) -> float:
+    def probe(path: Path) -> MediaTechnicalInfo:
         nonlocal probes
         probes += 1
-        return 123.0
+        return MediaTechnicalInfo(duration_seconds=123.0)
 
     def oshash(path: Path) -> str:
         nonlocal hashes
         hashes += 1
         return "0123456789abcdef"
 
-    monkeypatch.setattr(scanner_module, "probe_duration", probe)
+    monkeypatch.setattr(scanner_module, "probe_media_info", probe)
     monkeypatch.setattr(scanner_module, "compute_oshash", oshash)
     database = Database(f"sqlite:///{tmp_path / 'reuse.db'}")
     database.initialize()
@@ -176,6 +215,59 @@ def test_unchanged_video_reuses_probe_and_hash(
 
     assert probes == 1
     assert hashes == 1
+
+
+def test_scanner_reuses_saved_work_and_only_refreshes_file_quality(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    source = root / "SONE-118.mp4"
+    source.write_bytes(b"first-quality")
+    qualities = iter(
+        (
+            MediaTechnicalInfo(width=1920, height=1080, quality_label="1080p"),
+            MediaTechnicalInfo(width=3840, height=2160, quality_label="4K"),
+        )
+    )
+    monkeypatch.setattr(scanner_module, "probe_media_info", lambda path: next(qualities))
+    monkeypatch.setattr(scanner_module, "compute_oshash", lambda path: None)
+
+    database = Database(f"sqlite:///{tmp_path / 'reuse-work.db'}")
+    database.initialize()
+    with database.session() as session:
+        repository = Repository(session)
+        library = repository.create_library(
+            name="Japan",
+            root_path=str(root),
+            category=MediaCategory.JAPAN,
+            recursive=True,
+            organize_template="{code_or_title}.{ext}",
+        )
+        work = repository.upsert_provider_record(
+            ProviderRecord(
+                provider="fixture",
+                external_id="sone-118",
+                code="SONE-118",
+                title="Saved stable title",
+                family=ContentFamily.JAV,
+            ),
+            overwrite=True,
+        )
+
+        first = Scanner(repository).scan(library)
+        source.write_bytes(b"second-quality-is-larger")
+        second = Scanner(repository).scan(library)
+        asset = repository.list_assets()[0]
+        media_info = MediaTechnicalInfo.model_validate(asset.media_info)
+
+    assert first.identified == 1
+    assert second.identified == 1
+    assert asset.work_id == work.id
+    assert asset.state == "identified"
+    assert media_info.quality_label == "4K"
+    assert work.title == "Saved stable title"
 
 
 def test_scanner_ignores_metadata_and_recycle_directories(tmp_path: Path) -> None:

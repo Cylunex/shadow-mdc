@@ -5,7 +5,8 @@ __pycache__/
 .pytest-tmp/
 .ruff_cache/
 .mypy_cache/
-data/
+data/*
+!data/non-jav-actors.json
 dist/
 build/
 web/node_modules/

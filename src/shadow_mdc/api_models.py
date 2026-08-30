@@ -2,8 +2,14 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .domain import IdentityHints, OperationPlan, ProviderDescriptor, ProviderRecord
-from .enums import MediaCategory, NfoPolicy, OutputMode
+from .domain import (
+    IdentityHints,
+    MediaTechnicalInfo,
+    OperationPlan,
+    ProviderDescriptor,
+    ProviderRecord,
+)
+from .enums import MediaCategory, NfoPolicy, OutputMode, RecognitionScope
 from .providers.base import ProviderFailure
 
 
@@ -12,7 +18,12 @@ class LibraryCreate(BaseModel):
     root_path: str = Field(min_length=1)
     category: MediaCategory | None = None
     recursive: bool = True
-    organize_template: str = "{studio}/{code_or_title}/{code_or_title}.{ext}"
+    recognition_scope: RecognitionScope = RecognitionScope.ALL
+    organize_template: str = "{group}/{subgroup}/{actor}/{folder_name}/{media_name}.{ext}"
+
+
+class LibraryUpdate(BaseModel):
+    recognition_scope: RecognitionScope
 
 
 class LibraryOut(BaseModel):
@@ -23,6 +34,7 @@ class LibraryOut(BaseModel):
     root_path: str
     category: MediaCategory
     recursive: bool
+    recognition_scope: RecognitionScope
     organize_template: str
     created_at: datetime
 
@@ -37,12 +49,40 @@ class AssetOut(BaseModel):
     size: int
     modified_ns: int
     duration_seconds: float | None
+    media_info: MediaTechnicalInfo
     oshash: str | None
     state: str
     hints: IdentityHints
     error: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class AssetInboxHintsOut(BaseModel):
+    family: str
+    category: MediaCategory
+    code: str | None
+    title: str | None
+    media_locator: str | None
+    studio: str | None
+    series: str | None
+    actors: tuple[str, ...]
+
+
+class AssetInboxMediaOut(BaseModel):
+    video_codec: str | None
+    audio_codec: str | None
+    hdr_format: str | None
+    quality_label: str | None
+
+
+class AssetInboxOut(BaseModel):
+    id: str
+    library_id: str
+    path: str
+    state: str
+    hints: AssetInboxHintsOut
+    media_info: AssetInboxMediaOut
 
 
 class CandidateOut(BaseModel):
@@ -65,6 +105,46 @@ class IdentityOut(BaseModel):
     source_url: str | None
 
 
+class ActorSummaryOut(BaseModel):
+    id: str
+    name: str
+    image_url: str | None = None
+
+
+class NonJavActorEdit(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    aliases: tuple[str, ...] = Field(default_factory=tuple, max_length=100)
+    groups: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
+    categories: tuple[MediaCategory, ...] = (MediaCategory.OTHER,)
+    biography: str | None = Field(default=None, max_length=5000)
+    notes: str | None = Field(default=None, max_length=5000)
+
+
+class NonJavActorOut(BaseModel):
+    name: str
+    aliases: tuple[str, ...]
+    groups: tuple[str, ...]
+    categories: tuple[MediaCategory, ...]
+    match_names: tuple[str, ...]
+    image_url: str | None = None
+    biography: str | None = None
+    notes: str | None = None
+
+
+class DirectoryActorAssignRequest(BaseModel):
+    actor: str = Field(min_length=1, max_length=200)
+    category: MediaCategory
+    directory: str | None = Field(default=None, min_length=1, max_length=2000)
+
+
+class DirectoryActorAssignOut(BaseModel):
+    directory: str
+    actor: str
+    matched_assets: int
+    cataloged: int
+    skipped: int
+
+
 class WorkOut(BaseModel):
     id: str
     title: str
@@ -79,9 +159,12 @@ class WorkOut(BaseModel):
     series: str | None
     plot: str | None
     actors: list[str]
+    actor_entities: list[ActorSummaryOut] = Field(default_factory=list)
     directors: list[str]
     tags: list[str]
     artwork: list[dict[str, object]]
+    image_url: str | None = None
+    fanart_url: str | None = None
     field_sources: dict[str, str]
     identities: list[IdentityOut] = Field(default_factory=list)
     created_at: datetime
@@ -110,6 +193,25 @@ class IdentifyOut(BaseModel):
     failures: tuple[ProviderFailure, ...]
 
 
+class BulkIdentifyRequest(BaseModel):
+    limit: int = Field(default=20, ge=1, le=500)
+
+
+class BulkIdentifyOut(BaseModel):
+    queried_identities: int
+    code_queries: int
+    title_queries: int
+    attempted_assets: int
+    identified: int
+    online_identified: int
+    catalog_reused: int
+    local_optimized: int
+    unresolved: int
+    provider_failures: int
+    remaining_identities: int
+    scope_skipped: int
+
+
 class WorkLookupRequest(BaseModel):
     code: str = Field(min_length=2, max_length=100)
 
@@ -118,6 +220,33 @@ class WorkLookupOut(BaseModel):
     work: WorkOut | None
     matched_records: int
     failures: tuple[ProviderFailure, ...]
+
+
+class BulkTranslateRequest(BaseModel):
+    limit: int = Field(default=200, ge=1, le=1000)
+
+
+class BulkTranslateOut(BaseModel):
+    attempted: int
+    translated: int
+    skipped: int
+    failed: int
+    remaining: int
+    errors: tuple[str, ...]
+
+
+class ScreenshotGenerateOut(BaseModel):
+    attempted: int
+    generated: int
+    skipped_strm: int
+    skipped_cached: int
+    skipped_untrusted: int
+    failed: int
+    errors: tuple[str, ...]
+
+
+class ScreenshotGenerateRequest(BaseModel):
+    limit: int = Field(default=50, ge=1, le=500)
 
 
 class OrganizeRequest(BaseModel):
@@ -180,7 +309,8 @@ class ProviderDiagnoseOut(BaseModel):
 class ScanOut(BaseModel):
     discovered: int
     updated: int
-    cataloged: int
+    queued: int
+    identified: int
     filtered: int
     skipped: int
     errors: tuple[str, ...]

@@ -5,6 +5,7 @@ from urllib.parse import unquote, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .classification import classify_media
 from .domain import IdentityHints
 from .enums import ContentFamily, MediaCategory, QueryMode
 
@@ -19,18 +20,159 @@ _BRACKETS = re.compile(r"[\[【(\uFF08].*?[\]】)\uFF09]")
 _SEPARATORS = re.compile(r"[._\s]+")
 _GENERIC_STEM = re.compile(
     r"(?ix)^(?:\d{1,4}|cd\s*\d+|disc\s*\d+|part\s*\d+|ep\s*\d+|"
-    r"[vp]\s*(?:\d+|[\(\uFF08]\d+[\)\uFF09])?|video|movie|影片|视频|完整(?:版)?|full)$"
+    r"v\s*\d+\s*[-~\uFF5E至到]\s*\d+|[vp]\s*(?:\d+|[\(\uFF08]\d+[\)\uFF09])?|"
+    r"video|movie|影片|视频|完整(?:版)?|full)$"
 )
 
 _FC2 = re.compile(r"(?i)\bFC2(?:[-_. ]?PPV)?[-_. ]?(\d{5,9})\b")
 _HEYZO = re.compile(r"(?i)\bHEYZO[-_. ]?(\d{3,5})\b")
 _CHINESE = re.compile(r"(?i)\b((?:MD|MDSR|MDWP|MDCM|MKY-[A-Z]+)[-_]?[A-Z]*\d{3,6})\b")
 _WESTERN_DATE = re.compile(r"(?i)\b([a-z][a-z0-9-]{1,30})[._ -](?:20)?(\d{2})[._ -](\d{2})[._ -](\d{2})\b")
-_JAV = re.compile(r"(?i)(?<![A-Z0-9])((?:\d{2,5})?[A-Z]{2,10})[-_. ]?(\d{2,6})(?![A-Z0-9])")
+_JAV = re.compile(
+    r"(?i)(?<![A-Z0-9])((?:\d{2,5})?[A-Z]{2,10})([-_. ]?)(\d{2,6})"
+    r"(?:[-_. ]?(?:CD|DISC|PART)?[A-D])?(?![A-Z0-9])"
+)
 _UNCENSORED = re.compile(r"(?i)\b(1PONDO|CARIB|CARIBPR|10MUSUME|PACOPACOMAMA)[-_ ]?(\d{6})[-_ ](\d{2,4})\b")
 
 _DISALLOWED_PREFIXES = frozenset(
-    {"H264", "H265", "X264", "X265", "HEVC", "AVC", "AAC", "MP4", "MKV", "WEB", "FHD", "UHD"}
+    {
+        "AAC",
+        "AVC",
+        "FHD",
+        "H264",
+        "H265",
+        "HEVC",
+        "IMG",
+        "MANYVIDS",
+        "MKV",
+        "MOV",
+        "MP4",
+        "ONLYFANS",
+        "UHD",
+        "WEB",
+        "X264",
+        "X265",
+    }
+)
+_KNOWN_JAV_PREFIXES = frozenset(
+    {
+        "336KNB",
+        "ABF",
+        "ABP",
+        "ABW",
+        "ACHJ",
+        "ADN",
+        "APAA",
+        "ATID",
+        "AVAV",
+        "AVOP",
+        "BBAN",
+        "BF",
+        "BHD",
+        "CAWD",
+        "CJOD",
+        "DASD",
+        "DASS",
+        "DEAB",
+        "DLDSS",
+        "DVMM",
+        "DVRT",
+        "EBOD",
+        "EBWH",
+        "FAYS",
+        "FFT",
+        "FJIN",
+        "FKOU",
+        "FNEO",
+        "FNS",
+        "FSDSS",
+        "GEBB",
+        "GUPP",
+        "GVG",
+        "GVH",
+        "HAWA",
+        "HMN",
+        "HND",
+        "IPX",
+        "IPZ",
+        "IPZZ",
+        "JUFE",
+        "JUL",
+        "JUQ",
+        "JUR",
+        "JUX",
+        "JUY",
+        "KATU",
+        "KCKC",
+        "KNAM",
+        "LT",
+        "LULU",
+        "MANX",
+        "MDB",
+        "MDYD",
+        "MEYD",
+        "MFYD",
+        "MIAA",
+        "MIDA",
+        "MIDE",
+        "MIDV",
+        "MIKR",
+        "MIMK",
+        "MIRD",
+        "MKMP",
+        "MVSD",
+        "NACR",
+        "NACT",
+        "NCYF",
+        "NHDTB",
+        "NIMA",
+        "NMSL",
+        "NNPJ",
+        "NTRH",
+        "OAE",
+        "OFES",
+        "PASN",
+        "PFES",
+        "PPPD",
+        "PPPE",
+        "PRED",
+        "RCT",
+        "RCTD",
+        "REAL",
+        "ROYD",
+        "SABA",
+        "SAME",
+        "SDDE",
+        "SDMS",
+        "SGKI",
+        "SNIS",
+        "SNOS",
+        "SOGO",
+        "SONE",
+        "SPSE",
+        "SSIS",
+        "SSNI",
+        "STARS",
+        "START",
+        "SVVRT",
+        "TEK",
+        "TIKB",
+        "TOP",
+        "TYSF",
+        "URE",
+        "US",
+        "UUE",
+        "UUR",
+        "UUV",
+        "WAAA",
+        "WANZ",
+        "WSA",
+        "YMDD",
+        "YMDS",
+        "YUJ",
+        "ZEX",
+        "ZUKO",
+    }
 )
 
 
@@ -88,10 +230,20 @@ def extract_code(
     if match := _WESTERN_DATE.search(normalized):
         studio, year, month, day = match.groups()
         return f"{studio.lower()}.{year}.{month}.{day}", ContentFamily.WESTERN
-    if category is not MediaCategory.CHINA and (match := _JAV.search(normalized)):
-        prefix, digits = match.groups()
+    if match := _JAV.search(normalized):
+        prefix, separator, digits = match.groups()
         prefix = prefix.upper()
-        if prefix in _DISALLOWED_PREFIXES:
+        if prefix in _DISALLOWED_PREFIXES or (not separator and len(prefix) > 6):
+            return None, ContentFamily.UNKNOWN
+        if (
+            category
+            in {
+                MediaCategory.CHINA,
+                MediaCategory.KOREA,
+                MediaCategory.EUROPE,
+            }
+            and prefix not in _KNOWN_JAV_PREFIXES
+        ):
             return None, ContentFamily.UNKNOWN
         return f"{prefix}-{digits}", ContentFamily.JAV
     return None, ContentFamily.UNKNOWN
@@ -112,13 +264,19 @@ def build_identity_hints(
     clean = clean_stem(path_or_name)
     context = tuple(value for value in (clean, *context_names) if value)
     locator_name = _locator_name(media_locator)
-    code, family = _first_code((*context, locator_name), category)
+    locator_context = clean_stem(locator_name) if locator_name else ""
+    preliminary = classify_media(*context, locator_context, fallback=category)
+    code, family = _first_code((*context, locator_context), preliminary.category)
     title = _select_title(clean, context_names, locator_name, code)
-    alias_match = match_aliases(" ".join((*context, locator_name)), alias_rules)
-    if family is ContentFamily.UNKNOWN and alias_match.evidence:
-        family = ContentFamily.CHINESE
-    if family is ContentFamily.UNKNOWN:
-        family = _family_for_category(category)
+    alias_match = match_aliases(" ".join((*context, locator_context)), alias_rules)
+    classification = classify_media(
+        *context,
+        locator_context,
+        detected_family=family,
+        fallback=preliminary.category,
+    )
+    family = classification.family
+    category = classification.category
     known_ids = external_ids or {}
     known_fingerprints = fingerprints or {}
 
@@ -210,16 +368,6 @@ def _first_code(
         if code:
             return code, family
     return None, ContentFamily.UNKNOWN
-
-
-def _family_for_category(category: MediaCategory) -> ContentFamily:
-    return {
-        MediaCategory.JAPAN: ContentFamily.JAV,
-        MediaCategory.CHINA: ContentFamily.CHINESE,
-        MediaCategory.KOREA: ContentFamily.KOREAN,
-        MediaCategory.EUROPE: ContentFamily.WESTERN,
-        MediaCategory.OTHER: ContentFamily.UNKNOWN,
-    }[category]
 
 
 def _select_title(

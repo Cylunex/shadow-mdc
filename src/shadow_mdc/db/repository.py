@@ -1,14 +1,23 @@
+import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, select
+from sqlalchemy import Engine, create_engine, exists, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from ..domain import IdentityHints, ProviderRecord, ScoredCandidate
-from ..enums import AssetState, CandidateState, IdentityKind, MediaCategory
+from ..domain import IdentityHints, MatchEvidence, MediaTechnicalInfo, ProviderRecord, ScoredCandidate
+from ..enums import (
+    AssetState,
+    CandidateState,
+    IdentityKind,
+    MatchDecision,
+    MediaCategory,
+    RecognitionScope,
+)
 from ..identity import normalize_identity_value
 from .models import (
+    Actor,
     Base,
     ExternalIdentity,
     Library,
@@ -17,13 +26,27 @@ from .models import (
     SourceSnapshot,
     TaskRun,
     Work,
+    WorkActor,
     utc_now,
 )
+
+_JAV_ACTOR_PROVIDER_PRIORITY = {
+    "fanza": 0,
+    "jav321": 1,
+    "mgstage": 2,
+    "javlibrary": 3,
+    "r18dev": 4,
+    "javdb": 5,
+    "javbus": 6,
+    "airav": 7,
+    "avsox": 8,
+    "freejavbt": 100,
+}
 
 
 class Database:
     def __init__(self, url: str):
-        connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
+        connect_args = {"check_same_thread": False, "timeout": 30.0} if url.startswith("sqlite") else {}
         self.engine: Engine = create_engine(url, connect_args=connect_args)
         self._sessions = sessionmaker(self.engine, expire_on_commit=False)
 
@@ -33,6 +56,10 @@ class Database:
             self._migrate_sqlite()
 
     def _migrate_sqlite(self) -> None:
+        with self.engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+            connection.exec_driver_sql("PRAGMA busy_timeout=30000")
+            connection.commit()
         with self.engine.begin() as connection:
             library_columns = {
                 str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(libraries)")
@@ -44,16 +71,20 @@ class Database:
                 connection.exec_driver_sql(
                     "CREATE INDEX IF NOT EXISTS ix_libraries_category ON libraries (category)"
                 )
-            work_columns = {
-                str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(works)")
-            }
+            if "recognition_scope" not in library_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE libraries ADD COLUMN recognition_scope VARCHAR(30) NOT NULL DEFAULT 'all'"
+                )
+                connection.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_libraries_recognition_scope "
+                    "ON libraries (recognition_scope)"
+                )
+            work_columns = {str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(works)")}
             if "category" not in work_columns:
                 connection.exec_driver_sql(
                     "ALTER TABLE works ADD COLUMN category VARCHAR(30) NOT NULL DEFAULT 'Other'"
                 )
-                connection.exec_driver_sql(
-                    "CREATE INDEX IF NOT EXISTS ix_works_category ON works (category)"
-                )
+                connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_works_category ON works (category)")
             if "field_sources" not in work_columns:
                 connection.exec_driver_sql(
                     "ALTER TABLE works ADD COLUMN field_sources JSON NOT NULL DEFAULT '{}'"
@@ -64,6 +95,10 @@ class Database:
             if "modified_ns" not in asset_columns:
                 connection.exec_driver_sql(
                     "ALTER TABLE media_assets ADD COLUMN modified_ns INTEGER NOT NULL DEFAULT 0"
+                )
+            if "media_info" not in asset_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE media_assets ADD COLUMN media_info JSON NOT NULL DEFAULT '{}'"
                 )
             connection.exec_driver_sql(
                 """
@@ -76,6 +111,16 @@ class Database:
                     ELSE category
                 END
                 WHERE category = 'Other'
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                UPDATE libraries
+                SET organize_template = '{group}/{subgroup}/{actor}/{folder_name}/{media_name}.{ext}'
+                WHERE organize_template IN (
+                    '{studio}/{code_or_title}/{code_or_title}.{ext}',
+                    '{category}/{family}/{actor}/{code_or_title}/{code_or_title}.{ext}'
+                )
                 """
             )
             connection.exec_driver_sql(
@@ -117,15 +162,26 @@ class Repository:
         category: MediaCategory = MediaCategory.OTHER,
         recursive: bool,
         organize_template: str,
+        recognition_scope: RecognitionScope = RecognitionScope.ALL,
     ) -> Library:
         library = Library(
             name=name,
             root_path=str(Path(root_path).resolve()),
             category=category.value,
             recursive=recursive,
+            recognition_scope=recognition_scope.value,
             organize_template=organize_template,
         )
         self._session.add(library)
+        self._session.flush()
+        return library
+
+    def update_library_recognition_scope(
+        self,
+        library: Library,
+        recognition_scope: RecognitionScope,
+    ) -> Library:
+        library.recognition_scope = recognition_scope.value
         self._session.flush()
         return library
 
@@ -169,6 +225,7 @@ class Repository:
         duration_seconds: float | None,
         oshash: str | None,
         hints: IdentityHints,
+        media_info: MediaTechnicalInfo | None = None,
     ) -> tuple[MediaAsset, bool]:
         absolute = str(Path(path).resolve())
         existing = self._session.scalar(select(MediaAsset).where(MediaAsset.path == absolute))
@@ -176,6 +233,7 @@ class Repository:
             existing.size = size
             existing.modified_ns = modified_ns
             existing.duration_seconds = duration_seconds
+            existing.media_info = (media_info or MediaTechnicalInfo()).model_dump(mode="json")
             existing.oshash = oshash
             existing.hints = hints.model_dump(mode="json")
             if existing.state == AssetState.IGNORED.value:
@@ -188,6 +246,7 @@ class Repository:
             size=size,
             modified_ns=modified_ns,
             duration_seconds=duration_seconds,
+            media_info=(media_info or MediaTechnicalInfo()).model_dump(mode="json"),
             oshash=oshash,
             hints=hints.model_dump(mode="json"),
         )
@@ -218,6 +277,30 @@ class Repository:
         if identified_only:
             statement = statement.where(MediaAsset.work_id.is_not(None))
         return list(self._session.scalars(statement.order_by(MediaAsset.path)))
+
+    def list_unverified_local_assets(self) -> list[MediaAsset]:
+        remote_evidence = exists(
+            select(SourceSnapshot.id).where(
+                SourceSnapshot.work_id == Work.id,
+                SourceSnapshot.provider != "local-path",
+            )
+        )
+        accepted_evidence = exists(
+            select(MatchCandidateRow.id)
+            .join(MediaAsset, MatchCandidateRow.asset_id == MediaAsset.id)
+            .where(
+                MediaAsset.work_id == Work.id,
+                MatchCandidateRow.provider != "local-path",
+                MatchCandidateRow.state == CandidateState.ACCEPTED.value,
+            )
+        )
+        statement = (
+            select(MediaAsset)
+            .join(Work, MediaAsset.work_id == Work.id)
+            .where(~remote_evidence, ~accepted_evidence)
+            .order_by(MediaAsset.path)
+        )
+        return list(self._session.scalars(statement))
 
     def ignore_asset_by_path(self, path: str, reason: str) -> bool:
         absolute = str(Path(path).resolve())
@@ -344,6 +427,81 @@ class Repository:
         self._session.flush()
         return work
 
+    def refresh_local_catalog_asset(self, asset: MediaAsset, record: ProviderRecord) -> Work:
+        """Replace path-derived fields after a user confirms a broader directory rule."""
+
+        work = self.get_work(asset.work_id) if asset.work_id is not None else None
+        if work is None:
+            return self.catalog_asset(asset, record)
+        self._replace_local_record(work, record)
+        self._add_record_identities(work, record)
+        self._upsert_snapshot(work, record)
+        asset.state = AssetState.IDENTIFIED.value
+        asset.error = None
+        self._session.flush()
+        return work
+
+    def queue_local_candidate(self, asset: MediaAsset, record: ProviderRecord) -> bool:
+        """Queue path-derived metadata unless the asset is already backed by verified evidence."""
+
+        candidate = ScoredCandidate(
+            record=record,
+            score=0.6,
+            decision=MatchDecision.REVIEW,
+            evidence=(
+                MatchEvidence(
+                    kind="local_path",
+                    contribution=0.6,
+                    detail="filename and directory hints; not a verified metadata match",
+                ),
+            ),
+        )
+        work = self.get_work(asset.work_id) if asset.work_id is not None else None
+        if work is not None:
+            if self._work_has_verified_evidence(work.id):
+                self._merge_local_record(work, record)
+            else:
+                self._replace_local_record(work, record)
+            self._add_record_identities(work, record)
+            self._upsert_snapshot(work, record)
+            asset.state = AssetState.IDENTIFIED.value
+            asset.error = None
+            self.save_candidates(asset, [candidate])
+            return False
+        self.save_candidates(asset, [candidate])
+        return True
+
+    def accept_local_candidate(self, asset_id: str) -> Work | None:
+        asset = self.get_asset(asset_id)
+        if asset is None:
+            raise LookupError(f"asset {asset_id} not found")
+        if asset.work_id is not None:
+            return self.get_work(asset.work_id)
+        candidate = self._session.scalar(
+            select(MatchCandidateRow)
+            .where(
+                MatchCandidateRow.asset_id == asset.id,
+                MatchCandidateRow.provider == "local-path",
+            )
+            .order_by(MatchCandidateRow.created_at.desc())
+            .limit(1)
+        )
+        if candidate is None:
+            return None
+        return self.accept_candidate(candidate.id)
+
+    def local_candidate_record(self, asset_id: str) -> ProviderRecord | None:
+        candidate = self._session.scalar(
+            select(MatchCandidateRow)
+            .where(
+                MatchCandidateRow.asset_id == asset_id,
+                MatchCandidateRow.provider == "local-path",
+            )
+            .order_by(MatchCandidateRow.created_at.desc())
+            .limit(1)
+        )
+        return ProviderRecord.model_validate(candidate.record) if candidate is not None else None
+
     def upsert_provider_record(self, record: ProviderRecord, *, overwrite: bool) -> Work:
         work = self._resolve_existing_work(record)
         if work is None:
@@ -358,16 +516,86 @@ class Repository:
     def list_works(self) -> list[Work]:
         return list(self._session.scalars(select(Work).order_by(Work.created_at.desc())))
 
+    def sync_all_work_actors(self) -> None:
+        for work in self.list_works():
+            self._sync_work_actors(work)
+        self._session.flush()
+
+    def repair_jav_actor_sources(self) -> int:
+        """Rebuild JAV actor lists from the most trustworthy stored source snapshot."""
+
+        repaired = 0
+        for work in self.list_works():
+            snapshots = self._session.scalars(
+                select(SourceSnapshot).where(SourceSnapshot.work_id == work.id)
+            )
+            records = [
+                ProviderRecord.model_validate(snapshot.payload)
+                for snapshot in snapshots
+                if snapshot.provider in _JAV_ACTOR_PROVIDER_PRIORITY
+            ]
+            records = [record for record in records if record.actors]
+            if not records:
+                continue
+            best = min(records, key=lambda record: _JAV_ACTOR_PROVIDER_PRIORITY[record.provider])
+            actors = list(best.actors)
+            sources = dict(work.field_sources or {})
+            changed = work.actors != actors or sources.get("actors") != best.provider
+            if not changed:
+                continue
+            work.actors = actors
+            sources["actors"] = best.provider
+            work.field_sources = sources
+            self._sync_work_actors(work)
+            repaired += 1
+        self._session.flush()
+        return repaired
+
+    def list_actor_work_relations(self) -> list[tuple[Actor, Work]]:
+        statement = (
+            select(Actor, Work)
+            .join(WorkActor, WorkActor.actor_id == Actor.id)
+            .join(Work, Work.id == WorkActor.work_id)
+            .order_by(Actor.name, WorkActor.position, Work.release_date, Work.title)
+        )
+        return [(actor, work) for actor, work in self._session.execute(statement)]
+
+    def actors_for_work(self, work_id: str) -> list[Actor]:
+        statement = (
+            select(Actor)
+            .join(WorkActor, WorkActor.actor_id == Actor.id)
+            .where(WorkActor.work_id == work_id)
+            .order_by(WorkActor.position)
+        )
+        return list(self._session.scalars(statement))
+
     def first_asset_for_work(self, work_id: str) -> MediaAsset | None:
         return self._session.scalar(
-            select(MediaAsset)
-            .where(MediaAsset.work_id == work_id)
-            .order_by(MediaAsset.created_at)
-            .limit(1)
+            select(MediaAsset).where(MediaAsset.work_id == work_id).order_by(MediaAsset.created_at).limit(1)
         )
 
     def get_work(self, work_id: str) -> Work | None:
         return self._session.get(Work, work_id)
+
+    def find_work_by_code(self, code: str) -> Work | None:
+        identity = self._session.scalar(
+            select(ExternalIdentity).where(
+                ExternalIdentity.provider == "global",
+                ExternalIdentity.kind == IdentityKind.CODE.value,
+                ExternalIdentity.normalized_value == normalize_identity_value(code),
+            )
+        )
+        if identity is not None:
+            return self.get_work(identity.work_id)
+        return self._session.scalar(
+            select(Work).where(Work.primary_code == code).order_by(Work.created_at).limit(1)
+        )
+
+    def attach_asset_to_work(self, asset: MediaAsset, work: Work) -> None:
+        asset.work_id = work.id
+        asset.state = AssetState.IDENTIFIED.value
+        asset.error = None
+        self._session.flush()
 
     def identities_for_work(self, work_id: str) -> list[ExternalIdentity]:
         return list(
@@ -384,6 +612,83 @@ class Repository:
             updated.append(value)
         work.artwork = updated
         self._session.flush()
+
+    def set_generated_artwork(
+        self,
+        work: Work,
+        *,
+        asset_id: str,
+        fanart_path: str,
+        poster_path: str,
+        timestamp_seconds: float,
+    ) -> None:
+        """Attach asset-derived artwork without mixing it with provider snapshots."""
+
+        retained = [
+            dict(item)
+            for item in work.artwork
+            if not (
+                item.get("source") == "local-screenshot"
+                and item.get("asset_id") == asset_id
+            )
+        ]
+        generated = [
+            {
+                "kind": kind,
+                "local_path": path,
+                "source": "local-screenshot",
+                "asset_id": asset_id,
+                "timestamp_seconds": timestamp_seconds,
+            }
+            for kind, path in (("fanart", fanart_path), ("poster", poster_path))
+        ]
+        work.artwork = [*generated, *retained]
+        self._session.flush()
+
+    def apply_title_translation(
+        self,
+        work: Work,
+        *,
+        source: str,
+        translated: str,
+        provider: str,
+    ) -> None:
+        sources = dict(work.field_sources or {})
+        if work.original_title is None:
+            work.original_title = source
+            sources["original_title"] = sources.get("title", "unknown")
+        work.title = translated
+        sources["title"] = f"translation:{provider}"
+        work.field_sources = sources
+        self._session.flush()
+
+    def _work_has_verified_evidence(self, work_id: str) -> bool:
+        remote_snapshot = self._session.scalar(
+            select(SourceSnapshot.id)
+            .where(
+                SourceSnapshot.work_id == work_id,
+                SourceSnapshot.provider != "local-path",
+            )
+            .limit(1)
+        )
+        if remote_snapshot is not None:
+            return True
+        accepted_candidate = self._session.scalar(
+            select(MatchCandidateRow.id)
+            .join(MediaAsset, MatchCandidateRow.asset_id == MediaAsset.id)
+            .where(
+                MediaAsset.work_id == work_id,
+                MatchCandidateRow.provider != "local-path",
+                MatchCandidateRow.state == CandidateState.ACCEPTED.value,
+            )
+            .limit(1)
+        )
+        return accepted_candidate is not None
+
+    def work_has_verified_evidence(self, work_id: str) -> bool:
+        """Return whether a work has accepted metadata from a non-local source."""
+
+        return self._work_has_verified_evidence(work_id)
 
     def _resolve_existing_work(self, record: ProviderRecord) -> Work | None:
         checks = [(record.provider, IdentityKind.PROVIDER_ID, record.external_id)]
@@ -426,9 +731,16 @@ class Repository:
         )
         self._session.add(work)
         self._session.flush()
+        self._sync_work_actors(work)
         return work
 
     def _merge_local_record(self, work: Work, record: ProviderRecord) -> None:
+        # A code-less work must never retain a legacy JAV classification that
+        # came only from its library or directory name.  Verified descriptive
+        # fields remain intact; only the inferred family/category are repaired.
+        if work.primary_code is None:
+            work.family = record.family.value
+            work.category = record.category.value
         if record.category is not MediaCategory.OTHER:
             work.category = record.category.value
         if work.family == "unknown" and record.family.value != "unknown":
@@ -441,6 +753,27 @@ class Repository:
             work.series = record.series
         if not work.tags and record.tags:
             work.tags = list(record.tags)
+        self._sync_work_actors(work)
+
+    def _replace_local_record(self, work: Work, record: ProviderRecord) -> None:
+        work.title = record.title
+        work.original_title = record.original_title
+        work.primary_code = record.code
+        work.family = record.family.value
+        work.category = record.category.value
+        work.release_date = record.release_date
+        work.runtime_seconds = record.runtime_seconds
+        work.studio = record.studio
+        work.label = record.label
+        work.series = record.series
+        work.plot = record.plot
+        work.actors = list(record.actors)
+        work.directors = list(record.directors)
+        work.tags = list(record.tags)
+        if record.artwork and not work.artwork:
+            work.artwork = [item.model_dump(mode="json") for item in record.artwork]
+        work.field_sources = _record_field_sources(record)
+        self._sync_work_actors(work)
 
     def _merge_provider_record(
         self,
@@ -465,9 +798,7 @@ class Repository:
         category = record.category
         if category is MediaCategory.OTHER:
             category = _category_for_family(record.family.value)
-        if category is not MediaCategory.OTHER and (
-            overwrite or work.category == MediaCategory.OTHER.value
-        ):
+        if category is not MediaCategory.OTHER and (overwrite or work.category == MediaCategory.OTHER.value):
             work.category = category.value
             sources["category"] = record.provider
         if record.release_date and (overwrite or work.release_date is None):
@@ -490,14 +821,50 @@ class Repository:
             sources["plot"] = record.provider
 
         if record.actors:
-            work.actors = _merge_unique(work.actors, record.actors, replace=overwrite)
+            actor_source = str(sources.get("actors", ""))
+            incoming_priority = _JAV_ACTOR_PROVIDER_PRIORITY.get(record.provider)
+            current_priority = _JAV_ACTOR_PROVIDER_PRIORITY.get(actor_source)
+            if incoming_priority is None:
+                work.actors = _merge_unique(work.actors, record.actors, replace=overwrite)
+            elif current_priority is None or incoming_priority < current_priority:
+                work.actors = list(record.actors)
+                sources["actors"] = record.provider
+            elif incoming_priority == current_priority:
+                work.actors = list(record.actors)
         if record.directors:
             work.directors = _merge_unique(work.directors, record.directors, replace=overwrite)
         if record.tags:
             work.tags = _merge_unique(work.tags, record.tags, replace=overwrite)
-        if record.artwork:
-            work.artwork = _merge_artwork(work.artwork, record, replace=overwrite)
+        if record.artwork and not work.artwork:
+            work.artwork = _merge_artwork(work.artwork, record, replace=False)
         work.field_sources = sources
+        self._sync_work_actors(work)
+
+    def _sync_work_actors(self, work: Work) -> None:
+        existing_links = {
+            link.actor_id: link
+            for link in self._session.scalars(select(WorkActor).where(WorkActor.work_id == work.id))
+        }
+        desired_ids: set[str] = set()
+        for position, raw_name in enumerate(work.actors):
+            name = raw_name.strip()
+            normalized = _normalize_actor_name(name)
+            if not normalized:
+                continue
+            actor = self._session.scalar(select(Actor).where(Actor.normalized_name == normalized))
+            if actor is None:
+                actor = Actor(name=name, normalized_name=normalized)
+                self._session.add(actor)
+                self._session.flush()
+            desired_ids.add(actor.id)
+            link = existing_links.get(actor.id)
+            if link is None:
+                self._session.add(WorkActor(work_id=work.id, actor_id=actor.id, position=position))
+            else:
+                link.position = position
+        for actor_id, link in existing_links.items():
+            if actor_id not in desired_ids:
+                self._session.delete(link)
 
     def _add_identity(
         self,
@@ -580,6 +947,10 @@ def _category_for_family(family: str) -> MediaCategory:
     }.get(family, MediaCategory.OTHER)
 
 
+def _normalize_actor_name(value: str) -> str:
+    return unicodedata.normalize("NFKC", value).casefold().strip()
+
+
 def _record_field_sources(record: ProviderRecord) -> dict[str, str]:
     fields = {
         "title": record.title,
@@ -593,6 +964,7 @@ def _record_field_sources(record: ProviderRecord) -> dict[str, str]:
         "label": record.label,
         "series": record.series,
         "plot": record.plot,
+        "actors": record.actors,
     }
     return {field: record.provider for field, value in fields.items() if value not in {None, ""}}
 
