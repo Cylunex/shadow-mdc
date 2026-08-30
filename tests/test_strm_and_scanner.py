@@ -6,6 +6,7 @@ from shadow_mdc.db.repository import Database, Repository
 from shadow_mdc.domain import IdentityHints
 from shadow_mdc.enums import ContentFamily, QueryMode
 from shadow_mdc.media.strm import read_strm_locator, redact_media_locator
+from shadow_mdc.services import scanner as scanner_module
 from shadow_mdc.services.alias_store import default_alias_rules
 from shadow_mdc.services.scanner import Scanner
 
@@ -136,3 +137,64 @@ def test_bad_strm_is_reported_without_stopping_scan(tmp_path: Path) -> None:
     assert result.discovered == 1
     assert len(result.errors) == 1
     assert "empty.strm" in result.errors[0]
+
+
+def test_unchanged_video_reuses_probe_and_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    (root / "SSIS-123.mp4").write_bytes(b"fixture")
+    probes = 0
+    hashes = 0
+
+    def probe(path: Path) -> float:
+        nonlocal probes
+        probes += 1
+        return 123.0
+
+    def oshash(path: Path) -> str:
+        nonlocal hashes
+        hashes += 1
+        return "0123456789abcdef"
+
+    monkeypatch.setattr(scanner_module, "probe_duration", probe)
+    monkeypatch.setattr(scanner_module, "compute_oshash", oshash)
+    database = Database(f"sqlite:///{tmp_path / 'reuse.db'}")
+    database.initialize()
+    with database.session() as session:
+        repository = Repository(session)
+        library = repository.create_library(
+            name="Reuse",
+            root_path=str(root),
+            recursive=True,
+            organize_template="{code_or_title}.{ext}",
+        )
+        Scanner(repository).scan(library)
+        Scanner(repository).scan(library)
+
+    assert probes == 1
+    assert hashes == 1
+
+
+def test_scanner_ignores_metadata_and_recycle_directories(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    (root / ".actors").mkdir(parents=True)
+    (root / "#recycle").mkdir()
+    (root / ".actors" / "SSIS-001.mp4").write_bytes(b"ignored")
+    (root / "#recycle" / "SSIS-002.mp4").write_bytes(b"ignored")
+    (root / "SSIS-003.mp4").write_bytes(b"kept")
+    database = Database(f"sqlite:///{tmp_path / 'ignore-dirs.db'}")
+    database.initialize()
+    with database.session() as session:
+        repository = Repository(session)
+        library = repository.create_library(
+            name="Ignored dirs",
+            root_path=str(root),
+            recursive=True,
+            organize_template="{code_or_title}.{ext}",
+        )
+        result = Scanner(repository).scan(library)
+
+    assert result.discovered == 1

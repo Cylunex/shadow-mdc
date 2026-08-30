@@ -14,8 +14,43 @@ from ..media.strm import read_strm_locator, redact_media_locator
 from .local_catalog import build_local_catalog_record
 from .path_filter import MediaPathFilter
 
-VIDEO_EXTENSIONS = frozenset({".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".webm"})
+VIDEO_EXTENSIONS = frozenset(
+    {
+        ".3gp",
+        ".avi",
+        ".f4v",
+        ".flv",
+        ".iso",
+        ".m2ts",
+        ".m4v",
+        ".mkv",
+        ".mov",
+        ".mp4",
+        ".mpeg",
+        ".mpg",
+        ".rm",
+        ".rmvb",
+        ".ts",
+        ".vob",
+        ".webm",
+        ".wmv",
+    }
+)
 MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | {".strm"}
+IGNORED_DIRECTORY_NAMES = frozenset(
+    {
+        "#recycle",
+        "#不要扫描",
+        "#整理完成",
+        "$recycle.bin",
+        ".actors",
+        ".amane_trash",
+        "@eadir",
+        "extrafanart",
+        "lost+found",
+        "system volume information",
+    }
+)
 
 
 class ScanResult(BaseModel):
@@ -79,9 +114,23 @@ class Scanner:
     def _scan_asset(self, library: Library, root: Path, path: Path) -> tuple[bool, bool]:
         stat = path.stat()
         is_strm = path.suffix.casefold() == ".strm"
+        existing = self._repository.get_asset_by_path(str(path))
+        unchanged = bool(
+            existing
+            and existing.size == stat.st_size
+            and existing.modified_ns == stat.st_mtime_ns
+        )
         raw_media_locator = read_strm_locator(path) if is_strm else None
-        duration = None if is_strm else probe_duration(path)
-        oshash = None if is_strm else compute_oshash(path)
+        duration = (
+            existing.duration_seconds
+            if unchanged and existing is not None
+            else (None if is_strm else probe_duration(path))
+        )
+        oshash = (
+            existing.oshash
+            if unchanged and existing is not None
+            else (None if is_strm else compute_oshash(path))
+        )
         fingerprints = {"oshash": oshash} if oshash else {}
         hints = build_identity_hints(
             path,
@@ -100,6 +149,7 @@ class Scanner:
             library_id=library.id,
             path=str(path),
             size=stat.st_size,
+            modified_ns=stat.st_mtime_ns,
             duration_seconds=duration,
             oshash=oshash,
             hints=hints,
@@ -141,7 +191,11 @@ def _walk_files(root: Path, *, recursive: bool, errors: list[str]) -> Iterator[P
             try:
                 if entry.is_file(follow_symlinks=False):
                     yield Path(entry.path)
-                elif recursive and entry.is_dir(follow_symlinks=False):
+                elif (
+                    recursive
+                    and entry.is_dir(follow_symlinks=False)
+                    and entry.name.casefold() not in IGNORED_DIRECTORY_NAMES
+                ):
                     pending.append(Path(entry.path))
             except OSError as exc:
                 errors.append(f"{entry.path}: cannot inspect entry: {exc}")

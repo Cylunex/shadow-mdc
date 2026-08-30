@@ -49,6 +49,7 @@ export const assetSchema = z.object({
   work_id: z.string().nullable(),
   path: z.string(),
   size: z.number(),
+  modified_ns: z.number(),
   duration_seconds: z.number().nullable(),
   oshash: z.string().nullable(),
   state: z.string(),
@@ -120,11 +121,22 @@ export const workSchema = z.object({
   directors: z.array(z.string()),
   tags: z.array(z.string()),
   artwork: z.array(z.record(z.string(), z.unknown())),
+  field_sources: z.record(z.string(), z.string()),
   identities: z.array(identitySchema),
   created_at: z.string(),
   updated_at: z.string()
 });
 export const worksSchema = z.array(workSchema);
+
+export const workLookupSchema = z.object({
+  work: workSchema.nullable(),
+  matched_records: z.number(),
+  failures: z.array(z.object({
+    provider: z.string(),
+    reason: z.string(),
+    detail: z.string()
+  }))
+});
 
 export const providerListSchema = z.object({
   providers: z.array(z.object({
@@ -145,6 +157,7 @@ export const providerDiagnoseSchema = z.object({
     provider: z.string(),
     status: z.string(),
     records: z.number(),
+    accepted: z.number(),
     reason: z.string().nullable(),
     detail: z.string().nullable()
   }))
@@ -178,6 +191,26 @@ export const batchApplySchema = z.object({
   errors: z.array(z.string())
 });
 
+export const artworkDownloadSchema = z.object({
+  work_id: z.string(),
+  downloaded: z.number(),
+  cached: z.number(),
+  failed: z.number(),
+  errors: z.array(z.string())
+});
+
+export const taskRunSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  scope: z.string(),
+  status: z.string(),
+  summary: z.record(z.string(), z.unknown()),
+  error: z.string().nullable(),
+  created_at: z.string(),
+  finished_at: z.string().nullable()
+});
+export const taskRunsSchema = z.array(taskRunSchema);
+
 export const scanSchema = z.object({
   discovered: z.number(),
   updated: z.number(),
@@ -209,3 +242,4 @@ export type Work = z.infer<typeof workSchema>;
 export type IdentityAliases = z.infer<typeof identityAliasesSchema>;
 export type FilterWords = z.infer<typeof filterWordsSchema>;
 export type BatchPlan = z.infer<typeof batchPlanSchema>;
+export type TaskRun = z.infer<typeof taskRunSchema>;

@@ -257,3 +257,91 @@ def test_sidecar_mode_writes_nfo_without_moving_media(
 
     assert (root / "SONE-118.strm").read_bytes() == b"fixture"
     assert "<title>Sidecar title</title>" in (root / "SONE-118.nfo").read_text(encoding="utf-8")
+
+
+def test_copy_mode_keeps_parts_distinct_and_copies_matching_subtitle(
+    repository: Repository,
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "parts"
+    target_root = tmp_path / "library"
+    source_root.mkdir()
+    target_root.mkdir()
+    library, asset = _asset(repository, source_root, name="ABP-123-CD2.mp4")
+    subtitle = source_root / "ABP-123-CD2.zh.srt"
+    subtitle.write_text("subtitle", encoding="utf-8")
+    record = ProviderRecord(
+        provider="fixture",
+        external_id="abp-123",
+        code="ABP-123",
+        title="Multipart",
+        family=ContentFamily.JAV,
+        studio="Studio",
+    )
+    work = repository.accept_candidate(repository.save_candidates(asset, [_candidate(record)])[0].id)
+    organizer = Organizer(repository)
+    plan = organizer.plan(
+        asset=asset,
+        work=work,
+        library=library,
+        mode=OutputMode.COPY,
+        target_root=str(target_root),
+    )
+
+    destinations = [Path(operation.destination).name for operation in plan.operations]
+    assert destinations == ["ABP-123-CD2.mp4", "ABP-123-CD2.zh.srt", "ABP-123-CD2.nfo"]
+    organizer.execute(
+        asset=asset,
+        work=work,
+        library=library,
+        identities=repository.identities_for_work(work.id),
+        mode=OutputMode.COPY,
+        target_root=str(target_root),
+        token=plan.token,
+    )
+
+    destination_dir = target_root / "Studio" / "ABP-123"
+    assert (destination_dir / "ABP-123-CD2.mp4").is_file()
+    assert (destination_dir / "ABP-123-CD2.zh.srt").read_text(encoding="utf-8") == "subtitle"
+
+
+def test_sidecar_plan_copies_cached_artwork_next_to_media(
+    repository: Repository,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "artwork-sidecar"
+    root.mkdir()
+    library, asset = _asset(repository, root, name="ABP-123.mp4")
+    cached = tmp_path / "cache.jpg"
+    cached.write_bytes(b"image")
+    record = ProviderRecord(
+        provider="fixture",
+        external_id="abp-123",
+        code="ABP-123",
+        title="Artwork",
+        family=ContentFamily.JAV,
+    )
+    work = repository.accept_candidate(repository.save_candidates(asset, [_candidate(record)])[0].id)
+    work.artwork = [
+        {
+            "url": "https://images.example/cover.jpg",
+            "kind": "thumb",
+            "local_path": str(cached),
+        }
+    ]
+    organizer = Organizer(repository)
+    plan = organizer.plan(asset=asset, work=work, library=library, mode=OutputMode.SIDECAR)
+
+    assert [Path(item.destination).name for item in plan.operations] == [
+        "ABP-123-poster.jpg",
+        "ABP-123.nfo",
+    ]
+    organizer.execute(
+        asset=asset,
+        work=work,
+        library=library,
+        identities=repository.identities_for_work(work.id),
+        mode=OutputMode.SIDECAR,
+        token=plan.token,
+    )
+    assert (root / "ABP-123-poster.jpg").read_bytes() == b"image"

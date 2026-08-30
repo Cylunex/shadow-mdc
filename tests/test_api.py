@@ -1,9 +1,30 @@
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from shadow_mdc.api import app
+from shadow_mdc.domain import IdentityHints, ProviderDescriptor, ProviderRecord
+from shadow_mdc.enums import ContentFamily, QueryMode
+from shadow_mdc.providers.base import ProviderRegistry
+
+
+@dataclass(frozen=True)
+class LookupProvider:
+    record: ProviderRecord
+
+    @property
+    def descriptor(self) -> ProviderDescriptor:
+        return ProviderDescriptor(
+            id=self.record.provider,
+            name="Lookup fixture",
+            query_modes=frozenset({QueryMode.CODE}),
+            families=frozenset({ContentFamily.JAV}),
+        )
+
+    async def search(self, hints: IdentityHints) -> list[ProviderRecord]:
+        return [self.record]
 
 
 def test_library_scan_api_smoke(
@@ -33,6 +54,10 @@ def test_library_scan_api_smoke(
         scan = client.post(f"/api/libraries/{library_id}/scan")
         assert scan.status_code == 200
         assert scan.json()["discovered"] == 1
+        tasks = client.get("/api/tasks").json()
+        assert tasks[0]["kind"] == "scan"
+        assert tasks[0]["status"] == "succeeded"
+        assert tasks[0]["summary"]["discovered"] == 1
 
         assets = client.get("/api/assets")
         assert assets.status_code == 200
@@ -171,3 +196,39 @@ def test_library_sidecar_batch_preview_and_apply(
         assert applied.status_code == 200
         assert applied.json()["succeeded"] == 1
         assert "<uniqueid" in source.with_suffix(".nfo").read_text(encoding="utf-8")
+
+
+def test_lookup_by_number_creates_work_without_media(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{data_dir / 'lookup.db'}")
+    record = ProviderRecord(
+        provider="lookup-fixture",
+        external_id="sone-118",
+        code="SONE-118",
+        title="Lookup title",
+        family=ContentFamily.JAV,
+        plot="Lookup plot",
+    )
+
+    with TestClient(app) as client:
+        app.state.runtime = replace(
+            app.state.runtime,
+            providers=ProviderRegistry([LookupProvider(record)]),
+        )
+        diagnostic = client.post("/api/providers/diagnose", json={"code": "SONE-118"})
+        assert diagnostic.status_code == 200
+        assert diagnostic.json()["diagnostics"][0]["status"] == "success"
+        assert diagnostic.json()["diagnostics"][0]["accepted"] == 1
+        response = client.post("/api/works/lookup", json={"code": "sone-118"})
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["matched_records"] == 1
+        assert payload["work"]["primary_code"] == "SONE-118"
+        assert payload["work"]["plot"] == "Lookup plot"
+        assert client.get("/api/assets").json() == []
+        assert client.get("/api/tasks").json()[0]["kind"] == "lookup"

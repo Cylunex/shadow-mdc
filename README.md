@@ -12,7 +12,7 @@
 - 主分类：媒体库显式归入 Japan、China、Korea、Europe 或 Other，与在线来源路由分离。
 - 候选优先：模糊结果进入待确认，不让错误首条结果污染媒体库。
 - 多源可追溯：字段、图片和外部 ID 保留来源快照。
-- 四种输出：原目录写同名 NFO，或预览后复制、移动、硬链接到独立作品库。
+- 五种输出：原目录写同名 NFO，或预览后复制、移动、硬链接、软链接到独立作品库。
 - 安全整理：批量计划带摘要令牌，目标或配置变化后旧计划自动失效。
 - 可替换来源：内置网页来源、ThePornDB/Stash-box 与通用 JSON-LD URL。
 - 元数据边界：不提供影片下载、磁力或在线播放。
@@ -31,3 +31,6 @@ API 默认监听 `http://127.0.0.1:8000`，Web 开发服务器监听 `http://127
 架构和验收范围见 [docs/architecture.md](docs/architecture.md)，安装、Docker 与媒体库使用见
 [docs/user-guide.md](docs/user-guide.md)。参考项目与设计取舍见
 [docs/references.md](docs/references.md)。
+
+本机参考项目的逐项功能审计与吸收状态见
+[docs/reference-audit.md](docs/reference-audit.md)。

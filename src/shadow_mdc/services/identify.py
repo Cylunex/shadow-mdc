@@ -4,6 +4,7 @@ from ..db.models import MatchCandidateRow, Work
 from ..db.repository import Repository
 from ..domain import IdentityHints
 from ..enums import MatchDecision
+from ..identity import normalize_identity_value
 from ..matching import rank_candidates
 from ..providers.base import ProviderFailure, ProviderRegistry
 
@@ -35,6 +36,25 @@ class IdentifyService:
             first_row = _find_row(rows, ranked[0].record.provider, ranked[0].record.external_id)
             if first_row is not None:
                 accepted = self._repository.accept_candidate(first_row.id)
+                primary_code = ranked[0].record.code
+                if primary_code:
+                    for candidate in ranked[1:]:
+                        if candidate.decision is not MatchDecision.ACCEPT:
+                            continue
+                        if not candidate.record.code or normalize_identity_value(
+                            candidate.record.code
+                        ) != normalize_identity_value(primary_code):
+                            continue
+                        row = _find_row(
+                            rows,
+                            candidate.record.provider,
+                            candidate.record.external_id,
+                        )
+                        if row is not None:
+                            accepted = self._repository.merge_candidate_into_work(
+                                row.id,
+                                accepted.id,
+                            )
         return IdentifyResult(
             asset_id=asset.id,
             candidate_ids=tuple(row.id for row in rows),

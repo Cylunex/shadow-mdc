@@ -113,6 +113,9 @@ input:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
 .tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 14px; }
 .tags span { background: #202a2e; border-radius: 5px; color: #b9c4c8; font-size: 11px; padding: 4px 7px; }
 .work-refresh { font-size: 12px; margin-top: 14px; padding: 7px 10px; }
+.work-lookup { align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; display: grid; gap: 12px; grid-template-columns: 1fr minmax(220px, .6fr) auto; margin-bottom: 22px; padding: 18px; }
+.work-lookup h2 { font-size: 17px; margin-bottom: 5px; }
+.work-lookup p { color: var(--muted); font-size: 12px; margin-bottom: 0; }
 
 .library-form { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; display: grid; gap: 10px; grid-template-columns: .7fr 1.5fr .6fr auto; padding: 16px; }
 .library-list { display: grid; gap: 10px; margin-top: 18px; }
@@ -153,6 +156,14 @@ input:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
 .provider-diagnostics { align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; display: grid; gap: 12px; grid-template-columns: 1fr 180px auto; margin-top: 24px; padding: 18px; }
 .provider-diagnostics h2 { font-size: 17px; margin-bottom: 5px; }
 .provider-diagnostics p { color: var(--muted); font-size: 12px; margin-bottom: 0; overflow-wrap: anywhere; }
+.task-list { display: grid; gap: 10px; }
+.task-list article { align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; display: grid; gap: 16px; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto; padding: 18px; }
+.task-list h2 { font-size: 16px; margin: 7px 0 3px; }
+.task-list p, .task-list time { color: var(--muted); font-size: 12px; margin: 0; overflow-wrap: anywhere; }
+.task-list code { color: #b9c9cf; font: 11px/1.45 "Cascadia Code", Consolas, monospace; overflow-wrap: anywhere; }
+.task-state { border-radius: 12px; font-size: 10px; padding: 3px 8px; text-transform: uppercase; }
+.task-state.succeeded { background: var(--accent-dark); color: var(--accent); }
+.task-state.partial { background: #3a2c1c; color: #ffc98f; }
 
 
 @media (max-width: 760px) {
@@ -163,8 +174,9 @@ input:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
   .nav { flex: 1; }
   .provider-list { display: none; }
   main { padding: 28px 16px 60px; }
-  .manual, .library-form, .organizer-grid, .provider-diagnostics { grid-template-columns: 1fr; }
+  .manual, .library-form, .organizer-grid, .provider-diagnostics, .work-lookup { grid-template-columns: 1fr; }
   .organizer-grid .template-field { grid-column: auto; }
   .library-head { align-items: flex-start; gap: 12px; }
+  .task-list article { grid-template-columns: 1fr; }
   .work-grid { grid-template-columns: 1fr; }
 }

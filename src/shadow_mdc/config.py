@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     request_timeout_seconds: float = Field(default=20, ge=1, le=120)
     request_retries: int = Field(default=1, ge=0, le=5)
     proxy_url: str | None = None
+    artwork_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     user_agent: str = "ShadowMDC/0.1 (+https://github.com/Cylunex/shadow-mdc)"
 
     def ensure_directories(self) -> None:

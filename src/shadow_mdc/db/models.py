@@ -53,6 +53,7 @@ class Work(Base):
     directors: Mapped[list[str]] = mapped_column(JSON, default=list)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
     artwork: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    field_sources: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -81,6 +82,7 @@ class MediaAsset(Base):
     work_id: Mapped[str | None] = mapped_column(ForeignKey("works.id", ondelete="SET NULL"), index=True)
     path: Mapped[str] = mapped_column(Text, unique=True)
     size: Mapped[int] = mapped_column(Integer)
+    modified_ns: Mapped[int] = mapped_column(Integer, default=0)
     duration_seconds: Mapped[float | None] = mapped_column(Float)
     oshash: Mapped[str | None] = mapped_column(String(16), index=True)
     state: Mapped[str] = mapped_column(String(30), default=AssetState.NEW.value, index=True)
@@ -121,3 +123,16 @@ class SourceSnapshot(Base):
     external_id: Mapped[str] = mapped_column(Text)
     payload: Mapped[dict[str, object]] = mapped_column(JSON)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class TaskRun(Base):
+    __tablename__ = "task_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    kind: Mapped[str] = mapped_column(String(50), index=True)
+    scope: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(30), index=True, default="running")
+    summary: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

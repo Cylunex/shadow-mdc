@@ -35,6 +35,7 @@ class AssetOut(BaseModel):
     work_id: str | None
     path: str
     size: int
+    modified_ns: int
     duration_seconds: float | None
     oshash: str | None
     state: str
@@ -81,6 +82,7 @@ class WorkOut(BaseModel):
     directors: list[str]
     tags: list[str]
     artwork: list[dict[str, object]]
+    field_sources: dict[str, str]
     identities: list[IdentityOut] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
@@ -105,6 +107,16 @@ class IdentifyOut(BaseModel):
     asset_id: str
     candidate_ids: tuple[str, ...]
     accepted_work_id: str | None
+    failures: tuple[ProviderFailure, ...]
+
+
+class WorkLookupRequest(BaseModel):
+    code: str = Field(min_length=2, max_length=100)
+
+
+class WorkLookupOut(BaseModel):
+    work: WorkOut | None
+    matched_records: int
     failures: tuple[ProviderFailure, ...]
 
 
@@ -153,6 +165,7 @@ class ProviderDiagnostic(BaseModel):
     provider: str
     status: str
     records: int = 0
+    accepted: int = 0
     reason: str | None = None
     detail: str | None = None
 
@@ -171,6 +184,19 @@ class ScanOut(BaseModel):
     filtered: int
     skipped: int
     errors: tuple[str, ...]
+
+
+class TaskRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    kind: str
+    scope: str
+    status: str
+    summary: dict[str, object]
+    error: str | None
+    created_at: datetime
+    finished_at: datetime | None
 
 
 class FilterWordsPayload(BaseModel):

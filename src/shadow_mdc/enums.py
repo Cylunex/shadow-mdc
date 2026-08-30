@@ -59,6 +59,7 @@ class OperationKind(StrEnum):
     MOVE = "move"
     COPY = "copy"
     HARDLINK = "hardlink"
+    SYMLINK = "symlink"
     WRITE_NFO = "write_nfo"
 
 
@@ -67,6 +68,7 @@ class OutputMode(StrEnum):
     COPY = "copy"
     MOVE = "move"
     HARDLINK = "hardlink"
+    SYMLINK = "symlink"
 
 
 class NfoPolicy(StrEnum):

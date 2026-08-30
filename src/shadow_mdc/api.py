@@ -34,6 +34,9 @@ from .api_models import (
     ProviderDiagnostic,
     ProviderListOut,
     ScanOut,
+    TaskRunOut,
+    WorkLookupOut,
+    WorkLookupRequest,
     WorkOut,
 )
 from .config import Settings
@@ -41,7 +44,9 @@ from .db.models import Library, MatchCandidateRow, MediaAsset, Work
 from .db.repository import Database, Repository
 from .domain import IdentityHints, MatchEvidence, OperationPlan, ProviderRecord, ScoredCandidate
 from .enums import ContentFamily, MatchDecision, MediaCategory, QueryMode
-from .identity import IdentityAliasRules
+from .identity import IdentityAliasRules, extract_code, normalize_identity_value
+from .matching import rank_candidates, score_candidate
+from .media.artwork import ArtworkDownloadResult, ArtworkStore
 from .media.nfo import build_nfo
 from .media.organizer import Organizer
 from .providers import JavBusProvider, JavDBProvider, JsonLdProvider, ProviderRegistry, ThePornDBProvider
@@ -168,6 +173,12 @@ def providers(request: Request) -> ProviderListOut:
     return ProviderListOut(providers=runtime(request).providers.descriptors())
 
 
+@app.get("/api/tasks", response_model=list[TaskRunOut])
+def list_task_runs(repo: Repo, limit: int = 100) -> list[TaskRunOut]:
+    safe_limit = min(max(limit, 1), 500)
+    return [TaskRunOut.model_validate(item) for item in repo.list_task_runs(limit=safe_limit)]
+
+
 @app.post("/api/providers/diagnose", response_model=ProviderDiagnoseOut)
 async def diagnose_providers(payload: ProviderDiagnoseRequest, request: Request) -> ProviderDiagnoseOut:
     app_runtime = runtime(request)
@@ -181,13 +192,17 @@ async def diagnose_providers(payload: ProviderDiagnoseRequest, request: Request)
     )
     batch = await app_runtime.providers.search(hints)
     record_counts: dict[str, int] = {}
+    accepted_counts: dict[str, int] = {}
     for record in batch.records:
         record_counts[record.provider] = record_counts.get(record.provider, 0) + 1
+        if score_candidate(hints, record).decision is MatchDecision.ACCEPT:
+            accepted_counts[record.provider] = accepted_counts.get(record.provider, 0) + 1
     failures = {failure.provider: failure for failure in batch.failures}
     diagnostics: list[ProviderDiagnostic] = []
     for descriptor in app_runtime.providers.descriptors():
         failure = failures.get(descriptor.id)
         count = record_counts.get(descriptor.id, 0)
+        accepted = accepted_counts.get(descriptor.id, 0)
         if not descriptor.configured:
             diagnostic = ProviderDiagnostic(provider=descriptor.id, status="not_configured")
         elif QueryMode.CODE not in descriptor.query_modes:
@@ -199,8 +214,19 @@ async def diagnose_providers(payload: ProviderDiagnoseRequest, request: Request)
                 reason=failure.reason,
                 detail=failure.detail,
             )
+        elif accepted:
+            diagnostic = ProviderDiagnostic(
+                provider=descriptor.id,
+                status="success",
+                records=count,
+                accepted=accepted,
+            )
         elif count:
-            diagnostic = ProviderDiagnostic(provider=descriptor.id, status="success", records=count)
+            diagnostic = ProviderDiagnostic(
+                provider=descriptor.id,
+                status="candidates",
+                records=count,
+            )
         else:
             diagnostic = ProviderDiagnostic(provider=descriptor.id, status="no_result")
         diagnostics.append(diagnostic)
@@ -243,6 +269,7 @@ def scan_library(library_id: str, request: Request, repo: Repo) -> ScanOut:
     library = repo.get_library(library_id)
     if library is None:
         raise HTTPException(status_code=404, detail="library not found")
+    task = repo.create_task_run(kind="scan", scope=library.root_path)
     try:
         app_runtime = runtime(request)
         result = Scanner(
@@ -252,6 +279,18 @@ def scan_library(library_id: str, request: Request, repo: Repo) -> ScanOut:
         ).scan(library)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    repo.finish_task_run(
+        task,
+        status="partial" if result.errors else "succeeded",
+        summary={
+            "discovered": result.discovered,
+            "updated": result.updated,
+            "cataloged": result.cataloged,
+            "filtered": result.filtered,
+            "skipped": result.skipped,
+            "errors": len(result.errors),
+        },
+    )
     return ScanOut.model_validate(result.model_dump())
 
 
@@ -355,6 +394,67 @@ def list_works(repo: Repo) -> list[WorkOut]:
     return [_work_out(repo, work) for work in repo.list_works()]
 
 
+@app.post("/api/works/lookup", response_model=WorkLookupOut)
+async def lookup_work_by_code(
+    payload: WorkLookupRequest,
+    request: Request,
+    repo: Repo,
+) -> WorkLookupOut:
+    code, family = extract_code(payload.code, MediaCategory.JAPAN)
+    if code is None:
+        raise HTTPException(status_code=422, detail="code is not a supported media identity")
+    task = repo.create_task_run(kind="lookup", scope=code)
+    hints = IdentityHints(
+        term=code,
+        mode=QueryMode.CODE,
+        family=family,
+        category={
+            ContentFamily.JAV: MediaCategory.JAPAN,
+            ContentFamily.CHINESE: MediaCategory.CHINA,
+            ContentFamily.KOREAN: MediaCategory.KOREA,
+            ContentFamily.WESTERN: MediaCategory.EUROPE,
+        }.get(family, MediaCategory.OTHER),
+        code=code,
+    )
+    batch = await runtime(request).providers.search(hints)
+    ranked = rank_candidates(hints, list(batch.records))
+    accepted = [item for item in ranked if item.decision is MatchDecision.ACCEPT]
+    if not accepted:
+        repo.finish_task_run(
+            task,
+            status="partial" if batch.records or batch.failures else "succeeded",
+            summary={
+                "records": len(batch.records),
+                "accepted": 0,
+                "failures": len(batch.failures),
+            },
+        )
+        return WorkLookupOut(work=None, matched_records=len(batch.records), failures=batch.failures)
+    primary = accepted[0].record
+    work = repo.upsert_provider_record(primary, overwrite=True)
+    for candidate in accepted[1:]:
+        record = candidate.record
+        if record.code and primary.code and normalize_identity_value(
+            record.code
+        ) == normalize_identity_value(primary.code):
+            work = repo.upsert_provider_record(record, overwrite=False)
+    repo.finish_task_run(
+        task,
+        status="partial" if batch.failures else "succeeded",
+        summary={
+            "records": len(batch.records),
+            "accepted": len(accepted),
+            "failures": len(batch.failures),
+            "work_id": work.id,
+        },
+    )
+    return WorkLookupOut(
+        work=_work_out(repo, work),
+        matched_records=len(accepted),
+        failures=batch.failures,
+    )
+
+
 @app.get("/api/works/{work_id}", response_model=WorkOut)
 def get_work(work_id: str, repo: Repo) -> WorkOut:
     work = repo.get_work(work_id)
@@ -381,6 +481,31 @@ def work_nfo(work_id: str, repo: Repo) -> Response:
     if work is None:
         raise HTTPException(status_code=404, detail="work not found")
     return PlainTextResponse(build_nfo(work, repo.identities_for_work(work.id)), media_type="application/xml")
+
+
+@app.post("/api/works/{work_id}/artwork/download", response_model=ArtworkDownloadResult)
+async def download_work_artwork(work_id: str, request: Request, repo: Repo) -> ArtworkDownloadResult:
+    work = repo.get_work(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    task = repo.create_task_run(kind="artwork", scope=work.primary_code or work.title)
+    app_runtime = runtime(request)
+    result, local_paths = await ArtworkStore(
+        app_runtime.settings.data_dir / "artwork",
+        app_runtime.http,
+        max_bytes=app_runtime.settings.artwork_max_bytes,
+    ).acquire(work)
+    repo.update_artwork_local_paths(work, local_paths)
+    repo.finish_task_run(
+        task,
+        status="partial" if result.failed else "succeeded",
+        summary={
+            "downloaded": result.downloaded,
+            "cached": result.cached,
+            "failed": result.failed,
+        },
+    )
+    return result
 
 
 @app.post("/api/assets/{asset_id}/organize/plan", response_model=PlanOut)
@@ -437,6 +562,7 @@ def organize_library_apply(library_id: str, payload: OrganizeApplyRequest, repo:
     library = repo.get_library(library_id)
     if library is None:
         raise HTTPException(status_code=404, detail="library not found")
+    task = repo.create_task_run(kind=f"organize:{payload.mode.value}", scope=library.root_path)
     request_payload = OrganizeRequest(
         mode=payload.mode,
         target_root=payload.target_root,
@@ -482,6 +608,16 @@ def organize_library_apply(library_id: str, payload: OrganizeApplyRequest, repo:
             if len(errors) < 100:
                 errors.append(f"{asset.path}: {exc}")
     attempted = len(plans)
+    repo.finish_task_run(
+        task,
+        status="partial" if attempted != succeeded else "succeeded",
+        summary={
+            "attempted": attempted,
+            "succeeded": succeeded,
+            "failed": attempted - succeeded,
+            "errors_recorded": len(errors),
+        },
+    )
     return BatchApplyOut(
         token=current_token,
         attempted=attempted,
@@ -551,6 +687,7 @@ def _work_out(repo: Repository, work: Work) -> WorkOut:
         directors=work.directors,
         tags=work.tags,
         artwork=work.artwork,
+        field_sources=work.field_sources,
         identities=identities,
         created_at=work.created_at,
         updated_at=work.updated_at,

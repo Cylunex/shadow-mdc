@@ -3,15 +3,16 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import type { OrganizePayload } from "./api";
 import { identityAliasesSchema } from "./model";
-import type { Asset, BatchPlan, Candidate, IdentityAliases, Library, Work } from "./model";
+import type { Asset, BatchPlan, Candidate, IdentityAliases, Library, TaskRun, Work } from "./model";
 
-type View = "inbox" | "works" | "libraries";
+type View = "inbox" | "works" | "libraries" | "tasks";
 
 export function App() {
   const [view, setView] = useState<View>("inbox");
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [works, setWorks] = useState<Work[]>([]);
+  const [tasks, setTasks] = useState<TaskRun[]>([]);
   const [candidates, setCandidates] = useState<Record<string, Candidate[]>>({});
   const [providerStatus, setProviderStatus] = useState<string[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -19,15 +20,17 @@ export function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextLibraries, nextAssets, nextWorks, providers] = await Promise.all([
+      const [nextLibraries, nextAssets, nextWorks, nextTasks, providers] = await Promise.all([
         api.libraries(),
         api.assets(),
         api.works(),
+        api.tasks(),
         api.providers()
       ]);
       setLibraries(nextLibraries);
       setAssets(nextAssets);
       setWorks(nextWorks);
+      setTasks(nextTasks);
       setProviderStatus(
         providers.providers.map((provider) => `${provider.name}: ${provider.configured ? "已配置" : "未配置"}`)
       );
@@ -103,6 +106,7 @@ export function App() {
           <Nav active={view === "inbox"} onClick={() => setView("inbox")} label="待确认" count={inbox.length} />
           <Nav active={view === "works"} onClick={() => setView("works")} label="作品库" count={works.length} />
           <Nav active={view === "libraries"} onClick={() => setView("libraries")} label="媒体库" count={libraries.length} />
+          <Nav active={view === "tasks"} onClick={() => setView("tasks")} label="运行记录" count={tasks.length} />
         </nav>
         <div className="provider-list">
           <span>来源状态</span>
@@ -113,7 +117,7 @@ export function App() {
         <header>
           <div>
             <p className="eyebrow">LOCAL-FIRST / REVIEW-FIRST</p>
-            <h1>{view === "inbox" ? "识别收件箱" : view === "works" ? "作品库" : "媒体库"}</h1>
+            <h1>{view === "inbox" ? "识别收件箱" : view === "works" ? "作品库" : view === "libraries" ? "媒体库" : "运行记录"}</h1>
           </div>
           <button className="ghost" onClick={() => void refresh()}>刷新</button>
         </header>
@@ -142,14 +146,47 @@ export function App() {
                   : `未找到可自动接受的在线结果${failures ? `；失败来源：${failures}` : ""}`
               );
             })}
+            downloadArtwork={(work) => run(`artwork-${work.id}`, async () => {
+              const result = await api.downloadArtwork(work.id);
+              setMessage(
+                `图片缓存：新下载 ${result.downloaded}，已有 ${result.cached}，失败 ${result.failed}`
+              );
+            })}
+            lookupWork={(code) => run("lookup-work", async () => {
+              const result = await api.lookupWork(code);
+              const failed = result.failures.map((item) => `${item.provider}/${item.reason}`).join("、");
+              setMessage(
+                result.work
+                  ? `已按番号建立或更新 ${result.work.primary_code ?? result.work.title}，聚合 ${result.matched_records} 个来源`
+                  : `没有找到可自动确认的结果${result.matched_records ? `；有 ${result.matched_records} 条低置信候选未采用` : ""}${failed ? `；${failed}` : ""}`
+              );
+            })}
           />
         )}
         {view === "libraries" && (
           <Libraries libraries={libraries} busy={busy} run={run} report={setMessage} />
         )}
+        {view === "tasks" && <TaskHistory tasks={tasks} />}
       </main>
     </div>
   );
+}
+
+function TaskHistory({ tasks }: { tasks: TaskRun[] }) {
+  if (tasks.length === 0) {
+    return <Empty title="还没有运行记录" detail="扫描、番号查询、图片缓存和批量整理完成后会记录在这里。" />;
+  }
+  return <div className="task-list">{tasks.map((task) => (
+    <article key={task.id}>
+      <div>
+        <span className={`task-state ${task.status}`}>{task.status}</span>
+        <h2>{task.kind}</h2>
+        <p>{task.scope}</p>
+      </div>
+      <code>{JSON.stringify(task.summary)}</code>
+      <time>{new Date(task.created_at).toLocaleString()}</time>
+    </article>
+  ))}</div>;
 }
 
 function Nav(props: { active: boolean; onClick: () => void; label: string; count: number }) {
@@ -258,13 +295,24 @@ function Works(props: {
   works: Work[];
   busy: string | null;
   refreshMetadata: (work: Work) => Promise<void>;
+  downloadArtwork: (work: Work) => Promise<void>;
+  lookupWork: (code: string) => Promise<void>;
 }) {
   const { works } = props;
-  if (works.length === 0) {
-    return <Empty title="作品库为空" detail="接受候选后，逻辑作品会显示在这里。" />;
-  }
+  const [code, setCode] = useState("");
   const categories = ["Japan", "China", "Korea", "Europe", "Other"] as const;
-  return <div className="work-sections">{categories.map((category) => {
+  return <>
+    <form className="work-lookup" onSubmit={(event) => {
+      event.preventDefault();
+      if (code.trim()) void props.lookupWork(code.trim());
+    }}>
+      <div><h2>按番号获取信息</h2><p>无需先有本地文件；多个命中来源会逐字段聚合并保留来源。</p></div>
+      <input value={code} onChange={(event) => setCode(event.target.value)} placeholder="例如 SONE-118" />
+      <button disabled={!code.trim() || props.busy === "lookup-work"}>查询并建档</button>
+    </form>
+    {works.length === 0
+      ? <Empty title="作品库为空" detail="按番号查询，或扫描媒体库后接受候选。" />
+      : <div className="work-sections">{categories.map((category) => {
     const categoryWorks = works.filter((work) => work.category === category);
     if (categoryWorks.length === 0) return null;
     return <section className="work-section" key={category}>
@@ -287,12 +335,20 @@ function Works(props: {
               onClick={() => void props.refreshMetadata(work)}
             >刷新元数据</button>
           )}
+          {work.artwork.length > 0 && (
+            <button
+              className="ghost work-refresh"
+              disabled={props.busy === `artwork-${work.id}`}
+              onClick={() => void props.downloadArtwork(work)}
+            >缓存图片</button>
+          )}
         </div>
       </article>
     );
       })}</div>
     </section>;
-  })}</div>;
+      })}</div>}
+  </>;
 }
 
 function Libraries(props: {
@@ -412,6 +468,7 @@ function LibraryOrganizer(props: {
         <option value="copy">复制到新路径 + NFO</option>
         <option value="move">移动到新路径 + NFO</option>
         <option value="hardlink">硬链接到新路径 + NFO</option>
+        <option value="symlink">软链接到新路径 + NFO</option>
       </select></label>
       {mode !== "sidecar" && <>
         <label><span>目标根目录</span><input value={targetRoot} onChange={(event) => {
@@ -458,11 +515,13 @@ function ProviderDiagnostics() {
       const result = await api.diagnoseProviders(code);
       const items = result.diagnostics.map((item) => {
         const state = item.status === "success"
-          ? `成功，命中 ${item.records} 条`
+          ? `精确命中 ${item.accepted} 条（返回 ${item.records} 条）`
           : item.status === "failed"
             ? `失败 / ${item.reason ?? "未知原因"}`
             : item.status === "no_result"
               ? "可访问，但无结果"
+              : item.status === "candidates"
+                ? `返回 ${item.records} 条，但没有精确匹配`
               : item.status === "not_configured"
                 ? "未配置"
                 : "不适用于番号";

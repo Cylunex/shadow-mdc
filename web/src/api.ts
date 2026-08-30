@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   assetsSchema,
+  artworkDownloadSchema,
   batchApplySchema,
   batchPlanSchema,
   candidateSchema,
@@ -14,13 +15,15 @@ import {
   providerListSchema,
   providerDiagnoseSchema,
   scanSchema,
+  taskRunsSchema,
   workSchema,
+  workLookupSchema,
   worksSchema
 } from "./model";
 import type { FilterWords, IdentityAliases } from "./model";
 
 export type OrganizePayload = {
-  mode: "sidecar" | "copy" | "move" | "hardlink";
+  mode: "sidecar" | "copy" | "move" | "hardlink" | "symlink";
   target_root?: string | null;
   template?: string | null;
 };
@@ -47,6 +50,7 @@ export const api = {
     request(librarySchema, "/api/libraries", { method: "POST", body: JSON.stringify(payload) }),
   scan: (libraryId: string) =>
     request(scanSchema, `/api/libraries/${libraryId}/scan`, { method: "POST" }),
+  tasks: () => request(taskRunsSchema, "/api/tasks"),
   assets: () => request(assetsSchema, "/api/assets"),
   candidates: (assetId: string) => request(candidatesSchema, `/api/assets/${assetId}/candidates`),
   manualCandidate: (assetId: string, payload: { title?: string }) =>
@@ -62,8 +66,14 @@ export const api = {
   accept: (candidateId: string) =>
     request(workSchema, `/api/candidates/${candidateId}/accept`, { method: "POST" }),
   works: () => request(worksSchema, "/api/works"),
+  lookupWork: (code: string) => request(workLookupSchema, "/api/works/lookup", {
+    method: "POST",
+    body: JSON.stringify({ code })
+  }),
   refreshWork: (workId: string) =>
     request(identifySchema, `/api/works/${workId}/refresh`, { method: "POST" }),
+  downloadArtwork: (workId: string) =>
+    request(artworkDownloadSchema, `/api/works/${workId}/artwork/download`, { method: "POST" }),
   providers: () => request(providerListSchema, "/api/providers"),
   diagnoseProviders: (code: string) => request(providerDiagnoseSchema, "/api/providers/diagnose", {
     method: "POST",

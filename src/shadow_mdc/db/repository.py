@@ -8,7 +8,17 @@ from sqlalchemy.orm import Session, sessionmaker
 from ..domain import IdentityHints, ProviderRecord, ScoredCandidate
 from ..enums import AssetState, CandidateState, IdentityKind, MediaCategory
 from ..identity import normalize_identity_value
-from .models import Base, ExternalIdentity, Library, MatchCandidateRow, MediaAsset, SourceSnapshot, Work
+from .models import (
+    Base,
+    ExternalIdentity,
+    Library,
+    MatchCandidateRow,
+    MediaAsset,
+    SourceSnapshot,
+    TaskRun,
+    Work,
+    utc_now,
+)
 
 
 class Database:
@@ -43,6 +53,17 @@ class Database:
                 )
                 connection.exec_driver_sql(
                     "CREATE INDEX IF NOT EXISTS ix_works_category ON works (category)"
+                )
+            if "field_sources" not in work_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE works ADD COLUMN field_sources JSON NOT NULL DEFAULT '{}'"
+                )
+            asset_columns = {
+                str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(media_assets)")
+            }
+            if "modified_ns" not in asset_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE media_assets ADD COLUMN modified_ns INTEGER NOT NULL DEFAULT 0"
                 )
             connection.exec_driver_sql(
                 """
@@ -114,12 +135,37 @@ class Repository:
     def get_library(self, library_id: str) -> Library | None:
         return self._session.get(Library, library_id)
 
+    def create_task_run(self, *, kind: str, scope: str) -> TaskRun:
+        task = TaskRun(kind=kind, scope=scope)
+        self._session.add(task)
+        self._session.flush()
+        return task
+
+    def finish_task_run(
+        self,
+        task: TaskRun,
+        *,
+        status: str,
+        summary: dict[str, object],
+        error: str | None = None,
+    ) -> None:
+        task.status = status
+        task.summary = summary
+        task.error = error
+        task.finished_at = utc_now()
+        self._session.flush()
+
+    def list_task_runs(self, *, limit: int = 100) -> list[TaskRun]:
+        statement = select(TaskRun).order_by(TaskRun.created_at.desc()).limit(limit)
+        return list(self._session.scalars(statement))
+
     def upsert_asset(
         self,
         *,
         library_id: str,
         path: str,
         size: int,
+        modified_ns: int = 0,
         duration_seconds: float | None,
         oshash: str | None,
         hints: IdentityHints,
@@ -128,6 +174,7 @@ class Repository:
         existing = self._session.scalar(select(MediaAsset).where(MediaAsset.path == absolute))
         if existing is not None:
             existing.size = size
+            existing.modified_ns = modified_ns
             existing.duration_seconds = duration_seconds
             existing.oshash = oshash
             existing.hints = hints.model_dump(mode="json")
@@ -139,6 +186,7 @@ class Repository:
             library_id=library_id,
             path=absolute,
             size=size,
+            modified_ns=modified_ns,
             duration_seconds=duration_seconds,
             oshash=oshash,
             hints=hints.model_dump(mode="json"),
@@ -149,6 +197,10 @@ class Repository:
 
     def get_asset(self, asset_id: str) -> MediaAsset | None:
         return self._session.get(MediaAsset, asset_id)
+
+    def get_asset_by_path(self, path: str) -> MediaAsset | None:
+        absolute = str(Path(path).resolve())
+        return self._session.scalar(select(MediaAsset).where(MediaAsset.path == absolute))
 
     def list_assets(self, *, state: str | None = None) -> list[MediaAsset]:
         statement = select(MediaAsset)
@@ -261,6 +313,21 @@ class Repository:
         self._session.flush()
         return work
 
+    def merge_candidate_into_work(self, candidate_id: str, work_id: str) -> Work:
+        candidate = self.get_candidate(candidate_id)
+        work = self.get_work(work_id)
+        if candidate is None:
+            raise LookupError(f"candidate {candidate_id} not found")
+        if work is None:
+            raise LookupError(f"work {work_id} not found")
+        record = ProviderRecord.model_validate(candidate.record)
+        self._merge_provider_record(work, record, overwrite=False)
+        self._add_record_identities(work, record)
+        self._upsert_snapshot(work, record)
+        candidate.state = CandidateState.ACCEPTED.value
+        self._session.flush()
+        return work
+
     def catalog_asset(self, asset: MediaAsset, record: ProviderRecord) -> Work:
         work = self.get_work(asset.work_id) if asset.work_id is not None else None
         if work is None:
@@ -274,6 +341,17 @@ class Repository:
         asset.work_id = work.id
         asset.state = AssetState.IDENTIFIED.value
         asset.error = None
+        self._session.flush()
+        return work
+
+    def upsert_provider_record(self, record: ProviderRecord, *, overwrite: bool) -> Work:
+        work = self._resolve_existing_work(record)
+        if work is None:
+            work = self._create_work(record)
+        else:
+            self._merge_provider_record(work, record, overwrite=overwrite)
+        self._add_record_identities(work, record)
+        self._upsert_snapshot(work, record)
         self._session.flush()
         return work
 
@@ -295,6 +373,17 @@ class Repository:
         return list(
             self._session.scalars(select(ExternalIdentity).where(ExternalIdentity.work_id == work_id))
         )
+
+    def update_artwork_local_paths(self, work: Work, local_paths: dict[str, str]) -> None:
+        updated: list[dict[str, object]] = []
+        for item in work.artwork:
+            value = dict(item)
+            url = value.get("url")
+            if isinstance(url, str) and url in local_paths:
+                value["local_path"] = local_paths[url]
+            updated.append(value)
+        work.artwork = updated
+        self._session.flush()
 
     def _resolve_existing_work(self, record: ProviderRecord) -> Work | None:
         checks = [(record.provider, IdentityKind.PROVIDER_ID, record.external_id)]
@@ -333,6 +422,7 @@ class Repository:
             directors=list(record.directors),
             tags=list(record.tags),
             artwork=[item.model_dump(mode="json") for item in record.artwork],
+            field_sources=_record_field_sources(record),
         )
         self._session.add(work)
         self._session.flush()
@@ -352,39 +442,62 @@ class Repository:
         if not work.tags and record.tags:
             work.tags = list(record.tags)
 
-    def _merge_provider_record(self, work: Work, record: ProviderRecord) -> None:
-        work.title = record.title
-        if record.original_title:
+    def _merge_provider_record(
+        self,
+        work: Work,
+        record: ProviderRecord,
+        *,
+        overwrite: bool = True,
+    ) -> None:
+        sources = dict(work.field_sources or {})
+        if overwrite or not work.title:
+            work.title = record.title
+            sources["title"] = record.provider
+        if record.original_title and (overwrite or not work.original_title):
             work.original_title = record.original_title
-        if record.code:
+            sources["original_title"] = record.provider
+        if record.code and (overwrite or not work.primary_code):
             work.primary_code = record.code
-        if record.family.value != "unknown":
+            sources["primary_code"] = record.provider
+        if record.family.value != "unknown" and (overwrite or work.family == "unknown"):
             work.family = record.family.value
-        if work.category == MediaCategory.OTHER.value:
-            category = record.category
-            if category is MediaCategory.OTHER:
-                category = _category_for_family(record.family.value)
+            sources["family"] = record.provider
+        category = record.category
+        if category is MediaCategory.OTHER:
+            category = _category_for_family(record.family.value)
+        if category is not MediaCategory.OTHER and (
+            overwrite or work.category == MediaCategory.OTHER.value
+        ):
             work.category = category.value
-        if record.release_date:
+            sources["category"] = record.provider
+        if record.release_date and (overwrite or work.release_date is None):
             work.release_date = record.release_date
-        if record.runtime_seconds:
+            sources["release_date"] = record.provider
+        if record.runtime_seconds and (overwrite or work.runtime_seconds is None):
             work.runtime_seconds = record.runtime_seconds
-        if record.studio:
+            sources["runtime_seconds"] = record.provider
+        if record.studio and (overwrite or not work.studio):
             work.studio = record.studio
-        if record.label:
+            sources["studio"] = record.provider
+        if record.label and (overwrite or not work.label):
             work.label = record.label
-        if record.series:
+            sources["label"] = record.provider
+        if record.series and (overwrite or not work.series):
             work.series = record.series
-        if record.plot:
+            sources["series"] = record.provider
+        if record.plot and (overwrite or not work.plot):
             work.plot = record.plot
+            sources["plot"] = record.provider
+
         if record.actors:
-            work.actors = list(record.actors)
+            work.actors = _merge_unique(work.actors, record.actors, replace=overwrite)
         if record.directors:
-            work.directors = list(record.directors)
+            work.directors = _merge_unique(work.directors, record.directors, replace=overwrite)
         if record.tags:
-            work.tags = list(record.tags)
+            work.tags = _merge_unique(work.tags, record.tags, replace=overwrite)
         if record.artwork:
-            work.artwork = [item.model_dump(mode="json") for item in record.artwork]
+            work.artwork = _merge_artwork(work.artwork, record, replace=overwrite)
+        work.field_sources = sources
 
     def _add_identity(
         self,
@@ -465,3 +578,48 @@ def _category_for_family(family: str) -> MediaCategory:
         "korean": MediaCategory.KOREA,
         "western": MediaCategory.EUROPE,
     }.get(family, MediaCategory.OTHER)
+
+
+def _record_field_sources(record: ProviderRecord) -> dict[str, str]:
+    fields = {
+        "title": record.title,
+        "original_title": record.original_title,
+        "primary_code": record.code,
+        "family": record.family.value if record.family.value != "unknown" else None,
+        "category": record.category.value if record.category is not MediaCategory.OTHER else None,
+        "release_date": record.release_date,
+        "runtime_seconds": record.runtime_seconds,
+        "studio": record.studio,
+        "label": record.label,
+        "series": record.series,
+        "plot": record.plot,
+    }
+    return {field: record.provider for field, value in fields.items() if value not in {None, ""}}
+
+
+def _merge_unique(current: list[str], incoming: tuple[str, ...], *, replace: bool) -> list[str]:
+    values = [] if replace else list(current)
+    seen = {value.casefold() for value in values}
+    for value in incoming:
+        key = value.casefold()
+        if key not in seen:
+            seen.add(key)
+            values.append(value)
+    return values
+
+
+def _merge_artwork(
+    current: list[dict[str, object]],
+    record: ProviderRecord,
+    *,
+    replace: bool,
+) -> list[dict[str, object]]:
+    values = [] if replace else list(current)
+    seen = {(str(item.get("kind")), str(item.get("url"))) for item in values}
+    for artwork in record.artwork:
+        payload = artwork.model_dump(mode="json")
+        key = (str(payload.get("kind")), str(payload.get("url")))
+        if key not in seen:
+            seen.add(key)
+            values.append(payload)
+    return values
