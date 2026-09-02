@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "source": "import-fixture",
+  "actors": [
+    {
+      "name": "Existing Star",
+      "aliases": ["Existing Alias", "Richer Alias"],
+      "groups": ["western", "feature"],
+      "categories": ["Europe"],
+      "match_names": ["Existing Star", "Existing Alias", "Richer Alias"],
+      "image_file": "incoming-avatar.png",
+      "biography": "Incoming longer biography for existing actor.",
+      "notes": null
+    },
+    {
+      "name": "Brand New Star",
+      "aliases": ["New Alias"],
+      "groups": ["onlyfans"],
+      "categories": ["Other"],
+      "match_names": ["Brand New Star", "New Alias"],
+      "image_file": "incoming-avatar.png",
+      "biography": "New actor",
+      "notes": "from bundle"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "source": "import-fixture",
+  "works": [
+    {
+      "id": "fixture-import-1",
+      "title": "Imported Feature",
+      "family": "western",
+      "category": "Europe",
+      "year": 2021,
+      "studio": "Import Studio",
+      "actors": ["Brand New Star"],
+      "tags": ["import"],
+      "ensure_actors": [
+        {"name": "Brand New Star", "aliases": ["New Alias"], "groups": ["onlyfans"], "categories": ["Other"]}
+      ]
+    }
+  ]
+}
