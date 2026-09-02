@@ -272,3 +272,21 @@ button.danger { border-color: #6d3333; color: #ffb1b1; }
   .directory-stats { justify-content: flex-start; }
   .directory-title p { max-width: 70vw; }
 }
+
+.group-chip-bar {
+  display: flex; flex-wrap: wrap; gap: 8px; margin: -6px 0 14px;
+}
+.group-chip-bar button {
+  border-radius: 999px; font-size: 12px; padding: 7px 12px;
+}
+.group-chip-bar button.active {
+  background: var(--accent); color: #08120c;
+}
+.non-jav-stats {
+  color: var(--muted); font-size: 12px; margin: -4px 0 14px;
+}
+.actor-works-empty {
+  background: #10171a; border: 1px dashed #2a373c; border-radius: 10px;
+  color: var(--muted) !important; font-size: 12px; margin: 4px 0 0; padding: 12px;
+}
+.non-jav-grid .actor-works { margin-top: 8px; }

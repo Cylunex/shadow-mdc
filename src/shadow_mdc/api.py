@@ -42,6 +42,7 @@ from .api_models import (
     ManualCandidateRequest,
     NonJavActorEdit,
     NonJavActorOut,
+    NonJavActorWorkOut,
     OrganizeApplyRequest,
     OrganizeRequest,
     PlanOut,
@@ -125,6 +126,7 @@ from .services.non_jav_actor_catalog import (
     build_non_jav_actor_profile,
     enrich_non_jav_actor_aliases,
 )
+from .services.non_jav_work_seed import seed_non_jav_works
 from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
 from .services.scanner import Scanner
 from .services.translation import GoogleTitleTranslator, TranslationCache
@@ -192,6 +194,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         repo = Repository(session)
         repo.repair_jav_actor_sources()
         repo.sync_all_work_actors()
+        seed_non_jav_works(
+            repo,
+            seed_path=settings.data_dir / "non-jav-works.json",
+            actor_store=non_jav_actor_store,
+            actor_images_dir=settings.data_dir / "actor-images",
+            artwork_dir=settings.data_dir / "artwork",
+        )
     client = _http_client(settings, max_connections=settings.translation_concurrency + 4)
     provider_clients = tuple(
         _http_client(settings, max_connections=settings.identify_concurrency + 2) for _ in range(14)
@@ -487,9 +496,14 @@ def list_actor_catalog(request: Request, repo: Repo) -> tuple[ActorProfile, ...]
 
 
 @app.get("/api/non-jav-actors", response_model=tuple[NonJavActorOut, ...])
-def list_non_jav_actors(request: Request) -> tuple[NonJavActorOut, ...]:
+def list_non_jav_actors(request: Request, repo: Repo) -> tuple[NonJavActorOut, ...]:
     app_runtime = runtime(request)
-    return tuple(_non_jav_actor_out(actor) for actor in app_runtime.non_jav_actor_store.load().actors)
+    works_index = _non_jav_works_index(repo)
+    actors = tuple(
+        _non_jav_actor_out(actor, works=_works_for_non_jav_actor(actor, works_index))
+        for actor in app_runtime.non_jav_actor_store.load().actors
+    )
+    return tuple(sorted(actors, key=lambda item: (-item.work_count, item.name.casefold())))
 
 
 @app.post("/api/non-jav-actors", response_model=NonJavActorOut, status_code=201)
@@ -1468,7 +1482,12 @@ def _candidate_out(row: MatchCandidateRow) -> CandidateOut:
     )
 
 
-def _non_jav_actor_out(actor: NonJavActorProfile) -> NonJavActorOut:
+def _non_jav_actor_out(
+    actor: NonJavActorProfile,
+    *,
+    works: tuple[NonJavActorWorkOut, ...] = (),
+) -> NonJavActorOut:
+    # Merge works referenced by aliases / match names via caller-provided canonical bucket.
     return NonJavActorOut(
         name=actor.name,
         aliases=actor.aliases,
@@ -1478,7 +1497,70 @@ def _non_jav_actor_out(actor: NonJavActorProfile) -> NonJavActorOut:
         image_url=(f"/api/non-jav-actor-images/{actor.image_file}" if actor.image_file is not None else None),
         biography=actor.biography,
         notes=actor.notes,
+        work_count=len(works),
+        works=works,
     )
+
+
+
+def _works_for_non_jav_actor(
+    actor: NonJavActorProfile,
+    works_index: dict[str, tuple[NonJavActorWorkOut, ...]],
+) -> tuple[NonJavActorWorkOut, ...]:
+    keys = {
+        _normalize_person_name(actor.name),
+        *(_normalize_person_name(alias) for alias in actor.aliases),
+        *(_normalize_person_name(match_name) for match_name in actor.match_names),
+    }
+    merged: list[NonJavActorWorkOut] = []
+    seen: set[str] = set()
+    for key in keys:
+        for ref in works_index.get(key, ()):
+            if ref.id in seen:
+                continue
+            seen.add(ref.id)
+            merged.append(ref)
+    return tuple(sorted(merged, key=lambda item: (item.category, item.code or "", item.title)))
+
+
+def _normalize_person_name(value: str) -> str:
+    return unicodedata.normalize("NFKC", value).casefold().strip()
+
+
+def _non_jav_works_index(repo: Repository) -> dict[str, tuple[NonJavActorWorkOut, ...]]:
+    """Map normalized actor names to non-JAV works for actor-library display."""
+
+    buckets: dict[str, list[NonJavActorWorkOut]] = {}
+    seen: dict[str, set[str]] = {}
+    for work in repo.list_works():
+        if work.family == ContentFamily.JAV.value:
+            continue
+        if work.category == MediaCategory.JAPAN.value and work.primary_code:
+            # Keep JAV code-backed titles out of the non-JAV actor filmography pane.
+            continue
+        ref = NonJavActorWorkOut(
+            id=work.id,
+            title=work.title,
+            code=work.primary_code,
+            category=work.category,
+            studio=work.studio,
+            series=work.series,
+            release_date=work.release_date,
+            image_url=_work_display_artwork(work, "poster"),
+        )
+        for raw_name in work.actors:
+            key = _normalize_person_name(raw_name)
+            if not key:
+                continue
+            owned = seen.setdefault(key, set())
+            if ref.id in owned:
+                continue
+            owned.add(ref.id)
+            buckets.setdefault(key, []).append(ref)
+    return {
+        key: tuple(sorted(items, key=lambda item: (item.category, item.code or "", item.title)))
+        for key, items in buckets.items()
+    }
 
 
 def _detect_image(content: bytes) -> tuple[str, str] | None:

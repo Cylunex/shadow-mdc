@@ -120,6 +120,17 @@ class NonJavActorEdit(BaseModel):
     notes: str | None = Field(default=None, max_length=5000)
 
 
+class NonJavActorWorkOut(BaseModel):
+    id: str
+    title: str
+    code: str | None
+    category: str
+    studio: str | None = None
+    series: str | None = None
+    release_date: date | None = None
+    image_url: str | None = None
+
+
 class NonJavActorOut(BaseModel):
     name: str
     aliases: tuple[str, ...]
@@ -129,6 +140,8 @@ class NonJavActorOut(BaseModel):
     image_url: str | None = None
     biography: str | None = None
     notes: str | None = None
+    work_count: int = 0
+    works: tuple[NonJavActorWorkOut, ...] = ()
 
 
 class DirectoryActorAssignRequest(BaseModel):

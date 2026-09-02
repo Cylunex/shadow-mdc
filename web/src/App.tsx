@@ -295,11 +295,12 @@ function Actors(props: {
   deleteNonJavActor: (actor: NonJavActor) => Promise<void>;
   uploadActorImage: (actor: NonJavActor, file: File) => Promise<void>;
 }) {
-  const [source, setSource] = useState<"jav" | "non-jav">("jav");
+  const nonJavWorkTotal = props.nonJavActors.reduce((sum, actor) => sum + (actor.work_count ?? 0), 0);
+  const [source, setSource] = useState<"jav" | "non-jav">(props.actors.length === 0 && props.nonJavActors.length > 0 ? "non-jav" : "jav");
   return <>
     <div className="actor-source-tabs">
       <button className={source === "jav" ? "active" : "ghost"} onClick={() => setSource("jav")}>JAV 演员作品库 · {props.actors.length}</button>
-      <button className={source === "non-jav" ? "active" : "ghost"} onClick={() => setSource("non-jav")}>非 JAV 演员名单 · {props.nonJavActors.length}</button>
+      <button className={source === "non-jav" ? "active" : "ghost"} onClick={() => setSource("non-jav")}>非 JAV 演员 / 作品 · {props.nonJavActors.length} · 作品 {nonJavWorkTotal}</button>
     </div>
     {source === "jav"
       ? <JavActors actors={props.actors} />
@@ -335,7 +336,7 @@ function JavActors({ actors }: { actors: ActorProfile[] }) {
     currentPage * ACTOR_PAGE_SIZE
   );
   if (actors.length === 0) {
-    return <Empty title="演员库为空" detail="在线识别或本地优化产生演员信息后，会自动建立演员与作品索引。" />;
+    return <Empty title="JAV 演员作品库为空" detail="扫描并接受带番号的作品后会出现在这里。国产/欧美请切换到「非 JAV 演员 / 作品」。" />;
   }
   return <>
     <DisplayFilterBar
@@ -407,22 +408,46 @@ function NonJavActorsManager(props: {
 }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<DisplayCategory>("all");
+  const [group, setGroup] = useState<string>("all");
   const [draft, setDraft] = useState<ActorDraft | null>(null);
   const [page, setPage] = useState(1);
   const deferredQuery = useDeferredValue(query);
   const normalizedQuery = deferredQuery.trim().toLocaleLowerCase();
-  const visible = useMemo(() => props.actors.filter((actor) => {
-    const categoryMatches = category === "all" || actor.categories.includes(category);
-    const text = [actor.name, ...actor.aliases, ...actor.groups, actor.biography ?? "", actor.notes ?? ""]
-      .join(" ").toLocaleLowerCase();
-    return categoryMatches && (!normalizedQuery || text.includes(normalizedQuery));
-  }), [props.actors, category, normalizedQuery]);
-  useEffect(() => setPage(1), [category, deferredQuery]);
+  const groupOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const actor of props.actors) {
+      for (const item of actor.groups) {
+        counts.set(item, (counts.get(item) ?? 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .map(([value, count]) => ({ value, count, label: groupLabel(value) }));
+  }, [props.actors]);
+  const visible = useMemo(() => {
+    const filtered = props.actors.filter((actor) => {
+      const categoryMatches = category === "all" || actor.categories.includes(category);
+      const groupMatches = group === "all" || actor.groups.includes(group) || groupAliases(group).some((alias) => actor.groups.includes(alias));
+      const text = [
+        actor.name,
+        ...actor.aliases,
+        ...actor.match_names,
+        ...actor.groups,
+        actor.biography ?? "",
+        actor.notes ?? "",
+        ...actor.works.flatMap((work) => [work.title, work.code ?? "", work.studio ?? "", work.series ?? ""])
+      ].join(" ").toLocaleLowerCase();
+      return categoryMatches && groupMatches && (!normalizedQuery || text.includes(normalizedQuery));
+    });
+    return filtered.sort((left, right) => (right.work_count - left.work_count) || left.name.localeCompare(right.name));
+  }, [props.actors, category, group, normalizedQuery]);
+  useEffect(() => setPage(1), [category, group, deferredQuery]);
   const currentPage = Math.min(page, Math.max(1, Math.ceil(visible.length / NON_JAV_ACTOR_PAGE_SIZE)));
   const rendered = visible.slice(
     (currentPage - 1) * NON_JAV_ACTOR_PAGE_SIZE,
     currentPage * NON_JAV_ACTOR_PAGE_SIZE
   );
+  const withWorks = props.actors.filter((actor) => actor.work_count > 0).length;
 
   function edit(actor: NonJavActor) {
     setDraft({
@@ -450,9 +475,16 @@ function NonJavActorsManager(props: {
     setDraft(null);
   }
 
+  if (props.actors.length === 0) {
+    return <Empty title="非 JAV 演员名单为空" detail="可新增演员，或导入 non-jav-actors.json 后刷新。" />;
+  }
+
   return <>
     <div className="non-jav-heading">
-      <div><h2>非 JAV 演员与创作者</h2><p>这里就是之前从 avtor.txt 整理出的名单。编辑的名称和别名会参与下一次目录识别。</p></div>
+      <div>
+        <h2>非 JAV 演员与作品</h2>
+        <p>名单来自本地策展；热门演员的作品已写入作品库，可在卡片中直接查看。名称/别名会参与目录识别。</p>
+      </div>
       <button onClick={() => setDraft({ ...emptyActorDraft })}>新增演员</button>
     </div>
     <DisplayFilterBar
@@ -460,15 +492,33 @@ function NonJavActorsManager(props: {
       category={category}
       visible={visible.length}
       total={props.actors.length}
-      placeholder="搜索非 JAV 演员、别名或分组"
+      placeholder="搜索演员、别名、作品、工作室或分组（探花/博主/麻豆）"
       setQuery={setQuery}
       setCategory={setCategory}
     />
+    <div className="group-chip-bar" aria-label="分组筛选">
+      <button type="button" className={group === "all" ? "active" : "ghost"} onClick={() => setGroup("all")}>全部分组</button>
+      {GROUP_SHORTCUTS.map((item) => (
+        <button
+          key={item.value}
+          type="button"
+          className={group === item.value || groupAliases(item.value).includes(group) ? "active" : "ghost"}
+          onClick={() => setGroup(item.value)}
+        >{item.label}</button>
+      ))}
+      {groupOptions.filter((item) => !GROUP_SHORTCUT_VALUES.has(item.value)).slice(0, 8).map((item) => (
+        <button key={item.value} type="button" className={group === item.value ? "active" : "ghost"} onClick={() => setGroup(item.value)}>
+          {item.label} · {item.count}
+        </button>
+      ))}
+      {group !== "all" && <button type="button" className="ghost" onClick={() => setGroup("all")}>清除分组</button>}
+    </div>
+    <p className="non-jav-stats">已有作品资料的演员 {withWorks} / {props.actors.length} · 当前显示 {visible.length}</p>
     {draft && <form className="actor-editor" onSubmit={(event) => void submit(event)}>
       <div className="actor-editor-title"><h2>{draft.previousName ? `编辑 ${draft.previousName}` : "新增非 JAV 演员"}</h2><button type="button" className="ghost" onClick={() => setDraft(null)}>取消</button></div>
       <label><span>规范名称</span><input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
       <label><span>别名（逗号或换行分隔）</span><input value={draft.aliases} onChange={(event) => setDraft({ ...draft, aliases: event.target.value })} /></label>
-      <label><span>分组</span><input value={draft.groups} onChange={(event) => setDraft({ ...draft, groups: event.target.value })} /></label>
+      <label><span>分组</span><input value={draft.groups} onChange={(event) => setDraft({ ...draft, groups: event.target.value })} placeholder="madou, tanhua, onlyfans, western…" /></label>
       <fieldset><legend>分类</legend>{displayCategoryOptions.filter((item) => item.value !== "all").map((item) => {
         const value = item.value as Exclude<DisplayCategory, "all">;
         return <label key={value}><input type="checkbox" checked={draft.categories.includes(value)} onChange={(event) => setDraft({ ...draft, categories: event.target.checked ? [...draft.categories, value] : draft.categories.filter((current) => current !== value) })} />{item.label}</label>;
@@ -478,15 +528,36 @@ function NonJavActorsManager(props: {
       <button disabled={props.busy?.startsWith("actor-")}>保存资料</button>
     </form>}
     {visible.length === 0
-      ? <Empty title="没有匹配的非 JAV 演员" detail="可以清空筛选，或新增一位演员。" />
+      ? <Empty title="没有匹配的非 JAV 演员" detail="可以清空关键词、分类或分组筛选，或新增一位演员。" />
       : <><div className="actor-grid non-jav-grid">{rendered.map((actor) => <article className="actor-card" key={actor.name}>
           <div className="actor-profile">
             <div className="actor-avatar" style={actor.image_url ? { backgroundImage: `url("${appUrl(actor.image_url)}")` } : undefined} role="img" aria-label={`${actor.name} 头像`} />
-            <div className="actor-card-title"><div><span className="pill">{actor.categories.join(" / ")}</span><h2>{actor.name}</h2><small>{actor.groups.join(" / ") || "未分组"}</small></div></div>
+            <div className="actor-card-title">
+              <div>
+                <span className="pill">{actor.categories.join(" / ")}</span>
+                <h2>{actor.name}</h2>
+                <small>{actor.groups.map(groupLabel).join(" / ") || "未分组"}</small>
+              </div>
+              <b title="关联作品数">{actor.work_count}</b>
+            </div>
           </div>
           {actor.aliases.length > 0 && <p>别名：{actor.aliases.join("、")}</p>}
           {actor.biography && <p className="actor-biography">{actor.biography}</p>}
           {actor.notes && <p className="actor-notes">备注：{actor.notes}</p>}
+          {actor.works.length > 0
+            ? <div className="actor-works">{actor.works.slice(0, 6).map((work) => (
+              <div className="actor-work" key={work.id}>
+                <div
+                  className="actor-work-poster"
+                  style={work.image_url ? { backgroundImage: `url("${appUrl(work.image_url)}")` } : actor.image_url ? { backgroundImage: `url("${appUrl(actor.image_url)}")` } : undefined}
+                />
+                <div>
+                  <strong>{work.code ?? work.studio ?? work.series ?? "无番号"}</strong>
+                  <span>{work.title}</span>
+                </div>
+              </div>
+            ))}</div>
+            : <p className="actor-works-empty">暂无作品资料 · 扫描媒体并识别后会自动关联</p>}
           <div className="actor-actions">
             <button className="secondary" onClick={() => edit(actor)}>编辑</button>
             <label className="upload-button">上传头像<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => { const file = event.target.files?.[0]; if (file) void props.uploadImage(actor, file); event.target.value = ""; }} /></label>
@@ -494,6 +565,33 @@ function NonJavActorsManager(props: {
           </div>
         </article>)}</div><Pagination page={currentPage} total={visible.length} pageSize={NON_JAV_ACTOR_PAGE_SIZE} setPage={setPage} /></>}
   </>;
+}
+
+const GROUP_SHORTCUTS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "tanhua", label: "探花" },
+  { value: "blogger", label: "博主" },
+  { value: "madou", label: "麻豆" },
+  { value: "onlyfans", label: "OnlyFans" },
+  { value: "western", label: "欧美" },
+  { value: "swag", label: "SWAG" },
+  { value: "korean", label: "韩国" }
+];
+const GROUP_SHORTCUT_VALUES = new Set(GROUP_SHORTCUTS.map((item) => item.value));
+
+function groupAliases(value: string): string[] {
+  if (value === "tanhua") return ["tanhua", "91-tanhua", "x-tanhua", "tandian", "yuepao"];
+  if (value === "blogger") return ["blogger", "twitter", "x", "x-xingba", "xingba"];
+  if (value === "madou") return ["madou", "91-studio", "tianmei", "jelly", "xingkong"];
+  return [value];
+}
+
+function groupLabel(value: string): string {
+  const hit = GROUP_SHORTCUTS.find((item) => item.value === value || groupAliases(item.value).includes(value));
+  if (hit) {
+    if (hit.value === value) return hit.label;
+    return `${hit.label}/${value}`;
+  }
+  return value;
 }
 
 function TaskHistory({ tasks }: { tasks: TaskRun[] }) {
@@ -816,7 +914,7 @@ function Works(props: {
       setCategory={setCategory}
     />}
     {works.length === 0
-      ? <Empty title="作品库为空" detail="按番号查询，或扫描媒体库后接受候选。" />
+      ? <Empty title="作品库为空" detail="可按番号查询 JAV，或依赖非 JAV 种子作品 / 扫描媒体库后接受候选。打开演员库可查看已写入的非 JAV 作品。" />
       : visibleWorks.length === 0
         ? <Empty title="没有匹配的作品" detail="可以清空关键词或切换展示分类。" />
         : <div className="work-sections">{categories.map((sectionCategory) => {

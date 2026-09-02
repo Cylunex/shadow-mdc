@@ -198,6 +198,17 @@ export const actorProfileSchema = z.object({
 });
 export const actorProfilesSchema = z.array(actorProfileSchema);
 
+export const nonJavActorWorkSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  code: z.string().nullable(),
+  category: z.string(),
+  studio: z.string().nullable().optional(),
+  series: z.string().nullable().optional(),
+  release_date: z.string().nullable().optional(),
+  image_url: z.string().nullable()
+});
+
 export const nonJavActorSchema = z.object({
   name: z.string(),
   aliases: z.array(z.string()),
@@ -206,7 +217,9 @@ export const nonJavActorSchema = z.object({
   match_names: z.array(z.string()),
   image_url: z.string().nullable(),
   biography: z.string().nullable(),
-  notes: z.string().nullable()
+  notes: z.string().nullable(),
+  work_count: z.number().default(0),
+  works: z.array(nonJavActorWorkSchema).default([])
 });
 export const nonJavActorsSchema = z.array(nonJavActorSchema);
 
