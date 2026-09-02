@@ -6,6 +6,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 data/
+!tests/fixtures/catalog-import-bundle/data/
+!tests/fixtures/catalog-import-bundle/data/**
 seeds/
 dist/
 build/
