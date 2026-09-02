@@ -194,9 +194,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         repo = Repository(session)
         repo.repair_jav_actor_sources()
         repo.sync_all_work_actors()
+        _works_seed = Path(__file__).resolve().parents[2] / "seeds" / "non-jav-works.json"
+        if not _works_seed.is_file():
+            _works_seed = settings.data_dir / "non-jav-works.json"
         seed_non_jav_works(
             repo,
-            seed_path=settings.data_dir / "non-jav-works.json",
+            seed_path=_works_seed,
             actor_store=non_jav_actor_store,
             actor_images_dir=settings.data_dir / "actor-images",
             artwork_dir=settings.data_dir / "artwork",

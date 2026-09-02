@@ -5,13 +5,8 @@ __pycache__/
 .pytest-tmp/
 .ruff_cache/
 .mypy_cache/
-data/*
-!data/non-jav-actors.json
-!data/non-jav-works.json
-!data/actor-images/
-!data/actor-images/*.png
-!data/actor-images/*.jpg
-!data/actor-images/*.jpeg
+data/
+seeds/
 dist/
 build/
 web/node_modules/

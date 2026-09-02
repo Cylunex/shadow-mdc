@@ -18,12 +18,15 @@ def main() -> None:
         "--seed",
         type=Path,
         default=None,
-        help="path to non-jav-works.json (default: <data_dir>/non-jav-works.json)",
+        help="path to non-jav-works.json (default: seeds/non-jav-works.json)",
     )
     arguments = parser.parse_args()
     settings = Settings()
     settings.ensure_directories()
-    seed_path = arguments.seed or (settings.data_dir / "non-jav-works.json")
+    default_seed = Path(__file__).resolve().parents[1] / "seeds" / "non-jav-works.json"
+    if not default_seed.is_file():
+        default_seed = settings.data_dir / "non-jav-works.json"
+    seed_path = arguments.seed or default_seed
     database = Database(settings.database_url)
     database.initialize()
     actor_store = NonJavActorCatalogStore(settings.data_dir / "non-jav-actors.json")
