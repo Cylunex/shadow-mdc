@@ -92,6 +92,7 @@ def test_seed_non_jav_works_upserts_and_links_actors(tmp_path: Path) -> None:
     assert second.updated == 2
     assert {work.title for work in works} == {"Angela Fixture Feature", "Mia Seed Feature"}
     assert actor_store.get("Mia Seed") is not None
+    assert actor_store.get("Mia Seed").image_file is None
 
 
 def test_non_jav_actors_api_exposes_seeded_works(

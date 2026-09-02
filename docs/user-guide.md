@@ -86,7 +86,7 @@ MEDIA_PATH=/path/to/media docker compose up -d --build
 路径和文件名的演员证据，不会把无番号内容误标为 JAV。
 
 前端“演员库 → 非 JAV 演员名单”直接管理这份词库，可维护规范名称、别名、分组、分类、简介和备注，并上传
-本地头像；头像保存在 `data/actor-images/`。 词库条目可通过 `image_file` 指向该目录中的文件（上传接口使用姓名 NFKC casefold 的 SHA-256 加扩展名）。若没有可复用的真人照片，可运行 `python scripts/seed_non_jav_placeholders.py` 生成带姓名缩写的 identicon 头像（欧美词条会尝试 Wikipedia 公开缩略图）；之后可在演员库中上传替换。待确认页面的“确认多级目录的演员”可以从当前叶子目录向上选择
+本地头像；头像保存在 `data/actor-images/`。 词库条目可通过 `image_file` 指向该目录中的文件（上传接口使用姓名 NFKC casefold 的 SHA-256 加扩展名）。可运行 `python scripts/seed_non_jav_placeholders.py` 仅拉取公开真人照片（Wikipedia / Wikidata-Commons，以及配置了 `SHADOW_MDC_THEPORNDB_TOKEN` 时的 ThePornDB performer 图）；默认路径不再生成 identicon / 纯色占位图。没有真人照片时 `image_file` 留空，界面用 CSS 显示姓名缩写；之后可在演员库中上传替换。待确认页面的“确认多级目录的演员”可以从当前叶子目录向上选择
 真正的演员层级，并把演员应用到所选目录及全部子目录，规则保存到 `data/directory-actors.json`。演员以下的
 目录层级会参与标题和标签：例如 `江南第一深情/旧版/短 黑t妹妹/IMG_0940` 会生成标题
 `江南第一深情-旧版-短黑t妹妹-IMG_0940`，并写入 `探花`、`旧版`、`短黑t妹妹` 等标签。以后该目录新增的

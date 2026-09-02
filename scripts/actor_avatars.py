@@ -1,15 +1,43 @@
-"""Identicon avatars and optional public Wikipedia portraits for non-JAV actors."""
+"""Real public portraits for non-JAV actors (Wikipedia / Wikidata / ThePornDB).
+
+Default seeding never writes solid-color or identicon placeholders. When no
+real photo is available, leave ``image_file`` null and let the UI show initials.
+"""
 
 from __future__ import annotations
 
 import hashlib
-import io
+import os
 import struct
 import unicodedata
 import zlib
 from pathlib import Path
 
 FONT_PATH = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc")
+
+_ADULT_MARKERS = (
+    "adult film",
+    "pornographic",
+    "porn star",
+    "porn actress",
+    "porn actor",
+    "adult entertainer",
+    "erotic film",
+    "xxx",
+    "onlyfans",
+    "adult entertainment",
+)
+
+# Wikidata occupations commonly used for adult performers.
+_ADULT_OCCUPATION_QIDS = frozenset(
+    {
+        "Q488111",  # pornographic actor
+        "Q829472",  # (legacy alias sometimes seen)
+        "Q2251687",  # erotic photography model (occasionally)
+    }
+)
+
+_USER_AGENT = "ShadowMDC/0.1 (https://github.com/Cylunex/shadow-mdc; non-jav-avatar-seed)"
 
 
 def normalize_name(value: str) -> str:
@@ -53,6 +81,7 @@ def detect_image_ext(content: bytes) -> str | None:
 
 
 def is_solid_placeholder(path: Path) -> bool:
+    """True for missing/tiny/near-solid images (legacy placeholders)."""
     if not path.is_file():
         return True
     if path.stat().st_size < 1200:
@@ -66,7 +95,435 @@ def is_solid_placeholder(path: Path) -> bool:
     return colors is not None and len(colors) <= 2
 
 
+def is_designed_identicon(path: Path) -> bool:
+    """Heuristic for the old PIL identicon PNGs (many colors, modest size, PNG)."""
+    if not path.is_file() or path.suffix.lower() != ".png":
+        return False
+    size = path.stat().st_size
+    if size < 1500 or size > 80_000:
+        return False
+    if is_solid_placeholder(path):
+        return True
+    try:
+        from PIL import Image
+    except ImportError:
+        return False
+    with Image.open(path) as img:
+        rgb = img.convert("RGB")
+        if rgb.size != (256, 256):
+            return False
+        colors = rgb.getcolors(maxcolors=512)
+    # Identicons use a compact palette of gradient + accent tiles.
+    return colors is not None and 3 <= len(colors) <= 400
+
+
+def notes_indicate_real_photo(notes: str | None) -> bool:
+    text = (notes or "").casefold()
+    return any(
+        marker in text
+        for marker in (
+            "wikipedia",
+            "wikimedia",
+            "wikidata",
+            "theporndb",
+            "public summary thumbnail",
+            "public portrait",
+            "performer image",
+        )
+    )
+
+
+def notes_indicate_placeholder(notes: str | None) -> bool:
+    text = (notes or "").casefold()
+    return any(
+        marker in text
+        for marker in ("identicon", "placeholder portrait", "designed identicon", "solid-color")
+    )
+
+
+def theporndb_token_from_env(env_file: Path | None = None) -> str | None:
+    token = (os.environ.get("SHADOW_MDC_THEPORNDB_TOKEN") or "").strip()
+    if token:
+        return token
+    path = env_file
+    if path is None:
+        path = Path(__file__).resolve().parents[1] / ".env"
+    if not path.is_file():
+        return None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, _, value = stripped.partition("=")
+            if key.strip() != "SHADOW_MDC_THEPORNDB_TOKEN":
+                continue
+            cleaned = value.strip().strip("'").strip('"')
+            return cleaned or None
+    except OSError:
+        return None
+    return None
+
+
+def fetch_real_portrait(
+    name: str,
+    aliases: list[str] | None = None,
+    *,
+    theporndb_token: str | None = None,
+) -> tuple[bytes, str] | None:
+    """Download a real public portrait, or return None.
+
+    Preference order: Wikipedia summary thumb → Wikidata/Commons P18 → ThePornDB.
+    """
+    alias_list = list(aliases or [])
+    photo = wikipedia_photo(name, alias_list)
+    if photo is not None:
+        return photo, "Portrait from Wikipedia/Wikimedia public summary thumbnail."
+    photo = wikidata_photo(name, alias_list)
+    if photo is not None:
+        return photo, "Portrait from Wikidata/Wikimedia Commons (P18)."
+    token = theporndb_token if theporndb_token is not None else theporndb_token_from_env()
+    if token:
+        photo = theporndb_performer_photo(name, alias_list, token)
+        if photo is not None:
+            return photo, "Portrait from ThePornDB performer image."
+    return None
+
+
+def wikipedia_photo(name: str, aliases: list[str]) -> bytes | None:
+    try:
+        import httpx
+    except ImportError:
+        return None
+    headers = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
+    titles: list[str] = []
+    for title in [name, *aliases]:
+        cleaned = " ".join(unicodedata.normalize("NFKC", title).split())
+        if cleaned and cleaned not in titles:
+            titles.append(cleaned)
+    with httpx.Client(timeout=12.0, follow_redirects=True, headers=headers) as client:
+        for title in titles:
+            if not _looks_searchable_person_name(title):
+                continue
+            content = _wikipedia_summary_image(client, title)
+            if content is not None:
+                return content
+            # Opensearch fallback for slight title mismatches.
+            try:
+                response = client.get(
+                    "https://en.wikipedia.org/w/api.php",
+                    params={
+                        "action": "opensearch",
+                        "search": title,
+                        "limit": 5,
+                        "namespace": 0,
+                        "format": "json",
+                    },
+                )
+            except httpx.HTTPError:
+                continue
+            if response.status_code != 200:
+                continue
+            try:
+                payload = response.json()
+            except ValueError:
+                continue
+            if not isinstance(payload, list) or len(payload) < 2:
+                continue
+            for hit in payload[1]:
+                if not isinstance(hit, str):
+                    continue
+                if hit in titles:
+                    continue
+                content = _wikipedia_summary_image(client, hit)
+                if content is not None:
+                    return content
+    return None
+
+
+def wikidata_photo(name: str, aliases: list[str]) -> bytes | None:
+    try:
+        import httpx
+    except ImportError:
+        return None
+    headers = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
+    queries: list[str] = []
+    for title in [name, *aliases]:
+        cleaned = " ".join(unicodedata.normalize("NFKC", title).split())
+        if cleaned and cleaned not in queries and _looks_searchable_person_name(cleaned):
+            queries.append(cleaned)
+    with httpx.Client(timeout=15.0, follow_redirects=True, headers=headers) as client:
+        for query in queries:
+            try:
+                response = client.get(
+                    "https://www.wikidata.org/w/api.php",
+                    params={
+                        "action": "wbsearchentities",
+                        "search": query,
+                        "language": "en",
+                        "format": "json",
+                        "limit": 5,
+                        "type": "item",
+                    },
+                )
+            except httpx.HTTPError:
+                continue
+            if response.status_code != 200:
+                continue
+            try:
+                hits = response.json().get("search") or []
+            except ValueError:
+                continue
+            if not isinstance(hits, list):
+                continue
+            for hit in hits:
+                if not isinstance(hit, dict):
+                    continue
+                qid = hit.get("id")
+                if not isinstance(qid, str):
+                    continue
+                description = str(hit.get("description") or "")
+                if not _adult_description(description) and not _wikidata_has_adult_occupation(
+                    client, qid
+                ):
+                    continue
+                filename = _wikidata_image_filename(client, qid)
+                if not filename:
+                    continue
+                content = _commons_thumb_bytes(client, filename)
+                if content is not None:
+                    return content
+    return None
+
+
+def theporndb_performer_photo(name: str, aliases: list[str], token: str) -> bytes | None:
+    try:
+        import httpx
+    except ImportError:
+        return None
+    headers = {
+        "User-Agent": _USER_AGENT,
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+    queries: list[str] = []
+    for title in [name, *aliases]:
+        cleaned = " ".join(unicodedata.normalize("NFKC", title).split())
+        if cleaned and cleaned not in queries and _looks_searchable_person_name(cleaned):
+            queries.append(cleaned)
+    with httpx.Client(timeout=15.0, follow_redirects=True, headers=headers) as client:
+        for query in queries:
+            try:
+                response = client.get(
+                    "https://api.theporndb.net/performers",
+                    params={"q": query, "per_page": 5},
+                )
+            except httpx.HTTPError:
+                continue
+            if response.status_code != 200:
+                continue
+            try:
+                payload = response.json()
+            except ValueError:
+                continue
+            rows = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                row_name = str(row.get("name") or "")
+                if row_name and normalize_name(row_name) not in {
+                    normalize_name(query),
+                    *(normalize_name(item) for item in queries),
+                }:
+                    # Allow close matches when query is contained in performer name.
+                    if normalize_name(query) not in normalize_name(row_name):
+                        continue
+                image_url = row.get("image") or row.get("thumbnail")
+                if isinstance(image_url, dict):
+                    image_url = image_url.get("url") or image_url.get("full") or image_url.get("medium")
+                if not isinstance(image_url, str) or not image_url.startswith("https://"):
+                    continue
+                try:
+                    image = client.get(image_url)
+                    image.raise_for_status()
+                except httpx.HTTPError:
+                    continue
+                if detect_image_ext(image.content) is None or len(image.content) < 2000:
+                    continue
+                return image.content
+    return None
+
+
+def _looks_searchable_person_name(value: str) -> bool:
+    cleaned = value.strip()
+    if len(cleaned) < 2:
+        return False
+    latin = sum(1 for ch in cleaned if ("a" <= ch.lower() <= "z"))
+    if latin >= 4:
+        return True
+    # Allow CJK personal names (2–4 chars) but skip long studio slogans.
+    non_space = [ch for ch in cleaned if not ch.isspace()]
+    if not non_space:
+        return False
+    if all(ord(ch) > 0x2E7F for ch in non_space) and 2 <= len(non_space) <= 4:
+        return True
+    return False
+
+
+def _adult_description(text: str) -> bool:
+    lowered = text.casefold()
+    return any(marker in lowered for marker in _ADULT_MARKERS)
+
+
+def _wikipedia_summary_image(client: object, title: str) -> bytes | None:
+    import httpx
+
+    assert isinstance(client, httpx.Client)
+    slug = title.replace(" ", "_")
+    try:
+        response = client.get(f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}")
+    except httpx.HTTPError:
+        return None
+    if response.status_code != 200:
+        return None
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    extract = str(payload.get("extract") or payload.get("description") or "")
+    if not _adult_description(extract):
+        return None
+    thumb = payload.get("thumbnail") or payload.get("originalimage") or {}
+    source = thumb.get("source") if isinstance(thumb, dict) else None
+    if not isinstance(source, str) or not source.startswith("https://"):
+        return None
+    if "upload.wikimedia.org" not in source and "wikipedia.org" not in source:
+        return None
+    try:
+        image = client.get(source)
+        image.raise_for_status()
+    except httpx.HTTPError:
+        return None
+    if detect_image_ext(image.content) is None or len(image.content) < 2000:
+        return None
+    return image.content
+
+
+def _wikidata_has_adult_occupation(client: object, qid: str) -> bool:
+    import httpx
+
+    assert isinstance(client, httpx.Client)
+    try:
+        response = client.get(
+            "https://www.wikidata.org/w/api.php",
+            params={
+                "action": "wbgetentities",
+                "ids": qid,
+                "props": "claims",
+                "format": "json",
+            },
+        )
+    except httpx.HTTPError:
+        return False
+    if response.status_code != 200:
+        return False
+    try:
+        entity = response.json()["entities"][qid]
+    except (ValueError, KeyError, TypeError):
+        return False
+    claims = entity.get("claims") if isinstance(entity, dict) else None
+    if not isinstance(claims, dict):
+        return False
+    for claim in claims.get("P106") or []:
+        if not isinstance(claim, dict):
+            continue
+        mainsnak = claim.get("mainsnak") or {}
+        datavalue = mainsnak.get("datavalue") if isinstance(mainsnak, dict) else None
+        value = datavalue.get("value") if isinstance(datavalue, dict) else None
+        if isinstance(value, dict) and value.get("id") in _ADULT_OCCUPATION_QIDS:
+            return True
+    return False
+
+
+def _wikidata_image_filename(client: object, qid: str) -> str | None:
+    import httpx
+
+    assert isinstance(client, httpx.Client)
+    try:
+        response = client.get(
+            "https://www.wikidata.org/w/api.php",
+            params={
+                "action": "wbgetentities",
+                "ids": qid,
+                "props": "claims",
+                "format": "json",
+            },
+        )
+    except httpx.HTTPError:
+        return None
+    if response.status_code != 200:
+        return None
+    try:
+        entity = response.json()["entities"][qid]
+        claims = entity.get("claims") or {}
+        p18 = claims.get("P18") or []
+        mainsnak = p18[0]["mainsnak"]
+        return str(mainsnak["datavalue"]["value"])
+    except (ValueError, KeyError, TypeError, IndexError):
+        return None
+
+
+def _commons_thumb_bytes(client: object, filename: str) -> bytes | None:
+    import httpx
+
+    assert isinstance(client, httpx.Client)
+    title = filename if filename.startswith("File:") else f"File:{filename}"
+    try:
+        response = client.get(
+            "https://commons.wikimedia.org/w/api.php",
+            params={
+                "action": "query",
+                "titles": title,
+                "prop": "imageinfo",
+                "iiprop": "url|mime|size",
+                "iiurlwidth": 400,
+                "format": "json",
+            },
+        )
+    except httpx.HTTPError:
+        return None
+    if response.status_code != 200:
+        return None
+    try:
+        pages = response.json()["query"]["pages"]
+        info = next(iter(pages.values()))["imageinfo"][0]
+    except (ValueError, KeyError, TypeError, StopIteration, IndexError):
+        return None
+    source = info.get("thumburl") or info.get("url")
+    if not isinstance(source, str) or not source.startswith("https://"):
+        return None
+    try:
+        image = client.get(source)
+        image.raise_for_status()
+    except httpx.HTTPError:
+        return None
+    if detect_image_ext(image.content) is None or len(image.content) < 2000:
+        return None
+    return image.content
+
+
+# ---------------------------------------------------------------------------
+# Legacy helpers kept for optional offline tooling / tests — NOT used by the
+# default seed path or work-seed actor bootstrap.
+# ---------------------------------------------------------------------------
+
+
 def avatar_png(name: str, size: int = 256) -> bytes:
+    """Deprecated: legacy identicon generator. Do not use in default seeding."""
     try:
         from PIL import Image, ImageDraw, ImageFilter, ImageFont
     except ImportError:
@@ -138,6 +595,8 @@ def avatar_png(name: str, size: int = 256) -> bytes:
     xy = ((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1] - 4)
     text_draw.text((xy[0] + 2, xy[1] + 2), initials, font=font, fill=(20, 22, 32))
     text_draw.text(xy, initials, font=font, fill=(250, 252, 255))
+    import io
+
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
@@ -175,7 +634,11 @@ def _avatar_png_raw(name: str, size: int = 256) -> bytes:
                     and origin + gy * cell + inset <= y < origin + (gy + 1) * cell - inset
                 )
                 if bit % 3 and inside:
-                    color = (digest[7], 40 + digest[8] % 80, 180 + digest[9] % 70) if bit % 2 else (240, 246, 255)
+                    color = (
+                        (digest[7], 40 + digest[8] % 80, 180 + digest[9] % 70)
+                        if bit % 2
+                        else (240, 246, 255)
+                    )
             pixels.append(color)
     raw = bytearray()
     for y in range(size):
@@ -188,48 +651,3 @@ def _avatar_png_raw(name: str, size: int = 256) -> bytes:
         + _png_chunk(b"IDAT", zlib.compress(bytes(raw), 9))
         + _png_chunk(b"IEND", b"")
     )
-
-
-_WIKI_MARKERS = ("adult film", "pornographic", "porn star", "erotic film", "xxx", "onlyfans")
-
-
-def wikipedia_photo(name: str, aliases: list[str]) -> bytes | None:
-    try:
-        import httpx
-    except ImportError:
-        return None
-    headers = {
-        "User-Agent": "ShadowMDC/0.1 (https://github.com; non-jav-avatar-seed)",
-        "Accept": "application/json",
-    }
-    with httpx.Client(timeout=12.0, follow_redirects=True, headers=headers) as client:
-        for title in [name, *aliases]:
-            slug = title.replace(" ", "_")
-            try:
-                response = client.get(f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}")
-            except httpx.HTTPError:
-                continue
-            if response.status_code != 200:
-                continue
-            try:
-                payload = response.json()
-            except ValueError:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            extract = str(payload.get("extract") or payload.get("description") or "").casefold()
-            if not any(marker in extract for marker in _WIKI_MARKERS):
-                continue
-            thumb = payload.get("thumbnail") or payload.get("originalimage") or {}
-            source = thumb.get("source") if isinstance(thumb, dict) else None
-            if not isinstance(source, str) or not source.startswith("https://upload.wikimedia.org/"):
-                continue
-            try:
-                image = client.get(source)
-                image.raise_for_status()
-            except httpx.HTTPError:
-                continue
-            if detect_image_ext(image.content) is None or len(image.content) < 2000:
-                continue
-            return image.content
-    return None

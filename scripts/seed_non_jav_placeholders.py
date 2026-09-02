@@ -1,4 +1,4 @@
-"""Attach identicon avatars, extra catalog entries, and optional Wikipedia portraits."""
+"""Attach curated non-JAV actors and real public portraits only (no placeholders)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from actor_avatars import avatar_png, image_filename, is_solid_placeholder, wikipedia_photo
+from actor_avatars import (
+    detect_image_ext,
+    fetch_real_portrait,
+    image_filename,
+    is_designed_identicon,
+    is_solid_placeholder,
+    notes_indicate_placeholder,
+    notes_indicate_real_photo,
+    theporndb_token_from_env,
+)
+from actor_avatars import _looks_searchable_person_name
+
 
 CATALOG_PATH = ROOT / "data" / "non-jav-actors.json"
 IMAGE_DIR = ROOT / "data" / "actor-images"
@@ -564,8 +575,27 @@ def _safe_match_names(name: str, aliases: list[str]) -> list[str]:
 
 
 
-def _filename(name: str) -> str:
-    return image_filename(name, ".png")
+def _clear_actor_images(image_dir: Path, name: str) -> int:
+    removed = 0
+    stem = image_filename(name, ".png").rsplit(".", 1)[0]
+    for leftover in image_dir.glob(f"{stem}.*"):
+        leftover.unlink(missing_ok=True)
+        removed += 1
+    return removed
+
+
+def _should_keep_existing(path: Path, notes: str | None) -> bool:
+    if not path.is_file():
+        return False
+    if notes_indicate_placeholder(notes):
+        return False
+    if is_solid_placeholder(path) or is_designed_identicon(path):
+        return False
+    if notes_indicate_real_photo(notes):
+        return True
+    if path.suffix.lower() in {".jpg", ".jpeg", ".webp", ".gif"}:
+        return path.stat().st_size >= 2000
+    return path.stat().st_size >= 20_000 and not is_designed_identicon(path)
 
 
 def main() -> None:
@@ -616,54 +646,101 @@ def main() -> None:
             "match_names": _safe_match_names(name, aliases),
             "image_file": None,
             "biography": extra.get("biography") or f"Curated {extra['categories'][0]} adult performer seed.",
-            "notes": "Designed identicon avatar; replace via actor library upload.",
+            "notes": "Awaiting real portrait; upload via actor library or re-run portrait seed.",
         }
         actors.append(actor)
         existing.add(_normalize(name))
         added += 1
 
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    token = theporndb_token_from_env(ROOT / ".env")
     real_photos = 0
-    designed = 0
+    kept_existing = 0
+    without_image = 0
+    deleted_placeholders = 0
+
     for actor in actors:
         name = str(actor["name"])
         extra_aliases = extra_alias_map.get(_normalize(name), [])
         aliases = list(dict.fromkeys([*actor.get("aliases", []), *extra_aliases]))  # type: ignore[arg-type]
         actor["aliases"] = aliases
         actor["match_names"] = _safe_match_names(name, aliases)
-        groups = {str(item).casefold() for item in (actor.get("groups") or [])}
-        photo = wikipedia_photo(name, aliases) if "western" in groups else None
-        if photo is not None:
-            from actor_avatars import detect_image_ext, image_filename as _keyed
+        notes = str(actor.get("notes") or "") if actor.get("notes") is not None else None
 
-            ext = detect_image_ext(photo) or ".jpg"
-            filename = _keyed(name, ext)
-            stem = _keyed(name, ".png").rsplit(".", 1)[0]
-            for leftover in IMAGE_DIR.glob(f"{stem}.*"):
-                leftover.unlink(missing_ok=True)
-            (IMAGE_DIR / filename).write_bytes(photo)
-            actor["image_file"] = filename
-            actor["notes"] = "Portrait from Wikipedia/Wikimedia public summary thumbnail."
+        current_name = actor.get("image_file")
+        current_path = IMAGE_DIR / str(current_name) if current_name else None
+        if current_path is not None and _should_keep_existing(current_path, notes):
+            actor["image_file"] = current_path.name
+            if not notes_indicate_real_photo(notes):
+                actor["notes"] = "Existing local portrait kept (non-placeholder)."
+            kept_existing += 1
             real_photos += 1
         else:
-            filename = _filename(name)
-            path = IMAGE_DIR / filename
-            if is_solid_placeholder(path):
-                path.write_bytes(avatar_png(name))
-            actor["image_file"] = filename
-            notes = str(actor.get("notes") or "")
-            if not notes or "Placeholder portrait" in notes:
-                actor["notes"] = "Designed identicon avatar; replace via actor library upload."
-            designed += 1
+            groups = {str(item).casefold() for item in (actor.get("groups") or [])}
+            skip_groups = {
+                "studio",
+                "tanhua",
+                "91-tanhua",
+                "yuepao",
+                "x-tanhua",
+                "tandian",
+                "xingba",
+                "x-xingba",
+            }
+            # Public EN Wikipedia / Wikidata coverage is mainly Western stage names.
+            # Romanized Chinese/Korean aliases rarely have usable Commons portraits.
+            def _latin_primary(value: str) -> bool:
+                letters = sum(ch.isalpha() and ch.isascii() for ch in value)
+                visible = sum(not ch.isspace() for ch in value)
+                return letters >= 4 and letters >= max(1, visible // 2)
+
+            searchable = (
+                not (groups & skip_groups)
+                and ("western" in groups or _latin_primary(name))
+                and any(_looks_searchable_person_name(value) for value in [name, *aliases])
+            )
+            fetched = (
+                fetch_real_portrait(name, aliases, theporndb_token=token) if searchable else None
+            )
+            if fetched is not None:
+                content, source_note = fetched
+                ext = detect_image_ext(content) or ".jpg"
+                filename = image_filename(name, ext)
+                deleted_placeholders += _clear_actor_images(IMAGE_DIR, name)
+                (IMAGE_DIR / filename).write_bytes(content)
+                actor["image_file"] = filename
+                actor["notes"] = source_note
+                real_photos += 1
+            else:
+                deleted_placeholders += _clear_actor_images(IMAGE_DIR, name)
+                actor["image_file"] = None
+                if notes_indicate_placeholder(notes) or not notes:
+                    actor["notes"] = "No public portrait found; UI shows initials until upload."
+                without_image += 1
+
         if not actor.get("biography"):
             cats = ", ".join(actor.get("categories") or [])  # type: ignore[arg-type]
             actor["biography"] = f"Seeded non-JAV performer ({cats})."
 
+    referenced = {str(actor.get("image_file")) for actor in actors if actor.get("image_file")}
+    for path_item in IMAGE_DIR.iterdir():
+        if not path_item.is_file():
+            continue
+        if path_item.name in referenced:
+            continue
+        if is_solid_placeholder(path_item) or is_designed_identicon(path_item):
+            path_item.unlink(missing_ok=True)
+            deleted_placeholders += 1
+
     actors.sort(key=lambda item: str(item["name"]).casefold())
     catalog["actors"] = actors
-    catalog["source"] = "avtor.txt+seed-avatars"
+    catalog["source"] = "avtor.txt+real-portraits"
     CATALOG_PATH.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"actors={len(actors)} added={added} real_photos={real_photos} designed_avatars={designed}")
+    print(
+        f"actors={len(actors)} added={added} real_photos={real_photos} "
+        f"kept_existing={kept_existing} without_image={without_image} "
+        f"deleted_placeholders={deleted_placeholders} theporndb={'yes' if token else 'no'}"
+    )
 
 
 if __name__ == "__main__":

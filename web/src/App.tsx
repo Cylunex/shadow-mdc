@@ -227,6 +227,20 @@ export function App() {
   );
 }
 
+function actorInitials(name: string): string {
+  const cleaned = name.normalize("NFKC").trim().replace(/\s+/g, " ");
+  if (!cleaned) return "?";
+  const letters = [...cleaned].filter((ch) => !/\s|[·・._\-@]/.test(ch));
+  if (!letters.length) return "?";
+  const cjk = letters.filter((ch) => ch.charCodeAt(0) > 0x2e7f);
+  if (cjk.length) return cjk.slice(0, 2).join("");
+  const parts = cleaned.replace(/[_-]/g, " ").split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  const alnum = letters.filter((ch) => /[0-9A-Za-z]/.test(ch)).join("");
+  if (alnum.length >= 2) return alnum.slice(0, 2).toUpperCase();
+  return letters[0].toUpperCase();
+}
+
 function DisplayFilterBar(props: {
   query: string;
   category: DisplayCategory;
@@ -354,7 +368,8 @@ function JavActors({ actors }: { actors: ActorProfile[] }) {
     <article className="actor-card" key={actor.name}>
       <div className="actor-profile">
         <div
-          className="actor-avatar"
+          className={`actor-avatar${actor.image_url ? "" : " actor-avatar--empty"}`}
+          data-initial={actor.image_url ? undefined : actorInitials(actor.name)}
           style={actor.image_url ? { backgroundImage: `url("${appUrl(actor.image_url)}")` } : undefined}
           role="img"
           aria-label={`${actor.name} 代表图片`}
@@ -531,7 +546,7 @@ function NonJavActorsManager(props: {
       ? <Empty title="没有匹配的非 JAV 演员" detail="可以清空关键词、分类或分组筛选，或新增一位演员。" />
       : <><div className="actor-grid non-jav-grid">{rendered.map((actor) => <article className="actor-card" key={actor.name}>
           <div className="actor-profile">
-            <div className="actor-avatar" style={actor.image_url ? { backgroundImage: `url("${appUrl(actor.image_url)}")` } : undefined} role="img" aria-label={`${actor.name} 头像`} />
+            <div className={`actor-avatar${actor.image_url ? "" : " actor-avatar--empty"}`} data-initial={actor.image_url ? undefined : actorInitials(actor.name)} style={actor.image_url ? { backgroundImage: `url("${appUrl(actor.image_url)}")` } : undefined} role="img" aria-label={`${actor.name} 头像`} />
             <div className="actor-card-title">
               <div>
                 <span className="pill">{actor.categories.join(" / ")}</span>

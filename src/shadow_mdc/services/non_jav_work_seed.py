@@ -262,26 +262,29 @@ def _attach_poster(
 
 
 def _ensure_actor_avatar(name: str, actor_images_dir: Path) -> str | None:
+    """Reuse an existing real portrait file; never generate placeholder avatars."""
     actor_images_dir.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(_normalize(name).encode("utf-8")).hexdigest()
-    filename = f"{digest}.png"
-    path = actor_images_dir / filename
-    if path.is_file():
-        return filename
-    path.write_bytes(_avatar_bytes(name))
-    return filename
-
-
-def _avatar_bytes(name: str) -> bytes:
     scripts = Path(__file__).resolve().parents[3] / "scripts"
     if scripts.is_dir() and str(scripts) not in sys.path:
         sys.path.insert(0, str(scripts))
     try:
-        from actor_avatars import avatar_png
+        from actor_avatars import is_designed_identicon, is_solid_placeholder
+    except Exception:  # pragma: no cover - optional helper
+        is_designed_identicon = None  # type: ignore[assignment]
+        is_solid_placeholder = None  # type: ignore[assignment]
 
-        return avatar_png(name)
-    except Exception:
-        return _generate_poster_bytes(name, name)
+    for path in sorted(actor_images_dir.glob(f"{digest}.*")):
+        if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+            continue
+        if not path.is_file():
+            continue
+        if is_solid_placeholder is not None and is_solid_placeholder(path):
+            continue
+        if is_designed_identicon is not None and is_designed_identicon(path):
+            continue
+        return path.name
+    return None
 
 
 def _generate_poster_bytes(title: str, actor: str) -> bytes:
