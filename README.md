@@ -21,7 +21,7 @@
 - 五种输出：原目录或独立作品库写 `movie.nfo` 和可用图片，并支持复制、移动、硬链接和软链接。
 - 安全整理：批量计划带摘要令牌，目标或配置变化后旧计划自动失效。
 - 可替换来源：普通 JAV 并发查询 R18.dev、FANZA、JavLibrary、MGStage、JavDB、JavBus、Jav321、
-  AirAV、AVSOX 和 FreeJavBT 元数据；FC2 额外路由 FC2Club、FC2Hub 与 FreeJavBT，并保留
+  AirAV、AVSOX 和 FreeJavBT 元数据；FC2 额外路由 FC2Club、FC2Hub、FC2 Contents Market、Paipancon 与 FreeJavBT，并保留
   ThePornDB/Stash-box 和通用 JSON-LD URL。
 - 元数据边界：不提供影片下载、磁力或在线播放。
 

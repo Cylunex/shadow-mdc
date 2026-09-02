@@ -158,7 +158,7 @@ Docker 镜像已经包含 `ffmpeg`；直接在 Windows/macOS/Linux 本地运行�
 标题等标量，其余来源补齐剧情、日期、片商等空字段，并合并演员、标签和图片；标量字段来源保存在数据库中。
 
 普通 JAV 会并发查询 R18.dev、FANZA、JavLibrary、MGStage、JavDB、JavBus、Jav321、AirAV、AVSOX
-和 FreeJavBT 元数据；FC2 会额外查询 FC2Club 与 FC2Hub。站点受到地区限制、Cloudflare、登录或临时网络故障时，
+和 FreeJavBT 元数据；FC2 会额外查询 FC2Club、FC2Hub、官方 FC2 Contents Market 与 Paipancon。站点受到地区限制、Cloudflare、登录或临时网络故障时，
 来源诊断会单独标记失败，其他来源仍继续工作。所有来源只查询番号、文本或用户指定 URL，不使用截图或图片反搜。
 
 作品首次正式识别后会缓存公开图片；也可点击“缓存图片”，整理预览会补齐尚未下载的图片。图片按作品独立存入

@@ -10,10 +10,12 @@ from shadow_mdc.providers import (
     AvSoxProvider,
     FanzaProvider,
     Fc2ClubProvider,
+    Fc2ContentsProvider,
     Fc2HubProvider,
     FreeJavBtProvider,
     JavLibraryProvider,
     MgstageProvider,
+    PaipanconProvider,
     Provider,
     R18DevProvider,
 )
@@ -53,10 +55,14 @@ def _provider(name: str, client: httpx.AsyncClient) -> Provider:
             return MgstageProvider(client, base_url)
         case "fc2club":
             return Fc2ClubProvider(client, base_url)
+        case "fc2contents":
+            return Fc2ContentsProvider(client, base_url)
         case "fc2hub":
             return Fc2HubProvider(client, base_url)
         case "freejavbt":
             return FreeJavBtProvider(client, base_url)
+        case "paipancon":
+            return PaipanconProvider(client, base_url)
         case _:
             raise AssertionError(f"unknown provider fixture: {name}")
 
@@ -115,7 +121,9 @@ async def test_additional_provider_parses_offline_fixture(
         "javlibrary",
         "mgstage",
         "fc2club",
+        "fc2contents",
         "fc2hub",
+        "paipancon",
         "airav",
         "avsox",
         "freejavbt",
@@ -126,16 +134,18 @@ async def test_additional_provider_returns_empty_for_legal_miss(provider_name: s
     async def handler(request: httpx.Request) -> httpx.Response:
         if provider_name == "r18dev":
             return httpx.Response(200, text="{}", request=request)
-        if provider_name == "fc2club":
+        if provider_name in {"fc2club", "paipancon"}:
             return httpx.Response(404, text="not found", request=request)
+        if provider_name == "fc2contents":
+            return httpx.Response(200, text="<html><body>not found</body></html>", request=request)
         return httpx.Response(200, text="<html><body>not found</body></html>", request=request)
 
-    code = "FC2-9999999" if provider_name.startswith("fc2") else "ZZZZ-999"
+    code = "FC2-9999999" if provider_name.startswith("fc2") or provider_name == "paipancon" else "ZZZZ-999"
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         assert await _provider(provider_name, client).search(_hints(code)) == []
 
 
-@pytest.mark.parametrize("provider_name", ["fc2club", "fc2hub"])
+@pytest.mark.parametrize("provider_name", ["fc2club", "fc2contents", "fc2hub", "paipancon"])
 @pytest.mark.asyncio
 async def test_fc2_providers_reject_non_fc2_input_without_request(provider_name: str) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -153,7 +163,9 @@ async def test_fc2_providers_reject_non_fc2_input_without_request(provider_name:
         "javlibrary",
         "mgstage",
         "fc2club",
+        "fc2contents",
         "fc2hub",
+        "paipancon",
         "airav",
         "avsox",
         "freejavbt",
@@ -178,7 +190,9 @@ async def test_additional_provider_rejects_malformed_code_without_request(
         "javlibrary",
         "mgstage",
         "fc2club",
+        "fc2contents",
         "fc2hub",
+        "paipancon",
         "airav",
         "avsox",
         "freejavbt",
@@ -206,14 +220,51 @@ async def test_additional_provider_reports_structure_drift(provider_name: str) -
             "javlibrary": '<div id="video_info"></div>',
             "mgstage": '<div class="detail_left"></div>',
             "fc2club": '<img class="responsive" src="/cover.jpg">',
+            "fc2contents": '<div class="items_article_headerInfo"></div>',
             "fc2hub": "<html><body></body></html>",
+            "paipancon": "<html><body><h2></h2><title>FC2-PPV-3131319</title></body></html>",
             "airav": "<html><body></body></html>",
             "avsox": "<html><body></body></html>",
             "freejavbt": '<div class="single-video-info"></div>',
         }
         return httpx.Response(200, text=drift_markers[provider_name], request=request)
 
-    code = "FC2-3131319" if provider_name.startswith("fc2") else "IPX-219"
+    code = "FC2-3131319" if provider_name.startswith("fc2") or provider_name == "paipancon" else "IPX-219"
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(ProviderError, match="title missing"):
             await _provider(provider_name, client).search(_hints(code))
+
+
+@pytest.mark.asyncio
+async def test_fc2contents_provider_parses_offline_fixture() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=_fixture("fc2contents_detail.html"), request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        records = await _provider("fc2contents", client).search(_hints("FC2-3131319"))
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.code == "FC2-3131319"
+    assert record.title == "限定配信スペシャル"
+    assert record.studio == "販売者A"
+    assert record.release_date is not None
+    assert record.runtime_seconds == 996
+    assert "個人撮影" in record.tags
+    assert record.artwork
+    assert record.plot
+
+
+@pytest.mark.asyncio
+async def test_paipancon_provider_parses_offline_fixture() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=_fixture("paipancon_detail.html"), request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        records = await _provider("paipancon", client).search(_hints("FC2-3131319"))
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.code == "FC2-3131319"
+    assert record.title == "限定配信スペシャル"
+    assert any("cover.jpg" in str(item.url) for item in record.artwork)

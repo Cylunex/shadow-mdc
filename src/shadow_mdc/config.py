@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     mgstage_base_url: str = "https://www.mgstage.com"
     fc2club_base_url: str = "https://fc2club.top"
     fc2hub_base_url: str = "https://javten.com"
+    fc2contents_base_url: str = "https://adult.contents.fc2.com"
+    paipancon_base_url: str = "https://paipancon.com"
     airav_base_url: str = "https://cn.airav.wiki"
     avsox_base_url: str = "https://avsox.click"
     freejavbt_base_url: str = "https://freejavbt.com"

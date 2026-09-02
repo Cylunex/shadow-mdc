@@ -32,7 +32,7 @@ Shadow MDC 只吸收行为、边界和使用流程，所有代码、模型、接
 | 持久运行历史 | 已实现 | 扫描、番号查询、图片和整理记录范围、状态、统计与完成时间 |
 | 后台任务、阶段进度与取消 | 计划 | 可取消的网络阶段与不可中断文件阶段分开，运行历史模型继续扩展为 Worker |
 | 目录监控与定时任务 | 计划 | 本地事件模式 + NAS 轮询模式，先登记/自动刮削分级，不自动整理 |
-| 更多来源与内容路由 | 已扩展 | 普通 JAV 接入 R18.dev、FANZA、JavLibrary、MGStage、JavDB、JavBus、Jav321、AirAV、AVSOX、FreeJavBT；FC2 额外使用 FC2Club/FC2Hub。每源均有离线 fixture、合法未命中、非法输入和解析漂移测试 |
+| 更多来源与内容路由 | 已扩展 | 普通 JAV 接入 R18.dev、FANZA、JavLibrary、MGStage、JavDB、JavBus、Jav321、AirAV、AVSOX、FreeJavBT；FC2 额外使用 FC2Club/FC2Hub/FC2 Contents Market/Paipancon。每源均有离线 fixture、合法未命中、非法输入和解析漂移测试 |
 | 本地演员作品库 | 已实现 | 汇总演员、别名、分类和关联作品，已知演员反向辅助下一轮路径识别 |
 | 演员资料与头像 | 已实现 | 非 JAV 名单可编辑名称、别名、分组、简介、备注并上传本地头像；媒体服务器同步待后续扩展 |
 | 标题翻译 | 已实现 | 日/英/韩到简中、自动与批量补翻译、独立缓存；原文和来源快照不被覆盖 |

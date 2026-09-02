@@ -3,6 +3,7 @@ from .avsox import AvSoxProvider
 from .base import Provider, ProviderError, ProviderFailure, ProviderRegistry, SearchBatch
 from .fanza import FanzaProvider
 from .fc2club import Fc2ClubProvider
+from .fc2contents import Fc2ContentsProvider
 from .fc2hub import Fc2HubProvider
 from .freejavbt import FreeJavBtProvider
 from .jav321 import Jav321Provider
@@ -11,6 +12,7 @@ from .javdb import JavDBProvider
 from .javlibrary import JavLibraryProvider
 from .jsonld import JsonLdProvider
 from .mgstage import MgstageProvider
+from .paipancon import PaipanconProvider
 from .r18dev import R18DevProvider
 from .theporndb import ThePornDBProvider
 
@@ -19,6 +21,7 @@ __all__ = [
     "AvSoxProvider",
     "FanzaProvider",
     "Fc2ClubProvider",
+    "Fc2ContentsProvider",
     "Fc2HubProvider",
     "FreeJavBtProvider",
     "Jav321Provider",
@@ -27,6 +30,7 @@ __all__ = [
     "JavLibraryProvider",
     "JsonLdProvider",
     "MgstageProvider",
+    "PaipanconProvider",
     "Provider",
     "ProviderError",
     "ProviderFailure",

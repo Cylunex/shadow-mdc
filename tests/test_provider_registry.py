@@ -161,3 +161,50 @@ async def test_http_provider_reports_connect_timeout_without_empty_detail() -> N
 
     assert captured.value.reason == "connect_timeout"
     assert "ConnectTimeout" in captured.value.detail
+
+
+@pytest.mark.asyncio
+async def test_fc2_code_routes_to_fc2_specialist_providers() -> None:
+    called: list[str] = []
+
+    @dataclass(frozen=True)
+    class TrackingProvider:
+        provider_id: str
+        modes: frozenset[QueryMode] = frozenset({QueryMode.CODE})
+        families: frozenset[ContentFamily] = frozenset({ContentFamily.JAV})
+        skip_fc2: bool = False
+
+        @property
+        def descriptor(self) -> ProviderDescriptor:
+            return ProviderDescriptor(
+                id=self.provider_id,
+                name=self.provider_id,
+                query_modes=self.modes,
+                families=self.families,
+            )
+
+        async def search(self, hints: IdentityHints) -> list[ProviderRecord]:
+            called.append(self.provider_id)
+            if self.skip_fc2 and (hints.code or "").startswith("FC2-"):
+                return []
+            return []
+
+    registry = ProviderRegistry(
+        [
+            TrackingProvider("r18dev", skip_fc2=True),
+            TrackingProvider("fc2club"),
+            TrackingProvider("fc2hub"),
+            TrackingProvider("fc2contents"),
+            TrackingProvider("paipancon"),
+            TrackingProvider("javdb"),
+        ]
+    )
+    await registry.search(
+        IdentityHints(
+            term="FC2-3131319",
+            mode=QueryMode.CODE,
+            family=ContentFamily.JAV,
+            code="FC2-3131319",
+        )
+    )
+    assert set(called) == {"fc2club", "fc2hub", "fc2contents", "paipancon", "javdb", "r18dev"}

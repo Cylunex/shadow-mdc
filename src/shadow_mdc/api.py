@@ -90,6 +90,7 @@ from .providers import (
     AvSoxProvider,
     FanzaProvider,
     Fc2ClubProvider,
+    Fc2ContentsProvider,
     Fc2HubProvider,
     FreeJavBtProvider,
     Jav321Provider,
@@ -98,6 +99,7 @@ from .providers import (
     JavLibraryProvider,
     JsonLdProvider,
     MgstageProvider,
+    PaipanconProvider,
     ProviderRegistry,
     R18DevProvider,
     ThePornDBProvider,
@@ -206,7 +208,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     client = _http_client(settings, max_connections=settings.translation_concurrency + 4)
     provider_clients = tuple(
-        _http_client(settings, max_connections=settings.identify_concurrency + 2) for _ in range(14)
+        _http_client(settings, max_connections=settings.identify_concurrency + 2) for _ in range(16)
     )
     source_clients = iter(provider_clients)
     providers = ProviderRegistry(
@@ -217,6 +219,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             MgstageProvider(next(source_clients), settings.mgstage_base_url, settings.request_retries),
             Fc2ClubProvider(next(source_clients), settings.fc2club_base_url, settings.request_retries),
             Fc2HubProvider(next(source_clients), settings.fc2hub_base_url, settings.request_retries),
+            Fc2ContentsProvider(
+                next(source_clients),
+                settings.fc2contents_base_url,
+                settings.request_retries,
+            ),
+            PaipanconProvider(
+                next(source_clients),
+                settings.paipancon_base_url,
+                settings.request_retries,
+            ),
             AirAvProvider(next(source_clients), settings.airav_base_url, settings.request_retries),
             AvSoxProvider(next(source_clients), settings.avsox_base_url, settings.request_retries),
             FreeJavBtProvider(next(source_clients), settings.freejavbt_base_url, settings.request_retries),
