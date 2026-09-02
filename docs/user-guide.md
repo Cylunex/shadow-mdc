@@ -94,6 +94,37 @@ MEDIA_PATH=/path/to/media docker compose up -d --build
 替换其下旧的叶子规则，避免后续扫描重新套用错误演员。已在演员名单中登记、且目录组件与规范名称或
 安全别名完全一致时，上述数字分段也可在首次扫描时自动处理。
 
+## 导入其它服务器的词库 / 策展作品
+
+其它已整理好的服务器可导出便携词库后，在本机**合并导入**，不会清空媒体库、扫描资产、候选或任务记录，也不会整库覆盖 `data/` 或 `shadow-mdc.db`。
+
+支持两种包布局：
+
+1. 本地数据包装：含 `non-jav-actors.json`、`non-jav-works.json`、`actor-images/`、`artwork/`（可在根目录或 `data/` 下）。
+2. `python scripts/export_nas_catalog.py` 的输出：`manifest.json` + `data/`（含便携 catalog，无 runtime 表）。
+
+命令行（推荐）：
+
+```bash
+# 预览
+python scripts/import_catalog_bundle.py --bundle /path/to/catalog-bundle --dry-run
+
+# 合并导入到当前 data/
+python scripts/import_catalog_bundle.py --bundle /path/to/bundle.zip --data-dir data
+
+# 仅演员或仅作品
+python scripts/import_catalog_bundle.py --bundle ./export-dir --actors-only
+python scripts/import_catalog_bundle.py --bundle ./export-dir --works-only
+```
+
+合并规则摘要：
+
+- `non-jav-actors.json`：按姓名合并；保留本机字段，并并入更丰富的别名/分组/分类；本机无头像时复制 `actor-images/` 并写入 `image_file`。
+- 策展作品：按 `non-jav-works.json` 幂等写入 SQLite（复用 `seed_non_jav_works`），不删除已有作品；缺失海报从包内 `artwork/` 补齐。
+- 可选：若包内含 `actor-catalog.json` / `identity-aliases.json` / `filter-words.txt` / 便携 `shadow-mdc.db`，仅做增量合并或正式作品 upsert，不触碰 `libraries` / `media_assets` / `match_candidates` / `task_runs`。
+
+Web：媒体库页「导入词库」可填服务器本地路径，或上传 `.zip` / `.tar.gz`；亦可调用 `POST /api/catalog/import` 与 `POST /api/catalog/import/upload`。
+
 ## 垃圾文件过滤
 
 “媒体库”页面的“垃圾文件过滤词”按每行一个普通关键词维护。扫描器只对支持的视频和 `.strm`

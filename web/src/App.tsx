@@ -476,14 +476,14 @@ function NonJavActorsManager(props: {
   }
 
   if (props.actors.length === 0) {
-    return <Empty title="非 JAV 演员名单为空" detail="可新增演员，或导入 non-jav-actors.json 后刷新。" />;
+    return <Empty title="非 JAV 演员名单为空" detail="可新增演员，或到媒体库页使用「导入词库」合并其它服务器的 catalog bundle。" />;
   }
 
   return <>
     <div className="non-jav-heading">
       <div>
         <h2>非 JAV 演员与作品</h2>
-        <p>名单来自本地策展；热门演员的作品已写入作品库，可在卡片中直接查看。名称/别名会参与目录识别。</p>
+        <p>名单来自本地策展；热门演员的作品已写入作品库，可在卡片中直接查看。名称/别名会参与目录识别。也可在「媒体库」页使用「导入词库」从其它服务器合并。</p>
       </div>
       <button onClick={() => setDraft({ ...emptyActorDraft })}>新增演员</button>
     </div>
@@ -1109,6 +1109,7 @@ function Libraries(props: {
           <LibraryOrganizer library={library} busy={props.busy} run={props.run} report={props.report} />
         </article>
       ))}</div>}
+      <CatalogImportEditor report={props.report} busy={props.busy} run={props.run} />
       <ProviderDiagnostics />
       <FilterWordsEditor />
       <AliasEditor />
@@ -1200,6 +1201,87 @@ function LibraryOrganizer(props: {
       {plan.truncated && <small>这里只显示前 50 个文件的部分操作，执行仍覆盖完整计划。</small>}
     </div>}
   </section>;
+}
+
+
+function CatalogImportEditor(props: {
+  busy: string | null;
+  run: (key: string, action: () => Promise<void>) => Promise<void>;
+  report: (message: string) => void;
+}) {
+  const [path, setPath] = useState("");
+  const [dryRun, setDryRun] = useState(false);
+  const [actorsOnly, setActorsOnly] = useState(false);
+  const [worksOnly, setWorksOnly] = useState(false);
+  const [status, setStatus] = useState("从其它服务器合并词库与策展作品；不会覆盖媒体库、扫描状态或整库数据库。");
+
+  function summarize(result: Awaited<ReturnType<typeof api.importCatalogFromPath>>) {
+    return (
+      `${result.dry_run ? "预览" : "已合并"} ${result.bundle_kind}：` +
+      `演员 +${result.actors_added}/更新 ${result.actors_updated}，` +
+      `头像 ${result.actor_images_copied}，` +
+      `作品 +${result.works_created}/更新 ${result.works_updated}，` +
+      `海报文件 ${result.artwork_copied}，` +
+      `正式作品 ${result.formal_works_imported}` +
+      (result.notes.length ? `；${result.notes.join("；")}` : "")
+    );
+  }
+
+  return (
+    <section className="alias-editor">
+      <div>
+        <h2>导入词库</h2>
+        <p>{status}</p>
+      </div>
+      <label><span>服务器本地路径（目录 / .zip / .tar.gz）</span>
+        <input value={path} onChange={(event) => setPath(event.target.value)} placeholder="/data/import/catalog-bundle" />
+      </label>
+      <div className="group-chip-bar" aria-label="导入选项">
+        <label><input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.target.checked)} />仅预览</label>
+        <label><input type="checkbox" checked={actorsOnly} onChange={(event) => { setActorsOnly(event.target.checked); if (event.target.checked) setWorksOnly(false); }} />仅演员</label>
+        <label><input type="checkbox" checked={worksOnly} onChange={(event) => { setWorksOnly(event.target.checked); if (event.target.checked) setActorsOnly(false); }} />仅作品</label>
+      </div>
+      <div className="organizer-actions">
+        <button
+          disabled={props.busy !== null || !path.trim()}
+          onClick={() => void props.run("catalog-import-path", async () => {
+            const result = await api.importCatalogFromPath({
+              path: path.trim(),
+              dry_run: dryRun,
+              actors_only: actorsOnly,
+              works_only: worksOnly
+            });
+            const message = summarize(result);
+            setStatus(message);
+            props.report(message);
+          })}
+        >从路径合并导入</button>
+        <label className="ghost" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          上传压缩包
+          <input
+            type="file"
+            accept=".zip,.tar.gz,.tgz,application/zip,application/gzip"
+            disabled={props.busy !== null}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (!file) return;
+              void props.run("catalog-import-upload", async () => {
+                const result = await api.importCatalogUpload(file, {
+                  dry_run: dryRun,
+                  actors_only: actorsOnly,
+                  works_only: worksOnly
+                });
+                const message = summarize(result);
+                setStatus(message);
+                props.report(message);
+              });
+            }}
+          />
+        </label>
+      </div>
+    </section>
+  );
 }
 
 function ProviderDiagnostics() {

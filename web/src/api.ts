@@ -11,6 +11,7 @@ import {
   candidateSchema,
   candidatesSchema,
   directoryActorAssignSchema,
+  catalogImportResultSchema,
   filterWordsSchema,
   identifySchema,
   identityAliasesSchema,
@@ -185,5 +186,33 @@ export const api = {
     request(filterWordsSchema, "/api/settings/filter-words", {
       method: "PUT",
       body: JSON.stringify(payload)
-    })
+    }),
+  importCatalogFromPath: (payload: {
+    path: string;
+    dry_run?: boolean;
+    actors_only?: boolean;
+    works_only?: boolean;
+    include_formal?: boolean;
+  }) =>
+    request(catalogImportResultSchema, "/api/catalog/import", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  importCatalogUpload: async (
+    file: File,
+    options: { dry_run?: boolean; actors_only?: boolean; works_only?: boolean; include_formal?: boolean } = {}
+  ) => {
+    const params = new URLSearchParams();
+    if (options.dry_run) params.set("dry_run", "true");
+    if (options.actors_only) params.set("actors_only", "true");
+    if (options.works_only) params.set("works_only", "true");
+    if (options.include_formal === false) params.set("include_formal", "false");
+    const query = params.toString();
+    const path = `/api/catalog/import/upload${query ? `?${query}` : ""}`;
+    const body = new FormData();
+    body.append("file", file);
+    const response = await fetch(appUrl(path) ?? path, { method: "POST", body });
+    if (!response.ok) throw new Error(await response.text());
+    return catalogImportResultSchema.parse(await response.json());
+  }
 };

@@ -348,3 +348,31 @@ class FilterWordsPayload(BaseModel):
 
 class PlanOut(OperationPlan):
     pass
+
+
+class CatalogImportPathRequest(BaseModel):
+    path: str = Field(min_length=1)
+    dry_run: bool = False
+    actors_only: bool = False
+    works_only: bool = False
+    include_formal: bool = True
+
+
+class CatalogImportResultOut(BaseModel):
+    dry_run: bool
+    bundle_kind: str
+    actors_added: int = 0
+    actors_updated: int = 0
+    actors_unchanged: int = 0
+    actor_images_copied: int = 0
+    works_created: int = 0
+    works_updated: int = 0
+    works_posters: int = 0
+    works_actors_added: int = 0
+    artwork_copied: int = 0
+    formal_works_imported: int = 0
+    jav_actors_merged: int = 0
+    aliases_keys_added: int = 0
+    filter_words_added: int = 0
+    notes: tuple[str, ...] = ()
+

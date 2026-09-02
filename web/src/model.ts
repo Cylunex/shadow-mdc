@@ -362,6 +362,25 @@ export const filterWordsSchema = z.object({
   words: z.array(z.string())
 });
 
+export const catalogImportResultSchema = z.object({
+  dry_run: z.boolean(),
+  bundle_kind: z.string(),
+  actors_added: z.number(),
+  actors_updated: z.number(),
+  actors_unchanged: z.number(),
+  actor_images_copied: z.number(),
+  works_created: z.number(),
+  works_updated: z.number(),
+  works_posters: z.number(),
+  works_actors_added: z.number(),
+  artwork_copied: z.number(),
+  formal_works_imported: z.number(),
+  jav_actors_merged: z.number(),
+  aliases_keys_added: z.number(),
+  filter_words_added: z.number(),
+  notes: z.array(z.string())
+});
+
 export const identifySchema = z.object({
   asset_id: z.string(),
   candidate_ids: z.array(z.string()),
@@ -381,5 +400,6 @@ export type ActorProfile = z.infer<typeof actorProfileSchema>;
 export type NonJavActor = z.infer<typeof nonJavActorSchema>;
 export type IdentityAliases = z.infer<typeof identityAliasesSchema>;
 export type FilterWords = z.infer<typeof filterWordsSchema>;
+export type CatalogImportResult = z.infer<typeof catalogImportResultSchema>;
 export type BatchPlan = z.infer<typeof batchPlanSchema>;
 export type TaskRun = z.infer<typeof taskRunSchema>;

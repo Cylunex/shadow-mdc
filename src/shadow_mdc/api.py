@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import mimetypes
+import tempfile
 import unicodedata
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -9,7 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +30,8 @@ from .api_models import (
     BulkTranslateOut,
     BulkTranslateRequest,
     CandidateOut,
+    CatalogImportPathRequest,
+    CatalogImportResultOut,
     DirectoryActorAssignOut,
     DirectoryActorAssignRequest,
     FilterWordsPayload,
@@ -111,6 +114,7 @@ from .services.actor_catalog import (
     sync_actor_catalog_from_relations,
 )
 from .services.alias_store import IdentityAliasStore
+from .services.catalog_import import CatalogImportRequest, import_catalog_bundle
 from .services.directory_actor_rules import (
     DirectoryActorRule,
     DirectoryActorRuleStore,
@@ -388,6 +392,93 @@ def update_filter_words(payload: FilterWordsPayload, request: Request) -> Filter
         raise HTTPException(status_code=409, detail=f"cannot save filter words: {exc}") from exc
     return FilterWordsPayload(words=saved.words)
 
+
+
+
+@app.post("/api/catalog/import", response_model=CatalogImportResultOut)
+def import_catalog_from_path(
+    payload: CatalogImportPathRequest,
+    request: Request,
+    repo: Repo,
+) -> CatalogImportResultOut:
+    """Merge-import a catalog bundle from a server-local path (never wipes libraries/runtime)."""
+
+    runtime_state = runtime(request)
+    bundle = Path(payload.path).expanduser()
+    if not bundle.exists():
+        raise HTTPException(status_code=404, detail=f"bundle path not found: {bundle}")
+    try:
+        result = import_catalog_bundle(
+            bundle=bundle,
+            data_dir=runtime_state.settings.data_dir,
+            repo=repo,
+            actor_store=runtime_state.non_jav_actor_store,
+            actor_images_dir=runtime_state.settings.data_dir / "actor-images",
+            artwork_dir=runtime_state.settings.data_dir / "artwork",
+            request=CatalogImportRequest(
+                dry_run=payload.dry_run,
+                actors_only=payload.actors_only,
+                works_only=payload.works_only,
+                include_formal=payload.include_formal,
+            ),
+            actor_catalog_store=runtime_state.actor_store,
+            alias_store=runtime_state.alias_store,
+            filter_words_store=runtime_state.filter_words_store,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=409, detail=f"cannot import catalog: {exc}") from exc
+    return CatalogImportResultOut.model_validate(result.model_dump())
+
+
+@app.post("/api/catalog/import/upload", response_model=CatalogImportResultOut)
+async def import_catalog_upload(
+    request: Request,
+    repo: Repo,
+    file: Annotated[UploadFile, File()],
+    dry_run: bool = False,
+    actors_only: bool = False,
+    works_only: bool = False,
+    include_formal: bool = True,
+) -> CatalogImportResultOut:
+    """Upload a .zip/.tar.gz catalog bundle and merge-import it."""
+
+    runtime_state = runtime(request)
+    filename = Path(file.filename or "bundle.zip").name
+    path_name = Path(filename)
+    if len(path_name.suffixes) >= 2:
+        suffix = "".join(path_name.suffixes[-2:]).lower()
+    else:
+        suffix = path_name.suffix.lower()
+    if suffix not in {".tar.gz", ".tgz"} and path_name.suffix.lower() != ".zip":
+        raise HTTPException(status_code=400, detail="upload must be a .zip or .tar.gz catalog bundle")
+    with tempfile.TemporaryDirectory(prefix="shadow-mdc-upload-") as temporary:
+        target = Path(temporary) / filename
+        target.write_bytes(await file.read())
+        try:
+            result = import_catalog_bundle(
+                bundle=target,
+                data_dir=runtime_state.settings.data_dir,
+                repo=repo,
+                actor_store=runtime_state.non_jav_actor_store,
+                actor_images_dir=runtime_state.settings.data_dir / "actor-images",
+                artwork_dir=runtime_state.settings.data_dir / "artwork",
+                request=CatalogImportRequest(
+                    dry_run=dry_run,
+                    actors_only=actors_only,
+                    works_only=works_only,
+                    include_formal=include_formal,
+                ),
+                actor_catalog_store=runtime_state.actor_store,
+                alias_store=runtime_state.alias_store,
+                filter_words_store=runtime_state.filter_words_store,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=409, detail=f"cannot import catalog: {exc}") from exc
+    return CatalogImportResultOut.model_validate(result.model_dump())
 
 @app.get("/api/health", response_model=HealthOut)
 def health() -> HealthOut:
