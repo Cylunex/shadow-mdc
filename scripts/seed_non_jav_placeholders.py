@@ -17,6 +17,7 @@ from actor_avatars import (
     is_solid_placeholder,
     notes_indicate_placeholder,
     notes_indicate_real_photo,
+    theporndb_performer_photo,
     theporndb_token_from_env,
 )
 from actor_avatars import _looks_searchable_person_name
@@ -658,9 +659,34 @@ def main() -> None:
     kept_existing = 0
     without_image = 0
     deleted_placeholders = 0
+    source_counts: dict[str, int] = {
+        "theporndb": 0,
+        "wikipedia": 0,
+        "wikidata": 0,
+        "commons": 0,
+        "existing": 0,
+        "other": 0,
+    }
 
-    for actor in actors:
+    def _count_source(note: str | None) -> None:
+        text_n = (note or "").casefold()
+        if "theporndb" in text_n:
+            source_counts["theporndb"] += 1
+        elif "wikipedia" in text_n or "wikimedia public summary" in text_n:
+            source_counts["wikipedia"] += 1
+        elif "wikidata" in text_n:
+            source_counts["wikidata"] += 1
+        elif "commons file search" in text_n:
+            source_counts["commons"] += 1
+        elif "existing local" in text_n:
+            source_counts["existing"] += 1
+        else:
+            source_counts["other"] += 1
+
+    for index, actor in enumerate(actors, start=1):
         name = str(actor["name"])
+        if index == 1 or index % 25 == 0 or index == len(actors):
+            print(f"progress {index}/{len(actors)} real_photos={real_photos}", flush=True)
         extra_aliases = extra_alias_map.get(_normalize(name), [])
         aliases = list(dict.fromkeys([*actor.get("aliases", []), *extra_aliases]))  # type: ignore[arg-type]
         actor["aliases"] = aliases
@@ -675,6 +701,7 @@ def main() -> None:
                 actor["notes"] = "Existing local portrait kept (non-placeholder)."
             kept_existing += 1
             real_photos += 1
+            _count_source(str(actor.get("notes") or ""))
         else:
             groups = {str(item).casefold() for item in (actor.get("groups") or [])}
             skip_groups = {
@@ -687,21 +714,31 @@ def main() -> None:
                 "xingba",
                 "x-xingba",
             }
-            # Public EN Wikipedia / Wikidata coverage is mainly Western stage names.
-            # Romanized Chinese/Korean aliases rarely have usable Commons portraits.
+            # Prefer Latin stage names / aliases (TPDB + EN wiki coverage).
+            # CJK primary names are still searchable when romanized aliases exist.
             def _latin_primary(value: str) -> bool:
                 letters = sum(ch.isalpha() and ch.isascii() for ch in value)
                 visible = sum(not ch.isspace() for ch in value)
                 return letters >= 4 and letters >= max(1, visible // 2)
 
+            name_values = [name, *aliases]
+            has_latin = any(_latin_primary(value) for value in name_values)
             searchable = (
                 not (groups & skip_groups)
-                and ("western" in groups or _latin_primary(name))
-                and any(_looks_searchable_person_name(value) for value in [name, *aliases])
+                and ("western" in groups or "onlyfans" in groups or has_latin)
+                and any(_looks_searchable_person_name(value) for value in name_values)
             )
-            fetched = (
-                fetch_real_portrait(name, aliases, theporndb_token=token) if searchable else None
-            )
+            fetched = None
+            if searchable:
+                # Full public-source pipeline for Western / OnlyFans stage names.
+                # For CJK-primary catalog rows with romanized aliases, TPDB alone is
+                # the realistic hit rate; skip slow wiki/commons misses.
+                if "western" in groups or "onlyfans" in groups or _latin_primary(name):
+                    fetched = fetch_real_portrait(name, aliases, theporndb_token=token)
+                elif token:
+                    photo = theporndb_performer_photo(name, aliases, token)
+                    if photo is not None:
+                        fetched = (photo, "Portrait from ThePornDB performer image.")
             if fetched is not None:
                 content, source_note = fetched
                 ext = detect_image_ext(content) or ".jpg"
@@ -711,6 +748,7 @@ def main() -> None:
                 actor["image_file"] = filename
                 actor["notes"] = source_note
                 real_photos += 1
+                _count_source(source_note)
             else:
                 deleted_placeholders += _clear_actor_images(IMAGE_DIR, name)
                 actor["image_file"] = None
@@ -739,7 +777,8 @@ def main() -> None:
     print(
         f"actors={len(actors)} added={added} real_photos={real_photos} "
         f"kept_existing={kept_existing} without_image={without_image} "
-        f"deleted_placeholders={deleted_placeholders} theporndb={'yes' if token else 'no'}"
+        f"deleted_placeholders={deleted_placeholders} theporndb={'yes' if token else 'no'} "
+        f"sources={source_counts}"
     )
 
 
