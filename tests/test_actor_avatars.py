@@ -32,3 +32,10 @@ def test_is_solid_placeholder_for_tiny_file(tmp_path: Path) -> None:
     path.write_bytes(b"x" * 10)
     assert is_solid_placeholder(path)
     assert notes_indicate_placeholder("Designed identicon avatar; replace via actor library upload.")
+
+
+def test_collapse_name_pinyin_spacing() -> None:
+    from actor_avatars import collapse_name
+
+    assert collapse_name("Xia Qing Zi") == collapse_name("Xia Qingzi")
+    assert collapse_name("Su Chang") == "suchang"

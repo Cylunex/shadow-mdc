@@ -7,6 +7,7 @@ real photo is available, leave ``image_file`` null and let the UI show initials.
 from __future__ import annotations
 
 import hashlib
+import re
 import os
 import struct
 import unicodedata
@@ -42,6 +43,11 @@ _USER_AGENT = "ShadowMDC/0.1 (https://github.com/Cylunex/shadow-mdc; non-jav-ava
 
 def normalize_name(value: str) -> str:
     return unicodedata.normalize("NFKC", value).casefold().strip()
+
+
+def collapse_name(value: str) -> str:
+    """Casefold + strip spaces/punctuation for pinyin spacing variants (Xia Qing Zi)."""
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", normalize_name(value))
 
 
 def image_filename(name: str, extension: str = ".png") -> str:
@@ -131,6 +137,10 @@ def notes_indicate_real_photo(notes: str | None) -> bool:
             "performer image",
             "commons file search",
             "iafd",
+            "work cover",
+            "work cover/screenshot",
+            "model media",
+            "scene performer",
         )
     )
 
@@ -362,6 +372,11 @@ def theporndb_performer_photo(name: str, aliases: list[str], token: str) -> byte
                 stripped = cleaned.split("(", 1)[0].strip()
                 if stripped and stripped not in queries and _looks_searchable_person_name(stripped):
                     queries.append(stripped)
+            # CamelCase / glued pinyin → spaced tokens (HongKongDoll, XiaQingZi).
+            camel = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", cleaned)
+            camel = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", camel)
+            if camel != cleaned and camel not in queries and _looks_searchable_person_name(camel):
+                queries.append(camel)
     wanted = {normalize_name(item) for item in queries}
     with httpx.Client(timeout=20.0, follow_redirects=True, headers=headers) as client:
         for query in queries:
@@ -386,10 +401,17 @@ def theporndb_performer_photo(name: str, aliases: list[str], token: str) -> byte
                     continue
                 row_names = _tpdb_row_names(row)
                 query_norm = normalize_name(query)
-                if not (row_names & wanted):
+                row_collapsed = {collapse_name(name) for name in row_names}
+                wanted_collapsed = {collapse_name(name) for name in wanted}
+                if not (row_names & wanted) and not (row_collapsed & wanted_collapsed):
                     # Allow close matches when query is contained in performer name.
                     if not any(query_norm in row_name or row_name in query_norm for row_name in row_names):
-                        continue
+                        if not any(
+                            collapse_name(query) in item or item in collapse_name(query)
+                            for item in row_collapsed
+                            if len(item) >= 4
+                        ):
+                            continue
                 for image_url in _tpdb_image_urls(row):
                     try:
                         image = client.get(image_url)
