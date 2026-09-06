@@ -103,16 +103,23 @@ def import_catalog_bundle(
         artwork_copied = formal_imported = jav_merged = aliases_added = filters_added = 0
 
         if not options.works_only:
+            source_actors_path = _find_file(resolved.data_dir, *_ACTOR_IMAGE_NAMES)
             actor_stats = _merge_non_jav_actors(
                 actor_store=actor_store,
-                source_catalog_path=_find_file(resolved.data_dir, *_ACTOR_IMAGE_NAMES),
+                source_catalog_path=source_actors_path,
                 source_images_dir=resolved.data_dir / "actor-images",
                 target_images_dir=actor_images_dir,
                 dry_run=options.dry_run,
             )
             actors_added, actors_updated, actors_unchanged, images_copied = actor_stats
-            if actor_stats[0] + actor_stats[1] + actor_stats[2] == 0 and actor_stats[3] == 0:
+            if source_actors_path is None:
                 notes.append("no non-jav-actors.json found in bundle")
+            # Split chat packs ship actor-images without JSON; merge the tree like artwork.
+            images_copied += _copy_missing_tree(
+                resolved.data_dir / "actor-images",
+                actor_images_dir,
+                dry_run=options.dry_run,
+            )
 
             if options.include_formal:
                 jav_merged = _merge_jav_actor_catalog(
@@ -174,6 +181,27 @@ def import_catalog_bundle(
                     )
                 else:
                     notes.append("no portable shadow-mdc.db in bundle")
+
+        catalog_touched = (
+            actors_added
+            + actors_updated
+            + works_created
+            + works_updated
+            + formal_imported
+            + jav_merged
+            + aliases_added
+            + filters_added
+        )
+        if catalog_touched == 0 and (images_copied or artwork_copied):
+            notes.append(
+                "media-only pack: extracted images/artwork only; "
+                "merge all split .tar.gz parts into one folder (or one archive) before import for a full catalog"
+            )
+        elif catalog_touched == 0 and images_copied == 0 and artwork_copied == 0:
+            notes.append(
+                "nothing imported; need data/non-jav-actors.json / non-jav-works.json "
+                "(or extract+merge split catalog parts first)"
+            )
 
         return CatalogImportResult(
             dry_run=options.dry_run,

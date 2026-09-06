@@ -123,7 +123,33 @@ python scripts/import_catalog_bundle.py --bundle ./export-dir --works-only
 - 策展作品：按 `non-jav-works.json` 幂等写入 SQLite（复用 `seed_non_jav_works`），不删除已有作品；缺失海报从包内 `artwork/` 补齐。
 - 可选：若包内含 `actor-catalog.json` / `identity-aliases.json` / `filter-words.txt` / 便携 `shadow-mdc.db`，仅做增量合并或正式作品 upsert，不触碰 `libraries` / `media_assets` / `match_candidates` / `task_runs`。
 
-Web：媒体库页「导入词库」可填服务器本地路径，或上传 `.zip` / `.tar.gz`；亦可调用 `POST /api/catalog/import` 与 `POST /api/catalog/import/upload`。
+Web：媒体库页「导入词库」可填服务器本地路径，或上传**单个** `.zip` / `.tar.gz`；亦可调用 `POST /api/catalog/import` 与 `POST /api/catalog/import/upload`。上传接口一次只能选一个文件，无分片合并；浏览器上传大包（数百 MB）可能受反向代理限制，优先用服务器本地路径或 CLI。
+
+### 聊天分卷包（`shadow-mdc-chat-*.tar.gz` / `shadow-mdc-part-*.tar.gz`）
+
+这类导出是**按内容切开的多个 tar.gz**（meta / actor-images / artwork / db），每个分卷本身不是完整词库：
+
+- `*-00-meta-*.tar.gz`：含 `non-jav-actors.json`、`non-jav-works.json`、`shadow-mdc.db`（可导入演员与作品，但无头像/海报文件）
+- `*-0N-images-*.tar.gz`：仅 `data/actor-images/`（需与 meta 合并后才有完整头像；单独上传只会补齐已存在的头像文件名）
+- `*-art-*.tar.gz` / artwork 分卷：仅 `data/artwork/`
+- `*-part-db-*.tar.gz`：仅便携 `shadow-mdc.db`
+
+**正确做法：先把全部分卷解压到同一目录（路径会合并到 `data/`），再导入该目录或重新打包成一个 archive。**
+
+Windows（PowerShell，需系统自带 `tar`）示例：
+
+```powershell
+$src = "$env:USERPROFILE\Downloads\shadow-mdc-catalog-20260905"
+$dst = "$env:USERPROFILE\Downloads\shadow-mdc-catalog-merged"
+New-Item -ItemType Directory -Force -Path $dst | Out-Null
+Get-ChildItem $src -Filter *.tar.gz | ForEach-Object {
+  tar -xzf $_.FullName -C $dst
+}
+# 推荐：把 $dst 拷到服务器后用「服务器本地路径」导入；或：
+# tar -czf "$env:USERPROFILE\Downloads\shadow-mdc-catalog-complete.tar.gz" -C $dst .
+```
+
+若已有完整单包（如 `shadow-mdc-catalog-YYYYMMDD-*.tar.gz` 含 `manifest.json` + `data/`），可直接导入，无需合并分卷。
 
 ## 垃圾文件过滤
 

@@ -185,3 +185,46 @@ def test_import_local_package_layout_without_manifest(tmp_path: Path) -> None:
     assert result.bundle_kind == "local-package"
     assert result.actors_added == 1
     assert actor_store.get("Flat Actor") is not None
+
+def test_import_actor_images_only_pack_copies_tree_after_catalog(tmp_path: Path) -> None:
+    """Split chat image tarballs have data/actor-images without JSON; still merge files."""
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "actor-images").mkdir()
+    (data_dir / "artwork").mkdir()
+    actor_store = NonJavActorCatalogStore(data_dir / "non-jav-actors.json")
+    actor_store.upsert(
+        build_non_jav_actor_profile(
+            name="Existing Star",
+            aliases=(),
+            groups=("western",),
+            categories=(MediaCategory.EUROPE,),
+            image_file="incoming-avatar.png",
+        )
+    )
+    assert not (data_dir / "actor-images" / "incoming-avatar.png").exists()
+
+    images_only = tmp_path / "images-only"
+    (images_only / "data" / "actor-images").mkdir(parents=True)
+    avatar = FIXTURE_BUNDLE / "data" / "actor-images" / "incoming-avatar.png"
+    (images_only / "data" / "actor-images" / "incoming-avatar.png").write_bytes(avatar.read_bytes())
+
+    database = Database(f"sqlite:///{data_dir / 'shadow-mdc.db'}")
+    database.initialize()
+    with database.session() as session:
+        result = import_catalog_bundle(
+            bundle=images_only,
+            data_dir=data_dir,
+            repo=Repository(session),
+            actor_store=actor_store,
+            actor_images_dir=data_dir / "actor-images",
+            artwork_dir=data_dir / "artwork",
+            request=CatalogImportRequest(include_formal=False),
+        )
+
+    assert result.actors_added == 0
+    assert result.actor_images_copied == 1
+    assert (data_dir / "actor-images" / "incoming-avatar.png").is_file()
+    assert any("media-only pack" in note for note in result.notes)
+

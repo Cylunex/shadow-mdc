@@ -1228,7 +1228,7 @@ function CatalogImportEditor(props: {
   const [dryRun, setDryRun] = useState(false);
   const [actorsOnly, setActorsOnly] = useState(false);
   const [worksOnly, setWorksOnly] = useState(false);
-  const [status, setStatus] = useState("从其它服务器合并词库与策展作品；不会覆盖媒体库、扫描状态或整库数据库。");
+  const [status, setStatus] = useState("从其它服务器合并词库与策展作品；不会覆盖媒体库、扫描状态或整库数据库。聊天分卷包需先全部解压合并到同一文件夹（或打成一个 .tar.gz/.zip）再导入；单上传一个 images/artwork 分卷只会补媒体。");
 
   function summarize(result: Awaited<ReturnType<typeof api.importCatalogFromPath>>) {
     return (
@@ -1248,7 +1248,7 @@ function CatalogImportEditor(props: {
         <h2>导入词库</h2>
         <p>{status}</p>
       </div>
-      <label><span>服务器本地路径（目录 / .zip / .tar.gz）</span>
+      <label><span>服务器本地路径（已合并的目录 / .zip / .tar.gz；勿只传单个分卷）</span>
         <input value={path} onChange={(event) => setPath(event.target.value)} placeholder="/data/import/catalog-bundle" />
       </label>
       <div className="group-chip-bar" aria-label="导入选项">
