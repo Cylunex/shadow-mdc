@@ -208,6 +208,37 @@ class ProviderRegistry:
                     records.append(record)
         return SearchBatch(records=tuple(records), failures=tuple(failures))
 
+    def health_snapshot(self) -> list[dict[str, object]]:
+        now = time.monotonic()
+        rows: list[dict[str, object]] = []
+        for provider in sorted(self._providers.values(), key=lambda item: item.descriptor.id):
+            health = self._health.get(provider.descriptor.id)
+            retry_in = None
+            cooling = False
+            failures = 0
+            if health is not None:
+                failures = health.failures
+                if health.retry_after > now:
+                    cooling = True
+                    retry_in = max(1, round(health.retry_after - now))
+            rows.append(
+                {
+                    "provider": provider.descriptor.id,
+                    "configured": provider.descriptor.configured,
+                    "failures": failures,
+                    "cooldown": cooling,
+                    "retry_in_seconds": retry_in,
+                }
+            )
+        return rows
+
+    def clear_cooldown(self, provider_id: str | None = None) -> int:
+        if provider_id is None:
+            count = len(self._health)
+            self._health.clear()
+            return count
+        return 1 if self._health.pop(provider_id, None) is not None else 0
+
     def _record_failure(self, error: ProviderError) -> None:
         if error.reason not in {"blocked", "connect_timeout", "network", "timeout"}:
             return

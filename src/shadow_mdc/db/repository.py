@@ -124,6 +124,13 @@ class Database:
                 connection.exec_driver_sql(
                     "ALTER TABLE media_assets ADD COLUMN media_info JSON NOT NULL DEFAULT '{}'"
                 )
+            actor_columns = {
+                str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(actors)")
+            }
+            if "x_handle" not in actor_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE actors ADD COLUMN x_handle VARCHAR(100)"
+                )
             connection.exec_driver_sql(
                 """
                 UPDATE libraries
@@ -241,6 +248,37 @@ class Repository:
 
     def get_task_run(self, task_id: str) -> TaskRun | None:
         return self._session.get(TaskRun, task_id)
+
+    def update_task_progress(self, task: TaskRun, summary: dict[str, object]) -> None:
+        """Persist live progress without finishing the task."""
+
+        merged = dict(task.summary or {})
+        merged.update(summary)
+        task.summary = merged
+        if task.status == "cancel_requested":
+            return
+        if task.status not in {"cancelled", "succeeded", "failed", "partial"}:
+            task.status = "running"
+        self._session.flush()
+
+    def request_task_cancel(self, task: TaskRun) -> TaskRun:
+        if task.finished_at is not None or task.status in {"succeeded", "failed", "partial", "cancelled"}:
+            raise ValueError("task is already finished")
+        task.status = "cancel_requested"
+        summary = dict(task.summary or {})
+        summary["cancel_requested"] = True
+        task.summary = summary
+        self._session.flush()
+        return task
+
+    def is_task_cancel_requested(self, task_id: str) -> bool:
+        task = self.get_task_run(task_id)
+        if task is None:
+            return False
+        if task.status == "cancel_requested":
+            return True
+        summary = task.summary or {}
+        return bool(summary.get("cancel_requested"))
 
     def upsert_asset(
         self,
@@ -841,6 +879,37 @@ class Repository:
         work.field_sources = sources
         self._session.flush()
 
+    def apply_plot_translation(
+        self,
+        work: Work,
+        *,
+        translated: str,
+        provider: str,
+    ) -> None:
+        if _field_locked(work, "plot"):
+            return
+        sources = dict(work.field_sources or {})
+        work.plot = translated
+        sources["plot"] = f"translation:{provider}"
+        work.field_sources = sources
+        self._session.flush()
+
+    def get_actor(self, actor_id: str) -> Actor | None:
+        return self._session.get(Actor, actor_id)
+
+    def update_actor_x_handle(self, actor: Actor, x_handle: str | None) -> Actor:
+        from ..services.non_jav_actor_catalog import normalize_x_handle
+
+        actor.x_handle = normalize_x_handle(x_handle)
+        self._session.flush()
+        return actor
+
+    def work_has_external_identity(self, work_id: str, *, remote_only: bool = True) -> bool:
+        statement = select(ExternalIdentity.id).where(ExternalIdentity.work_id == work_id)
+        if remote_only:
+            statement = statement.where(ExternalIdentity.provider.notin_(("global", "local-path", "nfo-import")))
+        return self._session.scalar(statement.limit(1)) is not None
+
     def _work_has_verified_evidence(self, work_id: str) -> bool:
         remote_snapshot = self._session.scalar(
             select(SourceSnapshot.id)
@@ -1248,6 +1317,44 @@ class Repository:
             self._session.add(WorkCollection(work_id=work.id, collection_id=collection.id))
             self._session.flush()
 
+    
+    def merge_actors(self, *, keep_actor_id: str, drop_actor_id: str) -> Actor:
+        """Merge drop_actor into keep_actor and reassign WorkActor links."""
+
+        if keep_actor_id == drop_actor_id:
+            raise ValueError("keep and drop actor ids must differ")
+        keep = self._session.get(Actor, keep_actor_id)
+        drop = self._session.get(Actor, drop_actor_id)
+        if keep is None or drop is None:
+            raise LookupError("actor not found")
+        keep_links = {
+            row.work_id: row
+            for row in self._session.scalars(
+                select(WorkActor).where(WorkActor.actor_id == keep.id)
+            )
+        }
+        for row in list(
+            self._session.scalars(select(WorkActor).where(WorkActor.actor_id == drop.id))
+        ):
+            if row.work_id in keep_links:
+                self._session.delete(row)
+                continue
+            row.actor_id = keep.id
+        aliases = list(keep.aliases or [])
+        seen = {item.casefold() for item in aliases}
+        for alias in [drop.name, *(drop.aliases or [])]:
+            key = alias.casefold()
+            if alias and key not in seen and key != keep.name.casefold():
+                aliases.append(alias)
+                seen.add(key)
+        if not keep.image_url and drop.image_url:
+            keep.image_url = drop.image_url
+        if not keep.x_handle and drop.x_handle:
+            keep.x_handle = drop.x_handle
+        self._session.delete(drop)
+        self._session.flush()
+        return keep
+
     def sync_work_collections(self, work: Work) -> list[Collection]:
         """Ensure Work.studio / series / label string fields map to Collection links."""
 
@@ -1258,7 +1365,8 @@ class Repository:
             self.link_work_collection(work, collection)
             linked.append(collection)
         if work.series:
-            collection = self.upsert_collection(name=work.series, kind=CollectionKind.SERIES)
+            kind = detect_collection_kind(work.series, preferred=CollectionKind.SERIES)
+            collection = self.upsert_collection(name=work.series, kind=kind)
             self.link_work_collection(work, collection)
             linked.append(collection)
         if work.label:

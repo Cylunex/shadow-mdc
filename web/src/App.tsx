@@ -1,6 +1,10 @@
 import { FormEvent, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import { api, appUrl } from "./api";
+import { XHandleLink } from "./components/XHandleLink";
+import { TaskCenter } from "./components/TaskCenter";
+import { IdentifyByUrlPanel } from "./components/IdentifyByUrlPanel";
+import { FieldPrioritySettings } from "./components/FieldPrioritySettings";
 import type { NonJavActorEditPayload, OrganizePayload } from "./api";
 import { identityAliasesSchema } from "./model";
 import type { ActorProfile, Asset, BatchPlan, Candidate, IdentityAliases, Library, NonJavActor, TaskRun, Work, WorkDetail } from "./model";
@@ -194,7 +198,7 @@ export function App() {
               );
             })}
             lookupWork={(code) => run("lookup-work", async () => {
-              const result = await api.lookupWork(code);
+              const result = await api.lookupWork({ code });
               const failed = result.failures.map((item) => `${item.provider}/${item.reason}`).join("、");
               setMessage(
                 result.work
@@ -249,7 +253,7 @@ export function App() {
         {view === "libraries" && (
           <Libraries libraries={libraries} busy={busy} run={run} report={setMessage} />
         )}
-        {view === "tasks" && <TaskHistory tasks={tasks} />}
+        {view === "tasks" && <TaskCenter tasks={tasks} busy={busy} onChanged={refresh} report={setMessage} />}
       </main>
     </div>
   );
@@ -408,6 +412,7 @@ function JavActors({ actors }: { actors: ActorProfile[] }) {
         </div>
       </div>
       {actor.aliases.length > 0 && <p>别名：{actor.aliases.join("、")}</p>}
+      <XHandleLink handle={actor.x_handle} url={(actor as { x_url?: string | null }).x_url} />
       <div className="actor-works">{actor.works.slice(0, 8).map((work) => (
         <div className="actor-work" key={work.id}>
           <div
@@ -428,6 +433,7 @@ type ActorDraft = {
   aliases: string;
   groups: string;
   categories: Array<Exclude<DisplayCategory, "all">>;
+  x_handle: string;
   biography: string;
   notes: string;
 };
@@ -438,6 +444,7 @@ const emptyActorDraft: ActorDraft = {
   aliases: "",
   groups: "independent",
   categories: ["Other"],
+  x_handle: "",
   biography: "",
   notes: ""
 };
@@ -499,6 +506,7 @@ function NonJavActorsManager(props: {
       aliases: actor.aliases.join(", "),
       groups: actor.groups.join(", "),
       categories: actor.categories,
+      x_handle: actor.x_handle ?? "",
       biography: actor.biography ?? "",
       notes: actor.notes ?? ""
     });
@@ -512,6 +520,7 @@ function NonJavActorsManager(props: {
       aliases: splitList(draft.aliases),
       groups: splitList(draft.groups),
       categories: draft.categories.length ? draft.categories : ["Other"],
+      x_handle: draft.x_handle.trim() || null,
       biography: draft.biography.trim() || null,
       notes: draft.notes.trim() || null
     });
@@ -562,6 +571,7 @@ function NonJavActorsManager(props: {
       <label><span>规范名称</span><input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
       <label><span>别名（逗号或换行分隔）</span><input value={draft.aliases} onChange={(event) => setDraft({ ...draft, aliases: event.target.value })} /></label>
       <label><span>分组</span><input value={draft.groups} onChange={(event) => setDraft({ ...draft, groups: event.target.value })} placeholder="madou, tanhua, onlyfans, western…" /></label>
+      <label><span>X / Twitter</span><input value={draft.x_handle} onChange={(event) => setDraft({ ...draft, x_handle: event.target.value })} placeholder="@handle 或 https://x.com/handle" /></label>
       <fieldset><legend>分类</legend>{displayCategoryOptions.filter((item) => item.value !== "all").map((item) => {
         const value = item.value as Exclude<DisplayCategory, "all">;
         return <label key={value}><input type="checkbox" checked={draft.categories.includes(value)} onChange={(event) => setDraft({ ...draft, categories: event.target.checked ? [...draft.categories, value] : draft.categories.filter((current) => current !== value) })} />{item.label}</label>;
@@ -585,6 +595,7 @@ function NonJavActorsManager(props: {
             </div>
           </div>
           {actor.aliases.length > 0 && <p>别名：{actor.aliases.join("、")}</p>}
+          {actor.x_url && <p>X：<a href={actor.x_url} target="_blank" rel="noreferrer">@{actor.x_handle}</a></p>}
           {actor.biography && <p className="actor-biography">{actor.biography}</p>}
           {actor.notes && <p className="actor-notes">备注：{actor.notes}</p>}
           {actor.works.length > 0
@@ -637,7 +648,7 @@ function groupLabel(value: string): string {
   return value;
 }
 
-function TaskHistory({ tasks }: { tasks: TaskRun[] }) {
+function TaskHistory({ tasks, onCancel }: { tasks: TaskRun[]; onCancel?: (id: string) => Promise<void> }) {
   if (tasks.length === 0) {
     return <Empty title="还没有运行记录" detail="扫描、番号查询、图片缓存和批量整理完成后会记录在这里。" />;
   }
@@ -650,6 +661,11 @@ function TaskHistory({ tasks }: { tasks: TaskRun[] }) {
       </div>
       <code>{JSON.stringify(task.summary)}</code>
       <time>{new Date(task.created_at).toLocaleString()}</time>
+      {onCancel && (task.status === "running" || task.status === "cancel_requested") && (
+        <button className="ghost" type="button" disabled={task.status === "cancel_requested"} onClick={() => void onCancel(task.id)}>
+          {task.status === "cancel_requested" ? "取消中…" : "取消任务"}
+        </button>
+      )}
     </article>
   ))}</div>;
 }
@@ -1016,14 +1032,28 @@ function Works(props: {
   const [code, setCode] = useState("");
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<DisplayCategory>("all");
+  const [collectionFilter, setCollectionFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<WorkDetail | null>(null);
   const categories = ["Japan", "China", "Korea", "Europe", "Other"] as const;
   const deferredQuery = useDeferredValue(query);
   const normalizedQuery = deferredQuery.trim().toLocaleLowerCase();
+  const collectionOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const work of works) {
+      for (const item of work.collections ?? []) {
+        const key = `${item.kind}:${item.name}`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 80);
+  }, [works]);
   const visibleWorks = useMemo(() => works.filter((work) => {
     const categoryMatches = category === "all" || work.category === category;
+    const collectionMatches = collectionFilter === "all" || (work.collections ?? []).some((item) => `${item.kind}:${item.name}` === collectionFilter);
     const text = [
       work.title,
       work.original_title ?? "",
@@ -1033,9 +1063,9 @@ function Works(props: {
       ...work.actors,
       ...work.tags
     ].join(" ").toLocaleLowerCase();
-    return categoryMatches && (!normalizedQuery || text.includes(normalizedQuery));
-  }), [works, category, normalizedQuery]);
-  useEffect(() => setPage(1), [category, deferredQuery]);
+    return categoryMatches && collectionMatches && (!normalizedQuery || text.includes(normalizedQuery));
+  }), [works, category, collectionFilter, normalizedQuery]);
+  useEffect(() => setPage(1), [category, collectionFilter, deferredQuery]);
   useEffect(() => {
     if (!selectedId) {
       setDetail(null);
@@ -1071,7 +1101,17 @@ function Works(props: {
         onClick={() => void props.seedCollections()}
       >重建合集索引</button>
     </form>
-    {works.length > 0 && <DisplayFilterBar
+    {works.length > 0 && <>
+    <div className="display-filter" aria-label="合集筛选">
+      <select value={collectionFilter} onChange={(event) => setCollectionFilter(event.target.value)} aria-label="按合集筛选">
+        <option value="all">全部合集</option>
+        {collectionOptions.map(([value, count]) => (
+          <option key={value} value={value}>{value} · {count}</option>
+        ))}
+      </select>
+      {collectionFilter !== "all" && <button type="button" className="ghost" onClick={() => setCollectionFilter("all")}>清除合集</button>}
+    </div>
+    <DisplayFilterBar
       query={query}
       category={category}
       visible={visibleWorks.length}
@@ -1079,7 +1119,7 @@ function Works(props: {
       placeholder="搜索标题、番号、演员、片商或标签"
       setQuery={setQuery}
       setCategory={setCategory}
-    />}
+    /></>}
     <div className={detail ? "works-layout with-detail" : "works-layout"}>
       <div>
         {works.length === 0
@@ -1421,7 +1461,7 @@ function Libraries(props: {
             <button
               disabled={props.busy === `scan-${library.id}`}
               onClick={() => void props.run(`scan-${library.id}`, async () => {
-                const result = await api.scan(library.id);
+                const result = await api.scan(library.id, { only_new: false });
                 const errorSummary = result.errors.length > 0
                   ? `；${result.errors.length} 个路径失败：${result.errors.slice(0, 2).join("；")}`
                   : "";
@@ -1451,8 +1491,8 @@ function Libraries(props: {
               className="ghost"
               disabled={props.busy === `identify-continue-${library.id}`}
               title="从剩余未处理身份继续，默认每批 50"
-              onClick={() => void props.run(`identify-continue-${library.id}`, async () => {
-                const result = await api.identifyLibrary(library.id, 50);
+              onClick={() => void props.run(`identify-continue-${library.id}`, async (, { continue_failed: false, skip_identified: true, skip_remote_when_identified: true }) => {
+                const result = await api.identifyLibrary(library.id, 50, { continue_failed: false, skip_identified: true, skip_remote_when_identified: true });
                 props.report(
                   `继续识别：处理 ${result.attempted_assets}，剩余 ${result.remaining_identities} 组；` +
                   `在线 ${result.online_identified} / 本地 ${result.local_optimized} / 待确认 ${result.unresolved}`
@@ -1479,6 +1519,8 @@ function Libraries(props: {
           <LibraryOrganizer library={library} busy={props.busy} run={props.run} report={props.report} />
         </article>
       ))}</div>}
+      <IdentifyByUrlPanel busy={props.busy} run={props.run} report={props.report} />
+      <FieldPrioritySettings busy={props.busy} run={props.run} report={props.report} />
       <CatalogImportEditor report={props.report} busy={props.busy} run={props.run} />
       <ProviderDiagnostics />
       <FilterWordsEditor />

@@ -125,6 +125,8 @@ class ActorSummaryOut(BaseModel):
     id: str
     name: str
     image_url: str | None = None
+    x_handle: str | None = None
+    x_url: str | None = None
 
 
 class NonJavActorEdit(BaseModel):
@@ -132,6 +134,7 @@ class NonJavActorEdit(BaseModel):
     aliases: tuple[str, ...] = Field(default_factory=tuple, max_length=100)
     groups: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
     categories: tuple[MediaCategory, ...] = (MediaCategory.OTHER,)
+    x_handle: str | None = Field(default=None, max_length=100)
     biography: str | None = Field(default=None, max_length=5000)
     notes: str | None = Field(default=None, max_length=5000)
 
@@ -154,6 +157,8 @@ class NonJavActorOut(BaseModel):
     categories: tuple[MediaCategory, ...]
     match_names: tuple[str, ...]
     image_url: str | None = None
+    x_handle: str | None = None
+    x_url: str | None = None
     biography: str | None = None
     notes: str | None = None
     work_count: int = 0
@@ -232,8 +237,15 @@ class IdentifyOut(BaseModel):
     failures: tuple[ProviderFailure, ...]
 
 
+class ScanRequest(BaseModel):
+    only_new: bool = False
+
+
 class BulkIdentifyRequest(BaseModel):
     limit: int = Field(default=20, ge=1, le=500)
+    continue_failed: bool = False
+    skip_identified: bool = True
+    skip_remote_when_identified: bool = True
 
 
 class BulkIdentifyOut(BaseModel):
@@ -252,7 +264,9 @@ class BulkIdentifyOut(BaseModel):
 
 
 class WorkLookupRequest(BaseModel):
-    code: str = Field(min_length=2, max_length=100)
+    code: str | None = Field(default=None, min_length=2, max_length=100)
+    source_url: str | None = Field(default=None, max_length=2000)
+    external_ids: dict[str, str] = Field(default_factory=dict)
 
 
 class WorkLookupOut(BaseModel):
@@ -484,3 +498,58 @@ class CatalogExportResultOut(BaseModel):
     catalog_counts: dict[str, int]
     omitted_runtime_counts: dict[str, int]
     incremental: dict[str, object] = Field(default_factory=dict)
+
+
+class ProviderHealthItemOut(BaseModel):
+    provider: str
+    configured: bool
+    failures: int = 0
+    cooldown: bool = False
+    retry_in_seconds: int | None = None
+
+
+class ProviderHealthOut(BaseModel):
+    providers: tuple[ProviderHealthItemOut, ...]
+
+
+class ActorMergeRequest(BaseModel):
+    keep_actor_id: str = Field(min_length=1)
+    drop_actor_id: str = Field(min_length=1)
+
+
+class NfoImportRequest(BaseModel):
+    path: str = Field(min_length=1)
+    dry_run: bool = False
+
+
+class NfoImportResultOut(BaseModel):
+    path: str
+    dry_run: bool
+    work_id: str | None = None
+    title: str | None = None
+    created: bool = False
+    updated: bool = False
+    detail: str | None = None
+
+
+class LexiconExportOut(BaseModel):
+    filter_words: tuple[str, ...] = ()
+    identity_aliases: dict[str, object] = Field(default_factory=dict)
+    field_priority: dict[str, list[str]] = Field(default_factory=dict)
+    exported_at: str
+
+
+class FieldPriorityPayload(BaseModel):
+    priorities: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class MediaServerSettingsPayload(BaseModel):
+    enabled: bool = False
+    kind: str = "jellyfin"
+    base_url: str | None = None
+    api_key: str | None = None
+    verify_nfo_fields: bool = False
+
+
+class ActorXHandleEdit(BaseModel):
+    x_handle: str | None = Field(default=None, max_length=100)

@@ -18,6 +18,8 @@ def test_detect_collection_kind_prefers_chinese_platforms() -> None:
     assert detect_collection_kind("糖心Vlog", preferred=CollectionKind.STUDIO) is CollectionKind.PLATFORM
     assert detect_collection_kind("Blacked", preferred=CollectionKind.STUDIO) is CollectionKind.STUDIO
     assert detect_collection_kind("MDX", preferred=CollectionKind.SERIES) is CollectionKind.SERIES
+    assert detect_collection_kind("麻豆传媒", preferred=CollectionKind.SERIES) is CollectionKind.PLATFORM
+    assert detect_collection_kind("糖心Vlog", preferred=CollectionKind.SERIES) is CollectionKind.PLATFORM
 
 
 def test_seed_collections_from_work_fields(tmp_path: Path) -> None:

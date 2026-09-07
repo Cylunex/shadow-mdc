@@ -84,3 +84,17 @@ def _subtitle_matches(
 
 def _compact(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.casefold())
+
+
+def part_group_key(path: Path, code: str | None) -> str:
+    """Stable key so CD1/CD2 (and lettered parts) collapse to one Work group."""
+
+    if code:
+        return f"code:{_compact(code)}"
+    stem = path.stem.strip()
+    for pattern in (_EXPLICIT_PART, _VERSION_PART, _LETTER_PART, _TRAILING_PART):
+        match = pattern.search(stem)
+        if match:
+            stem = stem[: match.start()].rstrip("-_. ")
+            break
+    return f"stem:{_compact(stem) or path.name.casefold()}"

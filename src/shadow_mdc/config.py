@@ -32,8 +32,15 @@ class Settings(BaseSettings):
     translation_concurrency: int = Field(default=4, ge=1, le=16)
     proxy_url: str | None = None
     translation_enabled: bool = True
+    translation_backend: str = "google"
     translation_endpoint: str = "https://translate.google.com/translate_a/single"
+    translation_api_key: str | None = None
+    translation_deepl_api_url: str | None = "https://api-free.deepl.com/v2/translate"
+    translation_deepl_api_key: str | None = None
+    translation_deeplx_endpoint: str | None = None
+    translation_custom_endpoint: str | None = None
     translation_target_language: str = "zh-CN"
+    translation_plot: bool = True
     artwork_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     user_agent: str = "ShadowMDC/0.1 (+https://github.com/Cylunex/shadow-mdc)"
 

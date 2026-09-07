@@ -1,5 +1,5 @@
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
@@ -88,7 +88,14 @@ class Scanner:
         self._directory_actor_rules = directory_actor_rules or DirectoryActorRules()
         self._non_jav_actor_catalog = non_jav_actor_catalog or NonJavActorCatalog()
 
-    def scan(self, library: Library) -> ScanResult:
+    def scan(
+        self,
+        library: Library,
+        *,
+        only_new: bool = False,
+        progress: Callable[[dict[str, object]], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> ScanResult:
         root = _resolve_library_root(library.root_path)
         discovered = 0
         updated = 0
@@ -97,7 +104,13 @@ class Scanner:
         filtered = 0
         skipped = 0
         errors: list[str] = []
-        for path in _walk_files(root, recursive=library.recursive, errors=errors):
+        paths = list(_walk_files(root, recursive=library.recursive, errors=errors))
+        total = len(paths)
+        for index, path in enumerate(paths, start=1):
+            if cancelled is not None and cancelled():
+                break
+            if progress is not None and (index == 1 or index % 25 == 0 or index == total):
+                progress({"progress_current": index, "progress_total": total, "phase": "scan"})
             if path.suffix.casefold() not in MEDIA_EXTENSIONS:
                 skipped += 1
                 continue
@@ -109,6 +122,17 @@ class Scanner:
                 )
                 filtered += 1
                 continue
+            if only_new:
+                existing = self._repository.get_asset_by_path(str(path))
+                if existing is not None:
+                    try:
+                        stat = path.stat()
+                    except OSError as exc:
+                        errors.append(f"{path}: {exc}")
+                        continue
+                    if existing.size == stat.st_size and existing.modified_ns == stat.st_mtime_ns:
+                        skipped += 1
+                        continue
             try:
                 created, newly_queued = self._scan_asset(library, root, path)
                 discovered += int(created)

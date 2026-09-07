@@ -325,3 +325,34 @@ SHADOW_MDC_REQUEST_RETRIES=1
 ## 数据边界
 
 Shadow MDC 只管理用户已有本地媒体的元数据与公开图片，不提供影片下载、磁力搜索、破解、登录绕过或在线播放。
+
+## 任务中心与增量处理
+
+- 「运行记录」展示 TaskRun：状态、摘要进度、取消进行中的任务、登记重试。
+- 媒体库扫描可传 `only_new`：只处理磁盘上新增或 mtime/size 变化的文件。
+- 批量识别支持 `continue_failed`（只处理失败/待审）、`skip_identified`、以及当 Work 已有远程 ExternalIdentity 时跳过远程（`skip_remote_when_identified`）。
+- CD1/CD2 等同番号分段会归入同一 Work；整理计划会一并带走字幕 sidecar。
+
+## 翻译后端
+
+通过环境变量选择翻译链：`SHADOW_MDC_TRANSLATION_BACKEND=google|deepl|deeplx|custom`。
+可配置 DeepL / DeepLX / 自定义 URL，Google 作为回退。译文缓存仍在 `translations.db`，标题与剧情可分开翻译。
+
+## NFO 反导入与媒体服务器
+
+- `POST /api/nfo/import`：读取已有 `movie.nfo` 写入 Work（可 dry-run）。
+- 设置页 / `.env` 可配置 Jellyfin/Emby：整理成功后按路径触发刷新；可选 NFO 字段检查 stub。
+
+## 演员 X（Twitter）
+
+非 JAV 演员资料与 JAV Actor 实体均可保存 `x_handle`。界面接受 `@name` 或 `https://x.com/name`，规范化后展示可点击链接。
+
+## 字段优先级与词库导出
+
+- `GET/PUT /api/settings/field-priority`：默认字段来源优先级。
+- `GET /api/lexicon/export`：导出过滤词、别名与字段优先级（导入仍用既有 catalog/别名接口）。
+- `POST /api/actors/merge`：合并两名演员并重挂 WorkActor。
+
+## URL / 外部 ID 识别
+
+作品页与媒体库提供番号 / 详情 URL / provider ID 入口，调用 `POST /api/works/lookup`。

@@ -1,7 +1,7 @@
 import os
 import tempfile
 from pathlib import Path
-from xml.etree.ElementTree import Element, SubElement, indent, tostring
+from xml.etree.ElementTree import Element, ElementTree, SubElement, fromstring, indent, tostring
 
 from ..db.models import ExternalIdentity, MediaAsset, Work
 from ..domain import MediaTechnicalInfo
@@ -179,3 +179,43 @@ def write_nfo(path: str | Path, content: str) -> None:
     except Exception:
         Path(temporary).unlink(missing_ok=True)
         raise
+
+
+def parse_nfo(path: str | Path) -> dict[str, object]:
+    """Parse a Kodi/Emby-style movie.nfo into a flat field dict for reverse import."""
+
+    text = Path(path).read_text(encoding="utf-8-sig")
+    root = fromstring(text)
+    if root.tag.lower() != "movie":
+        movie = root.find("movie")
+        if movie is None:
+            raise ValueError("nfo root is not <movie>")
+        root = movie
+
+    def text_of(tag: str) -> str | None:
+        node = root.find(tag)
+        if node is None or node.text is None:
+            return None
+        value = node.text.strip()
+        return value or None
+
+    actors: list[str] = []
+    for actor in root.findall("actor"):
+        name = actor.findtext("name")
+        if name and name.strip():
+            actors.append(name.strip())
+    tags = [node.text.strip() for node in root.findall("tag") if node.text and node.text.strip()]
+    genres = [node.text.strip() for node in root.findall("genre") if node.text and node.text.strip()]
+    return {
+        "title": text_of("title"),
+        "original_title": text_of("originaltitle"),
+        "plot": text_of("plot"),
+        "studio": text_of("studio"),
+        "label": text_of("label"),
+        "series": text_of("set") or text_of("series"),
+        "premiered": text_of("premiered") or text_of("releasedate"),
+        "runtime": text_of("runtime"),
+        "code": text_of("num") or text_of("id"),
+        "actors": actors,
+        "tags": list(dict.fromkeys([*tags, *genres])),
+    }

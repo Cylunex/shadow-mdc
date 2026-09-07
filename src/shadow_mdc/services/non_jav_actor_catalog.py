@@ -55,6 +55,7 @@ class NonJavActorProfile(BaseModel):
     categories: tuple[MediaCategory, ...] = ()
     match_names: tuple[str, ...] = ()
     image_file: str | None = None
+    x_handle: str | None = None
     biography: str | None = None
     notes: str | None = None
 
@@ -129,6 +130,7 @@ class _ActorAccumulator:
     aliases: set[str] = field(default_factory=set)
     groups: set[str] = field(default_factory=set)
     categories: set[MediaCategory] = field(default_factory=set)
+    x_handle: str | None = None
 
 
 def parse_non_jav_actor_text(text: str, *, source: str) -> NonJavActorCatalog:
@@ -157,6 +159,14 @@ def parse_non_jav_actor_text(text: str, *, source: str) -> NonJavActorCatalog:
         )
         accumulator.groups.add(group)
         accumulator.categories.add(category)
+        if accumulator.x_handle is None:
+            for alias in aliases:
+                if not str(alias).startswith("@"):
+                    continue
+                handle = normalize_x_handle(alias)
+                if handle:
+                    accumulator.x_handle = handle
+                    break
 
     profiles = tuple(
         NonJavActorProfile(
@@ -169,6 +179,7 @@ def parse_non_jav_actor_text(text: str, *, source: str) -> NonJavActorCatalog:
                 for name in (item.name, *sorted(item.aliases, key=str.casefold))
                 if _is_safe_match_name(name)
             ),
+            x_handle=item.x_handle,
         )
         for item in sorted(accumulators.values(), key=lambda value: value.name.casefold())
     )
@@ -188,6 +199,40 @@ def enrich_non_jav_actor_aliases(
     return rules.model_copy(update={"actors": actors})
 
 
+def normalize_x_handle(value: str | None) -> str | None:
+    """Accept @name, name, or https://x.com/name and store the bare handle."""
+
+    if value is None:
+        return None
+    cleaned = unicodedata.normalize("NFKC", value).strip()
+    if not cleaned:
+        return None
+    lowered = cleaned.casefold()
+    for prefix in (
+        "https://x.com/",
+        "http://x.com/",
+        "https://twitter.com/",
+        "http://twitter.com/",
+        "https://www.x.com/",
+        "https://www.twitter.com/",
+    ):
+        if lowered.startswith(prefix):
+            cleaned = cleaned[len(prefix) :]
+            break
+    cleaned = cleaned.split("?")[0].split("#")[0].split("/")[0]
+    cleaned = cleaned.lstrip("@").strip()
+    if not cleaned or any(ch.isspace() for ch in cleaned):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,50}", cleaned):
+        return None
+    return cleaned
+
+
+def x_profile_url(handle: str | None) -> str | None:
+    normalized = normalize_x_handle(handle)
+    return f"https://x.com/{normalized}" if normalized else None
+
+
 def build_non_jav_actor_profile(
     *,
     name: str,
@@ -195,6 +240,7 @@ def build_non_jav_actor_profile(
     groups: tuple[str, ...],
     categories: tuple[MediaCategory, ...],
     image_file: str | None = None,
+    x_handle: str | None = None,
     biography: str | None = None,
     notes: str | None = None,
 ) -> NonJavActorProfile:
@@ -219,6 +265,7 @@ def build_non_jav_actor_profile(
         categories=cleaned_categories,
         match_names=match_names,
         image_file=image_file,
+        x_handle=normalize_x_handle(x_handle),
         biography=biography.strip() if biography and biography.strip() else None,
         notes=notes.strip() if notes and notes.strip() else None,
     )

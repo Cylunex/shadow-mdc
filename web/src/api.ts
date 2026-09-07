@@ -31,7 +31,10 @@ import {
   worksSchema,
   collectionsSchema,
   collectionSchema,
-  collectionSeedResultSchema
+  collectionSeedResultSchema,
+  fieldPrioritySchema,
+  lexiconExportSchema,
+  taskRunSchema
 } from "./model";
 import type { FilterWords, IdentityAliases } from "./model";
 
@@ -42,6 +45,7 @@ export type NonJavActorEditPayload = {
   aliases: string[];
   groups: string[];
   categories: DisplayMediaCategory[];
+  x_handle?: string | null;
   biography: string | null;
   notes: string | null;
 };
@@ -88,19 +92,35 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(payload)
     }),
-  scan: (libraryId: string) =>
-    request(scanSchema, `/api/libraries/${libraryId}/scan`, { method: "POST" }),
+  scan: (libraryId: string, options: { only_new?: boolean } = {}) =>
+    request(scanSchema, `/api/libraries/${libraryId}/scan`, {
+      method: "POST",
+      body: JSON.stringify({ only_new: Boolean(options.only_new) })
+    }),
   generateScreenshots: (libraryId: string, limit = 50) =>
     request(screenshotGenerateSchema, `/api/libraries/${libraryId}/screenshots`, {
       method: "POST",
       body: JSON.stringify({ limit })
     }),
-  identifyLibrary: (libraryId: string, limit = 20) =>
+  identifyLibrary: (
+    libraryId: string,
+    limit = 20,
+    options: { continue_failed?: boolean; skip_identified?: boolean; skip_remote_when_identified?: boolean } = {}
+  ) =>
     request(bulkIdentifySchema, `/api/libraries/${libraryId}/identify`, {
       method: "POST",
-      body: JSON.stringify({ limit })
+      body: JSON.stringify({
+        limit,
+        continue_failed: Boolean(options.continue_failed),
+        skip_identified: options.skip_identified !== false,
+        skip_remote_when_identified: options.skip_remote_when_identified !== false
+      })
     }),
   tasks: () => request(taskRunsSchema, "/api/tasks"),
+  cancelTask: (taskId: string) => request(taskRunSchema, `/api/tasks/${taskId}/cancel`, { method: "POST" }),
+  retryTask: (taskId: string) => request(taskRunSchema, `/api/tasks/${taskId}/retry`, { method: "POST" }),
+  providerHealth: () => request(z.object({ providers: z.array(z.object({ provider: z.string(), configured: z.boolean(), failures: z.number(), cooldown: z.boolean(), retry_in_seconds: z.number().nullable().optional() })) }), "/api/providers/health"),
+  exportLexicon: () => request(z.record(z.string(), z.unknown()), "/api/lexicon/export"),
   assets: () => request(assetInboxListSchema, "/api/inbox"),
   candidates: (assetId: string) => request(candidatesSchema, `/api/assets/${assetId}/candidates`),
   manualCandidate: (assetId: string, payload: { title?: string }) =>
@@ -219,10 +239,29 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ limit })
   }),
-  lookupWork: (code: string) => request(workLookupSchema, "/api/works/lookup", {
-    method: "POST",
-    body: JSON.stringify({ code })
-  }),
+  lookupWork: (payload: { code?: string; source_url?: string; external_ids?: Record<string, string> }) =>
+    request(workLookupSchema, "/api/works/lookup", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  patchActor: (actorId: string, x_handle: string | null) =>
+    request(z.object({
+      id: z.string(),
+      name: z.string(),
+      image_url: z.string().nullable().optional(),
+      x_handle: z.string().nullable().optional(),
+      x_url: z.string().nullable().optional()
+    }), `/api/actors/${actorId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ x_handle })
+    }),
+  fieldPriority: () => request(fieldPrioritySchema, "/api/settings/field-priority"),
+  saveFieldPriority: (priorities: Record<string, string[]>) =>
+    request(fieldPrioritySchema, "/api/settings/field-priority", {
+      method: "PUT",
+      body: JSON.stringify({ priorities })
+    }),
+  exportLexicon: () => request(lexiconExportSchema, "/api/lexicon/export"),
   refreshWork: (workId: string) =>
     request(identifySchema, `/api/works/${workId}/refresh`, { method: "POST" }),
   downloadArtwork: (workId: string) =>

@@ -91,6 +91,7 @@ class Actor(Base):
     normalized_name: Mapped[str] = mapped_column(String(300), unique=True, index=True)
     aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
     image_url: Mapped[str | None] = mapped_column(Text)
+    x_handle: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 

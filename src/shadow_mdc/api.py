@@ -64,19 +64,29 @@ from .api_models import (
     ProviderDiagnostic,
     ProviderListOut,
     ScanOut,
+    ScanRequest,
+    ActorXHandleEdit,
     ScreenshotGenerateOut,
     ScreenshotGenerateRequest,
     TaskRunOut,
     WorkDetailOut,
     WorkLocksRequest,
     WorkLookupOut,
+    MediaServerSettingsPayload,
+    FieldPriorityPayload,
+    LexiconExportOut,
+    NfoImportResultOut,
+    NfoImportRequest,
+    ActorMergeRequest,
+    ProviderHealthItemOut,
+    ProviderHealthOut,
     WorkLookupRequest,
     WorkOut,
     WorkPosterPreferRequest,
     WorkUpdateRequest,
 )
 from .config import Settings
-from .db.models import Library, MatchCandidateRow, MediaAsset, Work
+from .db.models import Library, MatchCandidateRow, MediaAsset, Work, utc_now
 from .db.repository import LOCKABLE_WORK_FIELDS, Database, Repository
 from .domain import (
     FileOperation,
@@ -100,7 +110,8 @@ from .enums import (
 from .identity import IdentityAliasRules, build_identity_hints, extract_code, normalize_identity_value
 from .matching import normalize_title, rank_candidates, score_candidate
 from .media.artwork import ArtworkDownloadResult, ArtworkStore
-from .media.nfo import build_nfo
+from .media.nfo import build_nfo, parse_nfo
+from .media.parts import part_group_key
 from .media.organizer import Organizer, plan_move_cleanup
 from .media.screenshots import capture_screenshot
 from .providers import (
@@ -143,6 +154,8 @@ from .services.local_catalog import (
     local_context_names,
 )
 from .services.non_jav_actor_catalog import (
+    normalize_x_handle,
+    x_profile_url,
     NonJavActorCatalogStore,
     NonJavActorProfile,
     build_non_jav_actor_profile,
@@ -150,8 +163,14 @@ from .services.non_jav_actor_catalog import (
 )
 from .services.non_jav_work_seed import seed_non_jav_works
 from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
+from .services.field_priority import FieldPriorityConfig, FieldPriorityStore
+from .services.media_server import MediaServerConnector, MediaServerSettings, MediaServerStore, refresh_media_server
 from .services.scanner import Scanner
-from .services.translation import GoogleTitleTranslator, TranslationCache
+from .services.translation import (
+    GoogleTitleTranslator,
+    TranslationCache,
+    build_translation_backends,
+)
 
 
 @dataclass(frozen=True)
@@ -160,12 +179,14 @@ class Runtime:
     database: Database
     http: httpx.AsyncClient
     providers: ProviderRegistry
-    translator: GoogleTitleTranslator
+    translator: object
     alias_store: IdentityAliasStore
     actor_store: ActorCatalogStore
     non_jav_actor_store: NonJavActorCatalogStore
     directory_actor_store: DirectoryActorRuleStore
     filter_words_store: FilterWordsStore
+    field_priority_store: FieldPriorityStore
+    media_server_store: MediaServerStore
 
 
 @dataclass
@@ -260,14 +281,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ],
         max_concurrent_calls=settings.provider_concurrency,
     )
+    backends = build_translation_backends(
+        client,
+        google_endpoint=settings.translation_endpoint,
+        deepl_api_url=settings.translation_deepl_api_url,
+        deepl_api_key=settings.translation_deepl_api_key or settings.translation_api_key,
+        deeplx_endpoint=settings.translation_deeplx_endpoint,
+        custom_endpoint=settings.translation_custom_endpoint,
+        prefer=settings.translation_backend,
+    )
     translator = GoogleTitleTranslator(
         client,
         TranslationCache(settings.data_dir / "translations.db"),
         enabled=settings.translation_enabled,
         endpoint=settings.translation_endpoint,
         target_language=settings.translation_target_language,
+        extra_backends=[b for b in backends if b.name != "google"],
+        translate_plot=settings.translation_plot,
     )
     filter_words_store = FilterWordsStore(settings.data_dir / "filter-words.txt")
+    field_priority_store = FieldPriorityStore(settings.data_dir / "field-priority.json")
+    media_server_store = MediaServerStore(settings.data_dir / "media-server.json")
     app.state.runtime = Runtime(
         settings=settings,
         database=database,
@@ -279,6 +313,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         non_jav_actor_store=non_jav_actor_store,
         directory_actor_store=directory_actor_store,
         filter_words_store=filter_words_store,
+        field_priority_store=field_priority_store,
+        media_server_store=media_server_store,
     )
     try:
         yield
@@ -555,6 +591,200 @@ def get_task_run(task_id: str, repo: Repo) -> TaskRunOut:
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
     return TaskRunOut.model_validate(task)
+
+
+@app.post("/api/tasks/{task_id}/retry", response_model=TaskRunOut)
+def retry_task_run(task_id: str, repo: Repo) -> TaskRunOut:
+    task = repo.get_task_run(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    if task.finished_at is None:
+        raise HTTPException(status_code=409, detail="task is still running")
+    retry = repo.create_task_run(kind=f"retry:{task.kind}", scope=task.scope)
+    repo.update_task_progress(
+        retry,
+        {
+            "phase": "queued",
+            "retried_from": task.id,
+            "note": "Retry recorded; re-invoke the original scan/identify/organize endpoint to run work.",
+        },
+    )
+    repo.finish_task_run(
+        retry,
+        status="succeeded",
+        summary={
+            "phase": "recorded",
+            "retried_from": task.id,
+            "original_kind": task.kind,
+            "hint": "Call the matching library action again to execute; this endpoint creates an audit trail.",
+        },
+    )
+    return TaskRunOut.model_validate(retry)
+
+
+@app.post("/api/tasks/{task_id}/cancel", response_model=TaskRunOut)
+def cancel_task_run(task_id: str, repo: Repo) -> TaskRunOut:
+    task = repo.get_task_run(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    try:
+        repo.request_task_cancel(task)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return TaskRunOut.model_validate(task)
+
+
+@app.get("/api/providers/health", response_model=ProviderHealthOut)
+def provider_health(request: Request) -> ProviderHealthOut:
+    rows = runtime(request).providers.health_snapshot()
+    return ProviderHealthOut(
+        providers=tuple(ProviderHealthItemOut.model_validate(row) for row in rows)
+    )
+
+
+@app.post("/api/providers/health/reset", response_model=ProviderHealthOut)
+def reset_provider_health(request: Request, provider: str | None = None) -> ProviderHealthOut:
+    runtime(request).providers.clear_cooldown(provider)
+    rows = runtime(request).providers.health_snapshot()
+    return ProviderHealthOut(
+        providers=tuple(ProviderHealthItemOut.model_validate(row) for row in rows)
+    )
+
+
+@app.patch("/api/actors/{actor_id}", response_model=ActorSummaryOut)
+def patch_actor(actor_id: str, payload: ActorXHandleEdit, repo: Repo) -> ActorSummaryOut:
+    actor = repo.get_actor(actor_id)
+    if actor is None:
+        raise HTTPException(status_code=404, detail="actor not found")
+    repo.update_actor_x_handle(actor, payload.x_handle)
+    handle = normalize_x_handle(actor.x_handle)
+    return ActorSummaryOut(
+        id=actor.id,
+        name=actor.name,
+        image_url=actor.image_url,
+        x_handle=handle,
+        x_url=x_profile_url(handle),
+    )
+
+
+@app.post("/api/actors/merge", response_model=ActorSummaryOut)
+def merge_actors_endpoint(payload: ActorMergeRequest, repo: Repo) -> ActorSummaryOut:
+    try:
+        actor = repo.merge_actors(
+            keep_actor_id=payload.keep_actor_id,
+            drop_actor_id=payload.drop_actor_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    handle = normalize_x_handle(getattr(actor, "x_handle", None))
+    return ActorSummaryOut(
+        id=actor.id,
+        name=actor.name,
+        image_url=actor.image_url,
+        x_handle=handle,
+        x_url=x_profile_url(handle),
+    )
+
+
+@app.post("/api/nfo/import", response_model=NfoImportResultOut)
+def import_nfo(payload: NfoImportRequest, repo: Repo) -> NfoImportResultOut:
+    path = Path(payload.path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="nfo file not found")
+    try:
+        fields = parse_nfo(path)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"invalid nfo: {exc}") from exc
+    title = fields.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise HTTPException(status_code=422, detail="nfo missing title")
+    if payload.dry_run:
+        return NfoImportResultOut(path=str(path), dry_run=True, title=title, detail="ok")
+    code = fields.get("code") if isinstance(fields.get("code"), str) else None
+    actors_raw = fields.get("actors") if isinstance(fields.get("actors"), list) else []
+    tags_raw = fields.get("tags") if isinstance(fields.get("tags"), list) else []
+    actors = tuple(str(item) for item in actors_raw if isinstance(item, str) and item.strip())
+    tags = tuple(str(item) for item in tags_raw if isinstance(item, str) and item.strip())
+    record = ProviderRecord(
+        provider="nfo-import",
+        external_id=f"nfo:{path.resolve()}",
+        title=title.strip(),
+        original_title=fields.get("original_title") if isinstance(fields.get("original_title"), str) else None,
+        family=ContentFamily.UNKNOWN,
+        category=MediaCategory.OTHER,
+        code=code,
+        studio=fields.get("studio") if isinstance(fields.get("studio"), str) else None,
+        series=fields.get("series") if isinstance(fields.get("series"), str) else None,
+        plot=fields.get("plot") if isinstance(fields.get("plot"), str) else None,
+        actors=actors,
+        tags=tags,
+    )
+    existing = repo.find_work_by_code(code) if code else None
+    created = existing is None
+    work = repo.upsert_provider_record(record, overwrite=True)
+    return NfoImportResultOut(
+        path=str(path),
+        dry_run=False,
+        work_id=work.id,
+        title=work.title,
+        created=created,
+        updated=not created,
+    )
+
+
+@app.get("/api/lexicon/export", response_model=LexiconExportOut)
+def export_lexicon(request: Request) -> LexiconExportOut:
+    app_runtime = runtime(request)
+    aliases = app_runtime.alias_store.load()
+    return LexiconExportOut(
+        filter_words=app_runtime.filter_words_store.load().words,
+        identity_aliases=aliases.model_dump(mode="json"),
+        field_priority=dict(app_runtime.field_priority_store.load().priorities),
+        exported_at=utc_now().isoformat(),
+    )
+
+
+@app.get("/api/settings/field-priority", response_model=FieldPriorityPayload)
+def get_field_priority(request: Request) -> FieldPriorityPayload:
+    return FieldPriorityPayload(priorities=runtime(request).field_priority_store.load().priorities)
+
+
+@app.put("/api/settings/field-priority", response_model=FieldPriorityPayload)
+def put_field_priority(payload: FieldPriorityPayload, request: Request) -> FieldPriorityPayload:
+    saved = runtime(request).field_priority_store.save(
+        FieldPriorityConfig(priorities=payload.priorities)
+    )
+    return FieldPriorityPayload(priorities=saved.priorities)
+
+
+@app.get("/api/settings/media-server", response_model=MediaServerSettingsPayload)
+def get_media_server(request: Request) -> MediaServerSettingsPayload:
+    settings = runtime(request).media_server_store.load()
+    return MediaServerSettingsPayload.model_validate(settings.model_dump())
+
+
+@app.put("/api/settings/media-server", response_model=MediaServerSettingsPayload)
+def put_media_server(
+    payload: MediaServerSettingsPayload, request: Request
+) -> MediaServerSettingsPayload:
+    saved = runtime(request).media_server_store.save(
+        MediaServerSettings.model_validate(payload.model_dump())
+    )
+    return MediaServerSettingsPayload.model_validate(saved.model_dump())
+
+
+@app.post("/api/settings/media-server/refresh")
+async def trigger_media_server_refresh(request: Request) -> dict[str, str]:
+    app_runtime = runtime(request)
+    try:
+        detail = await refresh_media_server(
+            app_runtime.media_server_store.load(), app_runtime.http
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"status": "ok", "detail": detail}
 
 
 @app.post("/api/providers/diagnose", response_model=ProviderDiagnoseOut)
@@ -856,10 +1086,16 @@ def assign_directory_actor(
 
 
 @app.post("/api/libraries/{library_id}/scan", response_model=ScanOut)
-def scan_library(library_id: str, request: Request, repo: Repo) -> ScanOut:
+def scan_library(
+    library_id: str,
+    request: Request,
+    repo: Repo,
+    payload: ScanRequest | None = None,
+) -> ScanOut:
     library = repo.get_library(library_id)
     if library is None:
         raise HTTPException(status_code=404, detail="library not found")
+    options = payload or ScanRequest()
     task = repo.create_task_run(kind="scan", scope=library.root_path)
     try:
         app_runtime = runtime(request)
@@ -880,7 +1116,12 @@ def scan_library(library_id: str, request: Request, repo: Repo) -> ScanOut:
             MediaPathFilter(app_runtime.filter_words_store.load().words),
             app_runtime.directory_actor_store.load(),
             non_jav_actor_catalog,
-        ).scan(library)
+        ).scan(
+            library,
+            only_new=options.only_new,
+            progress=lambda summary: repo.update_task_progress(task, summary),
+            cancelled=lambda: repo.is_task_cancel_requested(task.id),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     repo.finish_task_run(
@@ -916,9 +1157,21 @@ async def identify_library(
     )
     scope_skipped = 0
     catalog_reused = 0
+    task = repo.create_task_run(kind="identify:library", scope=library.root_path)
+    repo.update_task_progress(task, {"phase": "grouping", "assets": len(assets)})
     for asset in assets:
-        if asset.state == "identified":
+        if payload.skip_identified and asset.state == "identified":
             continue
+        if (
+            payload.skip_remote_when_identified
+            and asset.work_id is not None
+            and repo.work_has_external_identity(asset.work_id)
+        ):
+            catalog_reused += 1
+            continue
+        if payload.continue_failed and asset.state not in {"error", "review"}:
+            if asset.state != "new":
+                continue
         hints = IdentityHints.model_validate(asset.hints)
         if (
             library.recognition_scope == RecognitionScope.JAV_ONLY.value
@@ -933,7 +1186,7 @@ async def identify_library(
                 repo.attach_asset_to_work(asset, existing)
                 catalog_reused += 1
                 continue
-            key = f"code:{normalize_identity_value(hints.code)}"
+            key = part_group_key(Path(asset.path), hints.code)
             search_hints = hints
         else:
             local_record = repo.local_candidate_record(asset.id)
@@ -969,8 +1222,20 @@ async def identify_library(
     attempted = 0
     accepted_work_ids: set[str] = set()
     chunk_size = app_runtime.settings.identify_concurrency
+    cancelled = False
     for start in range(0, len(selected), chunk_size):
+        if repo.is_task_cancel_requested(task.id):
+            cancelled = True
+            break
         chunk = selected[start : start + chunk_size]
+        repo.update_task_progress(
+            task,
+            {
+                "phase": "identify",
+                "progress": start,
+                "total": len(selected),
+            },
+        )
         batches = await asyncio.gather(*(app_runtime.providers.search(group.hints) for group in chunk))
         for group, batch in zip(chunk, batches, strict=True):
             failures += sum(failure.reason != "cooldown" for failure in batch.failures)
@@ -1000,10 +1265,13 @@ async def identify_library(
     identified = online_identified + catalog_reused + local_optimized
     code_queries = sum(not group.local_fallback for group in selected)
     title_queries = len(selected) - code_queries
-    task = repo.create_task_run(kind="identify:library", scope=library.root_path)
     repo.finish_task_run(
         task,
-        status="succeeded" if identified == attempted else "partial",
+        status=(
+            "cancelled"
+            if cancelled
+            else ("succeeded" if identified == attempted else "partial")
+        ),
         summary={
             "queried_identities": len(selected),
             "code_queries": code_queries,
@@ -1017,6 +1285,7 @@ async def identify_library(
             "provider_failures": failures,
             "remaining_identities": remaining,
             "scope_skipped": scope_skipped,
+            "cancelled": cancelled,
         },
     )
     return BulkIdentifyOut(
@@ -1412,22 +1681,47 @@ async def lookup_work_by_code(
     request: Request,
     repo: Repo,
 ) -> WorkLookupOut:
-    code, family = extract_code(payload.code, MediaCategory.JAPAN)
-    if code is None:
-        raise HTTPException(status_code=422, detail="code is not a supported media identity")
-    task = repo.create_task_run(kind="lookup", scope=code)
-    hints = IdentityHints(
-        term=code,
-        mode=QueryMode.CODE,
-        family=family,
-        category={
-            ContentFamily.JAV: MediaCategory.JAPAN,
-            ContentFamily.CHINESE: MediaCategory.CHINA,
-            ContentFamily.KOREAN: MediaCategory.KOREA,
-            ContentFamily.WESTERN: MediaCategory.EUROPE,
-        }.get(family, MediaCategory.OTHER),
-        code=code,
-    )
+    if payload.source_url:
+        hints = IdentityHints(
+            term=payload.source_url,
+            mode=QueryMode.URL,
+            family=ContentFamily.UNKNOWN,
+            category=MediaCategory.OTHER,
+            source_url=payload.source_url,
+            external_ids=payload.external_ids,
+        )
+        scope = payload.source_url
+    elif payload.external_ids:
+        first_value = next(iter(payload.external_ids.values()))
+        hints = IdentityHints(
+            term=first_value,
+            mode=QueryMode.EXTERNAL_ID,
+            family=ContentFamily.UNKNOWN,
+            category=MediaCategory.OTHER,
+            external_ids=payload.external_ids,
+        )
+        scope = first_value
+    else:
+        if not payload.code:
+            raise HTTPException(status_code=422, detail="code, source_url, or external_ids required")
+        code, family = extract_code(payload.code, MediaCategory.JAPAN)
+        if code is None:
+            raise HTTPException(status_code=422, detail="code is not a supported media identity")
+        hints = IdentityHints(
+            term=code,
+            mode=QueryMode.CODE,
+            family=family,
+            category={
+                ContentFamily.JAV: MediaCategory.JAPAN,
+                ContentFamily.CHINESE: MediaCategory.CHINA,
+                ContentFamily.KOREAN: MediaCategory.KOREA,
+                ContentFamily.WESTERN: MediaCategory.EUROPE,
+            }.get(family, MediaCategory.OTHER),
+            code=code,
+        )
+        scope = code
+    task = repo.create_task_run(kind="lookup", scope=scope)
+
     batch = await runtime(request).providers.search(hints)
     ranked = rank_candidates(hints, list(batch.records))
     accepted = [item for item in ranked if item.decision is MatchDecision.ACCEPT]
@@ -1845,7 +2139,7 @@ def organize_library_plan(
 
 
 @app.post("/api/libraries/{library_id}/organize/apply", response_model=BatchApplyOut)
-def organize_library_apply(
+async def organize_library_apply(
     library_id: str,
     payload: OrganizeApplyRequest,
     request: Request,
@@ -1904,6 +2198,25 @@ def organize_library_apply(
             if len(errors) < 100:
                 errors.append(f"{item.asset.path}: {exc}")
     attempted = len(plans)
+    refresh_ok = 0
+    refresh_fail = 0
+    app_runtime = runtime(request)
+    media_settings = app_runtime.media_server_store.load()
+    if media_settings.enabled and succeeded:
+        connector = MediaServerConnector(settings=media_settings, client=app_runtime.http)
+        refreshed_paths: set[str] = set()
+        for item in plan_items[:succeeded]:
+            dest = Path(item.asset.path).parent
+            # After move, asset.path may already be updated.
+            key = str(dest)
+            if key in refreshed_paths:
+                continue
+            refreshed_paths.add(key)
+            result = await connector.refresh_path(key)
+            if result.ok:
+                refresh_ok += 1
+            elif result.attempted:
+                refresh_fail += 1
     repo.finish_task_run(
         task,
         status="partial" if attempted != succeeded else "succeeded",
@@ -1912,6 +2225,8 @@ def organize_library_apply(
             "succeeded": succeeded,
             "failed": attempted - succeeded,
             "errors_recorded": len(errors),
+            "media_server_refresh_ok": refresh_ok,
+            "media_server_refresh_fail": refresh_fail,
         },
     )
     return BatchApplyOut(
@@ -1962,6 +2277,7 @@ def _non_jav_actor_out(
     works: tuple[NonJavActorWorkOut, ...] = (),
 ) -> NonJavActorOut:
     # Merge works referenced by aliases / match names via caller-provided canonical bucket.
+    handle = normalize_x_handle(actor.x_handle)
     return NonJavActorOut(
         name=actor.name,
         aliases=actor.aliases,
@@ -1969,6 +2285,8 @@ def _non_jav_actor_out(
         categories=actor.categories,
         match_names=actor.match_names,
         image_url=(f"/api/non-jav-actor-images/{actor.image_file}" if actor.image_file is not None else None),
+        x_handle=handle,
+        x_url=x_profile_url(handle),
         biography=actor.biography,
         notes=actor.notes,
         work_count=len(works),
@@ -2060,7 +2378,13 @@ def _work_out(repo: Repository, work: Work) -> WorkOut:
         for item in repo.identities_for_work(work.id)
     ]
     actor_entities = [
-        ActorSummaryOut(id=actor.id, name=actor.name, image_url=actor.image_url)
+        ActorSummaryOut(
+            id=actor.id,
+            name=actor.name,
+            image_url=actor.image_url,
+            x_handle=normalize_x_handle(getattr(actor, "x_handle", None)),
+            x_url=x_profile_url(getattr(actor, "x_handle", None)),
+        )
         for actor in repo.actors_for_work(work.id)
     ]
     collections = [

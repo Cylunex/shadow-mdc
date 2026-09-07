@@ -33,6 +33,7 @@ class ActorProfile(BaseModel):
     work_count: int
     works: tuple[ActorWorkReference, ...]
     image_url: str | None = None
+    x_handle: str | None = None
 
 
 class ActorCatalogPayload(BaseModel):
@@ -77,6 +78,7 @@ class _ActorAccumulator:
     name: str
     id: str | None = None
     image_url: str | None = None
+    x_handle: str | None = None
     aliases: set[str] = field(default_factory=set)
     categories: set[str] = field(default_factory=set)
     works: list[ActorWorkReference] = field(default_factory=list)
@@ -137,6 +139,7 @@ def build_actor_catalog_from_relations(
                 name=canonical,
                 id=actor.id,
                 image_url=actor.image_url,
+                x_handle=getattr(actor, "x_handle", None),
             ),
         )
         accumulator.aliases.update(alias for alias in actor.aliases if alias.strip())
@@ -194,6 +197,8 @@ def merge_actor_catalogs(
             accumulator.id = profile.id
         if profile.image_url is not None:
             accumulator.image_url = profile.image_url
+        if getattr(profile, "x_handle", None):
+            accumulator.x_handle = profile.x_handle
         if _normalize(profile.name) != key:
             accumulator.aliases.add(profile.name.strip())
         accumulator.aliases.update(alias.strip() for alias in profile.aliases if alias.strip())
@@ -222,10 +227,8 @@ def merge_actor_catalogs(
             work_count=len(item.works),
             works=tuple(sorted(item.works, key=lambda work: (work.category, work.code or "", work.title))),
             image_url=item.image_url
-            or next(
-                (work.image_url for work in item.works if work.image_url),
-                None,
-            ),
+            or next((work.image_url for work in item.works if work.image_url), None),
+            x_handle=getattr(item, "x_handle", None),
         )
         for item in accumulators.values()
     ]
@@ -296,10 +299,8 @@ def _profiles_from_accumulators(
             work_count=len(item.works),
             works=tuple(sorted(item.works, key=lambda work: (work.category, work.code or "", work.title))),
             image_url=item.image_url
-            or next(
-                (work.image_url for work in item.works if work.image_url),
-                None,
-            ),
+            or next((work.image_url for work in item.works if work.image_url), None),
+            x_handle=getattr(item, "x_handle", None),
         )
         for item in accumulators.values()
     ]

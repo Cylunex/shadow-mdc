@@ -92,7 +92,21 @@ _STUDIO_NAME_MARKERS = (
 # TPDB site short_names that carry Chinese / Madou-adjacent catalog.
 _CHINESE_SITES: tuple[tuple[str, str, str], ...] = (
     ("modelmediaasia", "麻豆传媒", "madou"),
+    ("teamskeetxmodelmediaasia", "麻豆传媒", "madou"),
     ("fansdbhongkongdollonlyfans", "HongKongDoll", "onlyfans"),
+    ("swagliveezrabebe", "SWAG", "swag"),
+    ("swagliveweijoannana", "SWAG", "swag"),
+    ("swaglivelinlinbebe", "SWAG", "swag"),
+    ("swaglivesunnyday9", "SWAG", "swag"),
+    ("swagliveprincessdolly", "SWAG", "swag"),
+    ("swagliveasiaxxxtour", "SWAG", "swag"),
+    ("swaglivemiababe", "SWAG", "swag"),
+    ("swaglivewoshisuchang", "SWAG", "swag"),
+    ("swagliveelvababe", "SWAG", "swag"),
+    ("swaglivedaxiangtw", "SWAG", "swag"),
+    ("swaglivepeachmedia", "蜜桃影像", "swag"),
+    ("swagliveroostersclubtw", "SWAG", "swag"),
+    ("swagliveedmosaic", "SWAG", "swag"),
 )
 
 
@@ -541,6 +555,82 @@ def db_upsert_work_artwork(
     )
 
 
+CURATED_PLATFORM_SEEDS: tuple[dict[str, object], ...] = (
+    {
+        "id": "curated-tanhua-ktv-001",
+        "title": "KTV探花·样例场次 001",
+        "studio": "探花",
+        "series": "KTV探花",
+        "family": "chinese",
+        "category": "China",
+        "actors": ["探花达人"],
+        "tags": ["chinese", "tanhua", "curated-seed"],
+        "year": None,
+        "code": None,
+    },
+    {
+        "id": "curated-tanhua-hotel-002",
+        "title": "酒店探花·样例场次 002",
+        "studio": "探花",
+        "series": "酒店探花",
+        "family": "chinese",
+        "category": "China",
+        "actors": ["探花达人"],
+        "tags": ["chinese", "tanhua", "curated-seed"],
+        "year": None,
+        "code": None,
+    },
+    {
+        "id": "curated-sugarheart-vlog-001",
+        "title": "糖心Vlog·居家日常 001",
+        "studio": "糖心Vlog",
+        "series": "糖心",
+        "family": "chinese",
+        "category": "China",
+        "actors": ["糖心女孩"],
+        "tags": ["chinese", "tangxin", "sugarheart", "curated-seed"],
+        "year": None,
+        "code": None,
+    },
+    {
+        "id": "curated-sugarheart-vlog-002",
+        "title": "糖心Vlog·约会记录 002",
+        "studio": "糖心Vlog",
+        "series": "糖心",
+        "family": "chinese",
+        "category": "China",
+        "actors": ["糖心女孩"],
+        "tags": ["chinese", "tangxin", "sugarheart", "curated-seed"],
+        "year": None,
+        "code": None,
+    },
+    {
+        "id": "curated-tiameei-001",
+        "title": "天美传媒·都市情感 001",
+        "studio": "天美传媒",
+        "series": "天美传媒",
+        "family": "chinese",
+        "category": "China",
+        "actors": ["天美女郎"],
+        "tags": ["chinese", "tianmei", "curated-seed"],
+        "year": None,
+        "code": None,
+    },
+    {
+        "id": "curated-jelly-001",
+        "title": "果冻传媒·校园邂逅 001",
+        "studio": "果冻传媒",
+        "series": "果冻传媒",
+        "family": "chinese",
+        "category": "China",
+        "actors": ["果冻女孩"],
+        "tags": ["chinese", "jelly", "curated-seed"],
+        "year": None,
+        "code": None,
+    },
+)
+
+
 def main() -> None:
     token = theporndb_token_from_env(ROOT / ".env")
     if not token:
@@ -550,6 +640,33 @@ def main() -> None:
     works_doc = json.loads(WORKS_PATH.read_text(encoding="utf-8"))
     actors: list[dict[str, Any]] = list(actors_doc.get("actors") or [])
     works: list[dict[str, Any]] = list(works_doc.get("works") or [])
+    existing_ids = {str(item.get("id")) for item in works if isinstance(item, dict)}
+    for seed in CURATED_PLATFORM_SEEDS:
+        seed_id = str(seed["id"])
+        if seed_id not in existing_ids:
+            works.append(dict(seed))
+            existing_ids.add(seed_id)
+            print(f"curated seed added {seed_id}", flush=True)
+    for actor_name, groups in (
+        ("探花达人", ["tanhua"]),
+        ("糖心女孩", ["tangxin"]),
+        ("天美女郎", ["tianmei"]),
+        ("果冻女孩", ["jelly"]),
+    ):
+        if _exact_actor_match(_build_actor_index(actors), actor_name) is None:
+            actors.append(
+                {
+                    "name": actor_name,
+                    "aliases": [],
+                    "groups": groups,
+                    "categories": ["China"],
+                    "match_names": [actor_name],
+                    "image_file": None,
+                    "biography": "Curated Chinese platform placeholder actor.",
+                    "notes": "Local curated seed for platform collection linking.",
+                    "x_handle": None,
+                }
+            )
     index = _build_actor_index(actors)
 
     before_actors_with_img = sum(
@@ -584,7 +701,7 @@ def main() -> None:
         # --- Pass 1: site scenes → works + posters + performer portraits ---
         for site, studio, group in _CHINESE_SITES:
             print(f"fetch site={site}", flush=True)
-            scenes = fetch_site_scenes(client, site, pages=10 if site == "modelmediaasia" else 4)
+            scenes = fetch_site_scenes(client, site, pages=16 if site == "modelmediaasia" else (6 if site.startswith("swag") or site.startswith("teamskeet") else 4))
             print(f"  scenes={len(scenes)}", flush=True)
             for scene in scenes:
                 stats["scenes_seen"] += 1

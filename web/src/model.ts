@@ -167,7 +167,9 @@ export const identitySchema = z.object({
 export const actorSummarySchema = z.object({
   id: z.string(),
   name: z.string(),
-  image_url: z.string().nullable()
+  image_url: z.string().nullable(),
+  x_handle: z.string().nullable().optional(),
+  x_url: z.string().nullable().optional()
 });
 
 
@@ -242,7 +244,9 @@ export const actorProfileSchema = z.object({
     category: z.string(),
     image_url: z.string().nullable()
   })),
-  image_url: z.string().nullable()
+  image_url: z.string().nullable().optional(),
+  x_handle: z.string().nullable().optional(),
+  x_url: z.string().nullable().optional()
 });
 export const actorProfilesSchema = z.array(actorProfileSchema);
 
@@ -264,6 +268,8 @@ export const nonJavActorSchema = z.object({
   categories: z.array(z.enum(["Japan", "China", "Korea", "Europe", "Other"])),
   match_names: z.array(z.string()),
   image_url: z.string().nullable(),
+  x_handle: z.string().nullable().optional(),
+  x_url: z.string().nullable().optional(),
   biography: z.string().nullable(),
   notes: z.string().nullable(),
   work_count: z.number().default(0),
@@ -462,3 +468,16 @@ export type FilterWords = z.infer<typeof filterWordsSchema>;
 export type CatalogImportResult = z.infer<typeof catalogImportResultSchema>;
 export type BatchPlan = z.infer<typeof batchPlanSchema>;
 export type TaskRun = z.infer<typeof taskRunSchema>;
+
+
+export const fieldPrioritySchema = z.object({
+  priorities: z.record(z.string(), z.array(z.string()))
+});
+export type FieldPriority = z.infer<typeof fieldPrioritySchema>;
+
+export const lexiconExportSchema = z.object({
+  filter_words: z.array(z.string()),
+  identity_aliases: z.record(z.string(), z.unknown()),
+  field_priority: z.record(z.string(), z.array(z.string())),
+  exported_at: z.string()
+});

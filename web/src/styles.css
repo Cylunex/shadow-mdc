@@ -330,3 +330,42 @@ button.danger { border-color: #6d3333; color: #ffb1b1; }
   .works-layout.with-detail { grid-template-columns: 1fr; }
   .work-detail { position: static; }
 }
+
+.x-handle-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: #1d9bf0;
+  font-weight: 600;
+  text-decoration: none;
+}
+.x-handle-link:hover { text-decoration: underline; }
+.task-center-toolbar { margin-bottom: 0.75rem; }
+.task-progress {
+  position: relative;
+  height: 0.55rem;
+  background: #243044;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 0.4rem;
+}
+.task-progress > div {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #22c55e);
+}
+.task-progress > span {
+  position: absolute;
+  right: 0;
+  top: 0.7rem;
+  font-size: 0.75rem;
+  opacity: 0.8;
+}
+.task-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.identify-url-panel, .field-priority-settings {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid #2a3648;
+  border-radius: 12px;
+}
+.identify-url-form, .field-priority-row { display: grid; gap: 0.5rem; }
+.field-priority-row { grid-template-columns: 8rem 1fr; align-items: center; }

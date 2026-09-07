@@ -41,10 +41,13 @@ def normalize_collection_name(value: str) -> str:
 
 
 def detect_collection_kind(name: str, *, preferred: CollectionKind | None = None) -> CollectionKind:
-    """Map a free-text studio/series/label into a Collection kind."""
+    """Map a free-text studio/series/label into a Collection kind.
 
-    if preferred is CollectionKind.SERIES:
-        return CollectionKind.SERIES
+    Known Chinese platforms (麻豆/探花/糖心…) stay PLATFORM even when the string
+    came from a Work.series field, so the UI does not grow duplicate series+platform
+    rows for the same brand.
+    """
+
     if preferred is CollectionKind.LABEL:
         return CollectionKind.LABEL
     if preferred is CollectionKind.PLATFORM:
@@ -55,6 +58,8 @@ def detect_collection_kind(name: str, *, preferred: CollectionKind | None = None
     # Allow short canonical platform stems inside longer studio strings.
     if any(stem in key for stem in ("麻豆", "探花", "糖心", "天美", "果冻", "星空无限")):
         return CollectionKind.PLATFORM
+    if preferred is CollectionKind.SERIES:
+        return CollectionKind.SERIES
     if preferred is CollectionKind.STUDIO:
         return CollectionKind.STUDIO
     return preferred or CollectionKind.STUDIO
