@@ -1,5 +1,15 @@
 import { z } from "zod";
 
+const providerHealthSchema = z.object({
+  providers: z.array(z.object({
+    provider: z.string(),
+    configured: z.boolean(),
+    failures: z.number(),
+    cooldown: z.boolean(),
+    retry_in_seconds: z.number().nullable().optional()
+  }))
+});
+
 import {
   actorProfilesSchema,
   assetInboxListSchema,
@@ -119,8 +129,7 @@ export const api = {
   tasks: () => request(taskRunsSchema, "/api/tasks"),
   cancelTask: (taskId: string) => request(taskRunSchema, `/api/tasks/${taskId}/cancel`, { method: "POST" }),
   retryTask: (taskId: string) => request(taskRunSchema, `/api/tasks/${taskId}/retry`, { method: "POST" }),
-  providerHealth: () => request(z.object({ providers: z.array(z.object({ provider: z.string(), configured: z.boolean(), failures: z.number(), cooldown: z.boolean(), retry_in_seconds: z.number().nullable().optional() })) }), "/api/providers/health"),
-  exportLexicon: () => request(z.record(z.string(), z.unknown()), "/api/lexicon/export"),
+  providerHealth: () => request(providerHealthSchema, "/api/providers/health"),
   assets: () => request(assetInboxListSchema, "/api/inbox"),
   candidates: (assetId: string) => request(candidatesSchema, `/api/assets/${assetId}/candidates`),
   manualCandidate: (assetId: string, payload: { title?: string }) =>

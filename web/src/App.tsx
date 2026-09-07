@@ -1491,8 +1491,8 @@ function Libraries(props: {
               className="ghost"
               disabled={props.busy === `identify-continue-${library.id}`}
               title="从剩余未处理身份继续，默认每批 50"
-              onClick={() => void props.run(`identify-continue-${library.id}`, async (, { continue_failed: false, skip_identified: true, skip_remote_when_identified: true }) => {
-                const result = await api.identifyLibrary(library.id, 50, { continue_failed: false, skip_identified: true, skip_remote_when_identified: true });
+              onClick={() => void props.run(`identify-continue-${library.id}`, async () => {
+                const result = await api.identifyLibrary(library.id, 50, { continue_failed: false, skip_identified: true });
                 props.report(
                   `继续识别：处理 ${result.attempted_assets}，剩余 ${result.remaining_identities} 组；` +
                   `在线 ${result.online_identified} / 本地 ${result.local_optimized} / 待确认 ${result.unresolved}`
