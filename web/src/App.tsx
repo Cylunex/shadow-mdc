@@ -263,10 +263,10 @@ function actorInitials(name: string): string {
   const cjk = letters.filter((ch) => ch.charCodeAt(0) > 0x2e7f);
   if (cjk.length) return cjk.slice(0, 2).join("");
   const parts = cleaned.replace(/[_-]/g, " ").split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  if (parts.length >= 2) { const a = parts[0]?.[0]; const b = parts[1]?.[0]; if (a && b) return (a + b).toUpperCase(); }
   const alnum = letters.filter((ch) => /[0-9A-Za-z]/.test(ch)).join("");
   if (alnum.length >= 2) return alnum.slice(0, 2).toUpperCase();
-  return letters[0].toUpperCase();
+  return (letters[0] ?? "?").toUpperCase();
 }
 
 function DisplayFilterBar(props: {
@@ -1454,7 +1454,7 @@ function Libraries(props: {
               onClick={() => void props.run(`identify-continue-${library.id}`, async () => {
                 const result = await api.identifyLibrary(library.id, 50);
                 props.report(
-                  `继续识别：处理 ${result.attempted}，剩余 ${result.remaining_identities} 组；` +
+                  `继续识别：处理 ${result.attempted_assets}，剩余 ${result.remaining_identities} 组；` +
                   `在线 ${result.online_identified} / 本地 ${result.local_optimized} / 待确认 ${result.unresolved}`
                 );
               })}
