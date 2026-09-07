@@ -109,7 +109,7 @@ def build_local_catalog_record(
     title = hierarchical[0] or _local_title(path.stem, hints, subject)
     family = hints.family if hints.family is not ContentFamily.UNKNOWN else family_for_category(category)
     external_id = hashlib.sha256(f"{library_id}\0{relative.as_posix().casefold()}".encode()).hexdigest()
-    confirmed_directory_actor = "directory-actor:confirmed" in hints.alias_evidence
+    confirmed_directory_actor = bool({"directory-actor:confirmed", "batch-actor:confirmed"} & set(hints.alias_evidence))
     actors = (
         hints.actors
         if confirmed_directory_actor and hints.actors

@@ -80,6 +80,21 @@ export const assetSchema = z.object({
 });
 export const assetsSchema = z.array(assetSchema);
 
+export const inboxMatchEvidenceSchema = z.object({
+  kind: z.string(),
+  contribution: z.number(),
+  detail: z.string()
+});
+
+export const inboxMatchSummarySchema = z.object({
+  candidate_id: z.string(),
+  provider: z.string(),
+  title: z.string(),
+  score: z.number(),
+  decision: z.string(),
+  evidence: z.array(inboxMatchEvidenceSchema)
+});
+
 export const assetInboxSchema = z.object({
   id: z.string(),
   library_id: z.string(),
@@ -100,7 +115,8 @@ export const assetInboxSchema = z.object({
     audio_codec: z.string().nullable(),
     hdr_format: z.string().nullable(),
     quality_label: z.string().nullable()
-  })
+  }),
+  top_match: inboxMatchSummarySchema.nullable().optional()
 });
 export const assetInboxListSchema = z.array(assetInboxSchema);
 
@@ -154,6 +170,32 @@ export const actorSummarySchema = z.object({
   image_url: z.string().nullable()
 });
 
+
+export const collectionSummarySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  kind: z.enum(["series", "studio", "platform", "label"]),
+  aliases: z.array(z.string()).default([])
+});
+
+export const collectionSchema = collectionSummarySchema.extend({
+  description: z.string().nullable().optional(),
+  work_count: z.number().default(0),
+  created_at: z.string(),
+  updated_at: z.string()
+});
+export const collectionsSchema = z.array(collectionSchema);
+
+export const collectionSeedResultSchema = z.object({
+  collections_total: z.number(),
+  collections_created: z.number(),
+  links_added: z.number(),
+  kind_series: z.number().default(0),
+  kind_studio: z.number().default(0),
+  kind_platform: z.number().default(0),
+  kind_label: z.number().default(0)
+});
+
 export const workSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -175,11 +217,17 @@ export const workSchema = z.object({
   image_url: z.string().nullable(),
   fanart_url: z.string().nullable(),
   field_sources: z.record(z.string(), z.string()),
+  field_locks: z.array(z.string()).default([]),
   identities: z.array(identitySchema),
+  collections: z.array(collectionSummarySchema).default([]),
   created_at: z.string(),
   updated_at: z.string()
 });
 export const worksSchema = z.array(workSchema);
+
+export const workDetailSchema = workSchema.extend({
+  assets: z.array(assetSchema).default([])
+});
 
 export const actorProfileSchema = z.object({
   id: z.string().nullable(),
@@ -381,6 +429,13 @@ export const catalogImportResultSchema = z.object({
   notes: z.array(z.string())
 });
 
+export const inboxBatchResultSchema = z.object({
+  attempted: z.number(),
+  succeeded: z.number(),
+  skipped: z.number(),
+  errors: z.array(z.string())
+});
+
 export const identifySchema = z.object({
   asset_id: z.string(),
   candidate_ids: z.array(z.string()),
@@ -396,6 +451,10 @@ export type Library = z.infer<typeof librarySchema>;
 export type Asset = z.infer<typeof assetInboxSchema>;
 export type Candidate = z.infer<typeof candidateSchema>;
 export type Work = z.infer<typeof workSchema>;
+export type Collection = z.infer<typeof collectionSchema>;
+export type CollectionSummary = z.infer<typeof collectionSummarySchema>;
+export type WorkDetail = z.infer<typeof workDetailSchema>;
+export type InboxBatchResult = z.infer<typeof inboxBatchResultSchema>;
 export type ActorProfile = z.infer<typeof actorProfileSchema>;
 export type NonJavActor = z.infer<typeof nonJavActorSchema>;
 export type IdentityAliases = z.infer<typeof identityAliasesSchema>;

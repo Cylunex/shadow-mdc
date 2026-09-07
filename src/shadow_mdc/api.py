@@ -30,8 +30,13 @@ from .api_models import (
     BulkTranslateOut,
     BulkTranslateRequest,
     CandidateOut,
+    CatalogExportRequest,
+    CatalogExportResultOut,
     CatalogImportPathRequest,
     CatalogImportResultOut,
+    CollectionOut,
+    CollectionSeedResultOut,
+    CollectionSummaryOut,
     DirectoryActorAssignOut,
     DirectoryActorAssignRequest,
     FilterWordsPayload,
@@ -39,6 +44,11 @@ from .api_models import (
     IdentifyOut,
     IdentifyRequest,
     IdentityOut,
+    InboxBatchActorRequest,
+    InboxBatchRequest,
+    InboxBatchResultOut,
+    InboxMatchEvidenceOut,
+    InboxMatchSummaryOut,
     LibraryCreate,
     LibraryOut,
     LibraryUpdate,
@@ -57,13 +67,17 @@ from .api_models import (
     ScreenshotGenerateOut,
     ScreenshotGenerateRequest,
     TaskRunOut,
+    WorkDetailOut,
+    WorkLocksRequest,
     WorkLookupOut,
     WorkLookupRequest,
     WorkOut,
+    WorkPosterPreferRequest,
+    WorkUpdateRequest,
 )
 from .config import Settings
 from .db.models import Library, MatchCandidateRow, MediaAsset, Work
-from .db.repository import Database, Repository
+from .db.repository import LOCKABLE_WORK_FIELDS, Database, Repository
 from .domain import (
     FileOperation,
     IdentityHints,
@@ -74,6 +88,7 @@ from .domain import (
     ScoredCandidate,
 )
 from .enums import (
+    CollectionKind,
     ContentFamily,
     MatchDecision,
     MediaCategory,
@@ -114,6 +129,7 @@ from .services.actor_catalog import (
     sync_actor_catalog_from_relations,
 )
 from .services.alias_store import IdentityAliasStore
+from .services.catalog_export import export_catalog_bundle, state_path
 from .services.catalog_import import CatalogImportRequest, import_catalog_bundle
 from .services.directory_actor_rules import (
     DirectoryActorRule,
@@ -395,6 +411,43 @@ def update_filter_words(payload: FilterWordsPayload, request: Request) -> Filter
 
 
 
+@app.post("/api/catalog/export", response_model=CatalogExportResultOut)
+def export_catalog(payload: CatalogExportRequest, request: Request) -> CatalogExportResultOut:
+    """Export a portable catalog bundle; optional incremental/since-last delta."""
+
+    from pathlib import PurePosixPath
+
+    app_runtime = runtime(request)
+    target = PurePosixPath(payload.target_data_dir)
+    if not target.is_absolute():
+        raise HTTPException(status_code=422, detail="target_data_dir must be an absolute POSIX path")
+    output = Path(payload.output)
+    try:
+        manifest = export_catalog_bundle(
+            source_data_dir=app_runtime.settings.data_dir,
+            source_database=(
+                Path(app_runtime.settings.database_url.removeprefix("sqlite:///"))
+                if app_runtime.settings.database_url.startswith("sqlite:///")
+                else app_runtime.settings.data_dir / "shadow-mdc.db"
+            ),
+            output=output,
+            target_data_dir=target,
+            incremental=payload.incremental,
+            since=payload.since,
+            state_file=state_path(app_runtime.settings.data_dir),
+            update_state=payload.update_state,
+        )
+    except (OSError, ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return CatalogExportResultOut(
+        mode=manifest.mode,
+        output=str(output),
+        catalog_counts=dict(manifest.catalog_counts),
+        omitted_runtime_counts=dict(manifest.omitted_runtime_counts),
+        incremental=dict(manifest.incremental or {}),
+    )
+
+
 @app.post("/api/catalog/import", response_model=CatalogImportResultOut)
 def import_catalog_from_path(
     payload: CatalogImportPathRequest,
@@ -494,6 +547,14 @@ def providers(request: Request) -> ProviderListOut:
 def list_task_runs(repo: Repo, limit: int = 100) -> list[TaskRunOut]:
     safe_limit = min(max(limit, 1), 500)
     return [TaskRunOut.model_validate(item) for item in repo.list_task_runs(limit=safe_limit)]
+
+
+@app.get("/api/tasks/{task_id}", response_model=TaskRunOut)
+def get_task_run(task_id: str, repo: Repo) -> TaskRunOut:
+    task = repo.get_task_run(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    return TaskRunOut.model_validate(task)
 
 
 @app.post("/api/providers/diagnose", response_model=ProviderDiagnoseOut)
@@ -980,13 +1041,32 @@ def list_assets(repo: Repo, state: str | None = None) -> list[AssetOut]:
 
 
 @app.get("/api/inbox", response_model=list[AssetInboxOut])
-def list_inbox_assets(repo: Repo) -> list[AssetInboxOut]:
+def list_inbox_assets(repo: Repo, state: str | None = None) -> list[AssetInboxOut]:
     output: list[AssetInboxOut] = []
     for asset in repo.list_assets():
         if asset.state == "identified":
             continue
+        if state is not None and asset.state != state:
+            continue
         hints = IdentityHints.model_validate(asset.hints)
         media_info = MediaTechnicalInfo.model_validate(asset.media_info or {})
+        top = repo.top_pending_candidate(asset.id)
+        top_match = None
+        if top is not None:
+            record = ProviderRecord.model_validate(top.record)
+            evidence = [
+                InboxMatchEvidenceOut.model_validate(item)
+                for item in (top.evidence or [])
+                if isinstance(item, dict)
+            ]
+            top_match = InboxMatchSummaryOut(
+                candidate_id=top.id,
+                provider=top.provider,
+                title=record.title,
+                score=top.score,
+                decision=top.decision,
+                evidence=evidence,
+            )
         output.append(
             AssetInboxOut(
                 id=asset.id,
@@ -1009,9 +1089,145 @@ def list_inbox_assets(repo: Repo) -> list[AssetInboxOut]:
                     hdr_format=media_info.hdr_format,
                     quality_label=media_info.quality_label,
                 ),
+                top_match=top_match,
             )
         )
     return output
+
+
+@app.post("/api/inbox/batch/accept", response_model=InboxBatchResultOut)
+async def batch_accept_inbox(
+    payload: InboxBatchRequest,
+    request: Request,
+    repo: Repo,
+) -> InboxBatchResultOut:
+    succeeded = 0
+    skipped = 0
+    errors: list[str] = []
+    app_runtime = runtime(request)
+    for asset_id in payload.asset_ids:
+        asset = repo.get_asset(asset_id)
+        if asset is None or asset.state == "identified":
+            skipped += 1
+            continue
+        candidate = repo.top_pending_candidate(asset_id)
+        if candidate is None:
+            local = repo.accept_local_candidate(asset_id)
+            if local is None:
+                skipped += 1
+                continue
+            await app_runtime.translator.translate_work(repo, local)
+            succeeded += 1
+            continue
+        try:
+            work = repo.accept_candidate(candidate.id)
+            await app_runtime.translator.translate_work(repo, work)
+            succeeded += 1
+        except LookupError as exc:
+            errors.append(f"{asset_id}: {exc}")
+    return InboxBatchResultOut(
+        attempted=len(payload.asset_ids),
+        succeeded=succeeded,
+        skipped=skipped,
+        errors=tuple(errors[:20]),
+    )
+
+
+@app.post("/api/inbox/batch/ignore", response_model=InboxBatchResultOut)
+def batch_ignore_inbox(payload: InboxBatchRequest, repo: Repo) -> InboxBatchResultOut:
+    succeeded = 0
+    skipped = 0
+    errors: list[str] = []
+    for asset_id in payload.asset_ids:
+        asset = repo.get_asset(asset_id)
+        if asset is None:
+            skipped += 1
+            continue
+        if asset.state == "identified":
+            skipped += 1
+            continue
+        try:
+            repo.ignore_asset(asset_id, reason="user-junk")
+            succeeded += 1
+        except LookupError as exc:
+            errors.append(f"{asset_id}: {exc}")
+    return InboxBatchResultOut(
+        attempted=len(payload.asset_ids),
+        succeeded=succeeded,
+        skipped=skipped,
+        errors=tuple(errors[:20]),
+    )
+
+
+@app.post("/api/inbox/batch/actor", response_model=InboxBatchResultOut)
+def batch_apply_actor_inbox(
+    payload: InboxBatchActorRequest,
+    request: Request,
+    repo: Repo,
+) -> InboxBatchResultOut:
+    """Apply a confirmed actor to selected no-code inbox assets without directory rules."""
+
+    succeeded = 0
+    skipped = 0
+    errors: list[str] = []
+    app_runtime = runtime(request)
+    actor_name = payload.actor.strip()
+    existing_profile = app_runtime.non_jav_actor_store.get(actor_name)
+    if existing_profile is None:
+        app_runtime.non_jav_actor_store.upsert(
+            build_non_jav_actor_profile(
+                name=actor_name,
+                aliases=(),
+                groups=("user-batch",),
+                categories=(payload.category,),
+            )
+        )
+    for asset_id in payload.asset_ids:
+        asset = repo.get_asset(asset_id)
+        if asset is None:
+            skipped += 1
+            continue
+        library = repo.get_library(asset.library_id)
+        if library is None:
+            skipped += 1
+            continue
+        hints = IdentityHints.model_validate(asset.hints)
+        if hints.code is not None:
+            skipped += 1
+            continue
+        existing_work = repo.get_work(asset.work_id) if asset.work_id is not None else None
+        if existing_work is not None and repo.work_has_verified_evidence(existing_work.id):
+            skipped += 1
+            continue
+        try:
+            root = Path(library.root_path).resolve()
+            current_path = Path(asset.path).resolve()
+            updated_hints = hints.model_copy(
+                update={
+                    "actors": (actor_name,),
+                    "category": payload.category,
+                    "family": family_for_category(payload.category),
+                    "alias_evidence": (*hints.alias_evidence, "directory-actor:confirmed"),
+                }
+            )
+            repo.update_asset_hints(asset, updated_hints)
+            record = build_local_catalog_record(
+                library_id=library.id,
+                root=root,
+                path=current_path,
+                hints=updated_hints,
+                actor_directory=current_path.parent,
+            )
+            repo.refresh_local_catalog_asset(asset, record)
+            succeeded += 1
+        except (LookupError, ValueError, OSError) as exc:
+            errors.append(f"{asset_id}: {exc}")
+    return InboxBatchResultOut(
+        attempted=len(payload.asset_ids),
+        succeeded=succeeded,
+        skipped=skipped,
+        errors=tuple(errors[:20]),
+    )
 
 
 @app.get("/api/assets/{asset_id}", response_model=AssetOut)
@@ -1114,9 +1330,80 @@ async def accept_candidate(candidate_id: str, request: Request, repo: Repo) -> W
     return _work_out(repo, work)
 
 
+
+@app.get("/api/collections", response_model=list[CollectionOut])
+def list_collections(
+    repo: Repo,
+    kind: CollectionKind | None = None,
+    q: str | None = None,
+    seed_if_empty: bool = False,
+) -> list[CollectionOut]:
+    if seed_if_empty and not repo.list_collections():
+        repo.seed_collections_from_works()
+    output: list[CollectionOut] = []
+    for item in repo.list_collections(kind=kind, q=q):
+        work_count = len(repo.list_works(collection_id=item.id))
+        output.append(
+            CollectionOut(
+                id=item.id,
+                name=item.name,
+                kind=CollectionKind(item.kind),
+                aliases=list(item.aliases or []),
+                description=item.description,
+                work_count=work_count,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+            )
+        )
+    return output
+
+
+@app.post("/api/collections/seed", response_model=CollectionSeedResultOut)
+def seed_collections(repo: Repo) -> CollectionSeedResultOut:
+    result = repo.seed_collections_from_works()
+    return CollectionSeedResultOut(
+        collections_total=int(result.get("collections_total", 0)),
+        collections_created=int(result.get("collections_created", 0)),
+        links_added=int(result.get("links_added", 0)),
+        kind_series=int(result.get("kind_series", 0)),
+        kind_studio=int(result.get("kind_studio", 0)),
+        kind_platform=int(result.get("kind_platform", 0)),
+        kind_label=int(result.get("kind_label", 0)),
+    )
+
+
+@app.get("/api/collections/{collection_id}", response_model=CollectionOut)
+def get_collection(collection_id: str, repo: Repo) -> CollectionOut:
+    item = repo.get_collection(collection_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="collection not found")
+    return CollectionOut(
+        id=item.id,
+        name=item.name,
+        kind=CollectionKind(item.kind),
+        aliases=list(item.aliases or []),
+        description=item.description,
+        work_count=len(repo.list_works(collection_id=item.id)),
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
 @app.get("/api/works", response_model=list[WorkOut])
-def list_works(repo: Repo) -> list[WorkOut]:
-    return [_work_out(repo, work) for work in repo.list_works()]
+def list_works(
+    repo: Repo,
+    collection_id: str | None = None,
+    collection_kind: CollectionKind | None = None,
+    collection: str | None = None,
+) -> list[WorkOut]:
+    return [
+        _work_out(repo, work)
+        for work in repo.list_works(
+            collection_id=collection_id,
+            collection_kind=collection_kind,
+            collection_name=collection,
+        )
+    ]
 
 
 @app.post("/api/works/lookup", response_model=WorkLookupOut)
@@ -1184,12 +1471,67 @@ async def lookup_work_by_code(
     )
 
 
-@app.get("/api/works/{work_id}", response_model=WorkOut)
-def get_work(work_id: str, repo: Repo) -> WorkOut:
+@app.get("/api/works/{work_id}", response_model=WorkDetailOut)
+def get_work(work_id: str, repo: Repo) -> WorkDetailOut:
     work = repo.get_work(work_id)
     if work is None:
         raise HTTPException(status_code=404, detail="work not found")
-    return _work_out(repo, work)
+    return _work_detail_out(repo, work)
+
+
+@app.patch("/api/works/{work_id}", response_model=WorkDetailOut)
+def update_work(work_id: str, payload: WorkUpdateRequest, repo: Repo) -> WorkDetailOut:
+    work = repo.get_work(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    if (
+        payload.title is None
+        and payload.actors is None
+        and payload.studio is None
+        and payload.series is None
+        and payload.tags is None
+        and payload.plot is None
+    ):
+        raise HTTPException(status_code=422, detail="no editable fields provided")
+    repo.update_work_fields(
+        work,
+        title=payload.title,
+        actors=list(payload.actors) if payload.actors is not None else None,
+        studio=payload.studio,
+        series=payload.series,
+        tags=list(payload.tags) if payload.tags is not None else None,
+        plot=payload.plot,
+        lock_edited=payload.lock_edited,
+    )
+    return _work_detail_out(repo, work)
+
+
+@app.put("/api/works/{work_id}/locks", response_model=WorkDetailOut)
+def update_work_locks(work_id: str, payload: WorkLocksRequest, repo: Repo) -> WorkDetailOut:
+    work = repo.get_work(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    unknown = [field for field in payload.locks if field not in LOCKABLE_WORK_FIELDS]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"unsupported lock fields: {', '.join(unknown)}")
+    repo.set_field_locks(work, list(payload.locks))
+    return _work_detail_out(repo, work)
+
+
+@app.post("/api/works/{work_id}/artwork/prefer", response_model=WorkDetailOut)
+def prefer_work_poster(
+    work_id: str,
+    payload: WorkPosterPreferRequest,
+    repo: Repo,
+) -> WorkDetailOut:
+    work = repo.get_work(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    try:
+        repo.prefer_work_poster(work, artwork_index=payload.artwork_index)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _work_detail_out(repo, work)
 
 
 @app.post("/api/works/{work_id}/refresh", response_model=IdentifyOut)
@@ -1198,14 +1540,40 @@ async def refresh_work_metadata(work_id: str, request: Request, repo: Repo) -> I
     if work is None:
         raise HTTPException(status_code=404, detail="work not found")
     asset = repo.first_asset_for_work(work.id)
-    if asset is None:
-        raise HTTPException(status_code=409, detail="work has no media asset")
     app_runtime = runtime(request)
-    result = await IdentifyService(repo, app_runtime.providers).identify(asset.id)
-    accepted = repo.get_work(result.accepted_work_id) if result.accepted_work_id is not None else None
-    if accepted is not None:
-        await app_runtime.translator.translate_work(repo, accepted)
-    return IdentifyOut.model_validate(result.model_dump())
+    if asset is not None:
+        hints = IdentityHints.model_validate(asset.hints)
+    elif work.primary_code:
+        code, family = extract_code(work.primary_code, MediaCategory(work.category))
+        if code is None:
+            raise HTTPException(status_code=409, detail="work has no refreshable identity")
+        hints = IdentityHints(
+            term=code,
+            mode=QueryMode.CODE,
+            family=family,
+            category=MediaCategory(work.category),
+            code=code,
+        )
+    else:
+        raise HTTPException(status_code=409, detail="work has no media asset or code")
+    batch = await app_runtime.providers.search(hints)
+    ranked = rank_candidates(hints, list(batch.records))
+    accepted_ids: list[str] = []
+    accepted_work: Work | None = None
+    for candidate in ranked:
+        if candidate.decision is not MatchDecision.ACCEPT:
+            continue
+        # overwrite=True refreshes unlocked fields; field_locks stay protected in repository merge.
+        accepted_work = repo.upsert_provider_record(candidate.record, overwrite=True)
+        accepted_ids.append(candidate.record.external_id)
+    if accepted_work is not None:
+        await app_runtime.translator.translate_work(repo, accepted_work)
+    return IdentifyOut(
+        asset_id=asset.id if asset is not None else work.id,
+        candidate_ids=tuple(accepted_ids),
+        accepted_work_id=accepted_work.id if accepted_work is not None else None,
+        failures=batch.failures,
+    )
 
 
 @app.post("/api/works/translate", response_model=BulkTranslateOut)
@@ -1695,6 +2063,15 @@ def _work_out(repo: Repository, work: Work) -> WorkOut:
         ActorSummaryOut(id=actor.id, name=actor.name, image_url=actor.image_url)
         for actor in repo.actors_for_work(work.id)
     ]
+    collections = [
+        CollectionSummaryOut(
+            id=item.id,
+            name=item.name,
+            kind=CollectionKind(item.kind),
+            aliases=list(item.aliases or []),
+        )
+        for item in repo.collections_for_work(work.id)
+    ]
     return WorkOut(
         id=work.id,
         title=work.title,
@@ -1715,11 +2092,19 @@ def _work_out(repo: Repository, work: Work) -> WorkOut:
         artwork=work.artwork,
         image_url=_work_display_artwork(work, "poster"),
         fanart_url=_work_display_artwork(work, "fanart"),
-        field_sources=work.field_sources,
+        field_sources=dict(work.field_sources or {}),
+        field_locks=list(work.field_locks or []),
         identities=identities,
+        collections=collections,
         created_at=work.created_at,
         updated_at=work.updated_at,
     )
+
+
+def _work_detail_out(repo: Repository, work: Work) -> WorkDetailOut:
+    base = _work_out(repo, work)
+    assets = [AssetOut.model_validate(item) for item in repo.list_assets_for_work(work.id)]
+    return WorkDetailOut(**base.model_dump(), assets=assets)
 
 
 def _work_display_artwork(work: Work, kind: str) -> str | None:
@@ -1729,6 +2114,16 @@ def _work_display_artwork(work: Work, kind: str) -> str | None:
         for item in work.artwork
         if (str(item.get("kind", "thumb")).casefold() in {"fanart", "background", "backdrop"}) is is_fanart
     ]
+    if kind == "poster":
+        preferred = [
+            item
+            for item in work.artwork
+            if item.get("preferred") is True
+            and isinstance(item.get("local_path"), str)
+            and Path(str(item["local_path"])).is_file()
+        ]
+        if preferred:
+            return f"/api/works/{work.id}/artwork/poster"
     if any(isinstance((path := item.get("local_path")), str) and Path(path).is_file() for item in matching):
         return f"/api/works/{work.id}/artwork/{kind}"
     return next(

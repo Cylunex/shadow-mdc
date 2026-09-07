@@ -1,15 +1,18 @@
+import shutil
 import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, exists, select
+from sqlalchemy import Engine, create_engine, exists, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..collection_names import detect_collection_kind, normalize_collection_name
 from ..domain import IdentityHints, MatchEvidence, MediaTechnicalInfo, ProviderRecord, ScoredCandidate
 from ..enums import (
     AssetState,
     CandidateState,
+    CollectionKind,
     IdentityKind,
     MatchDecision,
     MediaCategory,
@@ -19,6 +22,7 @@ from ..identity import normalize_identity_value
 from .models import (
     Actor,
     Base,
+    Collection,
     ExternalIdentity,
     Library,
     MatchCandidateRow,
@@ -27,7 +31,23 @@ from .models import (
     TaskRun,
     Work,
     WorkActor,
+    WorkCollection,
     utc_now,
+)
+
+LOCKABLE_WORK_FIELDS = frozenset(
+    {
+        "title",
+        "original_title",
+        "actors",
+        "studio",
+        "series",
+        "tags",
+        "plot",
+        "label",
+        "release_date",
+        "runtime_seconds",
+    }
 )
 
 _JAV_ACTOR_PROVIDER_PRIORITY = {
@@ -88,6 +108,10 @@ class Database:
             if "field_sources" not in work_columns:
                 connection.exec_driver_sql(
                     "ALTER TABLE works ADD COLUMN field_sources JSON NOT NULL DEFAULT '{}'"
+                )
+            if "field_locks" not in work_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE works ADD COLUMN field_locks JSON NOT NULL DEFAULT '[]'"
                 )
             asset_columns = {
                 str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(media_assets)")
@@ -214,6 +238,9 @@ class Repository:
     def list_task_runs(self, *, limit: int = 100) -> list[TaskRun]:
         statement = select(TaskRun).order_by(TaskRun.created_at.desc()).limit(limit)
         return list(self._session.scalars(statement))
+
+    def get_task_run(self, task_id: str) -> TaskRun | None:
+        return self._session.get(TaskRun, task_id)
 
     def upsert_asset(
         self,
@@ -510,11 +537,37 @@ class Repository:
             self._merge_provider_record(work, record, overwrite=overwrite)
         self._add_record_identities(work, record)
         self._upsert_snapshot(work, record)
+        self.sync_work_collections(work)
         self._session.flush()
         return work
 
-    def list_works(self) -> list[Work]:
-        return list(self._session.scalars(select(Work).order_by(Work.created_at.desc())))
+    def list_works(
+        self,
+        *,
+        collection_id: str | None = None,
+        collection_kind: CollectionKind | str | None = None,
+        collection_name: str | None = None,
+    ) -> list[Work]:
+        statement = select(Work)
+        if collection_id or collection_kind or collection_name:
+            statement = statement.join(WorkCollection, WorkCollection.work_id == Work.id).join(
+                Collection, Collection.id == WorkCollection.collection_id
+            )
+            if collection_id:
+                statement = statement.where(Collection.id == collection_id)
+            if collection_kind is not None:
+                kind = (
+                    collection_kind.value
+                    if isinstance(collection_kind, CollectionKind)
+                    else str(collection_kind)
+                )
+                statement = statement.where(Collection.kind == kind)
+            if collection_name:
+                statement = statement.where(
+                    Collection.normalized_name == normalize_collection_name(collection_name)
+                )
+            statement = statement.distinct()
+        return list(self._session.scalars(statement.order_by(Work.created_at.desc())))
 
     def sync_all_work_actors(self) -> None:
         for work in self.list_works():
@@ -538,6 +591,8 @@ class Repository:
             if not records:
                 continue
             best = min(records, key=lambda record: _JAV_ACTOR_PROVIDER_PRIORITY[record.provider])
+            if _field_locked(work, "actors"):
+                continue
             actors = list(best.actors)
             sources = dict(work.field_sources or {})
             changed = work.actors != actors or sources.get("actors") != best.provider
@@ -568,6 +623,128 @@ class Repository:
             .order_by(WorkActor.position)
         )
         return list(self._session.scalars(statement))
+
+
+    def list_assets_for_work(self, work_id: str) -> list[MediaAsset]:
+        return list(
+            self._session.scalars(
+                select(MediaAsset)
+                .where(MediaAsset.work_id == work_id)
+                .order_by(MediaAsset.path)
+            )
+        )
+
+    def ignore_asset(self, asset_id: str, reason: str = "user-skipped") -> MediaAsset:
+        asset = self.get_asset(asset_id)
+        if asset is None:
+            raise LookupError(f"asset {asset_id} not found")
+        asset.state = AssetState.IGNORED.value
+        asset.error = reason
+        self._session.flush()
+        return asset
+
+    def top_pending_candidate(self, asset_id: str) -> MatchCandidateRow | None:
+        return self._session.scalar(
+            select(MatchCandidateRow)
+            .where(
+                MatchCandidateRow.asset_id == asset_id,
+                MatchCandidateRow.state == CandidateState.PENDING.value,
+            )
+            .order_by(MatchCandidateRow.score.desc(), MatchCandidateRow.created_at.desc())
+            .limit(1)
+        )
+
+    def update_work_fields(
+        self,
+        work: Work,
+        *,
+        title: str | None = None,
+        actors: list[str] | None = None,
+        studio: str | None = None,
+        series: str | None = None,
+        tags: list[str] | None = None,
+        plot: str | None = None,
+        lock_edited: bool = True,
+    ) -> Work:
+        """Apply manual Work edits without mutating SourceSnapshot rows."""
+
+        sources = dict(work.field_sources or {})
+        locks = list(work.field_locks or [])
+        if title is not None:
+            work.title = title.strip()
+            sources["title"] = "manual"
+            if lock_edited and "title" not in locks:
+                locks.append("title")
+        if actors is not None:
+            cleaned = [item.strip() for item in actors if item.strip()]
+            work.actors = cleaned
+            sources["actors"] = "manual"
+            if lock_edited and "actors" not in locks:
+                locks.append("actors")
+            self._sync_work_actors(work)
+        if studio is not None:
+            work.studio = studio.strip() or None
+            sources["studio"] = "manual"
+            if lock_edited and "studio" not in locks:
+                locks.append("studio")
+        if series is not None:
+            work.series = series.strip() or None
+            sources["series"] = "manual"
+            if lock_edited and "series" not in locks:
+                locks.append("series")
+        if tags is not None:
+            cleaned = [item.strip() for item in tags if item.strip()]
+            work.tags = cleaned
+            sources["tags"] = "manual"
+            if lock_edited and "tags" not in locks:
+                locks.append("tags")
+        if plot is not None:
+            work.plot = plot.strip() or None
+            sources["plot"] = "manual"
+            if lock_edited and "plot" not in locks:
+                locks.append("plot")
+        work.field_sources = sources
+        work.field_locks = locks
+        self.sync_work_collections(work)
+        self._session.flush()
+        return work
+
+    def set_field_locks(self, work: Work, locks: list[str]) -> Work:
+        cleaned = sorted({field for field in locks if field in LOCKABLE_WORK_FIELDS})
+        work.field_locks = cleaned
+        self._session.flush()
+        return work
+
+    def prefer_work_poster(self, work: Work, *, artwork_index: int) -> Work:
+        if artwork_index < 0 or artwork_index >= len(work.artwork):
+            raise ValueError("artwork index out of range")
+        selected = dict(work.artwork[artwork_index])
+        local_path = selected.get("local_path")
+        source = Path(str(local_path)) if isinstance(local_path, str) else None
+        if source is None or not source.is_file():
+            raise ValueError("selected artwork has no cached local file")
+        # Promote into the canonical per-work poster.* slot used by the artwork API.
+        work_root = source.parent
+        suffix = source.suffix if source.suffix else ".jpg"
+        target = work_root / f"poster{suffix}"
+        if source.resolve() != target.resolve():
+            for stale in work_root.glob("poster.*"):
+                if stale.resolve() != source.resolve():
+                    stale.unlink(missing_ok=True)
+            shutil.copy2(source, target)
+            selected["local_path"] = str(target)
+        selected["kind"] = "poster"
+        selected["preferred"] = True
+        updated: list[dict[str, object]] = [selected]
+        for index, item in enumerate(work.artwork):
+            if index == artwork_index:
+                continue
+            value = dict(item)
+            value.pop("preferred", None)
+            updated.append(value)
+        work.artwork = updated
+        self._session.flush()
+        return work
 
     def first_asset_for_work(self, work_id: str) -> MediaAsset | None:
         return self._session.scalar(
@@ -653,8 +830,10 @@ class Repository:
         translated: str,
         provider: str,
     ) -> None:
+        if _field_locked(work, "title"):
+            return
         sources = dict(work.field_sources or {})
-        if work.original_title is None:
+        if work.original_title is None and not _field_locked(work, "original_title"):
             work.original_title = source
             sources["original_title"] = sources.get("title", "unknown")
         work.title = translated
@@ -732,6 +911,7 @@ class Repository:
         self._session.add(work)
         self._session.flush()
         self._sync_work_actors(work)
+        self.sync_work_collections(work)
         return work
 
     def _merge_local_record(self, work: Work, record: ProviderRecord) -> None:
@@ -745,34 +925,65 @@ class Repository:
             work.category = record.category.value
         if work.family == "unknown" and record.family.value != "unknown":
             work.family = record.family.value
-        if not work.actors and record.actors:
+        if not work.actors and record.actors and not _field_locked(work, "actors"):
             work.actors = list(record.actors)
-        if work.studio is None and record.studio:
+        if work.studio is None and record.studio and not _field_locked(work, "studio"):
             work.studio = record.studio
-        if work.series is None and record.series:
+        if work.series is None and record.series and not _field_locked(work, "series"):
             work.series = record.series
-        if not work.tags and record.tags:
+        if not work.tags and record.tags and not _field_locked(work, "tags"):
             work.tags = list(record.tags)
         self._sync_work_actors(work)
 
     def _replace_local_record(self, work: Work, record: ProviderRecord) -> None:
-        work.title = record.title
-        work.original_title = record.original_title
+        sources = dict(work.field_sources or {})
+        incoming = _record_field_sources(record)
+        if not _field_locked(work, "title"):
+            work.title = record.title
+            sources["title"] = incoming.get("title", record.provider)
+        if not _field_locked(work, "original_title"):
+            work.original_title = record.original_title
+            if record.original_title:
+                sources["original_title"] = incoming.get("original_title", record.provider)
         work.primary_code = record.code
         work.family = record.family.value
         work.category = record.category.value
-        work.release_date = record.release_date
-        work.runtime_seconds = record.runtime_seconds
-        work.studio = record.studio
-        work.label = record.label
-        work.series = record.series
-        work.plot = record.plot
-        work.actors = list(record.actors)
+        if not _field_locked(work, "release_date"):
+            work.release_date = record.release_date
+            if record.release_date:
+                sources["release_date"] = incoming.get("release_date", record.provider)
+        if not _field_locked(work, "runtime_seconds"):
+            work.runtime_seconds = record.runtime_seconds
+            if record.runtime_seconds:
+                sources["runtime_seconds"] = incoming.get("runtime_seconds", record.provider)
+        if not _field_locked(work, "studio"):
+            work.studio = record.studio
+            if record.studio:
+                sources["studio"] = incoming.get("studio", record.provider)
+        if not _field_locked(work, "label"):
+            work.label = record.label
+            if record.label:
+                sources["label"] = incoming.get("label", record.provider)
+        if not _field_locked(work, "series"):
+            work.series = record.series
+            if record.series:
+                sources["series"] = incoming.get("series", record.provider)
+        if not _field_locked(work, "plot"):
+            work.plot = record.plot
+            if record.plot:
+                sources["plot"] = incoming.get("plot", record.provider)
+        if not _field_locked(work, "actors"):
+            work.actors = list(record.actors)
+            if record.actors:
+                sources["actors"] = incoming.get("actors", record.provider)
         work.directors = list(record.directors)
-        work.tags = list(record.tags)
+        if not _field_locked(work, "tags"):
+            work.tags = list(record.tags)
+            if record.tags:
+                sources["tags"] = incoming.get("tags", record.provider)
         if record.artwork and not work.artwork:
             work.artwork = [item.model_dump(mode="json") for item in record.artwork]
-        work.field_sources = _record_field_sources(record)
+        work.field_sources = sources
         self._sync_work_actors(work)
 
     def _merge_provider_record(
@@ -783,10 +994,14 @@ class Repository:
         overwrite: bool = True,
     ) -> None:
         sources = dict(work.field_sources or {})
-        if overwrite or not work.title:
+        if not _field_locked(work, "title") and (overwrite or not work.title):
             work.title = record.title
             sources["title"] = record.provider
-        if record.original_title and (overwrite or not work.original_title):
+        if (
+            record.original_title
+            and not _field_locked(work, "original_title")
+            and (overwrite or not work.original_title)
+        ):
             work.original_title = record.original_title
             sources["original_title"] = record.provider
         if record.code and (overwrite or not work.primary_code):
@@ -801,31 +1016,41 @@ class Repository:
         if category is not MediaCategory.OTHER and (overwrite or work.category == MediaCategory.OTHER.value):
             work.category = category.value
             sources["category"] = record.provider
-        if record.release_date and (overwrite or work.release_date is None):
+        if (
+            record.release_date
+            and not _field_locked(work, "release_date")
+            and (overwrite or work.release_date is None)
+        ):
             work.release_date = record.release_date
             sources["release_date"] = record.provider
-        if record.runtime_seconds and (overwrite or work.runtime_seconds is None):
+        if (
+            record.runtime_seconds
+            and not _field_locked(work, "runtime_seconds")
+            and (overwrite or work.runtime_seconds is None)
+        ):
             work.runtime_seconds = record.runtime_seconds
             sources["runtime_seconds"] = record.provider
-        if record.studio and (overwrite or not work.studio):
+        if record.studio and not _field_locked(work, "studio") and (overwrite or not work.studio):
             work.studio = record.studio
             sources["studio"] = record.provider
-        if record.label and (overwrite or not work.label):
+        if record.label and not _field_locked(work, "label") and (overwrite or not work.label):
             work.label = record.label
             sources["label"] = record.provider
-        if record.series and (overwrite or not work.series):
+        if record.series and not _field_locked(work, "series") and (overwrite or not work.series):
             work.series = record.series
             sources["series"] = record.provider
-        if record.plot and (overwrite or not work.plot):
+        if record.plot and not _field_locked(work, "plot") and (overwrite or not work.plot):
             work.plot = record.plot
             sources["plot"] = record.provider
 
-        if record.actors:
+        if record.actors and not _field_locked(work, "actors"):
             actor_source = str(sources.get("actors", ""))
             incoming_priority = _JAV_ACTOR_PROVIDER_PRIORITY.get(record.provider)
             current_priority = _JAV_ACTOR_PROVIDER_PRIORITY.get(actor_source)
             if incoming_priority is None:
                 work.actors = _merge_unique(work.actors, record.actors, replace=overwrite)
+                if overwrite or sources.get("actors") in {None, "", "local-path", "local-manual"}:
+                    sources["actors"] = record.provider
             elif current_priority is None or incoming_priority < current_priority:
                 work.actors = list(record.actors)
                 sources["actors"] = record.provider
@@ -833,8 +1058,10 @@ class Repository:
                 work.actors = list(record.actors)
         if record.directors:
             work.directors = _merge_unique(work.directors, record.directors, replace=overwrite)
-        if record.tags:
+        if record.tags and not _field_locked(work, "tags"):
             work.tags = _merge_unique(work.tags, record.tags, replace=overwrite)
+            if overwrite or "tags" not in sources:
+                sources["tags"] = record.provider
         if record.artwork and not work.artwork:
             work.artwork = _merge_artwork(work.artwork, record, replace=False)
         work.field_sources = sources
@@ -936,6 +1163,137 @@ class Repository:
             )
         else:
             snapshot.payload = payload
+
+
+
+
+    def list_collections(
+        self,
+        *,
+        kind: CollectionKind | str | None = None,
+        q: str | None = None,
+    ) -> list[Collection]:
+        statement = select(Collection)
+        if kind is not None:
+            kind_value = kind.value if isinstance(kind, CollectionKind) else str(kind)
+            statement = statement.where(Collection.kind == kind_value)
+        if q:
+            needle = f"%{normalize_collection_name(q)}%"
+            statement = statement.where(Collection.normalized_name.like(needle))
+        return list(self._session.scalars(statement.order_by(Collection.kind, Collection.name)))
+
+    def get_collection(self, collection_id: str) -> Collection | None:
+        return self._session.get(Collection, collection_id)
+
+    def collections_for_work(self, work_id: str) -> list[Collection]:
+        statement = (
+            select(Collection)
+            .join(WorkCollection, WorkCollection.collection_id == Collection.id)
+            .where(WorkCollection.work_id == work_id)
+            .order_by(Collection.kind, Collection.name)
+        )
+        return list(self._session.scalars(statement))
+
+    def upsert_collection(
+        self,
+        *,
+        name: str,
+        kind: CollectionKind,
+        aliases: list[str] | None = None,
+        description: str | None = None,
+    ) -> Collection:
+        cleaned = name.strip()
+        if not cleaned:
+            raise ValueError("collection name is required")
+        normalized = normalize_collection_name(cleaned)
+        existing = self._session.scalar(
+            select(Collection).where(
+                Collection.kind == kind.value,
+                Collection.normalized_name == normalized,
+            )
+        )
+        if existing is None:
+            existing = Collection(
+                name=cleaned,
+                normalized_name=normalized,
+                kind=kind.value,
+                aliases=[],
+                description=description,
+            )
+            self._session.add(existing)
+        else:
+            if description and not existing.description:
+                existing.description = description
+        if aliases:
+            merged = list(existing.aliases or [])
+            seen = {normalize_collection_name(item) for item in merged}
+            for alias in aliases:
+                value = alias.strip()
+                key = normalize_collection_name(value)
+                if value and key not in seen and key != normalized:
+                    merged.append(value)
+                    seen.add(key)
+            existing.aliases = merged
+        self._session.flush()
+        return existing
+
+    def link_work_collection(self, work: Work, collection: Collection) -> None:
+        exists_row = self._session.scalar(
+            select(WorkCollection).where(
+                WorkCollection.work_id == work.id,
+                WorkCollection.collection_id == collection.id,
+            )
+        )
+        if exists_row is None:
+            self._session.add(WorkCollection(work_id=work.id, collection_id=collection.id))
+            self._session.flush()
+
+    def sync_work_collections(self, work: Work) -> list[Collection]:
+        """Ensure Work.studio / series / label string fields map to Collection links."""
+
+        linked: list[Collection] = []
+        if work.studio:
+            kind = detect_collection_kind(work.studio, preferred=CollectionKind.STUDIO)
+            collection = self.upsert_collection(name=work.studio, kind=kind)
+            self.link_work_collection(work, collection)
+            linked.append(collection)
+        if work.series:
+            collection = self.upsert_collection(name=work.series, kind=CollectionKind.SERIES)
+            self.link_work_collection(work, collection)
+            linked.append(collection)
+        if work.label:
+            collection = self.upsert_collection(name=work.label, kind=CollectionKind.LABEL)
+            self.link_work_collection(work, collection)
+            linked.append(collection)
+        return linked
+
+    def seed_collections_from_works(self) -> dict[str, int]:
+        """Idempotent migrate: create Collections from existing studio/series/label strings."""
+
+        existing_ids = {item.id for item in self.list_collections()}
+        links_before = int(self._session.scalar(select(func.count()).select_from(WorkCollection)) or 0)
+        for work in list(self._session.scalars(select(Work))):
+            self.sync_work_collections(work)
+        self._session.flush()
+        links_after = int(self._session.scalar(select(func.count()).select_from(WorkCollection)) or 0)
+        created = 0
+        by_kind = {kind.value: 0 for kind in CollectionKind}
+        for collection in self.list_collections():
+            by_kind[collection.kind] = by_kind.get(collection.kind, 0) + 1
+            if collection.id not in existing_ids:
+                created += 1
+        return {
+            "collections_total": sum(by_kind.values()),
+            "collections_created": created,
+            "links_added": max(0, links_after - links_before),
+            **{f"kind_{key}": value for key, value in by_kind.items()},
+        }
+
+
+
+def _field_locked(work: Work, field: str) -> bool:
+    locks = work.field_locks or []
+    return field in locks
 
 
 def _category_for_family(family: str) -> MediaCategory:

@@ -89,3 +89,12 @@ class ProviderRequirement(StrEnum):
     COOKIE = "cookie"
     BROWSER = "browser"
     MANUAL_INTERACTION = "manual_interaction"
+
+
+class CollectionKind(StrEnum):
+    """Collection kinds: series / studio / platform / label (not loose tags)."""
+
+    SERIES = "series"
+    STUDIO = "studio"
+    PLATFORM = "platform"
+    LABEL = "label"

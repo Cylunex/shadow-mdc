@@ -3,7 +3,7 @@ import { FormEvent, useCallback, useDeferredValue, useEffect, useMemo, useState 
 import { api, appUrl } from "./api";
 import type { NonJavActorEditPayload, OrganizePayload } from "./api";
 import { identityAliasesSchema } from "./model";
-import type { ActorProfile, Asset, BatchPlan, Candidate, IdentityAliases, Library, NonJavActor, TaskRun, Work } from "./model";
+import type { ActorProfile, Asset, BatchPlan, Candidate, IdentityAliases, Library, NonJavActor, TaskRun, Work, WorkDetail } from "./model";
 
 type View = "inbox" | "works" | "actors" | "libraries" | "tasks";
 type DisplayCategory = "all" | "Japan" | "China" | "Korea" | "Europe" | "Other";
@@ -160,6 +160,18 @@ export function App() {
               const result = await api.assignDirectoryActor(asset.id, actor, category, directory);
               setMessage(`目录 ${result.directory} 已绑定 ${result.actor}：处理 ${result.cataloged} 个，跳过 ${result.skipped} 个`);
             })}
+            batchAccept={(ids) => run("batch-accept", async () => {
+              const result = await api.batchAcceptInbox(ids);
+              setMessage(`批量接受：成功 ${result.succeeded}，跳过 ${result.skipped}${result.errors[0] ? `；${result.errors[0]}` : ""}`);
+            })}
+            batchIgnore={(ids) => run("batch-ignore", async () => {
+              const result = await api.batchIgnoreInbox(ids);
+              setMessage(`批量标记跳过：成功 ${result.succeeded}，跳过 ${result.skipped}`);
+            })}
+            batchActor={(ids, actor, category) => run("batch-actor", async () => {
+              const result = await api.batchApplyActorInbox(ids, actor, category);
+              setMessage(`批量应用演员 ${actor}：成功 ${result.succeeded}，跳过 ${result.skipped}`);
+            })}
           />
         )}
         {view === "works" && (
@@ -197,6 +209,22 @@ export function App() {
                 `标题翻译：成功 ${result.translated}，无需翻译 ${result.skipped}，` +
                 `失败 ${result.failed}，剩余 ${result.remaining}${error}`
               );
+            })}
+            saveWork={(workId, payload) => run(`edit-${workId}`, async () => {
+              await api.updateWork(workId, payload);
+              setMessage("作品字段已保存（仅改 Work，来源快照不变）");
+            })}
+            saveLocks={(workId, locks) => run(`locks-${workId}`, async () => {
+              await api.updateWorkLocks(workId, locks);
+              setMessage(`已更新字段锁：${locks.length ? locks.join("、") : "无"}`);
+            })}
+            preferPoster={(workId, index) => run(`poster-${workId}`, async () => {
+              await api.preferWorkPoster(workId, index);
+              setMessage("已选用缓存海报");
+            })}
+            seedCollections={() => run("seed-collections", async () => {
+              const result = await api.seedCollections();
+              setMessage(`合集索引：共 ${result.collections_total}，新建 ${result.collections_created}`);
             })}
           />
         )}
@@ -650,14 +678,22 @@ function Inbox(props: {
     category: Exclude<DisplayCategory, "all">,
     directory: string
   ) => Promise<void>;
+  batchAccept: (ids: string[]) => Promise<void>;
+  batchIgnore: (ids: string[]) => Promise<void>;
+  batchActor: (ids: string[], actor: string, category: Exclude<DisplayCategory, "all">) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<DisplayCategory>("all");
+  const [stateFilter, setStateFilter] = useState<"all" | "new" | "review" | "error">("all");
   const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [batchActor, setBatchActor] = useState("");
+  const [batchCategory, setBatchCategory] = useState<Exclude<DisplayCategory, "all">>("China");
   const deferredQuery = useDeferredValue(query);
   const normalizedQuery = deferredQuery.trim().toLocaleLowerCase();
   const visibleAssets = useMemo(() => props.assets.filter((asset) => {
     const categoryMatches = category === "all" || asset.hints.category === category;
+    const stateMatches = stateFilter === "all" || asset.state === stateFilter;
     const text = [
       asset.path,
       asset.hints.code ?? "",
@@ -666,15 +702,23 @@ function Inbox(props: {
       asset.hints.series ?? "",
       ...asset.hints.actors
     ].join(" ").toLocaleLowerCase();
-    return categoryMatches && (!normalizedQuery || text.includes(normalizedQuery));
-  }), [props.assets, category, normalizedQuery]);
-  useEffect(() => setPage(1), [category, deferredQuery]);
+    return categoryMatches && stateMatches && (!normalizedQuery || text.includes(normalizedQuery));
+  }), [props.assets, category, stateFilter, normalizedQuery]);
+  useEffect(() => setPage(1), [category, deferredQuery, stateFilter]);
   const directoryGroups = useMemo(() => groupAssetsByDirectory(visibleAssets), [visibleAssets]);
   const currentPage = Math.min(page, Math.max(1, Math.ceil(directoryGroups.length / INBOX_PAGE_SIZE)));
   const renderedGroups = directoryGroups.slice(
     (currentPage - 1) * INBOX_PAGE_SIZE,
     currentPage * INBOX_PAGE_SIZE
   );
+  const selectedIds = visibleAssets.filter((asset) => selected[asset.id]).map((asset) => asset.id);
+  function toggleAllVisible(on: boolean) {
+    setSelected((current) => {
+      const next = { ...current };
+      for (const asset of visibleAssets) next[asset.id] = on;
+      return next;
+    });
+  }
   if (props.assets.length === 0) {
     return <Empty title="没有待确认文件" detail="扫描媒体库后，无法自动确认的影片会出现在这里。" />;
   }
@@ -688,8 +732,63 @@ function Inbox(props: {
       setQuery={setQuery}
       setCategory={setCategory}
     />
+    <div className="inbox-toolbar">
+      <div className="state-filters">
+        {(["all", "new", "review", "error"] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            className={stateFilter === value ? "secondary" : "ghost"}
+            onClick={() => setStateFilter(value)}
+          >{value === "all" ? "全部状态" : value}</button>
+        ))}
+      </div>
+      <div className="batch-actions">
+        <label className="check-line">
+          <input
+            type="checkbox"
+            checked={visibleAssets.length > 0 && selectedIds.length === visibleAssets.length}
+            onChange={(event) => toggleAllVisible(event.target.checked)}
+          />
+          全选当前筛选 ({selectedIds.length})
+        </label>
+        <button
+          className="secondary"
+          disabled={selectedIds.length === 0 || props.busy !== null}
+          onClick={() => void props.batchAccept(selectedIds)}
+        >批量接受</button>
+        <button
+          className="ghost"
+          disabled={selectedIds.length === 0 || props.busy !== null}
+          onClick={() => {
+            if (window.confirm(`将 ${selectedIds.length} 个文件标记为跳过/junk？`)) {
+              void props.batchIgnore(selectedIds);
+            }
+          }}
+        >批量跳过</button>
+        <input
+          list="non-jav-actor-options"
+          value={batchActor}
+          onChange={(event) => setBatchActor(event.target.value)}
+          placeholder="批量演员"
+        />
+        <select
+          value={batchCategory}
+          onChange={(event) => setBatchCategory(event.target.value as Exclude<DisplayCategory, "all">)}
+        >
+          {displayCategoryOptions.filter((item) => item.value !== "all" && item.value !== "Japan").map((item) => (
+            <option key={item.value} value={item.value}>{item.label}</option>
+          ))}
+        </select>
+        <button
+          className="secondary"
+          disabled={selectedIds.length === 0 || !batchActor.trim() || props.busy !== null}
+          onClick={() => void props.batchActor(selectedIds, batchActor.trim(), batchCategory)}
+        >批量应用演员</button>
+      </div>
+    </div>
     {visibleAssets.length === 0
-      ? <Empty title="没有匹配的待确认文件" detail="可以清空关键词或切换展示分类。" />
+      ? <Empty title="没有匹配的待确认文件" detail="可以清空关键词、切换分类或状态筛选。" />
       : <><datalist id="non-jav-actor-options">{props.nonJavActors.map((actor) => <option key={actor.name} value={actor.name} />)}</datalist><div className="directory-list">{renderedGroups.map((group) => (
     <AssetDirectoryGroup
       key={group.directory}
@@ -697,6 +796,8 @@ function Inbox(props: {
       libraryRoot={props.libraries.find((library) => library.id === group.assets[0]?.library_id)?.root_path}
       candidates={props.candidates}
       busy={props.busy}
+      selected={selected}
+      setSelected={setSelected}
       identify={props.identify}
       createManualCandidate={props.createManualCandidate}
       loadCandidates={props.loadCandidates}
@@ -718,6 +819,8 @@ function AssetDirectoryGroup(props: {
   libraryRoot?: string;
   candidates: Record<string, Candidate[]>;
   busy: string | null;
+  selected: Record<string, boolean>;
+  setSelected: (value: Record<string, boolean> | ((current: Record<string, boolean>) => Record<string, boolean>)) => void;
   identify: (asset: Asset, payload: { title?: string; source_url?: string }) => Promise<void>;
   createManualCandidate: (asset: Asset, title: string | undefined) => Promise<void>;
   loadCandidates: (assetId: string) => Promise<void>;
@@ -785,6 +888,8 @@ function AssetDirectoryGroup(props: {
       asset={asset}
       candidates={props.candidates[asset.id] ?? []}
       busy={props.busy}
+      checked={Boolean(props.selected[asset.id])}
+      onCheckedChange={(checked) => props.setSelected((current) => ({ ...current, [asset.id]: checked }))}
       identify={props.identify}
       createManualCandidate={props.createManualCandidate}
       loadCandidates={props.loadCandidates}
@@ -804,6 +909,8 @@ function AssetReview(props: {
   asset: Asset;
   candidates: Candidate[];
   busy: string | null;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
   identify: (asset: Asset, payload: { title?: string; source_url?: string }) => Promise<void>;
   createManualCandidate: (asset: Asset, title: string | undefined) => Promise<void>;
   loadCandidates: (assetId: string) => Promise<void>;
@@ -811,11 +918,16 @@ function AssetReview(props: {
 }) {
   const [manual, setManual] = useState("");
   const isUrl = /^https?:\/\//i.test(manual);
+  const top = props.asset.top_match;
   return (
     <article className="asset">
       <div className="asset-head">
+        <label className="check-line">
+          <input type="checkbox" checked={props.checked} onChange={(event) => props.onCheckedChange(event.target.checked)} />
+        </label>
         <div>
           <span className={`pill ${props.asset.hints.family}`}>{props.asset.hints.family}</span>
+          <span className="pill muted">{props.asset.state}</span>
           <h2>{fileName(props.asset.path)}</h2>
           <p>{props.asset.hints.code ?? props.asset.hints.title ?? "未提取身份"}</p>
           <div className="hint-line">
@@ -825,6 +937,15 @@ function AssetReview(props: {
             {props.asset.hints.series && <span>系列 · {props.asset.hints.series}</span>}
             {props.asset.hints.actors.map((actor) => <span key={actor}>人物 · {actor}</span>)}
           </div>
+          {top && <div className="match-evidence">
+            <strong>匹配证据 · {top.provider} {Math.round(top.score * 100)}%</strong>
+            <p>{top.title}</p>
+            <div className="hint-line">
+              {top.evidence.map((item, index) => (
+                <span key={`${item.kind}-${index}`}>{item.kind} · {item.detail} (+{Math.round(item.contribution * 100)}%)</span>
+              ))}
+            </div>
+          </div>}
         </div>
         <button disabled={props.busy === props.asset.id} onClick={() => void props.identify(props.asset, {})}>
           自动识别
@@ -861,6 +982,9 @@ function AssetReview(props: {
             </div>
             <h3>{candidate.record.title}</h3>
             <p>{[candidate.record.code, candidate.record.studio, candidate.record.release_date].filter(Boolean).join(" · ")}</p>
+            {candidate.evidence.length > 0 && (
+              <p className="evidence-line">{candidate.evidence.map((item) => `${String(item.kind ?? "")}:${String(item.detail ?? "")}`).join(" · ")}</p>
+            )}
             <button disabled={props.busy === candidate.id} onClick={() => void props.accept(candidate)}>接受</button>
           </div>
         ))}
@@ -876,12 +1000,25 @@ function Works(props: {
   downloadArtwork: (work: Work) => Promise<void>;
   lookupWork: (code: string) => Promise<void>;
   translateWorks: () => Promise<void>;
+  saveWork: (workId: string, payload: {
+    title?: string;
+    actors?: string[];
+    studio?: string | null;
+    series?: string | null;
+    tags?: string[];
+    plot?: string | null;
+  }) => Promise<void>;
+  saveLocks: (workId: string, locks: string[]) => Promise<void>;
+  preferPoster: (workId: string, index: number) => Promise<void>;
+  seedCollections: () => Promise<void>;
 }) {
   const { works } = props;
   const [code, setCode] = useState("");
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<DisplayCategory>("all");
   const [page, setPage] = useState(1);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<WorkDetail | null>(null);
   const categories = ["Japan", "China", "Korea", "Europe", "Other"] as const;
   const deferredQuery = useDeferredValue(query);
   const normalizedQuery = deferredQuery.trim().toLocaleLowerCase();
@@ -899,6 +1036,15 @@ function Works(props: {
     return categoryMatches && (!normalizedQuery || text.includes(normalizedQuery));
   }), [works, category, normalizedQuery]);
   useEffect(() => setPage(1), [category, deferredQuery]);
+  useEffect(() => {
+    if (!selectedId) {
+      setDetail(null);
+      return;
+    }
+    void api.workDetail(selectedId)
+      .then(setDetail)
+      .catch(() => setDetail(null));
+  }, [selectedId, works]);
   const currentPage = Math.min(page, Math.max(1, Math.ceil(visibleWorks.length / WORK_PAGE_SIZE)));
   const renderedWorks = visibleWorks.slice(
     (currentPage - 1) * WORK_PAGE_SIZE,
@@ -918,6 +1064,12 @@ function Works(props: {
         disabled={props.busy === "translate-works"}
         onClick={() => void props.translateWorks()}
       >补翻译标题</button>
+      <button
+        type="button"
+        className="ghost"
+        disabled={props.busy === "seed-collections"}
+        onClick={() => void props.seedCollections()}
+      >重建合集索引</button>
     </form>
     {works.length > 0 && <DisplayFilterBar
       query={query}
@@ -928,55 +1080,246 @@ function Works(props: {
       setQuery={setQuery}
       setCategory={setCategory}
     />}
-    {works.length === 0
-      ? <Empty title="作品库为空" detail="可按番号查询 JAV，或依赖非 JAV 种子作品 / 扫描媒体库后接受候选。打开演员库可查看已写入的非 JAV 作品。" />
-      : visibleWorks.length === 0
-        ? <Empty title="没有匹配的作品" detail="可以清空关键词或切换展示分类。" />
-        : <div className="work-sections">{categories.map((sectionCategory) => {
-    const categoryWorks = renderedWorks.filter((work) => work.category === sectionCategory);
-    if (categoryWorks.length === 0) return null;
-    return <section className="work-section" key={sectionCategory}>
-      <div className="work-section-title"><h2>{sectionCategory}</h2><span>{categoryWorks.length}</span></div>
-      <div className="work-grid">{categoryWorks.map((work) => {
-    return (
-      <article className="work" key={work.id}>
-        <div
-          className="poster"
-          style={work.image_url ? { backgroundImage: `url("${appUrl(work.image_url)}")` } : undefined}
-          role="img"
-          aria-label={`${work.primary_code ?? work.title} 海报`}
+    <div className={detail ? "works-layout with-detail" : "works-layout"}>
+      <div>
+        {works.length === 0
+          ? <Empty title="作品库为空" detail="可按番号查询 JAV，或依赖非 JAV 种子作品 / 扫描媒体库后接受候选。打开演员库可查看已写入的非 JAV 作品。" />
+          : visibleWorks.length === 0
+            ? <Empty title="没有匹配的作品" detail="可以清空关键词或切换展示分类。" />
+            : <div className="work-sections">{categories.map((sectionCategory) => {
+        const categoryWorks = renderedWorks.filter((work) => work.category === sectionCategory);
+        if (categoryWorks.length === 0) return null;
+        return <section className="work-section" key={sectionCategory}>
+          <div className="work-section-title"><h2>{sectionCategory}</h2><span>{categoryWorks.length}</span></div>
+          <div className="work-grid">{categoryWorks.map((work) => {
+        return (
+          <article
+            className={selectedId === work.id ? "work selected" : "work"}
+            key={work.id}
+            onClick={() => setSelectedId(work.id)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") setSelectedId(work.id);
+            }}
+            role="button"
+            tabIndex={0}
+          >
+            <div
+              className="poster"
+              style={work.image_url ? { backgroundImage: `url("${appUrl(work.image_url)}")` } : undefined}
+              role="img"
+              aria-label={`${work.primary_code ?? work.title} 海报`}
+            />
+            <div>
+              <span className="pill">{work.category}</span>
+              <h2>{work.title}</h2>
+              {work.original_title && work.original_title !== work.title && (
+                <p className="original-title">原文：{work.original_title}</p>
+              )}
+              <p>{[work.primary_code, work.studio, work.release_date].filter(Boolean).join(" · ")}</p>
+              <div className="tags">{work.actor_entities.slice(0, 4).map((actor) => (
+                <span key={actor.id}>{actor.name}</span>
+              ))}</div>
+              {work.primary_code && (
+                <button
+                  className="secondary work-refresh"
+                  disabled={props.busy === `work-${work.id}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void props.refreshMetadata(work);
+                  }}
+                >刷新元数据</button>
+              )}
+              {work.artwork.length > 0 && (
+                <button
+                  className="ghost work-refresh"
+                  disabled={props.busy === `artwork-${work.id}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void props.downloadArtwork(work);
+                  }}
+                >缓存图片</button>
+              )}
+            </div>
+          </article>
+        );
+          })}</div>
+        </section>;
+          })}</div>}
+        <Pagination page={currentPage} total={visibleWorks.length} pageSize={WORK_PAGE_SIZE} setPage={setPage} />
+      </div>
+      {detail && (
+        <WorkDetailPanel
+          detail={detail}
+          busy={props.busy}
+          onClose={() => setSelectedId(null)}
+          onSave={props.saveWork}
+          onLocks={props.saveLocks}
+          onPreferPoster={props.preferPoster}
+          onRefresh={() => {
+            const work = works.find((item) => item.id === detail.id);
+            if (work) void props.refreshMetadata(work);
+          }}
+          onDownload={() => {
+            const work = works.find((item) => item.id === detail.id);
+            if (work) void props.downloadArtwork(work);
+          }}
         />
-        <div>
-          <span className="pill">{work.category}</span>
-          <h2>{work.title}</h2>
-          {work.original_title && work.original_title !== work.title && (
-            <p className="original-title">原文：{work.original_title}</p>
-          )}
-          <p>{[work.primary_code, work.studio, work.release_date].filter(Boolean).join(" · ")}</p>
-          <div className="tags">{work.actor_entities.slice(0, 4).map((actor) => (
-            <span key={actor.id}>{actor.name}</span>
-          ))}</div>
-          {work.primary_code && (
-            <button
-              className="secondary work-refresh"
-              disabled={props.busy === `work-${work.id}`}
-              onClick={() => void props.refreshMetadata(work)}
-            >刷新元数据</button>
-          )}
-          {work.artwork.length > 0 && (
-            <button
-              className="ghost work-refresh"
-              disabled={props.busy === `artwork-${work.id}`}
-              onClick={() => void props.downloadArtwork(work)}
-            >缓存图片</button>
-          )}
-        </div>
-      </article>
-    );
-      })}</div>
-    </section>;
-      })}</div>}<Pagination page={currentPage} total={visibleWorks.length} pageSize={WORK_PAGE_SIZE} setPage={setPage} />
+      )}
+    </div>
   </>;
+}
+
+const EDITABLE_LOCK_FIELDS = ["title", "actors", "studio", "series", "tags", "plot"] as const;
+
+function WorkDetailPanel(props: {
+  detail: WorkDetail;
+  busy: string | null;
+  onClose: () => void;
+  onSave: (workId: string, payload: {
+    title?: string;
+    actors?: string[];
+    studio?: string | null;
+    series?: string | null;
+    tags?: string[];
+    plot?: string | null;
+  }) => Promise<void>;
+  onLocks: (workId: string, locks: string[]) => Promise<void>;
+  onPreferPoster: (workId: string, index: number) => Promise<void>;
+  onRefresh: () => void;
+  onDownload: () => void;
+}) {
+  const work = props.detail;
+  const [title, setTitle] = useState(work.title);
+  const [actors, setActors] = useState(work.actors.join(", "));
+  const [studio, setStudio] = useState(work.studio ?? "");
+  const [series, setSeries] = useState(work.series ?? "");
+  const [tags, setTags] = useState(work.tags.join(", "));
+  const [plot, setPlot] = useState(work.plot ?? "");
+  const [locks, setLocks] = useState<string[]>(work.field_locks ?? []);
+  useEffect(() => {
+    setTitle(work.title);
+    setActors(work.actors.join(", "));
+    setStudio(work.studio ?? "");
+    setSeries(work.series ?? "");
+    setTags(work.tags.join(", "));
+    setPlot(work.plot ?? "");
+    setLocks(work.field_locks ?? []);
+  }, [work]);
+  function sourceOf(field: string): string {
+    return work.field_sources[field] ?? "—";
+  }
+  return <aside className="work-detail">
+    <div className="work-detail-head">
+      <div>
+        <p className="eyebrow">WORK DETAIL</p>
+        <h2>{work.primary_code ?? work.title}</h2>
+      </div>
+      <button className="ghost" type="button" onClick={props.onClose}>关闭</button>
+    </div>
+    <div
+      className="poster large"
+      style={work.image_url ? { backgroundImage: `url("${appUrl(work.image_url)}")` } : undefined}
+    />
+    <div className="work-detail-actions">
+      <button className="secondary" disabled={props.busy === `work-${work.id}`} onClick={props.onRefresh}>刷新元数据</button>
+      <button className="ghost" disabled={props.busy === `artwork-${work.id}`} onClick={props.onDownload}>缓存图片</button>
+    </div>
+    <label><span>标题 <small>来源 {sourceOf("title")}</small></span>
+      <input value={title} onChange={(event) => setTitle(event.target.value)} />
+    </label>
+    <label><span>演员 <small>来源 {sourceOf("actors")}</small></span>
+      <input value={actors} onChange={(event) => setActors(event.target.value)} placeholder="逗号分隔" />
+    </label>
+    <label><span>片商 <small>来源 {sourceOf("studio")}</small></span>
+      <input value={studio} onChange={(event) => setStudio(event.target.value)} />
+    </label>
+    <label><span>系列 <small>来源 {sourceOf("series")}</small></span>
+      <input value={series} onChange={(event) => setSeries(event.target.value)} />
+    </label>
+    <label><span>标签 <small>来源 {sourceOf("tags")}</small></span>
+      <input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="逗号分隔" />
+    </label>
+    <label><span>剧情 <small>来源 {sourceOf("plot")}</small></span>
+      <textarea value={plot} onChange={(event) => setPlot(event.target.value)} rows={5} />
+    </label>
+    <div className="lock-grid">
+      <strong>字段锁</strong>
+      <small>锁定后刷新/再刮削不会覆盖该字段</small>
+      {EDITABLE_LOCK_FIELDS.map((field) => (
+        <label key={field} className="check-line">
+          <input
+            type="checkbox"
+            checked={locks.includes(field)}
+            onChange={(event) => {
+              setLocks((current) => event.target.checked
+                ? [...current, field]
+                : current.filter((item) => item !== field));
+            }}
+          />
+          {field}
+        </label>
+      ))}
+    </div>
+    <div className="work-detail-actions">
+      <button
+        disabled={props.busy === `edit-${work.id}`}
+        onClick={() => void props.onSave(work.id, {
+          title,
+          actors: actors.split(/[,，]/).map((item) => item.trim()).filter(Boolean),
+          studio: studio.trim() || null,
+          series: series.trim() || null,
+          tags: tags.split(/[,，]/).map((item) => item.trim()).filter(Boolean),
+          plot: plot.trim() || null
+        })}
+      >保存到 Work</button>
+      <button
+        className="secondary"
+        disabled={props.busy === `locks-${work.id}`}
+        onClick={() => void props.onLocks(work.id, locks)}
+      >保存锁</button>
+    </div>
+    <section>
+      <h3>关联资产 ({work.assets.length})</h3>
+      {work.assets.length === 0
+        ? <p className="muted">暂无本地媒体文件</p>
+        : <ul className="asset-list">{work.assets.map((asset) => (
+          <li key={asset.id}><code>{asset.path}</code><span>{asset.state}</span></li>
+        ))}</ul>}
+    </section>
+    <section>
+      <h3>缓存海报</h3>
+      <div className="poster-pick">
+        {work.artwork.map((item, index) => {
+          const local = typeof item.local_path === "string" ? item.local_path : null;
+          const preferred = item.preferred === true;
+          return <button
+            key={`${index}-${String(item.url ?? local ?? index)}`}
+            type="button"
+            className={preferred ? "secondary" : "ghost"}
+            disabled={!local || props.busy === `poster-${work.id}`}
+            onClick={() => void props.onPreferPoster(work.id, index)}
+          >{preferred ? "当前海报" : local ? `选用 #${index + 1}` : `无缓存 #${index + 1}`}</button>;
+        })}
+        {work.artwork.length === 0 && <p className="muted">暂无图片条目</p>}
+      </div>
+    </section>
+    <section>
+      <h3>合集</h3>
+      <div className="tags">{(work.collections ?? []).map((item) => (
+        <span key={item.id}>{item.kind} · {item.name}</span>
+      ))}
+      {(work.collections ?? []).length === 0 && <p className="muted">尚未关联系列/片商/平台合集</p>}
+      </div>
+    </section>
+    <section>
+      <h3>身份</h3>
+      <ul className="asset-list">{work.identities.map((identity) => (
+        <li key={`${identity.provider}-${identity.kind}-${identity.value}`}>
+          <code>{identity.provider}/{identity.kind}</code><span>{identity.value}</span>
+        </li>
+      ))}</ul>
+    </section>
+  </aside>;
 }
 
 function Libraries(props: {
@@ -1105,6 +1448,18 @@ function Libraries(props: {
               })}
             >识别并优化媒体</button>
             <button
+              className="ghost"
+              disabled={props.busy === `identify-continue-${library.id}`}
+              title="从剩余未处理身份继续，默认每批 50"
+              onClick={() => void props.run(`identify-continue-${library.id}`, async () => {
+                const result = await api.identifyLibrary(library.id, 50);
+                props.report(
+                  `继续识别：处理 ${result.attempted}，剩余 ${result.remaining_identities} 组；` +
+                  `在线 ${result.online_identified} / 本地 ${result.local_optimized} / 待确认 ${result.unresolved}`
+                );
+              })}
+            >继续剩余识别</button>
+            <button
               className="secondary"
               disabled={props.busy === `screenshots-${library.id}`}
               onClick={() => void props.run(`screenshots-${library.id}`, async () => {
@@ -1206,18 +1561,38 @@ function LibraryOrganizer(props: {
         <button disabled={props.busy !== null || plan === null} onClick={apply}>确认执行</button>
       </div>
     </div>
-    {plan && <div className="plan-preview">
-      <strong>{plan.asset_count} 个文件 / {plan.operation_count} 项操作 / {plan.conflict_count} 个现存目标</strong>
-      {plan.samples.flatMap((item) => item.operations).slice(0, 8).map((operation, index) =>
-        <p key={`${operation.destination}-${index}`} className={operation.conflict ? "conflict" : ""}>
-          {operation.kind} → {operation.destination}{operation.conflict ? "（已存在）" : ""}
-        </p>
-      )}
-      {plan.truncated && <small>这里只显示前 50 个文件的部分操作，执行仍覆盖完整计划。</small>}
-    </div>}
+    {plan && <PlanPreview plan={plan} />}
   </section>;
 }
 
+
+function PlanPreview(props: { plan: BatchPlan }) {
+  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const rows = props.plan.samples.flatMap((item) =>
+    item.operations.map((operation, index) => ({
+      key: `${item.asset_id}-${operation.destination}-${index}`,
+      assetId: item.asset_id,
+      operation
+    }))
+  ).slice(0, 12);
+  return <div className="plan-preview">
+    <strong>{props.plan.asset_count} 个文件 / {props.plan.operation_count} 项操作 / {props.plan.conflict_count} 个现存目标</strong>
+    {props.plan.conflict_count > 0 && (
+      <p className="conflict">注意：有 {props.plan.conflict_count} 个目标已存在；媒体目标永不覆盖，请确认 NFO 策略。</p>
+    )}
+    {rows.map((row) => (
+      <label key={row.key} className={row.operation.conflict ? "plan-row conflict" : "plan-row"}>
+        <input
+          type="checkbox"
+          checked={Boolean(checked[row.key])}
+          onChange={(event) => setChecked((current) => ({ ...current, [row.key]: event.target.checked }))}
+        />
+        <span>{row.operation.kind} → {row.operation.destination}{row.operation.conflict ? "（冲突：已存在）" : ""}{row.operation.detail ? ` · ${row.operation.detail}` : ""}</span>
+      </label>
+    ))}
+    {props.plan.truncated && <small>这里只显示前 50 个文件的部分操作，勾选仅用于本地核对，执行仍覆盖完整计划令牌。</small>}
+  </div>;
+}
 
 function CatalogImportEditor(props: {
   busy: string | null;

@@ -15,6 +15,7 @@ import {
   filterWordsSchema,
   identifySchema,
   identityAliasesSchema,
+  inboxBatchResultSchema,
   librariesSchema,
   librarySchema,
   nonJavActorSchema,
@@ -24,9 +25,13 @@ import {
   scanSchema,
   screenshotGenerateSchema,
   taskRunsSchema,
+  workDetailSchema,
   workSchema,
   workLookupSchema,
-  worksSchema
+  worksSchema,
+  collectionsSchema,
+  collectionSchema,
+  collectionSeedResultSchema
 } from "./model";
 import type { FilterWords, IdentityAliases } from "./model";
 
@@ -110,7 +115,71 @@ export const api = {
     }),
   accept: (candidateId: string) =>
     request(workSchema, `/api/candidates/${candidateId}/accept`, { method: "POST" }),
-  works: () => request(worksSchema, "/api/works"),
+  batchAcceptInbox: (assetIds: string[]) =>
+    request(inboxBatchResultSchema, "/api/inbox/batch/accept", {
+      method: "POST",
+      body: JSON.stringify({ asset_ids: assetIds })
+    }),
+  batchIgnoreInbox: (assetIds: string[]) =>
+    request(inboxBatchResultSchema, "/api/inbox/batch/ignore", {
+      method: "POST",
+      body: JSON.stringify({ asset_ids: assetIds })
+    }),
+  batchApplyActorInbox: (
+    assetIds: string[],
+    actor: string,
+    category: DisplayMediaCategory
+  ) =>
+    request(inboxBatchResultSchema, "/api/inbox/batch/actor", {
+      method: "POST",
+      body: JSON.stringify({ asset_ids: assetIds, actor, category })
+    }),
+  works: (params?: { collection_id?: string; collection_kind?: string; collection?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.collection_id) query.set("collection_id", params.collection_id);
+    if (params?.collection_kind) query.set("collection_kind", params.collection_kind);
+    if (params?.collection) query.set("collection", params.collection);
+    const suffix = query.toString() ? `?${query}` : "";
+    return request(worksSchema, `/api/works${suffix}`);
+  },
+  collections: (params?: { kind?: string; q?: string; seed_if_empty?: boolean }) => {
+    const query = new URLSearchParams();
+    if (params?.kind) query.set("kind", params.kind);
+    if (params?.q) query.set("q", params.q);
+    if (params?.seed_if_empty) query.set("seed_if_empty", "true");
+    const suffix = query.toString() ? `?${query}` : "";
+    return request(collectionsSchema, `/api/collections${suffix}`);
+  },
+  collection: (collectionId: string) => request(collectionSchema, `/api/collections/${collectionId}`),
+  seedCollections: () =>
+    request(collectionSeedResultSchema, "/api/collections/seed", { method: "POST" }),
+  workDetail: (workId: string) => request(workDetailSchema, `/api/works/${workId}`),
+  updateWork: (
+    workId: string,
+    payload: {
+      title?: string;
+      actors?: string[];
+      studio?: string | null;
+      series?: string | null;
+      tags?: string[];
+      plot?: string | null;
+      lock_edited?: boolean;
+    }
+  ) =>
+    request(workDetailSchema, `/api/works/${workId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  updateWorkLocks: (workId: string, locks: string[]) =>
+    request(workDetailSchema, `/api/works/${workId}/locks`, {
+      method: "PUT",
+      body: JSON.stringify({ locks })
+    }),
+  preferWorkPoster: (workId: string, artworkIndex: number) =>
+    request(workDetailSchema, `/api/works/${workId}/artwork/prefer`, {
+      method: "POST",
+      body: JSON.stringify({ artwork_index: artworkIndex })
+    }),
   actors: () => request(actorProfilesSchema, "/api/actors"),
   nonJavActors: () => request(nonJavActorsSchema, "/api/non-jav-actors"),
   createNonJavActor: (payload: NonJavActorEditPayload) =>

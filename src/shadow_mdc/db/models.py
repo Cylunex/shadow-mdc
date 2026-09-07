@@ -18,6 +18,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from ..enums import (
     AssetState,
     CandidateState,
+    CollectionKind,
     ContentFamily,
     IdentityKind,
     MediaCategory,
@@ -77,6 +78,7 @@ class Work(Base):
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
     artwork: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     field_sources: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    field_locks: Mapped[list[str]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -190,3 +192,40 @@ class TaskRun(Base):
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Collection(Base):
+    """Collection entity (series/studio/platform/label) many-to-many with Work."""
+
+    __tablename__ = "collections"
+    __table_args__ = (
+        UniqueConstraint("kind", "normalized_name", name="uq_collection_kind_name"),
+        Index("ix_collection_kind", "kind"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(300))
+    normalized_name: Mapped[str] = mapped_column(String(300), index=True)
+    kind: Mapped[str] = mapped_column(String(30), default=CollectionKind.SERIES.value)
+    aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
+    description: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class WorkCollection(Base):
+    __tablename__ = "work_collections"
+    __table_args__ = (
+        UniqueConstraint("work_id", "collection_id", name="uq_work_collection"),
+        Index("ix_work_collection_collection", "collection_id"),
+    )
+
+    work_id: Mapped[str] = mapped_column(
+        ForeignKey("works.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    collection_id: Mapped[str] = mapped_column(
+        ForeignKey("collections.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+

@@ -242,10 +242,15 @@ def _attach_poster(
     target_dir.mkdir(parents=True, exist_ok=True)
     if source is None:
         target = target_dir / "poster.png"
-        target.write_bytes(_generate_poster_bytes(seed.title, seed.actors[0]))
+        try:
+            target.write_bytes(_generate_poster_bytes(seed.title, seed.actors[0] if seed.actors else seed.title))
+        except FileNotFoundError:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(_generate_poster_bytes(seed.title, seed.actors[0] if seed.actors else seed.title))
     else:
         target = target_dir / f"poster{source.suffix.lower() or '.png'}"
         if not target.is_file():
+            target_dir.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)
 
     retained = [dict(item) for item in work.artwork if item.get("kind") not in {"poster", "thumb"}]

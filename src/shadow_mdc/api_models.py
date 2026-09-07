@@ -9,7 +9,7 @@ from .domain import (
     ProviderDescriptor,
     ProviderRecord,
 )
-from .enums import MediaCategory, NfoPolicy, OutputMode, RecognitionScope
+from .enums import CollectionKind, MediaCategory, NfoPolicy, OutputMode, RecognitionScope
 from .providers.base import ProviderFailure
 
 
@@ -76,6 +76,21 @@ class AssetInboxMediaOut(BaseModel):
     quality_label: str | None
 
 
+class InboxMatchEvidenceOut(BaseModel):
+    kind: str
+    contribution: float
+    detail: str
+
+
+class InboxMatchSummaryOut(BaseModel):
+    candidate_id: str
+    provider: str
+    title: str
+    score: float
+    decision: str
+    evidence: list[InboxMatchEvidenceOut] = Field(default_factory=list)
+
+
 class AssetInboxOut(BaseModel):
     id: str
     library_id: str
@@ -83,6 +98,7 @@ class AssetInboxOut(BaseModel):
     state: str
     hints: AssetInboxHintsOut
     media_info: AssetInboxMediaOut
+    top_match: InboxMatchSummaryOut | None = None
 
 
 class CandidateOut(BaseModel):
@@ -158,6 +174,14 @@ class DirectoryActorAssignOut(BaseModel):
     skipped: int
 
 
+
+class CollectionSummaryOut(BaseModel):
+    id: str
+    name: str
+    kind: CollectionKind
+    aliases: list[str] = Field(default_factory=list)
+
+
 class WorkOut(BaseModel):
     id: str
     title: str
@@ -179,7 +203,9 @@ class WorkOut(BaseModel):
     image_url: str | None = None
     fanart_url: str | None = None
     field_sources: dict[str, str]
+    field_locks: list[str] = Field(default_factory=list)
     identities: list[IdentityOut] = Field(default_factory=list)
+    collections: list[CollectionSummaryOut] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -376,3 +402,85 @@ class CatalogImportResultOut(BaseModel):
     filter_words_added: int = 0
     notes: tuple[str, ...] = ()
 
+
+class WorkUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=2000)
+    actors: tuple[str, ...] | None = None
+    studio: str | None = Field(default=None, max_length=300)
+    series: str | None = Field(default=None, max_length=300)
+    tags: tuple[str, ...] | None = None
+    plot: str | None = Field(default=None, max_length=20000)
+    lock_edited: bool = True
+
+
+class WorkLocksRequest(BaseModel):
+    locks: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
+
+
+class WorkPosterPreferRequest(BaseModel):
+    artwork_index: int = Field(ge=0)
+
+
+class WorkDetailOut(WorkOut):
+    assets: list[AssetOut] = Field(default_factory=list)
+
+
+class InboxBatchRequest(BaseModel):
+    asset_ids: tuple[str, ...] = Field(min_length=1, max_length=500)
+
+
+class InboxBatchActorRequest(InboxBatchRequest):
+    actor: str = Field(min_length=1, max_length=200)
+    category: MediaCategory
+
+
+class InboxBatchResultOut(BaseModel):
+    attempted: int
+    succeeded: int
+    skipped: int
+    errors: tuple[str, ...] = ()
+
+
+class TaskProgressOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    kind: str
+    scope: str
+    status: str
+    summary: dict[str, object]
+    error: str | None
+    created_at: datetime
+    finished_at: datetime | None
+
+
+class CollectionOut(CollectionSummaryOut):
+    description: str | None = None
+    work_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class CollectionSeedResultOut(BaseModel):
+    collections_total: int
+    collections_created: int
+    links_added: int
+    kind_series: int = 0
+    kind_studio: int = 0
+    kind_platform: int = 0
+    kind_label: int = 0
+
+class CatalogExportRequest(BaseModel):
+    output: str = Field(min_length=1)
+    target_data_dir: str = Field(min_length=1)
+    incremental: bool = False
+    since: datetime | None = None
+    update_state: bool = True
+
+
+class CatalogExportResultOut(BaseModel):
+    mode: str
+    output: str
+    catalog_counts: dict[str, int]
+    omitted_runtime_counts: dict[str, int]
+    incremental: dict[str, object] = Field(default_factory=dict)

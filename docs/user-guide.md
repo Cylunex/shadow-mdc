@@ -101,7 +101,7 @@ MEDIA_PATH=/path/to/media docker compose up -d --build
 支持两种包布局：
 
 1. 本地数据包装：含 `non-jav-actors.json`、`non-jav-works.json`、`actor-images/`、`artwork/`（可在根目录或 `data/` 下）。
-2. `python scripts/export_nas_catalog.py` 的输出：`manifest.json` + `data/`（含便携 catalog，无 runtime 表）。
+2. `python scripts/export_catalog_bundle.py` / `export_nas_catalog.py` 的输出：`manifest.json` + `data/`（含便携 catalog，无 runtime 表；支持 `--incremental`）。
 
 命令行（推荐）：
 
@@ -150,6 +150,68 @@ Get-ChildItem $src -Filter *.tar.gz | ForEach-Object {
 ```
 
 若已有完整单包（如 `shadow-mdc-catalog-YYYYMMDD-*.tar.gz` 含 `manifest.json` + `data/`），可直接导入，无需合并分卷。
+
+
+
+## 导出词库包（完整 / 增量）
+
+与「导入词库」对称，可用 CLI 导出便携 catalog（正式作品、演员关系、头像与海报），不含媒体库扫描、候选或任务等 runtime 状态。
+
+```bash
+# 完整导出（并写入 data/export-manifest.json 指纹基线）
+python scripts/export_catalog_bundle.py \
+  --output /tmp/shadow-mdc-catalog-full \
+  --target-data-dir /data
+
+# 仅导出相对上次导出有变更的演员 / 头像 / 作品 / 海报
+python scripts/export_catalog_bundle.py \
+  --output /tmp/shadow-mdc-catalog-delta \
+  --target-data-dir /data \
+  --incremental
+
+# 等价写法
+python scripts/export_catalog_bundle.py --output /tmp/delta --target-data-dir /data --since-last
+
+# 按时间阈值（ISO）导出之后变更的内容
+python scripts/export_catalog_bundle.py \
+  --output /tmp/since-bundle \
+  --target-data-dir /data \
+  --since 2026-09-01T00:00:00+08:00
+```
+
+增量依据 `data/export-manifest.json` 中的逐项指纹：演员资料哈希、作品字段/海报文件 sha、`actor-images/` 与 `artwork/` 文件 sha。完整导出与增量导出成功后都会刷新该基线（可用 `--no-update-state` 跳过）。旧脚本 `scripts/export_nas_catalog.py` 仍可用，等同于完整导出。
+
+导出目录可直接交给 `scripts/import_catalog_bundle.py` 在另一台机器合并导入。
+
+
+## 作品详情与字段锁
+
+在「作品库」点击作品打开右侧详情：展示 `field_sources` 来源、关联本地资产、缓存海报选用，以及标题/演员/片商/系列/标签/剧情编辑。
+手动保存只改 Work，不改 SourceSnapshot；默认锁定已编辑字段。刷新元数据时锁定字段不会被覆盖。详情也会列出已关联的合集。
+
+## 待确认批量工作台
+
+「待确认」支持状态筛选与多选：批量接受最高分候选、批量跳过（junk）、批量应用演员。目录级「确认多级目录的演员」仍处理整棵子树。
+列表展示已计算的匹配证据（番号/标题/时长等）。媒体库在「识别并优化媒体」旁提供「继续剩余识别」。
+
+## 合集（系列 / 片商 / 平台）
+
+作品库中的 `studio` / `series` / `label` 字符串会映射为正式 **合集（Collection）** 实体，而不是松散标签：
+
+- `kind=platform`：麻豆、探花、糖心、天美、果冻等国产平台优先
+- `kind=studio`：其它片商
+- `kind=series`：系列
+- `kind=label`：厂牌
+
+合集与作品多对多；可选 aliases。首次可用：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/collections/seed
+curl 'http://127.0.0.1:8000/api/collections?kind=platform'
+curl 'http://127.0.0.1:8000/api/works?collection=麻豆传媒&collection_kind=platform'
+```
+
+作品库 UI 的平台筛选芯片（麻豆/探花/糖心等）可接上述 API；若前端仍由其它改动占用，可先用 API 验证后再补界面。
 
 ## 垃圾文件过滤
 

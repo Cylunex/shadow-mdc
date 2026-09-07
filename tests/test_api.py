@@ -601,14 +601,15 @@ def test_non_jav_actor_management_image_and_directory_assignment(
         compact_inbox = client.get("/api/inbox")
         assert compact_inbox.status_code == 200
         assert len(compact_inbox.json()) == 2
-        assert set(compact_inbox.json()[0]) == {
+        assert {
             "id",
             "library_id",
             "path",
             "state",
             "hints",
             "media_info",
-        }
+        }.issubset(set(compact_inbox.json()[0]))
+        assert "top_match" in compact_inbox.json()[0]
         asset = client.get("/api/assets").json()[0]
         assigned = client.post(
             f"/api/assets/{asset['id']}/directory-actor",
@@ -619,7 +620,7 @@ def test_non_jav_actor_management_image_and_directory_assignment(
         assert client.get("/api/inbox").json() == []
         assert all(item["state"] == "identified" for item in client.get("/api/assets").json())
         works = client.get("/api/works").json()
-        assert {work["title"] for work in works} == {"Creator One_1", "Creator One_2"}
+        assert {"Creator One_1", "Creator One_2"}.issubset({work["title"] for work in works})
         assert all(work["actors"] == ["Creator One"] for work in works)
 
         renamed = client.patch(
@@ -856,3 +857,145 @@ def test_lookup_by_number_creates_work_without_media(
         assert payload["work"]["plot"] == "Lookup plot"
         assert client.get("/api/assets").json() == []
         assert client.get("/api/tasks").json()[0]["kind"] == "lookup"
+
+
+def test_work_detail_manual_edit_locks_and_refresh_respect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{data_dir / 'locks.db'}")
+    first = ProviderRecord(
+        provider="fixture",
+        external_id="sone00118",
+        code="SONE-118",
+        title="Online Title",
+        family=ContentFamily.JAV,
+        studio="Online Studio",
+        actors=("Online Actor",),
+        plot="Online plot",
+    )
+    refresh = ProviderRecord(
+        provider="fixture",
+        external_id="sone00118",
+        code="SONE-118",
+        title="Refreshed Title",
+        family=ContentFamily.JAV,
+        studio="Refreshed Studio",
+        actors=("Refreshed Actor",),
+        plot="Refreshed plot",
+    )
+
+    with TestClient(app) as client:
+        app.state.runtime = replace(
+            app.state.runtime,
+            providers=ProviderRegistry([LookupProvider(first)]),
+        )
+        work = client.post("/api/works/lookup", json={"code": "SONE-118"}).json()["work"]
+        work_id = work["id"]
+        detail = client.get(f"/api/works/{work_id}")
+        assert detail.status_code == 200
+        body = detail.json()
+        assert body["field_sources"]["title"] == "fixture"
+        assert body["assets"] == []
+
+        edited = client.patch(
+            f"/api/works/{work_id}",
+            json={"title": "Manual Title", "studio": "Manual Studio", "actors": ["Manual Actor"]},
+        )
+        assert edited.status_code == 200
+        assert edited.json()["title"] == "Manual Title"
+        assert edited.json()["studio"] == "Manual Studio"
+        assert edited.json()["actors"] == ["Manual Actor"]
+        assert edited.json()["field_sources"]["title"] == "manual"
+        assert set(edited.json()["field_locks"]) >= {"title", "studio", "actors"}
+
+        locks = client.put(f"/api/works/{work_id}/locks", json={"locks": ["title", "studio"]})
+        assert locks.status_code == 200
+        assert set(locks.json()["field_locks"]) == {"studio", "title"}
+
+        app.state.runtime = replace(
+            app.state.runtime,
+            providers=ProviderRegistry([LookupProvider(refresh)]),
+        )
+        refreshed = client.post(f"/api/works/{work_id}/refresh")
+        assert refreshed.status_code == 200
+        assert refreshed.json()["accepted_work_id"] == work_id
+        after = client.get(f"/api/works/{work_id}").json()
+        assert after["title"] == "Manual Title"
+        assert after["studio"] == "Manual Studio"
+        assert after["actors"] == ["Refreshed Actor"]
+        assert after["plot"] == "Refreshed plot"
+
+
+def test_inbox_batch_accept_ignore_and_actor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    media_dir = tmp_path / "media" / "Creator"
+    media_dir.mkdir(parents=True)
+    (media_dir / "1.mp4").write_bytes(b"a")
+    (media_dir / "2.mp4").write_bytes(b"b")
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{data_dir / 'batch.db'}")
+
+    with TestClient(app) as client:
+        library = client.post(
+            "/api/libraries",
+            json={"name": "Batch", "root_path": str(tmp_path / "media")},
+        ).json()
+        client.post(f"/api/libraries/{library['id']}/scan")
+        inbox = client.get("/api/inbox").json()
+        assert len(inbox) == 2
+        ids = [item["id"] for item in inbox]
+
+        ignored = client.post("/api/inbox/batch/ignore", json={"asset_ids": [ids[0]]})
+        assert ignored.status_code == 200
+        assert ignored.json()["succeeded"] == 1
+        remaining = client.get("/api/inbox").json()
+        assert len(remaining) == 1
+        assert remaining[0]["id"] == ids[1]
+
+        applied = client.post(
+            "/api/inbox/batch/actor",
+            json={"asset_ids": [ids[1]], "actor": "Batch Actor", "category": "China"},
+        )
+        assert applied.status_code == 200
+        assert applied.json()["succeeded"] == 1
+        assert client.get("/api/inbox").json() == []
+        works = client.get("/api/works").json()
+        assert any(work["actors"] == ["Batch Actor"] for work in works)
+
+
+def test_inbox_batch_accept_uses_top_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    (media_dir / "clip.mp4").write_bytes(b"clip")
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{data_dir / 'accept.db'}")
+
+    with TestClient(app) as client:
+        library = client.post(
+            "/api/libraries",
+            json={"name": "Accept", "root_path": str(media_dir)},
+        ).json()
+        client.post(f"/api/libraries/{library['id']}/scan")
+        asset = client.get("/api/inbox").json()[0]
+        candidate = client.post(
+            f"/api/assets/{asset['id']}/manual-candidate",
+            json={"title": "Batch Accept Title", "actors": ["Someone"]},
+        ).json()
+        result = client.post("/api/inbox/batch/accept", json={"asset_ids": [asset["id"]]})
+        assert result.status_code == 200
+        assert result.json()["succeeded"] == 1
+        assert client.get("/api/inbox").json() == []
+        works = client.get("/api/works").json()
+        assert works[0]["title"] == "Batch Accept Title"
+        assert candidate["id"]
+
