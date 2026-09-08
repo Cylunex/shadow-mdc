@@ -32,6 +32,7 @@ from .models import (
     Work,
     WorkActor,
     WorkCollection,
+    WorkMagnet,
     utc_now,
 )
 
@@ -805,6 +806,82 @@ class Repository:
         return self._session.scalar(
             select(Work).where(Work.primary_code == code).order_by(Work.created_at).limit(1)
         )
+
+    def find_work_by_provider_identity(self, provider: str, value: str) -> Work | None:
+        normalized = normalize_identity_value(value)
+        identity = self._session.scalar(
+            select(ExternalIdentity).where(
+                ExternalIdentity.provider == provider,
+                ExternalIdentity.normalized_value == normalized,
+            )
+        )
+        if identity is None:
+            return None
+        return self.get_work(identity.work_id)
+
+
+    def list_work_magnets(self, work_id: str) -> list[WorkMagnet]:
+        return list(
+            self._session.scalars(
+                select(WorkMagnet)
+                .where(WorkMagnet.work_id == work_id)
+                .order_by(WorkMagnet.created_at.desc())
+            )
+        )
+
+    def save_work_magnets(
+        self,
+        work: Work,
+        magnets: list[dict[str, object]],
+        *,
+        provider: str,
+    ) -> tuple[int, int]:
+        """Upsert magnet URIs for a work. Returns (created, skipped)."""
+
+        created = 0
+        skipped = 0
+        for item in magnets:
+            uri = item.get("uri")
+            info_hash = item.get("info_hash")
+            if not isinstance(uri, str) or not isinstance(info_hash, str):
+                skipped += 1
+                continue
+            digest = info_hash.strip().upper()
+            existing = self._session.scalar(
+                select(WorkMagnet).where(
+                    WorkMagnet.work_id == work.id,
+                    WorkMagnet.info_hash == digest,
+                )
+            )
+            if existing is not None:
+                skipped += 1
+                continue
+            self._session.add(
+                WorkMagnet(
+                    work_id=work.id,
+                    provider=str(item.get("provider") or provider),
+                    info_hash=digest,
+                    uri=uri.strip(),
+                    name=str(item["name"]) if isinstance(item.get("name"), str) else None,
+                    size_bytes=int(item["size_bytes"]) if isinstance(item.get("size_bytes"), int) else None,
+                    has_subtitle=bool(item.get("has_subtitle")),
+                    hd=bool(item.get("hd")),
+                    files_count=int(item["files_count"]) if isinstance(item.get("files_count"), int) else None,
+                )
+            )
+            created += 1
+        if created:
+            work.updated_at = utc_now()
+        self._session.flush()
+        return created, skipped
+
+    def delete_work_magnet(self, work_id: str, magnet_id: str) -> bool:
+        row = self._session.get(WorkMagnet, magnet_id)
+        if row is None or row.work_id != work_id:
+            return False
+        self._session.delete(row)
+        self._session.flush()
+        return True
 
     def attach_asset_to_work(self, asset: MediaAsset, work: Work) -> None:
         asset.work_id = work.id

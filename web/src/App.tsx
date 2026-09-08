@@ -3,13 +3,14 @@ import { FormEvent, useCallback, useDeferredValue, useEffect, useMemo, useState 
 import { api, appUrl } from "./api";
 import { XHandleLink } from "./components/XHandleLink";
 import { TaskCenter } from "./components/TaskCenter";
+import { DiscoverPanel } from "./components/DiscoverPanel";
 import { IdentifyByUrlPanel } from "./components/IdentifyByUrlPanel";
 import { FieldPrioritySettings } from "./components/FieldPrioritySettings";
 import type { NonJavActorEditPayload, OrganizePayload } from "./api";
 import { identityAliasesSchema } from "./model";
 import type { ActorProfile, Asset, BatchPlan, Candidate, IdentityAliases, Library, NonJavActor, TaskRun, Work, WorkDetail } from "./model";
 
-type View = "inbox" | "works" | "actors" | "libraries" | "tasks";
+type View = "inbox" | "discover" | "works" | "actors" | "libraries" | "tasks";
 type DisplayCategory = "all" | "Japan" | "China" | "Korea" | "Europe" | "Other";
 
 const INBOX_PAGE_SIZE = 15;
@@ -130,6 +131,7 @@ export function App() {
         </div>
         <nav>
           <Nav active={view === "inbox"} onClick={() => setView("inbox")} label="待确认" count={inbox.length} />
+          <Nav active={view === "discover"} onClick={() => setView("discover")} label="发现" />
           <Nav active={view === "works"} onClick={() => setView("works")} label="作品库" count={works.length} />
           <Nav active={view === "actors"} onClick={() => setView("actors")} label="演员库" count={actors.length + nonJavActors.length} />
           <Nav active={view === "libraries"} onClick={() => setView("libraries")} label="媒体库" count={libraries.length} />
@@ -144,7 +146,7 @@ export function App() {
         <header>
           <div>
             <p className="eyebrow">LOCAL-FIRST / REVIEW-FIRST</p>
-            <h1>{view === "inbox" ? "识别收件箱" : view === "works" ? "作品库" : view === "actors" ? "演员作品库" : view === "libraries" ? "媒体库" : "运行记录"}</h1>
+            <h1>{view === "inbox" ? "识别收件箱" : view === "discover" ? "发现（远程目录）" : view === "works" ? "作品库" : view === "actors" ? "演员作品库" : view === "libraries" ? "媒体库" : "运行记录"}</h1>
           </div>
           <button className="ghost" onClick={() => void refresh()}>刷新</button>
         </header>
@@ -177,6 +179,9 @@ export function App() {
               setMessage(`批量应用演员 ${actor}：成功 ${result.succeeded}，跳过 ${result.skipped}`);
             })}
           />
+        )}
+        {view === "discover" && (
+          <DiscoverPanel busy={busy} report={setMessage} onSeeded={refresh} />
         )}
         {view === "works" && (
           <Works
@@ -253,7 +258,7 @@ export function App() {
         {view === "libraries" && (
           <Libraries libraries={libraries} busy={busy} run={run} report={setMessage} />
         )}
-        {view === "tasks" && <TaskCenter tasks={tasks} busy={busy} onChanged={refresh} report={setMessage} />}
+        {view === "tasks" && <TaskCenter tasks={tasks} busy={busy} onChanged={refresh} report={setMessage} onTasksSnapshot={setTasks} />}
       </main>
     </div>
   );
@@ -1104,6 +1109,7 @@ function Works(props: {
     currentPage * WORK_PAGE_SIZE
   );
   return <>
+    <p className="discover-banner inline">作品库只展示已建档元数据；远程榜单请用侧栏「发现」。发现结果不会自动变成作品。</p>
     <form className="work-lookup" onSubmit={(event) => {
       event.preventDefault();
       if (code.trim()) void props.lookupWork(code.trim());
@@ -1341,6 +1347,25 @@ function WorkDetailPanel(props: {
         onClick={() => void props.onLocks(work.id, locks)}
       >保存锁</button>
     </div>
+    <section className="magnet-panel">
+      <h3>磁力链接 ({(work.magnets ?? []).length})</h3>
+      <p className="muted">一对多保存在本地，仅供复制；不下载。云盘离线能力待开放平台就绪后再接。</p>
+      {(work.magnets ?? []).length === 0
+        ? <p className="muted">暂无已保存磁力。可在「发现 → 多源番号搜索」勾选后保存到作品。</p>
+        : <div className="magnet-list">{(work.magnets ?? []).map((magnet) => (
+          <div className="magnet-row" key={magnet.id}>
+            <span>{(magnet.name || magnet.info_hash.slice(0, 12)) + (magnet.has_subtitle ? " · 字幕" : "") + (magnet.hd ? " · HD" : "")}</span>
+            <small className="muted">{magnet.provider}</small>
+            <button type="button" className="ghost" onClick={() => void navigator.clipboard.writeText(magnet.uri)}>复制</button>
+            <button
+              type="button"
+              className="ghost"
+              disabled={props.busy === `magnet-del-${magnet.id}`}
+              onClick={() => props.onDeleteMagnet && void props.onDeleteMagnet(work.id, magnet.id)}
+            >移除</button>
+          </div>
+        ))}</div>}
+    </section>
     <section>
       <h3>关联资产 ({work.assets.length})</h3>
       {work.assets.length === 0

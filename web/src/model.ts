@@ -227,8 +227,25 @@ export const workSchema = z.object({
 });
 export const worksSchema = z.array(workSchema);
 
+export const magnetLinkSchema = z.object({
+  provider: z.string(),
+  info_hash: z.string(),
+  uri: z.string(),
+  name: z.string().nullable().optional(),
+  size_bytes: z.number().nullable().optional(),
+  has_subtitle: z.boolean().optional(),
+  hd: z.boolean().optional(),
+  files_count: z.number().nullable().optional()
+});
+export const workMagnetSchema = magnetLinkSchema.extend({
+  id: z.string(),
+  work_id: z.string(),
+  created_at: z.string()
+});
+
 export const workDetailSchema = workSchema.extend({
-  assets: z.array(assetSchema).default([])
+  assets: z.array(assetSchema).default([]),
+  magnets: z.array(workMagnetSchema).optional().default([])
 });
 
 export const actorProfileSchema = z.object({
@@ -481,3 +498,46 @@ export const lexiconExportSchema = z.object({
   field_priority: z.record(z.string(), z.array(z.string())),
   exported_at: z.string()
 });
+
+export const discoverItemSchema = z.object({
+  provider: z.string(),
+  external_id: z.string(),
+  source_url: z.string(),
+  code: z.string().nullable().optional(),
+  title: z.string(),
+  thumb_url: z.string().nullable().optional(),
+  release_date: z.string().nullable().optional(),
+  state: z.enum(["not_in_library", "catalog_only", "in_library"]),
+  work_id: z.string().nullable().optional(),
+  has_local_media: z.boolean().optional()
+});
+export const discoverPageSchema = z.object({
+  provider: z.string(),
+  list_name: z.string().nullable().optional(),
+  query: z.string().nullable().optional(),
+  page: z.number(),
+  items: z.array(discoverItemSchema)
+});
+export const providerSearchHitSchema = z.object({
+  provider: z.string(),
+  item: discoverItemSchema,
+  magnets: z.array(magnetLinkSchema),
+  magnets_error: z.string().nullable().optional()
+});
+export const multiSiteSearchSchema = z.object({
+  query: z.string(),
+  code: z.string().nullable(),
+  hits: z.array(providerSearchHitSchema),
+  failures: z.array(z.string())
+});
+export const discoverSeedSchema = z.object({
+  work_id: z.string(),
+  created: z.boolean(),
+  title: z.string(),
+  primary_code: z.string().nullable(),
+  note: z.string()
+});
+export type DiscoverItem = z.infer<typeof discoverItemSchema>;
+export type MagnetLink = z.infer<typeof magnetLinkSchema>;
+export type WorkMagnet = z.infer<typeof workMagnetSchema>;
+export type MultiSiteSearch = z.infer<typeof multiSiteSearchSchema>;

@@ -1,5 +1,6 @@
 from .models import (
     Base,
+    WorkMagnet,
     ExternalIdentity,
     Library,
     MatchCandidateRow,
@@ -19,4 +20,5 @@ __all__ = [
     "Repository",
     "SourceSnapshot",
     "Work",
+    "WorkMagnet",
 ]

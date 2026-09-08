@@ -409,3 +409,41 @@ button.danger { border-color: #6d3333; color: #ffb1b1; }
   .blogger-spotlight { grid-template-columns: 1fr; }
   .blogger-spotlight-media { min-height: 160px; }
 }
+
+
+.discover-banner {
+  background: #132027;
+  border: 1px solid #2b3d45;
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.discover-banner.inline { margin: 0 0 12px; }
+.discover-banner p, .discover-banner.inline { color: #9db0b8; font-size: 0.92rem; line-height: 1.45; }
+.discover-toolbar, .discover-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.discover-search { display: flex; gap: 8px; margin-bottom: 16px; }
+.discover-search input { flex: 1; }
+.discover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.discover-card, .discover-hit {
+  background: #10181c;
+  border: 1px solid #243239;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.discover-card { display: grid; grid-template-rows: 140px auto; }
+.discover-card > div:last-child, .discover-hit { padding: 10px 12px; }
+.discover-hit { margin-bottom: 12px; }
+.discover-hit header { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.magnet-panel, .magnet-list { display: grid; gap: 8px; }
+.magnet-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #0d1417;
+  border: 1px solid #223036;
+}
+.magnet-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-center-toolbar { margin-bottom: 10px; color: #9db0b8; }

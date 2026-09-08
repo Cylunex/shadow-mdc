@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import mimetypes
 import tempfile
 import unicodedata
@@ -12,7 +13,7 @@ from typing import Annotated
 import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import IntegrityError
 
@@ -84,6 +85,16 @@ from .api_models import (
     WorkOut,
     WorkPosterPreferRequest,
     WorkUpdateRequest,
+    WorkMagnetOut,
+    DiscoverItemOut,
+    DiscoverPageOut,
+    DiscoverDetailOut,
+    DiscoverSeedRequest,
+    DiscoverSeedOut,
+    MagnetLinkOut,
+    ProviderSearchHitOut,
+    MultiSiteSearchOut,
+    SaveMagnetsRequest,
 )
 from .config import Settings
 from .db.models import Library, MatchCandidateRow, MediaAsset, Work, utc_now
@@ -167,6 +178,10 @@ from .services.non_jav_actor_catalog import (
     enrich_non_jav_actor_aliases,
 )
 from .services.non_jav_work_seed import seed_non_jav_works
+from .services.discover import DiscoverService
+from .services.task_events import TaskEventHub
+from .services.pan import pan_status
+from .media.magnets import MagnetLink
 from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
 from .services.scanner import Scanner
 from .services.translation import (
@@ -196,6 +211,8 @@ class Runtime:
     filter_words_store: FilterWordsStore
     field_priority_store: FieldPriorityStore
     media_server_store: MediaServerStore
+    task_events: TaskEventHub
+    discover: DiscoverService
 
 
 @dataclass
@@ -311,6 +328,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     filter_words_store = FilterWordsStore(settings.data_dir / "filter-words.txt")
     field_priority_store = FieldPriorityStore(settings.data_dir / "field-priority.json")
     media_server_store = MediaServerStore(settings.data_dir / "media-server.json")
+    javdb_provider = next(
+        (provider for provider in providers._providers.values() if provider.descriptor.id == "javdb"),
+        None,
+    )
+    discover_service = DiscoverService(providers, javdb_provider if isinstance(javdb_provider, JavDBProvider) else None)
+    task_events = TaskEventHub()
     app.state.runtime = Runtime(
         settings=settings,
         database=database,
@@ -324,6 +347,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         filter_words_store=filter_words_store,
         field_priority_store=field_priority_store,
         media_server_store=media_server_store,
+        task_events=task_events,
+        discover=discover_service,
     )
     try:
         yield
@@ -583,6 +608,13 @@ def health() -> HealthOut:
     return HealthOut(version=__version__)
 
 
+@app.get("/api/pan/status")
+def get_pan_status() -> dict[str, object]:
+    """Stub for future pan integration; always unavailable until approved."""
+
+    return pan_status()
+
+
 @app.get("/api/providers", response_model=ProviderListOut)
 def providers(request: Request) -> ProviderListOut:
     return ProviderListOut(providers=runtime(request).providers.descriptors())
@@ -594,6 +626,40 @@ def list_task_runs(repo: Repo, limit: int = 100) -> list[TaskRunOut]:
     return [TaskRunOut.model_validate(item) for item in repo.list_task_runs(limit=safe_limit)]
 
 
+@app.get("/api/tasks/events")
+async def task_events_stream(request: Request) -> StreamingResponse:
+    """SSE task snapshots for TaskCenter (discover-inspired live progress)."""
+
+    app_runtime = runtime(request)
+    hub = app_runtime.task_events
+    event = await hub.subscribe()
+
+    async def event_generator():
+        try:
+            async for kind in hub.changes(event, heartbeat_seconds=15.0):
+                if await request.is_disconnected():
+                    break
+                if kind == "ping":
+                    yield "event: ping\ndata: {}\n\n"
+                    continue
+                with app_runtime.database.session() as session:
+                    rows = Repository(session).list_task_runs(limit=100)
+                    payload = [TaskRunOut.model_validate(item).model_dump(mode="json") for item in rows]
+                yield f"event: tasks\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        finally:
+            await hub.unsubscribe(event)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/api/tasks/{task_id}", response_model=TaskRunOut)
 def get_task_run(task_id: str, repo: Repo) -> TaskRunOut:
     task = repo.get_task_run(task_id)
@@ -603,7 +669,7 @@ def get_task_run(task_id: str, repo: Repo) -> TaskRunOut:
 
 
 @app.post("/api/tasks/{task_id}/retry", response_model=TaskRunOut)
-def retry_task_run(task_id: str, repo: Repo) -> TaskRunOut:
+def retry_task_run(task_id: str, request: Request, repo: Repo) -> TaskRunOut:
     task = repo.get_task_run(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
@@ -628,11 +694,12 @@ def retry_task_run(task_id: str, repo: Repo) -> TaskRunOut:
             "hint": "Call the matching library action again to execute; this endpoint creates an audit trail.",
         },
     )
+    runtime(request).task_events.notify()
     return TaskRunOut.model_validate(retry)
 
 
 @app.post("/api/tasks/{task_id}/cancel", response_model=TaskRunOut)
-def cancel_task_run(task_id: str, repo: Repo) -> TaskRunOut:
+def cancel_task_run(task_id: str, request: Request, repo: Repo) -> TaskRunOut:
     task = repo.get_task_run(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
@@ -640,7 +707,195 @@ def cancel_task_run(task_id: str, repo: Repo) -> TaskRunOut:
         repo.request_task_cancel(task)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    runtime(request).task_events.notify()
     return TaskRunOut.model_validate(task)
+
+
+def _discover_item_out(item) -> DiscoverItemOut:
+    return DiscoverItemOut.model_validate(item.model_dump(mode="json"))
+
+
+def _magnet_out(item: MagnetLink | object) -> MagnetLinkOut:
+    if isinstance(item, MagnetLink):
+        return MagnetLinkOut.model_validate(item.model_dump(mode="json"))
+    return MagnetLinkOut.model_validate(item)
+
+
+@app.get("/api/discover/browse", response_model=DiscoverPageOut)
+async def discover_browse(
+    request: Request,
+    repo: Repo,
+    provider: str = "javdb",
+    list: str = "latest",
+    page: int = 1,
+) -> DiscoverPageOut:
+    """Browse remote rankings/lists. Discover ≠ library — does not write Works."""
+
+    try:
+        page_data = await runtime(request).discover.browse(
+            repo,
+            provider=provider,
+            list_name=list,  # type: ignore[arg-type]
+            page=page,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"discover browse failed: {exc}") from exc
+    return DiscoverPageOut(
+        provider=page_data.provider,
+        list_name=page_data.list,
+        query=page_data.query,
+        page=page_data.page,
+        items=[_discover_item_out(item) for item in page_data.items],
+    )
+
+
+@app.get("/api/discover/search", response_model=DiscoverPageOut)
+async def discover_search(
+    request: Request,
+    repo: Repo,
+    q: str,
+    provider: str = "javdb",
+    page: int = 1,
+) -> DiscoverPageOut:
+    try:
+        page_data = await runtime(request).discover.search(repo, query=q, provider=provider, page=page)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"discover search failed: {exc}") from exc
+    return DiscoverPageOut(
+        provider=page_data.provider,
+        list_name=page_data.list,
+        query=page_data.query,
+        page=page_data.page,
+        items=[_discover_item_out(item) for item in page_data.items],
+    )
+
+
+@app.get("/api/discover/multi-search", response_model=MultiSiteSearchOut)
+async def discover_multi_search(
+    request: Request,
+    repo: Repo,
+    q: str,
+    include_magnets: bool = True,
+) -> MultiSiteSearchOut:
+    """Multi-provider 番号/text search with optional per-source magnet lists."""
+
+    try:
+        result = await runtime(request).discover.multi_site_search(
+            repo, query=q, include_magnets=include_magnets
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"multi-site search failed: {exc}") from exc
+    return MultiSiteSearchOut(
+        query=result.query,
+        code=result.code,
+        failures=list(result.failures),
+        hits=[
+            ProviderSearchHitOut(
+                provider=hit.provider,
+                item=_discover_item_out(hit.item),
+                magnets=[_magnet_out(m) for m in hit.magnets],
+                magnets_error=hit.magnets_error,
+            )
+            for hit in result.hits
+        ],
+    )
+
+
+@app.post("/api/discover/seed", response_model=DiscoverSeedOut)
+async def discover_seed(
+    payload: DiscoverSeedRequest,
+    request: Request,
+    repo: Repo,
+) -> DiscoverSeedOut:
+    """Optional curated Work seed from remote metadata — still not library media."""
+
+    try:
+        result = await runtime(request).discover.seed(
+            repo,
+            provider=payload.provider,
+            external_id=payload.external_id,
+            source_url=payload.source_url,
+            code=payload.code,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"discover seed failed: {exc}") from exc
+    return DiscoverSeedOut.model_validate(result.model_dump())
+
+
+@app.get("/api/discover/{provider}/{external_id}", response_model=DiscoverDetailOut)
+async def discover_detail(
+    provider: str,
+    external_id: str,
+    request: Request,
+    repo: Repo,
+) -> DiscoverDetailOut:
+    try:
+        detail = await runtime(request).discover.detail(repo, provider=provider, external_id=external_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"discover detail failed: {exc}") from exc
+    return DiscoverDetailOut(
+        item=_discover_item_out(detail.item),
+        studio=detail.studio,
+        actors=list(detail.actors),
+        tags=list(detail.tags),
+        plot=detail.plot,
+        runtime_seconds=detail.runtime_seconds,
+    )
+
+
+@app.get("/api/discover/{provider}/{external_id}/magnets", response_model=list[MagnetLinkOut])
+async def discover_magnets(
+    provider: str,
+    external_id: str,
+    request: Request,
+    source_url: str | None = None,
+) -> list[MagnetLinkOut]:
+    try:
+        magnets = await runtime(request).discover.list_magnets(
+            provider=provider, external_id=external_id, source_url=source_url
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"magnet list failed: {exc}") from exc
+    return [_magnet_out(item) for item in magnets]
+
+
+@app.get("/api/works/{work_id}/magnets", response_model=list[WorkMagnetOut])
+def list_work_magnets(work_id: str, repo: Repo) -> list[WorkMagnetOut]:
+    if repo.get_work(work_id) is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    return [WorkMagnetOut.model_validate(item) for item in repo.list_work_magnets(work_id)]
+
+
+@app.post("/api/works/{work_id}/magnets", response_model=list[WorkMagnetOut])
+def save_work_magnets(work_id: str, payload: SaveMagnetsRequest, repo: Repo) -> list[WorkMagnetOut]:
+    work = repo.get_work(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    magnets = [item.model_dump(mode="json") for item in payload.magnets]
+    provider = payload.provider or (payload.magnets[0].provider if payload.magnets else "manual")
+    repo.save_work_magnets(work, magnets, provider=provider)
+    return [WorkMagnetOut.model_validate(item) for item in repo.list_work_magnets(work_id)]
+
+
+@app.delete("/api/works/{work_id}/magnets/{magnet_id}", status_code=204)
+def delete_work_magnet(work_id: str, magnet_id: str, repo: Repo) -> Response:
+    if not repo.delete_work_magnet(work_id, magnet_id):
+        raise HTTPException(status_code=404, detail="magnet not found")
+    return Response(status_code=204)
 
 
 @app.get("/api/providers/health", response_model=ProviderHealthOut)
@@ -1135,16 +1390,21 @@ def scan_library(
             app_runtime.non_jav_actor_store.load(),
         )
         non_jav_actor_catalog = app_runtime.non_jav_actor_store.load()
+        def _scan_progress(summary: dict[str, object]) -> None:
+            repo.update_task_progress(task, summary)
+            app_runtime.task_events.notify()
+
         result = Scanner(
             repo,
             effective_alias_rules,
             MediaPathFilter(app_runtime.filter_words_store.load().words),
             app_runtime.directory_actor_store.load(),
             non_jav_actor_catalog,
+            artwork_dir=app_runtime.settings.data_dir / "artwork",
         ).scan(
             library,
             only_new=options.only_new,
-            progress=lambda summary: repo.update_task_progress(task, summary),
+            progress=_scan_progress,
             cancelled=lambda: repo.is_task_cancel_requested(task.id),
         )
     except ValueError as exc:
@@ -1949,7 +2209,7 @@ def work_nfo(work_id: str, repo: Repo) -> Response:
 
 @app.get("/api/works/{work_id}/artwork/{kind}", response_class=FileResponse)
 def work_artwork_file(work_id: str, kind: str, request: Request, repo: Repo) -> Response:
-    if kind not in {"poster", "fanart"}:
+    if kind not in {"poster", "fanart", "thumb"}:
         raise HTTPException(status_code=404, detail="artwork kind not found")
     if repo.get_work(work_id) is None:
         raise HTTPException(status_code=404, detail="work not found")
@@ -2453,10 +2713,11 @@ def _work_out(repo: Repository, work: Work) -> WorkOut:
 def _work_detail_out(repo: Repository, work: Work) -> WorkDetailOut:
     base = _work_out(repo, work)
     assets = [AssetOut.model_validate(item) for item in repo.list_assets_for_work(work.id)]
-    return WorkDetailOut(**base.model_dump(), assets=assets)
+    magnets = [WorkMagnetOut.model_validate(item) for item in repo.list_work_magnets(work.id)]
+    return WorkDetailOut(**base.model_dump(), assets=assets, magnets=magnets)
 
 
-def _work_display_artwork(work: Work, kind: str) -> str | None:
+def _work_display_artwork(work: Work, kind: str, *, data_dir: Path | None = None) -> str | None:
     is_fanart = kind == "fanart"
     matching = [
         item
@@ -2471,6 +2732,19 @@ def _work_display_artwork(work: Work, kind: str) -> str | None:
             and isinstance(item.get("local_path"), str)
             and Path(str(item["local_path"])).is_file()
         ]
+        root: Path | None = None
+        if data_dir is not None:
+            root = data_dir / "artwork" / work.id
+        elif preferred:
+            root = Path(str(preferred[0]["local_path"])).parent
+        else:
+            for item in matching:
+                local = item.get("local_path")
+                if isinstance(local, str) and Path(local).is_file():
+                    root = Path(local).parent
+                    break
+        if root is not None and any(root.glob("thumb.*")):
+            return f"/api/works/{work.id}/artwork/thumb"
         if preferred:
             return f"/api/works/{work.id}/artwork/poster"
     if any(isinstance((path := item.get("local_path")), str) and Path(path).is_file() for item in matching):

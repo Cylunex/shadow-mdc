@@ -151,11 +151,18 @@ class ProviderRegistry:
             sorted((provider.descriptor for provider in self._providers.values()), key=lambda item: item.id)
         )
 
-    async def search(self, hints: IdentityHints) -> SearchBatch:
+    async def search(
+        self,
+        hints: IdentityHints,
+        *,
+        provider_ids: tuple[str, ...] | None = None,
+    ) -> SearchBatch:
+        allowed = set(provider_ids) if provider_ids is not None else None
         eligible = [
             provider
             for provider in self._providers.values()
             if provider.descriptor.configured
+            and (allowed is None or provider.descriptor.id in allowed)
             and hints.mode in provider.descriptor.query_modes
             and (
                 not provider.descriptor.families

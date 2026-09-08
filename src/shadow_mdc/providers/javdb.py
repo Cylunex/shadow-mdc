@@ -8,6 +8,7 @@ from ..domain import IdentityHints, ProviderDescriptor, ProviderRecord
 from ..enums import ContentFamily, QueryMode
 from ..identity import extract_code
 from .base import HttpProvider, ProviderError
+from ..media.magnets import MagnetLink, parse_magnet_links_from_html
 from .html import first_text, image_artwork, link_texts, meta_content, parse_date, parse_runtime_seconds
 
 
@@ -17,15 +18,24 @@ class JavDBProvider(HttpProvider):
         self._base_url = base_url.rstrip("/")
 
     @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @property
     def descriptor(self) -> ProviderDescriptor:
         return ProviderDescriptor(
             id="javdb",
             name="JavDB",
-            query_modes=frozenset({QueryMode.CODE, QueryMode.TEXT}),
+            query_modes=frozenset({QueryMode.CODE, QueryMode.TEXT, QueryMode.URL}),
             families=frozenset({ContentFamily.JAV, ContentFamily.CHINESE, ContentFamily.ANIMATION}),
         )
 
+    async def fetch_html(self, url: str, *, params: dict[str, str] | None = None) -> str:
+        return await self._get_text(self.descriptor.id, url, params=params)
+
     async def search(self, hints: IdentityHints) -> list[ProviderRecord]:
+        if hints.mode is QueryMode.URL and hints.source_url:
+            return [await self._detail(hints.source_url)]
         url = f"{self._base_url}/search?q={quote(hints.term)}&f=all"
         html = await self._get_text(self.descriptor.id, url, params={"locale": "zh"})
         root = HTMLParser(html)
@@ -80,3 +90,13 @@ class JavDBProvider(HttpProvider):
             artwork=image_artwork(root, url),
             language="zh",
         )
+
+    async def magnets(self, external_id_or_url: str) -> tuple[MagnetLink, ...]:
+        """List magnet URIs from the public detail page (display/save only)."""
+
+        if external_id_or_url.startswith("http://") or external_id_or_url.startswith("https://"):
+            url = external_id_or_url
+        else:
+            url = f"{self._base_url}/v/{external_id_or_url}"
+        html = await self._get_text(self.descriptor.id, url, params={"locale": "zh"})
+        return parse_magnet_links_from_html(html, provider=self.descriptor.id)

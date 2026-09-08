@@ -83,6 +83,29 @@ class Work(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 
+class WorkMagnet(Base):
+    """Persisted magnet URI for copy/later use — never downloaded by this app."""
+
+    __tablename__ = "work_magnets"
+    __table_args__ = (
+        UniqueConstraint("work_id", "info_hash", name="uq_work_magnet_hash"),
+        Index("ix_work_magnet_work", "work_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    work_id: Mapped[str] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"))
+    provider: Mapped[str] = mapped_column(String(100))
+    info_hash: Mapped[str] = mapped_column(String(64))
+    uri: Mapped[str] = mapped_column(Text)
+    name: Mapped[str | None] = mapped_column(Text)
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    has_subtitle: Mapped[bool] = mapped_column(default=False)
+    hd: Mapped[bool] = mapped_column(default=False)
+    files_count: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+
 class Actor(Base):
     __tablename__ = "actors"
 

@@ -1,25 +1,46 @@
 import { useEffect, useState } from "react";
 import type { TaskRun } from "../model";
-import { api } from "../api";
+import { api, appUrl } from "../api";
+import { taskRunsSchema } from "../model";
 
 type Props = {
   tasks: TaskRun[];
   busy: string | null;
   onChanged: () => Promise<void>;
   report: (message: string) => void;
+  onTasksSnapshot?: (tasks: TaskRun[]) => void;
 };
 
-export function TaskCenter({ tasks, busy, onChanged, report }: Props) {
+export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: Props) {
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [live, setLive] = useState(false);
+
   useEffect(() => {
     if (!autoRefresh) return;
-    const hasRunning = tasks.some((task) => !task.finished_at && task.status !== "succeeded");
-    if (!hasRunning) return;
-    const timer = window.setInterval(() => {
-      void onChanged();
-    }, 2500);
-    return () => window.clearInterval(timer);
-  }, [autoRefresh, tasks, onChanged]);
+    const url = appUrl("/api/tasks/events");
+    if (!url || typeof EventSource === "undefined") {
+      const hasRunning = tasks.some((task) => !task.finished_at && task.status !== "succeeded");
+      if (!hasRunning) return;
+      const timer = window.setInterval(() => {
+        void onChanged();
+      }, 2500);
+      return () => window.clearInterval(timer);
+    }
+    const source = new EventSource(url);
+    source.addEventListener("tasks", (event) => {
+      try {
+        const payload = taskRunsSchema.parse(JSON.parse((event as MessageEvent).data));
+        setLive(true);
+        onTasksSnapshot?.(payload);
+      } catch {
+        void onChanged();
+      }
+    });
+    source.onerror = () => {
+      setLive(false);
+    };
+    return () => source.close();
+  }, [autoRefresh, onChanged, onTasksSnapshot, tasks]);
 
   if (tasks.length === 0) {
     return <p className="empty-detail">还没有运行记录。扫描、识别、翻译和整理会显示在这里，可取消或登记重试。</p>;
@@ -30,7 +51,7 @@ export function TaskCenter({ tasks, busy, onChanged, report }: Props) {
       <div className="task-center-toolbar">
         <label>
           <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
-          自动刷新进行中的任务
+          实时同步进行中的任务{live ? "（SSE）" : "（轮询回退）"}
         </label>
       </div>
       <div className="task-list">

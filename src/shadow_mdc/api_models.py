@@ -435,8 +435,24 @@ class WorkPosterPreferRequest(BaseModel):
     artwork_index: int = Field(ge=0)
 
 
+class WorkMagnetOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    work_id: str
+    provider: str
+    info_hash: str
+    uri: str
+    name: str | None
+    size_bytes: int | None
+    has_subtitle: bool
+    hd: bool
+    files_count: int | None
+    created_at: datetime
+
 class WorkDetailOut(WorkOut):
     assets: list[AssetOut] = Field(default_factory=list)
+    magnets: list[WorkMagnetOut] = Field(default_factory=list)
 
 
 class InboxBatchRequest(BaseModel):
@@ -553,3 +569,80 @@ class MediaServerSettingsPayload(BaseModel):
 
 class ActorXHandleEdit(BaseModel):
     x_handle: str | None = Field(default=None, max_length=100)
+
+
+
+class DiscoverItemOut(BaseModel):
+    provider: str
+    external_id: str
+    source_url: str
+    code: str | None = None
+    title: str
+    thumb_url: str | None = None
+    release_date: date | None = None
+    state: str
+    work_id: str | None = None
+    has_local_media: bool = False
+
+
+class DiscoverPageOut(BaseModel):
+    provider: str
+    list_name: str | None = None
+    query: str | None = None
+    page: int
+    items: list[DiscoverItemOut]
+
+
+class DiscoverDetailOut(BaseModel):
+    item: DiscoverItemOut
+    studio: str | None = None
+    actors: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    plot: str | None = None
+    runtime_seconds: int | None = None
+
+
+class DiscoverSeedRequest(BaseModel):
+    provider: str = Field(min_length=1)
+    external_id: str | None = None
+    source_url: str | None = None
+    code: str | None = None
+
+
+class DiscoverSeedOut(BaseModel):
+    work_id: str
+    created: bool
+    title: str
+    primary_code: str | None
+    note: str
+
+
+class MagnetLinkOut(BaseModel):
+    provider: str
+    info_hash: str
+    uri: str
+    name: str | None = None
+    size_bytes: int | None = None
+    has_subtitle: bool = False
+    hd: bool = False
+    files_count: int | None = None
+
+
+class ProviderSearchHitOut(BaseModel):
+    provider: str
+    item: DiscoverItemOut
+    magnets: list[MagnetLinkOut] = Field(default_factory=list)
+    magnets_error: str | None = None
+
+
+class MultiSiteSearchOut(BaseModel):
+    query: str
+    code: str | None
+    hits: list[ProviderSearchHitOut]
+    failures: list[str] = Field(default_factory=list)
+
+
+class SaveMagnetsRequest(BaseModel):
+    magnets: list[MagnetLinkOut] = Field(min_length=1)
+    provider: str | None = None
+

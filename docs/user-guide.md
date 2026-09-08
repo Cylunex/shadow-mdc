@@ -358,3 +358,11 @@ Shadow MDC 只管理用户已有本地媒体的元数据与公开图片，不提
 ## URL / 外部 ID 识别
 
 作品页与媒体库提供番号 / 详情 URL / provider ID 入口，调用 `POST /api/works/lookup`。
+
+## 发现与作品库分离（inspired by miyabi discover separation）
+
+侧栏「发现」浏览远程榜单/搜索目录，**不会**因为浏览就写入作品库。只有主动「建档元数据」才会创建/更新 Work 元数据种子；本地媒体仍需扫描入库后才算「已有本地媒体」。
+
+「多源番号搜索」会聚合已配置来源；若来源页面暴露磁力，可勾选后**保存到 Work**（一对多 `work_magnets`），或一键复制。应用本身不下载种子内容、不提交网盘离线任务。云盘（如 115 Open Platform）需开发者审批后再接入，当前 `/api/pan/status` 仅返回不可用占位。
+
+作品库网格优先使用 `data/artwork/<work_id>/thumb.*` 列表缩略图；扫描时若旁路已有 `.nfo` 与 poster/fanart，会优先用于重建元数据与图片缓存。运行记录可通过 SSE（`/api/tasks/events`）实时刷新。

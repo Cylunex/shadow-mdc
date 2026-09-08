@@ -1,12 +1,13 @@
-import { z } from "zod";
+import {
+  z } from "zod";
 
 const providerHealthSchema = z.object({
   providers: z.array(z.object({
     provider: z.string(),
-    configured: z.boolean(),
-    failures: z.number(),
-    cooldown: z.boolean(),
-    retry_in_seconds: z.number().nullable().optional()
+  configured: z.boolean(),
+  failures: z.number(),
+  cooldown: z.boolean(),
+  retry_in_seconds: z.number().nullable().optional()
   }))
 });
 
@@ -44,7 +45,12 @@ import {
   collectionSeedResultSchema,
   fieldPrioritySchema,
   lexiconExportSchema,
-  taskRunSchema
+  taskRunSchema,
+  discoverPageSchema,
+  discoverSeedSchema,
+  multiSiteSearchSchema,
+  magnetLinkSchema,
+  workMagnetSchema
 } from "./model";
 import type { FilterWords, IdentityAliases } from "./model";
 
@@ -128,6 +134,41 @@ export const api = {
     }),
   tasks: () => request(taskRunsSchema, "/api/tasks"),
   cancelTask: (taskId: string) => request(taskRunSchema, `/api/tasks/${taskId}/cancel`, { method: "POST" }),
+  discoverBrowse: (params: { provider?: string; list?: string; page?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.provider) query.set("provider", params.provider);
+    if (params.list) query.set("list", params.list);
+    if (params.page) query.set("page", String(params.page));
+    const suffix = query.toString() ? `?${query}` : "";
+    return request(discoverPageSchema, `/api/discover/browse${suffix}`);
+  },
+  discoverSearch: (q: string, params: { provider?: string; page?: number } = {}) => {
+    const query = new URLSearchParams({ q });
+    if (params.provider) query.set("provider", params.provider);
+    if (params.page) query.set("page", String(params.page));
+    return request(discoverPageSchema, `/api/discover/search?${query}`);
+  },
+  discoverMultiSearch: (q: string, includeMagnets = true) => {
+    const query = new URLSearchParams({ q, include_magnets: includeMagnets ? "true" : "false" });
+    return request(multiSiteSearchSchema, `/api/discover/multi-search?${query}`);
+  },
+  discoverSeed: (payload: { provider: string; external_id?: string; source_url?: string; code?: string }) =>
+    request(discoverSeedSchema, "/api/discover/seed", { method: "POST", body: JSON.stringify(payload) }),
+  discoverMagnets: (provider: string, externalId: string, sourceUrl?: string) => {
+    const query = sourceUrl ? `?${new URLSearchParams({ source_url: sourceUrl })}` : "";
+    return request(z.array(magnetLinkSchema), `/api/discover/${provider}/${externalId}/magnets${query}`);
+  },
+  workMagnets: (workId: string) => request(z.array(workMagnetSchema), `/api/works/${workId}/magnets`),
+  saveWorkMagnets: (workId: string, magnets: unknown[], provider?: string) =>
+    request(z.array(workMagnetSchema), `/api/works/${workId}/magnets`, {
+      method: "POST",
+      body: JSON.stringify({ magnets, provider })
+    }),
+  deleteWorkMagnet: async (workId: string, magnetId: string): Promise<void> => {
+    const path = `/api/works/${workId}/magnets/${magnetId}`;
+    const response = await fetch(appUrl(path) ?? path, { method: "DELETE" });
+    if (!response.ok) throw new Error(await response.text());
+  },
   retryTask: (taskId: string) => request(taskRunSchema, `/api/tasks/${taskId}/retry`, { method: "POST" }),
   providerHealth: () => request(providerHealthSchema, "/api/providers/health"),
   assets: () => request(assetInboxListSchema, "/api/inbox"),

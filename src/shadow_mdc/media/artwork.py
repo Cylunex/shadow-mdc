@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+from PIL import Image
+
 from ..db.models import Work
 
 _CONTENT_EXTENSIONS = {
@@ -58,6 +60,7 @@ class ArtworkStore:
                     existing=existing,
                 )
                 local_paths[url] = str(path)
+                ensure_list_thumbnail(work_root, path)
                 cached += int(was_cached)
                 downloaded += int(not was_cached)
             except (ValueError, OSError, httpx.HTTPError) as exc:
@@ -175,3 +178,30 @@ def _validate_remote_url(url: str) -> None:
         return
     if not address.is_global:
         raise ValueError("private artwork addresses are not allowed")
+
+
+LIST_THUMB_MAX_WIDTH = 480
+
+
+def ensure_list_thumbnail(work_root: Path, source: Path, *, max_width: int = LIST_THUMB_MAX_WIDTH) -> Path | None:
+    """Create data/artwork/<work>/thumb.jpg for faster works-grid rendering."""
+
+    if not source.is_file():
+        return None
+    existing = next(work_root.glob("thumb.*"), None)
+    if existing is not None and existing.is_file():
+        return existing
+    try:
+        with Image.open(source) as image:
+            image = image.convert("RGB")
+            width, height = image.size
+            if width > max_width:
+                ratio = max_width / float(width)
+                image = image.resize((max_width, max(1, int(height * ratio))), Image.Resampling.LANCZOS)
+            destination = work_root / "thumb.jpg"
+            temporary = work_root / "thumb.jpg.tmp"
+            image.save(temporary, format="JPEG", quality=85, optimize=True)
+            temporary.replace(destination)
+            return destination
+    except OSError:
+        return None

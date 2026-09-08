@@ -59,12 +59,8 @@ class NfoImporter:
         scanned = trusted = candidates = ignored = 0
         errors: list[str] = []
         for asset in assets:
-            nfo_path = Path(asset.path).with_name("movie.nfo")
-            if not nfo_path.is_file():
-                # Also accept sibling named after media stem.
-                alt = Path(asset.path).with_suffix(".nfo")
-                nfo_path = alt if alt.is_file() else nfo_path
-            if not nfo_path.is_file():
+            nfo_path = resolve_sidecar_nfo(Path(asset.path))
+            if nfo_path is None:
                 continue
             scanned += 1
             if self.policy.mode == "ignore":
@@ -101,6 +97,42 @@ class NfoImporter:
         )
 
 
+
+
+def resolve_sidecar_nfo(media_path: Path) -> Path | None:
+    """Prefer movie.nfo, then <stem>.nfo, then <code>-style siblings (miyabi rebuild path)."""
+
+    directory = media_path.parent
+    candidates = [
+        directory / "movie.nfo",
+        media_path.with_suffix(".nfo"),
+    ]
+    stem = media_path.stem
+    # CD1/CD2 share the base stem when possible
+    for suffix in ("-CD1", "-CD2", "-cd1", "-cd2", "_1", "_2", "-A", "-B"):
+        if stem.endswith(suffix):
+            candidates.append(directory / f"{stem[: -len(suffix)]}.nfo")
+            break
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def sibling_artwork_paths(media_path: Path) -> dict[str, Path]:
+    directory = media_path.parent
+    found: dict[str, Path] = {}
+    for kind, names in {
+        "poster": ("poster.jpg", "poster.png", "poster.webp", f"{media_path.stem}-poster.jpg"),
+        "fanart": ("fanart.jpg", "fanart.png", "fanart.webp", f"{media_path.stem}-fanart.jpg"),
+    }.items():
+        for name in names:
+            path = directory / name
+            if path.is_file():
+                found[kind] = path
+                break
+    return found
+
 def parse_movie_nfo(path: Path) -> ParsedNfo:
     tree = ElementTree.parse(path)
     root = tree.getroot()
@@ -112,7 +144,7 @@ def parse_movie_nfo(path: Path) -> ParsedNfo:
     studio = _text(root, "studio")
     series = _text(root, "set") or _text(root, "showtitle")
     premiered = _text(root, "premiered") or _text(root, "releasedate")
-    code = _text(root, "id")
+    code = _text(root, "num") or _text(root, "id")
     actors = tuple(
         name
         for actor in root.findall("actor")

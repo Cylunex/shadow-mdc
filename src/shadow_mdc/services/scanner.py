@@ -11,6 +11,9 @@ from ..enums import ContentFamily, MediaCategory, QueryMode, RecognitionScope
 from ..identity import IdentityAliasRules, build_identity_hints
 from ..media.oshash import compute_oshash
 from ..media.probe import probe_media_info
+from ..media.nfo_import import NfoImporter, NfoImportPolicy, resolve_sidecar_nfo, sibling_artwork_paths
+from ..media.artwork import ensure_list_thumbnail
+import shutil
 from ..media.strm import read_strm_locator, redact_media_locator
 from .directory_actor_rules import DirectoryActorRules
 from .local_catalog import (
@@ -81,12 +84,14 @@ class Scanner:
         path_filter: MediaPathFilter | None = None,
         directory_actor_rules: DirectoryActorRules | None = None,
         non_jav_actor_catalog: NonJavActorCatalog | None = None,
+        artwork_dir: Path | None = None,
     ):
         self._repository = repository
         self._alias_rules = alias_rules or IdentityAliasRules()
         self._path_filter = path_filter or MediaPathFilter()
         self._directory_actor_rules = directory_actor_rules or DirectoryActorRules()
         self._non_jav_actor_catalog = non_jav_actor_catalog or NonJavActorCatalog()
+        self._artwork_dir = artwork_dir
 
     def scan(
         self,
@@ -249,6 +254,18 @@ class Scanner:
             existing_work = self._repository.find_work_by_code(hints.code)
             if existing_work is not None:
                 self._repository.attach_asset_to_work(asset, existing_work)
+        # NFO-first rebuild: trust sidecar metadata before remote scrape (miyabi-inspired).
+        if asset.work_id is None and resolve_sidecar_nfo(path) is not None:
+            result = NfoImporter(
+                self._repository,
+                policy=NfoImportPolicy(mode="trust"),
+            ).import_library_assets([asset])
+            if result.trusted:
+                asset = self._repository.get_asset(asset.id) or asset
+        if asset.work_id is not None and self._artwork_dir is not None:
+            work = self._repository.get_work(asset.work_id)
+            if work is not None:
+                _adopt_sibling_artwork(self._repository, work, path, self._artwork_dir)
         if (
             hints.code is None
             and confirmed_directory_actor
@@ -305,3 +322,40 @@ def _walk_files(root: Path, *, recursive: bool, errors: list[str]) -> Iterator[P
                     pending.append(Path(entry.path))
             except OSError as exc:
                 errors.append(f"{entry.path}: cannot inspect entry: {exc}")
+
+
+def _adopt_sibling_artwork(repository: Repository, work, media_path: Path, artwork_dir: Path) -> None:
+    """Copy NFO-adjacent poster/fanart into the local artwork cache and make a list thumb."""
+
+    siblings = sibling_artwork_paths(media_path)
+    if not siblings:
+        return
+    work_root = artwork_dir / work.id
+    work_root.mkdir(parents=True, exist_ok=True)
+    artwork = [dict(item) for item in (work.artwork or [])]
+    changed = False
+    for kind, source in siblings.items():
+        suffix = source.suffix.casefold() if source.suffix else ".jpg"
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+            suffix = ".jpg"
+        destination = work_root / f"{kind}{suffix}"
+        if not destination.is_file():
+            shutil.copy2(source, destination)
+            changed = True
+        ensure_list_thumbnail(work_root, destination)
+        already = any(
+            isinstance(item.get("local_path"), str) and Path(str(item["local_path"])) == destination
+            for item in artwork
+        )
+        if not already:
+            artwork.append(
+                {
+                    "url": f"file://{destination}",
+                    "kind": kind,
+                    "local_path": str(destination),
+                }
+            )
+            changed = True
+    if changed:
+        work.artwork = artwork
+        repository._session.flush()
