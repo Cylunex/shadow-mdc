@@ -139,6 +139,9 @@ def notes_indicate_real_photo(notes: str | None) -> bool:
             "iafd",
             "work cover",
             "work cover/screenshot",
+            "twitter",
+            "x profile",
+            "x avatar",
             "model media",
             "scene performer",
         )

@@ -498,6 +498,16 @@ function NonJavActorsManager(props: {
     currentPage * NON_JAV_ACTOR_PAGE_SIZE
   );
   const withWorks = props.actors.filter((actor) => actor.work_count > 0).length;
+  const bloggerPool = useMemo(
+    () => props.actors.filter((actor) => actor.work_count > 0 && (actor.groups.includes("blogger") || actor.groups.includes("twitter") || actor.groups.includes("onlyfans"))),
+    [props.actors]
+  );
+  const [spotlightIndex, setSpotlightIndex] = useState(0);
+  const spotlight = bloggerPool.length > 0 ? bloggerPool[spotlightIndex % bloggerPool.length] : null;
+  useEffect(() => {
+    if (bloggerPool.length === 0) return;
+    setSpotlightIndex((current) => current % bloggerPool.length);
+  }, [bloggerPool.length]);
 
   function edit(actor: NonJavActor) {
     setDraft({
@@ -548,6 +558,19 @@ function NonJavActorsManager(props: {
       setQuery={setQuery}
       setCategory={setCategory}
     />
+    {spotlight && <div className="blogger-spotlight" aria-label="博主 Spotlight">
+      <div className="blogger-spotlight-media" style={spotlight.image_url ? { backgroundImage: `url("${appUrl(spotlight.image_url)}")` } : undefined} />
+      <div className="blogger-spotlight-body">
+        <span className="pill">今日精选 Spotlight</span>
+        <h3>{spotlight.name}</h3>
+        <p>{spotlight.biography || (spotlight.x_handle ? `@{spotlight.x_handle}` : "本地策展博主，已关联作品资料。")}</p>
+        <div className="blogger-spotlight-actions">
+          <button type="button" className="secondary" onClick={() => { setGroup("blogger"); setQuery(spotlight.name); }}>查看博主</button>
+          <button type="button" className="ghost" onClick={() => setSpotlightIndex((current) => current + 1)}>换一位推荐</button>
+          {spotlight.x_handle && spotlight.x_url && <a className="ghost button-link" href={spotlight.x_url} target="_blank" rel="noreferrer">打开 X</a>}
+        </div>
+      </div>
+    </div>}
     <div className="group-chip-bar" aria-label="分组筛选">
       <button type="button" className={group === "all" ? "active" : "ghost"} onClick={() => setGroup("all")}>全部分组</button>
       {GROUP_SHORTCUTS.map((item) => (

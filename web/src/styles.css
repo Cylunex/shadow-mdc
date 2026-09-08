@@ -369,3 +369,43 @@ button.danger { border-color: #6d3333; color: #ffb1b1; }
 }
 .identify-url-form, .field-priority-row { display: grid; gap: 0.5rem; }
 .field-priority-row { grid-template-columns: 8rem 1fr; align-items: center; }
+
+
+.blogger-spotlight {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+  margin: 0 0 16px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: linear-gradient(135deg, #10181c 0%, #0b1214 55%, #14101a 100%);
+}
+.blogger-spotlight-media {
+  border-radius: 14px;
+  background: #1a2428 center/cover no-repeat;
+  min-height: 112px;
+}
+.blogger-spotlight-body { display: grid; gap: 8px; align-content: start; }
+.blogger-spotlight-body h3 { margin: 0; font-size: 18px; }
+.blogger-spotlight-body p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.blogger-spotlight-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.button-link {
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 7px 12px; color: var(--text); text-decoration: none; font-size: 12px;
+}
+@media (max-width: 720px) {
+  .blogger-spotlight { grid-template-columns: 1fr; }
+  .blogger-spotlight-media { min-height: 160px; }
+}
