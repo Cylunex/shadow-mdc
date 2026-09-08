@@ -18,7 +18,9 @@ from sqlalchemy.exc import IntegrityError
 
 from . import __version__
 from .api_models import (
+    ActorMergeRequest,
     ActorSummaryOut,
+    ActorXHandleEdit,
     AssetInboxHintsOut,
     AssetInboxMediaOut,
     AssetInboxOut,
@@ -39,6 +41,7 @@ from .api_models import (
     CollectionSummaryOut,
     DirectoryActorAssignOut,
     DirectoryActorAssignRequest,
+    FieldPriorityPayload,
     FilterWordsPayload,
     HealthOut,
     IdentifyOut,
@@ -49,10 +52,14 @@ from .api_models import (
     InboxBatchResultOut,
     InboxMatchEvidenceOut,
     InboxMatchSummaryOut,
+    LexiconExportOut,
     LibraryCreate,
     LibraryOut,
     LibraryUpdate,
     ManualCandidateRequest,
+    MediaServerSettingsPayload,
+    NfoImportRequest,
+    NfoImportResultOut,
     NonJavActorEdit,
     NonJavActorOut,
     NonJavActorWorkOut,
@@ -62,24 +69,17 @@ from .api_models import (
     ProviderDiagnoseOut,
     ProviderDiagnoseRequest,
     ProviderDiagnostic,
+    ProviderHealthItemOut,
+    ProviderHealthOut,
     ProviderListOut,
     ScanOut,
     ScanRequest,
-    ActorXHandleEdit,
     ScreenshotGenerateOut,
     ScreenshotGenerateRequest,
     TaskRunOut,
     WorkDetailOut,
     WorkLocksRequest,
     WorkLookupOut,
-    MediaServerSettingsPayload,
-    FieldPriorityPayload,
-    LexiconExportOut,
-    NfoImportResultOut,
-    NfoImportRequest,
-    ActorMergeRequest,
-    ProviderHealthItemOut,
-    ProviderHealthOut,
     WorkLookupRequest,
     WorkOut,
     WorkPosterPreferRequest,
@@ -111,8 +111,8 @@ from .identity import IdentityAliasRules, build_identity_hints, extract_code, no
 from .matching import normalize_title, rank_candidates, score_candidate
 from .media.artwork import ArtworkDownloadResult, ArtworkStore
 from .media.nfo import build_nfo, parse_nfo
-from .media.parts import part_group_key
 from .media.organizer import Organizer, plan_move_cleanup
+from .media.parts import part_group_key
 from .media.screenshots import capture_screenshot
 from .providers import (
     AirAvProvider,
@@ -146,6 +146,7 @@ from .services.directory_actor_rules import (
     DirectoryActorRule,
     DirectoryActorRuleStore,
 )
+from .services.field_priority import FieldPriorityConfig, FieldPriorityStore
 from .services.identify import IdentifyService
 from .services.local_catalog import (
     build_local_catalog_record,
@@ -153,9 +154,13 @@ from .services.local_catalog import (
     is_generic_file_name,
     local_context_names,
 )
+from .services.media_server import (
+    MediaServerConnector,
+    MediaServerSettings,
+    MediaServerStore,
+    refresh_media_server,
+)
 from .services.non_jav_actor_catalog import (
-    normalize_x_handle,
-    x_profile_url,
     NonJavActorCatalogStore,
     NonJavActorProfile,
     build_non_jav_actor_profile,
@@ -163,13 +168,17 @@ from .services.non_jav_actor_catalog import (
 )
 from .services.non_jav_work_seed import seed_non_jav_works
 from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
-from .services.field_priority import FieldPriorityConfig, FieldPriorityStore
-from .services.media_server import MediaServerConnector, MediaServerSettings, MediaServerStore, refresh_media_server
 from .services.scanner import Scanner
 from .services.translation import (
     GoogleTitleTranslator,
     TranslationCache,
     build_translation_backends,
+)
+from .services.x_handle import (
+    XHandleError,
+    require_verified_x_handle,
+    sanitize_stored_x_handle,
+    x_profile_url,
 )
 
 
@@ -656,8 +665,12 @@ def patch_actor(actor_id: str, payload: ActorXHandleEdit, repo: Repo) -> ActorSu
     actor = repo.get_actor(actor_id)
     if actor is None:
         raise HTTPException(status_code=404, detail="actor not found")
-    repo.update_actor_x_handle(actor, payload.x_handle)
-    handle = normalize_x_handle(actor.x_handle)
+    try:
+        handle = require_verified_x_handle(payload.x_handle)
+    except XHandleError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    repo.update_actor_x_handle(actor, handle)
+    handle = sanitize_stored_x_handle(actor.x_handle)
     return ActorSummaryOut(
         id=actor.id,
         name=actor.name,
@@ -678,7 +691,7 @@ def merge_actors_endpoint(payload: ActorMergeRequest, repo: Repo) -> ActorSummar
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    handle = normalize_x_handle(getattr(actor, "x_handle", None))
+    handle = sanitize_stored_x_handle(getattr(actor, "x_handle", None))
     return ActorSummaryOut(
         id=actor.id,
         name=actor.name,
@@ -782,7 +795,7 @@ async def trigger_media_server_refresh(request: Request) -> dict[str, str]:
         detail = await refresh_media_server(
             app_runtime.media_server_store.load(), app_runtime.http
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"status": "ok", "detail": detail}
 
@@ -908,7 +921,13 @@ def create_non_jav_actor(payload: NonJavActorEdit, request: Request) -> NonJavAc
     app_runtime = runtime(request)
     if app_runtime.non_jav_actor_store.get(payload.name) is not None:
         raise HTTPException(status_code=409, detail="non-JAV actor already exists")
-    actor = build_non_jav_actor_profile(**payload.model_dump())
+    try:
+        handle = require_verified_x_handle(payload.x_handle)
+    except XHandleError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    data = payload.model_dump()
+    data["x_handle"] = handle
+    actor = build_non_jav_actor_profile(**data)
     app_runtime.non_jav_actor_store.upsert(actor)
     return _non_jav_actor_out(actor)
 
@@ -923,8 +942,14 @@ def update_non_jav_actor(
     existing = app_runtime.non_jav_actor_store.get(actor_name)
     if existing is None:
         raise HTTPException(status_code=404, detail="non-JAV actor not found")
+    try:
+        handle = require_verified_x_handle(payload.x_handle)
+    except XHandleError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    data = payload.model_dump()
+    data["x_handle"] = handle
     actor = build_non_jav_actor_profile(
-        **payload.model_dump(),
+        **data,
         image_file=existing.image_file,
     )
     app_runtime.non_jav_actor_store.upsert(actor, previous_name=actor_name)
@@ -2277,7 +2302,7 @@ def _non_jav_actor_out(
     works: tuple[NonJavActorWorkOut, ...] = (),
 ) -> NonJavActorOut:
     # Merge works referenced by aliases / match names via caller-provided canonical bucket.
-    handle = normalize_x_handle(actor.x_handle)
+    handle = sanitize_stored_x_handle(actor.x_handle)
     return NonJavActorOut(
         name=actor.name,
         aliases=actor.aliases,
@@ -2382,8 +2407,8 @@ def _work_out(repo: Repository, work: Work) -> WorkOut:
             id=actor.id,
             name=actor.name,
             image_url=actor.image_url,
-            x_handle=normalize_x_handle(getattr(actor, "x_handle", None)),
-            x_url=x_profile_url(getattr(actor, "x_handle", None)),
+            x_handle=sanitize_stored_x_handle(getattr(actor, "x_handle", None)),
+            x_url=x_profile_url(sanitize_stored_x_handle(getattr(actor, "x_handle", None))),
         )
         for actor in repo.actors_for_work(work.id)
     ]

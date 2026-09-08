@@ -345,7 +345,9 @@ Shadow MDC 只管理用户已有本地媒体的元数据与公开图片，不提
 
 ## 演员 X（Twitter）
 
-非 JAV 演员资料与 JAV Actor 实体均可保存 `x_handle`。界面接受 `@name` 或 `https://x.com/name`，规范化后展示可点击链接。
+非 JAV 演员资料与 JAV Actor 实体均可保存 `x_handle`。界面接受 `@name` 或 `https://x.com/name`。
+
+**仅真实存在的账号才会被标记**：保存时服务端会做公开主页校验（`GET https://x.com/{handle}`）；校验失败或不存在则拒绝写入并返回明确错误。演示/测试类占位 handle（如 `DemoUser`、`DogfoodHandle`）一律拒绝。不会从别名或导入文本自动推断 X 账号。通过校验后才持久化，界面仅在有已校验 handle 时显示可点击链接。
 
 ## 字段优先级与词库导出
 

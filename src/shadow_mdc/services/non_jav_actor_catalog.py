@@ -7,6 +7,32 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..enums import MediaCategory
 from ..identity import IdentityAliasRules
+from .x_handle import (
+    XHandleError,
+    is_blocked_demo_x_handle,
+    normalize_x_handle,
+    require_verified_x_handle,
+    sanitize_stored_x_handle,
+    verify_x_handle_exists,
+    x_profile_url,
+)
+
+__all__ = [
+    "NonJavActorCatalog",
+    "NonJavActorCatalogStore",
+    "NonJavActorProfile",
+    "XHandleError",
+    "build_non_jav_actor_profile",
+    "enrich_non_jav_actor_aliases",
+    "is_blocked_demo_x_handle",
+    "match_non_jav_actor_directory",
+    "normalize_x_handle",
+    "parse_non_jav_actor_text",
+    "require_verified_x_handle",
+    "sanitize_stored_x_handle",
+    "verify_x_handle_exists",
+    "x_profile_url",
+]
 
 _PARENTHETICAL = re.compile(r"\s*\([^)]*\)\s*$")
 _HANDLE_SUFFIX = re.compile(r"^(.+?)\s+@([A-Za-z0-9_]{2,32})$")
@@ -130,7 +156,6 @@ class _ActorAccumulator:
     aliases: set[str] = field(default_factory=set)
     groups: set[str] = field(default_factory=set)
     categories: set[MediaCategory] = field(default_factory=set)
-    x_handle: str | None = None
 
 
 def parse_non_jav_actor_text(text: str, *, source: str) -> NonJavActorCatalog:
@@ -159,14 +184,7 @@ def parse_non_jav_actor_text(text: str, *, source: str) -> NonJavActorCatalog:
         )
         accumulator.groups.add(group)
         accumulator.categories.add(category)
-        if accumulator.x_handle is None:
-            for alias in aliases:
-                if not str(alias).startswith("@"):
-                    continue
-                handle = normalize_x_handle(alias)
-                if handle:
-                    accumulator.x_handle = handle
-                    break
+        # Never invent x_handle from aliases/text — only explicit verified handles are stored.
 
     profiles = tuple(
         NonJavActorProfile(
@@ -179,7 +197,7 @@ def parse_non_jav_actor_text(text: str, *, source: str) -> NonJavActorCatalog:
                 for name in (item.name, *sorted(item.aliases, key=str.casefold))
                 if _is_safe_match_name(name)
             ),
-            x_handle=item.x_handle,
+            x_handle=None,
         )
         for item in sorted(accumulators.values(), key=lambda value: value.name.casefold())
     )
@@ -197,40 +215,6 @@ def enrich_non_jav_actor_aliases(
         for match_name in profile.match_names:
             actors.setdefault(match_name, profile.name)
     return rules.model_copy(update={"actors": actors})
-
-
-def normalize_x_handle(value: str | None) -> str | None:
-    """Accept @name, name, or https://x.com/name and store the bare handle."""
-
-    if value is None:
-        return None
-    cleaned = unicodedata.normalize("NFKC", value).strip()
-    if not cleaned:
-        return None
-    lowered = cleaned.casefold()
-    for prefix in (
-        "https://x.com/",
-        "http://x.com/",
-        "https://twitter.com/",
-        "http://twitter.com/",
-        "https://www.x.com/",
-        "https://www.twitter.com/",
-    ):
-        if lowered.startswith(prefix):
-            cleaned = cleaned[len(prefix) :]
-            break
-    cleaned = cleaned.split("?")[0].split("#")[0].split("/")[0]
-    cleaned = cleaned.lstrip("@").strip()
-    if not cleaned or any(ch.isspace() for ch in cleaned):
-        return None
-    if not re.fullmatch(r"[A-Za-z0-9_]{1,50}", cleaned):
-        return None
-    return cleaned
-
-
-def x_profile_url(handle: str | None) -> str | None:
-    normalized = normalize_x_handle(handle)
-    return f"https://x.com/{normalized}" if normalized else None
 
 
 def build_non_jav_actor_profile(
@@ -265,7 +249,7 @@ def build_non_jav_actor_profile(
         categories=cleaned_categories,
         match_names=match_names,
         image_file=image_file,
-        x_handle=normalize_x_handle(x_handle),
+        x_handle=sanitize_stored_x_handle(x_handle),
         biography=biography.strip() if biography and biography.strip() else None,
         notes=notes.strip() if notes and notes.strip() else None,
     )

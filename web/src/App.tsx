@@ -571,7 +571,7 @@ function NonJavActorsManager(props: {
       <label><span>规范名称</span><input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
       <label><span>别名（逗号或换行分隔）</span><input value={draft.aliases} onChange={(event) => setDraft({ ...draft, aliases: event.target.value })} /></label>
       <label><span>分组</span><input value={draft.groups} onChange={(event) => setDraft({ ...draft, groups: event.target.value })} placeholder="madou, tanhua, onlyfans, western…" /></label>
-      <label><span>X / Twitter</span><input value={draft.x_handle} onChange={(event) => setDraft({ ...draft, x_handle: event.target.value })} placeholder="@handle 或 https://x.com/handle" /></label>
+      <label><span>X / Twitter（须真实存在，保存时校验）</span><input value={draft.x_handle} onChange={(event) => setDraft({ ...draft, x_handle: event.target.value })} placeholder="@handle 或 https://x.com/handle（仅已验证才保存）" /></label>
       <fieldset><legend>分类</legend>{displayCategoryOptions.filter((item) => item.value !== "all").map((item) => {
         const value = item.value as Exclude<DisplayCategory, "all">;
         return <label key={value}><input type="checkbox" checked={draft.categories.includes(value)} onChange={(event) => setDraft({ ...draft, categories: event.target.checked ? [...draft.categories, value] : draft.categories.filter((current) => current !== value) })} />{item.label}</label>;
@@ -595,7 +595,7 @@ function NonJavActorsManager(props: {
             </div>
           </div>
           {actor.aliases.length > 0 && <p>别名：{actor.aliases.join("、")}</p>}
-          {actor.x_url && <p>X：<a href={actor.x_url} target="_blank" rel="noreferrer">@{actor.x_handle}</a></p>}
+          {actor.x_handle && actor.x_url && <p>X：<a href={actor.x_url} target="_blank" rel="noreferrer">@{actor.x_handle}</a></p>}
           {actor.biography && <p className="actor-biography">{actor.biography}</p>}
           {actor.notes && <p className="actor-notes">备注：{actor.notes}</p>}
           {actor.works.length > 0

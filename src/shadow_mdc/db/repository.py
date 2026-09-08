@@ -898,9 +898,10 @@ class Repository:
         return self._session.get(Actor, actor_id)
 
     def update_actor_x_handle(self, actor: Actor, x_handle: str | None) -> Actor:
-        from ..services.non_jav_actor_catalog import normalize_x_handle
+        from ..services.x_handle import sanitize_stored_x_handle
 
-        actor.x_handle = normalize_x_handle(x_handle)
+        # Callers must verify before persist; sanitize drops demo/invalid leftovers.
+        actor.x_handle = sanitize_stored_x_handle(x_handle)
         self._session.flush()
         return actor
 
