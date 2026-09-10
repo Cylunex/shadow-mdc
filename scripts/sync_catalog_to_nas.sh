@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Incremental local → NAS catalog sync (fallback path).
 #
-# Prefer running scripts/seed_daily_chart.py **on NAS** against shared data instead
-# of this hop. Use this only when the daily chart seed (or other catalog edits)
-# happened locally and must be merged into NAS.
+# Preferred when NAS cannot reach JavDB: seed on the box (FANZA rankings), then
+# run this hop. Also usable after any local catalog edits that must merge to NAS.
+# NAS direct seed remains fine when JavDB is reachable there.
 #
 # Flow:
 #   1) export_catalog_bundle.py --incremental → /workspace/exports/…

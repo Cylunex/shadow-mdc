@@ -123,3 +123,34 @@ def test_chart_tags_and_merge_tags() -> None:
     day = date(2026, 9, 10)
     assert chart_tags(day, 3) == ("daily-chart-2026-09-10", "daily-chart-rank-3")
     assert merge_tags(["a", "b"], ["b", "c", "  "]) == ["a", "b", "c"]
+
+
+def test_browse_page_key_and_fanza_weights() -> None:
+    from shadow_mdc.services.daily_chart_seed import LIST_WEIGHTS, browse_page_key
+
+    assert browse_page_key("javdb", "rankings_daily") == "rankings_daily"
+    assert browse_page_key("fanza", "rankings_daily") == "fanza_rankings_daily"
+    assert LIST_WEIGHTS["fanza_rankings_daily"] == LIST_WEIGHTS["rankings_daily"]
+
+
+def test_score_browse_pages_merges_fanza_and_javdb() -> None:
+    pages = {
+        "rankings_daily": (
+            _item(code="AAA-001", title="Daily", external_id="d1"),
+        ),
+        "fanza_rankings_daily": (
+            DiscoverItem(
+                provider="fanza",
+                external_id="aaa00001",
+                source_url="https://www.dmm.co.jp/digital/videoa/-/detail/=/cid=aaa00001/",
+                code="AAA-001",
+                title="Fanza Daily Longer Title",
+            ),
+        ),
+    }
+    ranked = score_browse_pages(pages)
+    assert ranked[0].code == "AAA-001"
+    assert ranked[0].list_count == 2
+    assert ranked[0].score == appearance_score("rankings_daily", 1) + appearance_score(
+        "fanza_rankings_daily", 1
+    )

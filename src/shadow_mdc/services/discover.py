@@ -21,6 +21,7 @@ from ..identity import extract_code
 from ..providers.base import ProviderRegistry
 from ..providers.html import absolute, parse_date
 from ..media.magnets import MagnetLink
+from ..providers.fanza import FanzaProvider
 from ..providers.javdb import JavDBProvider
 
 DiscoverState = Literal["not_in_library", "catalog_only", "in_library"]
@@ -103,9 +104,15 @@ _LIST_PATHS: dict[DiscoverList, str] = {
 
 
 class DiscoverService:
-    def __init__(self, providers: ProviderRegistry, javdb: JavDBProvider | None):
+    def __init__(
+        self,
+        providers: ProviderRegistry,
+        javdb: JavDBProvider | None,
+        fanza: FanzaProvider | None = None,
+    ):
         self._providers = providers
         self._javdb = javdb
+        self._fanza = fanza
 
     async def browse(
         self,
@@ -115,6 +122,23 @@ class DiscoverService:
         list_name: DiscoverList = "latest",
         page: int = 1,
     ) -> DiscoverPage:
+        if provider == "fanza":
+            if self._fanza is None:
+                raise ValueError(f"browse list is not available for provider: {provider}")
+            ranking = await self._fanza.fetch_ranking(list_name, limit=100, offset=max(0, (page - 1) * 100))
+            raw = [
+                DiscoverItem(
+                    provider="fanza",
+                    external_id=item.content_id,
+                    source_url=item.source_url,
+                    code=item.code,
+                    title=item.title,
+                    thumb_url=item.thumb_url,
+                )
+                for item in ranking
+            ]
+            items = self._project(repo, raw)
+            return DiscoverPage(provider=provider, list=list_name, page=page, items=tuple(items))
         if provider != "javdb" or self._javdb is None:
             raise ValueError(f"browse list is not available for provider: {provider}")
         path = _LIST_PATHS[list_name]
@@ -269,6 +293,9 @@ class DiscoverService:
         source_url: str | None,
         code: str | None = None,
     ) -> ProviderRecord:
+        # FANZA detail pages are often geo/age gated from HTML; prefer code/cid.
+        if provider == "fanza" and code:
+            source_url = None
         if source_url:
             hints = IdentityHints(
                 term=source_url,

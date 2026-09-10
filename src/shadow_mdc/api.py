@@ -332,7 +332,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         (provider for provider in providers._providers.values() if provider.descriptor.id == "javdb"),
         None,
     )
-    discover_service = DiscoverService(providers, javdb_provider if isinstance(javdb_provider, JavDBProvider) else None)
+    fanza_provider = next(
+        (provider for provider in providers._providers.values() if provider.descriptor.id == "fanza"),
+        None,
+    )
+    discover_service = DiscoverService(
+        providers,
+        javdb_provider if isinstance(javdb_provider, JavDBProvider) else None,
+        fanza_provider if isinstance(fanza_provider, FanzaProvider) else None,
+    )
     task_events = TaskEventHub()
     app.state.runtime = Runtime(
         settings=settings,

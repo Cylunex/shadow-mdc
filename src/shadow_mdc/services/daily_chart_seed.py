@@ -2,8 +2,8 @@
 
 Product intent: each day scan available discover rankings, synthesize a combined
 ranking by multi-list consensus, and seed the top N works (default 10) plus their
-actors into the catalog. Prefer running against NAS shared data; local runs can
-export incrementally via ``scripts/sync_catalog_to_nas.sh``.
+actors into the catalog. Prefer seeding on a host that can fetch rankings (box/FANZA GraphQL when
+JavDB is blocked), then incremental sync via ``scripts/sync_catalog_to_nas.sh``.
 
 NAS routine (after deploy of this commit)::
 
@@ -28,11 +28,15 @@ from ..media.artwork import ArtworkStore
 from .discover import DiscoverItem, DiscoverList, DiscoverService
 
 # Higher weight = fresher / more authoritative list signal.
-LIST_WEIGHTS: dict[DiscoverList, int] = {
+LIST_WEIGHTS: dict[str, int] = {
     "rankings_daily": 4,
     "rankings_weekly": 3,
     "rankings_monthly": 2,
     "latest": 1,
+    "fanza_rankings_daily": 4,
+    "fanza_rankings_weekly": 3,
+    "fanza_rankings_monthly": 2,
+    "fanza_latest": 1,
 }
 
 DEFAULT_LISTS: tuple[DiscoverList, ...] = (
@@ -42,6 +46,8 @@ DEFAULT_LISTS: tuple[DiscoverList, ...] = (
     "latest",
 )
 
+DEFAULT_BROWSE_PROVIDERS: tuple[str, ...] = ("javdb", "fanza")
+
 # Rank 1 → 50 points, rank 50 → 1; deeper ranks keep a fractional floor.
 _RANK_POINT_CEILING = 51.0
 
@@ -49,7 +55,7 @@ _RANK_POINT_CEILING = 51.0
 class ChartAppearance(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    list_name: DiscoverList
+    list_name: str
     rank: int = Field(ge=1)
     weight: int = Field(ge=1)
     points: float = Field(ge=0)
@@ -129,7 +135,7 @@ def list_rank_points(rank: int) -> float:
 
 
 def appearance_score(
-    list_name: DiscoverList,
+    list_name: str,
     rank: int,
     *,
     weights: Mapping[str, int] | None = None,
@@ -151,7 +157,7 @@ def _state_rank(state: str) -> int:
 
 
 def score_browse_pages(
-    pages: Mapping[DiscoverList, Sequence[DiscoverItem]],
+    pages: Mapping[str, Sequence[DiscoverItem]],
     *,
     weights: Mapping[str, int] | None = None,
 ) -> list[ChartCandidate]:
@@ -336,31 +342,46 @@ def persist_run_log(data_dir: Path, result: DailyChartSeedResult, *, filename: s
     return path
 
 
+def browse_page_key(provider: str, list_name: DiscoverList | str) -> str:
+    """Map provider+logical list to a scoring bucket (FANZA gets fanza_ prefix)."""
+
+    if provider == "fanza":
+        return f"fanza_{list_name}"
+    return str(list_name)
+
+
 async def collect_browse_pages(
     discover: DiscoverService,
     repo: Repository,
     *,
-    provider: str = "javdb",
+    provider: str | Sequence[str] = DEFAULT_BROWSE_PROVIDERS,
     lists: Sequence[DiscoverList] = DEFAULT_LISTS,
     page: int = 1,
-) -> tuple[dict[DiscoverList, tuple[DiscoverItem, ...]], tuple[str, ...]]:
-    """Browse configured lists; skip providers/lists that do not expose browse yet.
+) -> tuple[dict[str, tuple[DiscoverItem, ...]], tuple[str, ...]]:
+    """Browse configured lists across providers; one failure must not abort others.
 
-    Hook for future providers: call with another ``provider`` once browse is supported.
+    Tries JavDB and FANZA by default. FANZA rankings use the public DMM GraphQL API
+    (works when JavDB is Cloudflare-blocked). Empty pages are skipped.
     """
 
-    pages: dict[DiscoverList, tuple[DiscoverItem, ...]] = {}
+    providers = (provider,) if isinstance(provider, str) else tuple(provider)
+    pages: dict[str, tuple[DiscoverItem, ...]] = {}
     failures: list[str] = []
-    for list_name in lists:
-        try:
-            result = await discover.browse(
-                repo, provider=provider, list_name=list_name, page=page
-            )
-            pages[list_name] = result.items
-        except ValueError as exc:
-            failures.append(f"{provider}/{list_name}: unsupported ({exc})")
-        except Exception as exc:  # noqa: BLE001 - surface per-list, continue others
-            failures.append(f"{provider}/{list_name}: {type(exc).__name__}: {exc}")
+    for provider_id in providers:
+        for list_name in lists:
+            key = browse_page_key(provider_id, list_name)
+            try:
+                result = await discover.browse(
+                    repo, provider=provider_id, list_name=list_name, page=page
+                )
+                if result.items:
+                    pages[key] = result.items
+                else:
+                    failures.append(f"{provider_id}/{list_name}: empty")
+            except ValueError as exc:
+                failures.append(f"{provider_id}/{list_name}: unsupported ({exc})")
+            except Exception as exc:  # noqa: BLE001 - surface per-list, continue others
+                failures.append(f"{provider_id}/{list_name}: {type(exc).__name__}: {exc}")
     return pages, tuple(failures)
 
 
@@ -374,7 +395,7 @@ async def seed_daily_chart(
     dry_run: bool = False,
     run_day: date | None = None,
     lists: Sequence[DiscoverList] = DEFAULT_LISTS,
-    provider: str = "javdb",
+    provider: str | Sequence[str] = DEFAULT_BROWSE_PROVIDERS,
     download_posters: bool = True,
     artwork_max_bytes: int = 25 * 1024 * 1024,
     persist_log: bool = True,
