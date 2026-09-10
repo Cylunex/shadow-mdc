@@ -231,6 +231,10 @@ export function App() {
               await api.preferWorkPoster(workId, index);
               setMessage("已选用缓存海报");
             })}
+            deleteMagnet={(workId, magnetId) => run(`magnet-del-${magnetId}`, async () => {
+              await api.deleteWorkMagnet(workId, magnetId);
+              setMessage("已移除磁力链接");
+            })}
             seedCollections={() => run("seed-collections", async () => {
               const result = await api.seedCollections();
               setMessage(`合集索引：共 ${result.collections_total}，新建 ${result.collections_created}`);
@@ -698,10 +702,10 @@ function TaskHistory({ tasks, onCancel }: { tasks: TaskRun[]; onCancel?: (id: st
   ))}</div>;
 }
 
-function Nav(props: { active: boolean; onClick: () => void; label: string; count: number }) {
+function Nav(props: { active: boolean; onClick: () => void; label: string; count?: number }) {
   return (
     <button className={props.active ? "nav active" : "nav"} onClick={props.onClick}>
-      <span>{props.label}</span><b>{props.count}</b>
+      <span>{props.label}</span>{typeof props.count === "number" ? <b>{props.count}</b> : null}
     </button>
   );
 }
@@ -1054,6 +1058,7 @@ function Works(props: {
   }) => Promise<void>;
   saveLocks: (workId: string, locks: string[]) => Promise<void>;
   preferPoster: (workId: string, index: number) => Promise<void>;
+  deleteMagnet: (workId: string, magnetId: string) => Promise<void>;
   seedCollections: () => Promise<void>;
 }) {
   const { works } = props;
@@ -1224,6 +1229,14 @@ function Works(props: {
           onSave={props.saveWork}
           onLocks={props.saveLocks}
           onPreferPoster={props.preferPoster}
+          onDeleteMagnet={async (workId, magnetId) => {
+            await props.deleteMagnet(workId, magnetId);
+            try {
+              setDetail(await api.workDetail(workId));
+            } catch {
+              setDetail(null);
+            }
+          }}
           onRefresh={() => {
             const work = works.find((item) => item.id === detail.id);
             if (work) void props.refreshMetadata(work);
@@ -1254,6 +1267,7 @@ function WorkDetailPanel(props: {
   }) => Promise<void>;
   onLocks: (workId: string, locks: string[]) => Promise<void>;
   onPreferPoster: (workId: string, index: number) => Promise<void>;
+  onDeleteMagnet: (workId: string, magnetId: string) => Promise<void>;
   onRefresh: () => void;
   onDownload: () => void;
 }) {
@@ -1361,7 +1375,7 @@ function WorkDetailPanel(props: {
               type="button"
               className="ghost"
               disabled={props.busy === `magnet-del-${magnet.id}`}
-              onClick={() => props.onDeleteMagnet && void props.onDeleteMagnet(work.id, magnet.id)}
+              onClick={() => void props.onDeleteMagnet(work.id, magnet.id)}
             >移除</button>
           </div>
         ))}</div>}
