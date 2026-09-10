@@ -55,7 +55,8 @@ if [[ ! -f "$SOURCE_DB" ]]; then
   exit 3
 fi
 
-mkdir -p "$EXPORTS_ROOT" "$BUNDLE_DIR"
+mkdir -p "$EXPORTS_ROOT"
+# export_catalog_bundle creates BUNDLE_DIR and errors if it already exists
 
 echo "==> incremental export → $BUNDLE_DIR"
 (
