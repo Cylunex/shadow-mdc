@@ -3,7 +3,7 @@ import { api } from "../api";
 
 type Props = {
   busy: string | null;
-  run: (key: string, action: () => Promise<void>) => Promise<void>;
+  run: (key: string, action: () => Promise<void>, refresh?: "none" | "works" | "actors" | "inbox" | "tasks" | "core" | "all") => Promise<void>;
   report: (message: string) => void;
 };
 
@@ -27,7 +27,7 @@ export function IdentifyByUrlPanel({ busy, run, report }: Props) {
           ? `已识别作品：${result.work.title}`
           : `未命中正式作品（匹配记录 ${result.matched_records}）`
       );
-    });
+    }, "works");
   }
 
   return (

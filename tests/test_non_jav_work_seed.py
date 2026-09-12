@@ -103,6 +103,7 @@ def test_non_jav_actors_api_exposes_seeded_works(
     data_dir.mkdir()
     monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(data_dir))
     monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{data_dir / 'api-seed.db'}")
+    monkeypatch.setenv("SHADOW_MDC_AUTO_SEED_NON_JAV_WORKS", "true")
     (data_dir / "non-jav-works.json").write_text(
         """
 {

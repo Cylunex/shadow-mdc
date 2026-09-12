@@ -2,14 +2,15 @@ import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react
 
 import { api, appUrl } from "./api";
 import { XHandleLink } from "./components/XHandleLink";
-import { IdentifyByUrlPanel } from "./components/IdentifyByUrlPanel";
-import { FieldPrioritySettings } from "./components/FieldPrioritySettings";
 import type { NonJavActorEditPayload, OrganizePayload } from "./api";
 import { identityAliasesSchema } from "./model";
 import type { ActorProfile, Asset, BatchPlan, Candidate, IdentityAliases, Library, LibraryPrefs, NonJavActor, TaskRun, Work, WorkDetail } from "./model";
 import { WorkCard } from "./components/WorkCard";
 
 type DisplayCategory = "all" | "Japan" | "China" | "Korea" | "Europe" | "Other";
+
+type RefreshMode = "none" | "works" | "actors" | "inbox" | "tasks" | "core" | "all";
+type RunFn = (key: string, action: () => Promise<void>, refresh?: RefreshMode) => Promise<void>;
 
 const INBOX_PAGE_SIZE = 15;
 const DIRECTORY_FILE_PAGE_SIZE = 10;
@@ -859,7 +860,7 @@ export function Works(props: {
   busy: string | null;
   refreshMetadata: (work: Work) => Promise<void>;
   downloadArtwork: (work: Work) => Promise<void>;
-  lookupWork: (code: string) => Promise<void>;
+  lookupWork: (query: string) => Promise<void>;
   translateWorks: () => Promise<void>;
   saveWork: (workId: string, payload: {
     title?: string;
@@ -935,7 +936,8 @@ export function Works(props: {
       </div>
       <form className="command-bar-row" onSubmit={(event) => {
         event.preventDefault();
-        if (code.trim()) void props.lookupWork(code.trim());
+        const query = code.trim();
+        if (query) void props.lookupWork(query);
       }}>
         <input value={code} onChange={(event) => setCode(event.target.value)} placeholder="番号、FC2 或详情 URL" />
         <button disabled={!code.trim() || props.busy === "lookup-work"}>一键查档</button>
@@ -1207,7 +1209,7 @@ export function WorkDetailPanel(props: {
 export function Libraries(props: {
   libraries: Library[];
   busy: string | null;
-  run: (key: string, action: () => Promise<void>) => Promise<void>;
+  run: RunFn;
   report: (message: string) => void;
 }) {
   const [name, setName] = useState("");
@@ -1227,7 +1229,7 @@ export function Libraries(props: {
       await api.createLibrary({ name, root_path: path, recognition_scope: recognitionScope });
       setName("");
       setPath("");
-    });
+    }, "core");
   }
   return (
     <>
@@ -1293,7 +1295,7 @@ export function Libraries(props: {
                     const recognition_scope = event.target.value as "all" | "jav_only";
                     await api.updateLibrary(library.id, { recognition_scope });
                     props.report(recognition_scope === "jav_only" ? "该媒体库已切换为仅识别 JAV" : "该媒体库已恢复识别全部内容");
-                  })}
+                  }, "core")}
                 >
                   <option value="all">全部内容</option>
                   <option value="jav_only">仅 JAV</option>
@@ -1313,7 +1315,7 @@ export function Libraries(props: {
                   `过滤 ${result.filtered}，` +
                   `跳过 ${result.skipped}${errorSummary}`
                 );
-              })}
+              }, "tasks")}
             >扫描</button>
             <button
               className="secondary"
@@ -1327,7 +1329,7 @@ export function Libraries(props: {
                   `待确认 ${result.unresolved}，来源失败 ${result.provider_failures} 次，` +
                   `范围外跳过 ${result.scope_skipped}，剩余 ${result.remaining_identities} 组`
                 );
-              })}
+              }, "all")}
             >识别并优化媒体</button>
             <button
               className="ghost"
@@ -1339,7 +1341,7 @@ export function Libraries(props: {
                   `继续识别：处理 ${result.attempted_assets}，剩余 ${result.remaining_identities} 组；` +
                   `在线 ${result.online_identified} / 本地 ${result.local_optimized} / 待确认 ${result.unresolved}`
                 );
-              })}
+              }, "all")}
             >继续剩余识别</button>
             <button
               className="secondary"
@@ -1355,18 +1357,12 @@ export function Libraries(props: {
                   `严格校验未通过 ${result.skipped_untrusted}，` +
                   `失败 ${result.failed}${errorSummary}`
                 );
-              })}
+              }, "works")}
             >生成非 JAV 截图</button>
           </div>
           <LibraryOrganizer library={library} busy={props.busy} run={props.run} report={props.report} />
         </article>
       ))}</div>}
-      <IdentifyByUrlPanel busy={props.busy} run={props.run} report={props.report} />
-      <FieldPrioritySettings busy={props.busy} run={props.run} report={props.report} />
-      <CatalogImportEditor report={props.report} busy={props.busy} run={props.run} />
-      <ProviderDiagnostics />
-      <FilterWordsEditor />
-      <AliasEditor />
     </>
   );
 }
@@ -1374,7 +1370,7 @@ export function Libraries(props: {
 function LibraryOrganizer(props: {
   library: Library;
   busy: string | null;
-  run: (key: string, action: () => Promise<void>) => Promise<void>;
+  run: RunFn;
   report: (message: string) => void;
 }) {
   const [mode, setMode] = useState<OrganizePayload["mode"]>("sidecar");
@@ -1395,7 +1391,7 @@ function LibraryOrganizer(props: {
       const next = await api.planLibrary(props.library.id, payload);
       setPlan(next);
       props.report(`整理预览完成：${next.asset_count} 个文件，${next.conflict_count} 个冲突`);
-    });
+    }, "none");
   }
 
   function apply() {
@@ -1408,7 +1404,7 @@ function LibraryOrganizer(props: {
       });
       setPlan(null);
       props.report(`整理完成：成功 ${result.succeeded}，失败 ${result.failed}`);
-    });
+    }, "tasks");
   }
 
   return <section className="organizer">
@@ -1480,7 +1476,7 @@ function PlanPreview(props: { plan: BatchPlan }) {
 
 export function CatalogImportEditor(props: {
   busy: string | null;
-  run: (key: string, action: () => Promise<void>) => Promise<void>;
+  run: RunFn;
   report: (message: string) => void;
 }) {
   const [path, setPath] = useState("");
@@ -1528,7 +1524,7 @@ export function CatalogImportEditor(props: {
             const message = summarize(result);
             setStatus(message);
             props.report(message);
-          })}
+          }, dryRun ? "none" : "all")}
         >从路径合并导入</button>
         <label className="ghost" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
           上传压缩包
@@ -1549,7 +1545,7 @@ export function CatalogImportEditor(props: {
                 const message = summarize(result);
                 setStatus(message);
                 props.report(message);
-              });
+              }, dryRun ? "none" : "all");
             }}
           />
         </label>

@@ -15,6 +15,19 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
   const [actorName, setActorName] = useState("");
   const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
   const [maxCast, setMaxCast] = useState(3);
+  const [localBusy, setLocalBusy] = useState<string | null>(null);
+  const blocked = Boolean(busy || localBusy);
+
+  async function runLocal(key: string, action: () => Promise<void>) {
+    setLocalBusy(key);
+    try {
+      await action();
+    } catch (error) {
+      report(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLocalBusy(null);
+    }
+  }
 
   const enabledCount = useMemo(
     () => prefs.subscriptions.filter((item) => item.enabled).length,
@@ -28,17 +41,19 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!actorKey.trim() || !actorName.trim()) return;
-    const next = await api.upsertSubscription({
-      actor_key: actorKey.trim(),
-      actor_name: actorName.trim(),
-      start_date: startDate,
-      max_cast: maxCast,
-      enabled: true
+    await runLocal("add-sub", async () => {
+      const next = await api.upsertSubscription({
+        actor_key: actorKey.trim(),
+        actor_name: actorName.trim(),
+        start_date: startDate,
+        max_cast: maxCast,
+        enabled: true
+      });
+      onChanged(next);
+      report(`已订阅 ${actorName.trim()}（起始 ${startDate}，人数 ≤${maxCast}）`);
+      setActorKey("");
+      setActorName("");
     });
-    onChanged(next);
-    report(`已订阅 ${actorName.trim()}（起始 ${startDate}，人数 ≤${maxCast}）`);
-    setActorKey("");
-    setActorName("");
   }
 
   return (
@@ -52,17 +67,17 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
         <div className="hero-actions">
           <button
             type="button"
-            disabled={busy === "scan-subs"}
+            disabled={blocked}
             onClick={() => {
-              void (async () => {
+              void runLocal("scan-subs", async () => {
                 const result = await api.scanSubscriptions();
                 const next = await api.libraryPrefs();
                 onChanged(next);
                 report(`扫描完成：新增队列 ${result.queued}，跳过暂停 ${result.skipped}`);
-              })();
+              });
             }}
           >
-            扫描新作
+            {localBusy === "scan-subs" ? "扫描中…" : "扫描新作"}
           </button>
         </div>
       </div>
@@ -86,7 +101,7 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
               <span>人数 ≤</span>
               <input type="number" min={1} max={50} value={maxCast} onChange={(e) => setMaxCast(Number(e.target.value) || 3)} />
             </label>
-            <button type="submit">添加订阅</button>
+            <button type="submit" disabled={blocked}>添加订阅</button>
           </form>
 
           {prefs.subscriptions.length === 0 ? (
@@ -109,7 +124,8 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
                       type="button"
                       className="ghost"
                       onClick={() => {
-                        void api.upsertSubscription({ ...sub, enabled: !sub.enabled }).then((next) => {
+                        void runLocal(`toggle-${sub.actor_key}`, async () => {
+                          const next = await api.upsertSubscription({ ...sub, enabled: !sub.enabled });
                           onChanged(next);
                           report(sub.enabled ? `已暂停 ${sub.actor_name}` : `已启用 ${sub.actor_name}`);
                         });
@@ -121,7 +137,8 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
                       type="button"
                       className="danger ghost"
                       onClick={() => {
-                        void api.removeSubscription(sub.actor_key).then((next) => {
+                        void runLocal(`remove-${sub.actor_key}`, async () => {
+                          const next = await api.removeSubscription(sub.actor_key);
                           onChanged(next);
                           report(`已取消订阅 ${sub.actor_name}`);
                         });
@@ -152,8 +169,8 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
                 <div className="subscription-actions">
                   {item.status === "pending" && (
                     <>
-                      <button type="button" className="secondary" onClick={() => void api.patchQueueItem(item.id, "accepted").then(onChanged)}>接受</button>
-                      <button type="button" className="ghost" onClick={() => void api.patchQueueItem(item.id, "dismissed").then(onChanged)}>忽略</button>
+                      <button type="button" className="secondary" disabled={blocked} onClick={() => void runLocal(`accept-${item.id}`, async () => onChanged(await api.patchQueueItem(item.id, "accepted")))}>接受</button>
+                      <button type="button" className="ghost" disabled={blocked} onClick={() => void runLocal(`dismiss-${item.id}`, async () => onChanged(await api.patchQueueItem(item.id, "dismissed")))}>忽略</button>
                     </>
                   )}
                 </div>

@@ -3,7 +3,7 @@ import { api } from "../api";
 
 type Props = {
   busy: string | null;
-  run: (key: string, action: () => Promise<void>) => Promise<void>;
+  run: (key: string, action: () => Promise<void>, refresh?: "none" | "works" | "actors" | "inbox" | "tasks" | "core" | "all") => Promise<void>;
   report: (message: string) => void;
 };
 
@@ -50,7 +50,7 @@ export function FieldPrioritySettings({ busy, run, report }: Props) {
             const saved = await api.saveFieldPriority(next);
             setPriorities(saved.priorities);
             report("字段优先级已保存");
-          });
+          }, "none");
         }}
       >
         保存优先级

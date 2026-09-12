@@ -80,16 +80,18 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
+        let refreshed = false;
         if (view === "works" && !loaded.works) {
           await refreshWorks();
+          refreshed = true;
         } else if (view === "actors" && !loaded.actors) {
           await refreshActors();
+          refreshed = true;
         } else if (view === "tasks" && !loaded.tasks) {
           await refreshInbox();
-        } else if (view === "settings" && !loaded.works) {
-          // settings uses libraries from core only
+          refreshed = true;
         }
-        setMessage("数据已同步");
+        if (refreshed) setMessage("数据已同步");
       } catch (error) {
         setMessage(errorMessage(error));
       }
@@ -152,8 +154,7 @@ export function App() {
   }
 
   const badges = {
-    tasks: inbox.length,
-    works: inbox.length > 0 ? inbox.length : undefined,
+    tasks: inbox.length || undefined,
     subscriptions: prefs.queue.filter((item) => item.status === "pending").length || undefined
   };
 
@@ -199,20 +200,26 @@ export function App() {
             busy={busy}
             prefs={prefs}
             onActorTags={(actorKey, tags) => run(`tag-${actorKey}`, async () => {
-              const next = await api.setActorTags({ actor_key: actorKey, ...tags });
-              setPrefs(next);
-              if (tags.subscribe && !prefs.subscriptions.some((item) => item.actor_key === actorKey)) {
-                const actor = actors.find((item) => item.id === actorKey || item.name === actorKey);
-                const name = actor?.name ?? actorKey;
-                const synced = await api.upsertSubscription({
-                  actor_key: actorKey,
-                  actor_name: name,
-                  start_date: new Date().toISOString().slice(0, 10),
-                  max_cast: 3,
-                  enabled: true
-                });
-                setPrefs(synced);
+              let next = await api.setActorTags({ actor_key: actorKey, ...tags });
+              const existing = next.subscriptions.find((item) => item.actor_key === actorKey);
+              if (tags.subscribe) {
+                if (!existing) {
+                  const actor = actors.find((item) => item.id === actorKey || item.name === actorKey);
+                  const name = actor?.name ?? actorKey;
+                  next = await api.upsertSubscription({
+                    actor_key: actorKey,
+                    actor_name: name,
+                    start_date: new Date().toISOString().slice(0, 10),
+                    max_cast: 3,
+                    enabled: true
+                  });
+                } else if (!existing.enabled) {
+                  next = await api.upsertSubscription({ ...existing, enabled: true });
+                }
+              } else if (existing) {
+                next = await api.removeSubscription(actorKey);
               }
+              setPrefs(next);
               setMessage(`已更新 ${actorKey} 标签`);
             }, "none")}
             saveNonJavActor={(previousName, payload) => run(`actor-${previousName ?? "new"}`, async () => {
@@ -256,12 +263,16 @@ export function App() {
               const result = await api.downloadArtwork(work.id);
               setMessage(`图片缓存：新下载 ${result.downloaded}，已有 ${result.cached}，失败 ${result.failed}`);
             }, "works")}
-            lookupWork={(code) => run("lookup-work", async () => {
-              const result = await api.lookupWork({ code });
+            lookupWork={(query) => run("lookup-work", async () => {
+              const trimmed = query.trim();
+              const looksLikeUrl = /^https?:\/\//i.test(trimmed);
+              const result = await api.lookupWork(
+                looksLikeUrl ? { source_url: trimmed } : { code: trimmed }
+              );
               const failed = result.failures.map((item) => `${item.provider}/${item.reason}`).join("、");
               setMessage(
                 result.work
-                  ? `已按番号建立或更新 ${result.work.primary_code ?? result.work.title}，聚合 ${result.matched_records} 个来源`
+                  ? `已按${looksLikeUrl ? "URL" : "番号"}建立或更新 ${result.work.primary_code ?? result.work.title}，聚合 ${result.matched_records} 个来源`
                   : `没有找到可自动确认的结果${result.matched_records ? `；有 ${result.matched_records} 条低置信候选未采用` : ""}${failed ? `；${failed}` : ""}`
               );
             }, "works")}
@@ -364,7 +375,12 @@ export function App() {
         )}
 
         {view === "settings" && (
-          <SettingsView libraries={libraries} busy={busy} run={run} report={setMessage} />
+          <SettingsView
+            libraries={libraries}
+            busy={busy}
+            run={(key, action, refresh = "core") => run(key, action, refresh)}
+            report={setMessage}
+          />
         )}
       </main>
     </div>

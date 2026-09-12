@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { api } from "../api";
 import type { DiscoverItem, MagnetLink, MultiSiteSearch } from "../model";
 
@@ -29,6 +29,19 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
   const [items, setItems] = useState<DiscoverItem[]>([]);
   const [multi, setMulti] = useState<MultiSiteSearch | null>(null);
   const [selectedMagnets, setSelectedMagnets] = useState<Record<string, MagnetLink>>({});
+  const [loading, setLoading] = useState(false);
+  const blocked = loading || busy === "discover";
+
+  async function withLoading(action: () => Promise<void>) {
+    setLoading(true);
+    try {
+      await action();
+    } catch (error) {
+      report(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function loadBrowse(nextList = list, nextPage = page) {
     const result = await api.discoverBrowse({ provider: "javdb", list: nextList, page: nextPage });
@@ -37,36 +50,45 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
     report(`发现浏览 ${result.items.length} 条（不写入作品库）`);
   }
 
+  useEffect(() => {
+    void withLoading(() => loadBrowse("latest", 1));
+    // Mount: load latest chart once.
+  }, []);
+
   async function loadSearch(event: FormEvent) {
     event.preventDefault();
     if (!query.trim()) return;
-    if (mode === "multi") {
-      const result = await api.discoverMultiSearch(query.trim(), true);
-      setMulti(result);
-      setItems([]);
-      setSelectedMagnets({});
-      report(`多源番号搜索 ${result.hits.length} 条命中`);
-      return;
-    }
-    const result = await api.discoverSearch(query.trim(), { provider: "javdb", page: 1 });
-    setItems(result.items);
-    setMulti(null);
-    report(`发现搜索 ${result.items.length} 条（不写入作品库）`);
+    await withLoading(async () => {
+      if (mode === "multi") {
+        const result = await api.discoverMultiSearch(query.trim(), true);
+        setMulti(result);
+        setItems([]);
+        setSelectedMagnets({});
+        report(`多源番号搜索 ${result.hits.length} 条命中`);
+        return;
+      }
+      const result = await api.discoverSearch(query.trim(), { provider: "javdb", page: 1 });
+      setItems(result.items);
+      setMulti(null);
+      report(`发现搜索 ${result.items.length} 条（不写入作品库）`);
+    });
   }
 
   async function seedItem(item: DiscoverItem) {
-    const result = await api.discoverSeed({
-      provider: item.provider,
-      external_id: item.external_id,
-      source_url: item.source_url,
-      code: item.code ?? undefined
+    await withLoading(async () => {
+      const result = await api.discoverSeed({
+        provider: item.provider,
+        external_id: item.external_id,
+        source_url: item.source_url,
+        code: item.code ?? undefined
+      });
+      report(
+        result.created
+          ? `已从发现页建档元数据：${result.title}（仍无本地文件）`
+          : `已关联现有作品：${result.title}`
+      );
+      await onSeeded();
     });
-    report(
-      result.created
-        ? `已从发现页建档元数据：${result.title}（仍无本地文件）`
-        : `已关联现有作品：${result.title}`
-    );
-    await onSeeded();
   }
 
   async function copyText(value: string, label: string) {
@@ -130,16 +152,12 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
           <button
             type="button"
             className="danger-solid"
-            disabled={busy === "discover"}
+            disabled={blocked}
             onClick={() => {
-              void (async () => {
-                try {
-                  await loadBrowse(list, page);
-                  report("榜单已刷新");
-                } catch (error) {
-                  report(error instanceof Error ? error.message : String(error));
-                }
-              })();
+              void withLoading(async () => {
+                await loadBrowse(list, page);
+                report("榜单已刷新");
+              });
             }}
           >更新榜单</button>
           {LISTS.map((entry) => (
@@ -147,17 +165,11 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
               key={entry.value}
               type="button"
               className={list === entry.value ? "active" : "ghost"}
-              disabled={busy === "discover"}
+              disabled={blocked}
               onClick={() => {
                 setList(entry.value);
                 setPage(1);
-                void (async () => {
-                  try {
-                    await loadBrowse(entry.value, 1);
-                  } catch (error) {
-                    report(error instanceof Error ? error.message : String(error));
-                  }
-                })();
+                void withLoading(() => loadBrowse(entry.value, 1));
               }}
             >
               {entry.label}
@@ -166,15 +178,9 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
           <button
             type="button"
             className="secondary"
-            disabled={busy === "discover"}
+            disabled={blocked}
             onClick={() => {
-              void (async () => {
-                try {
-                  await loadBrowse(list, page);
-                } catch (error) {
-                  report(error instanceof Error ? error.message : String(error));
-                }
-              })();
+              void withLoading(() => loadBrowse(list, page));
             }}
           >
             刷新列表
@@ -186,7 +192,7 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
             onClick={() => {
               const next = Math.max(1, page - 1);
               setPage(next);
-              void loadBrowse(list, next).catch((error) => report(String(error)));
+              void withLoading(() => loadBrowse(list, next));
             }}
           >
             上一页
@@ -197,7 +203,7 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
             onClick={() => {
               const next = page + 1;
               setPage(next);
-              void loadBrowse(list, next).catch((error) => report(String(error)));
+              void withLoading(() => loadBrowse(list, next));
             }}
           >
             下一页
@@ -205,13 +211,13 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
         </div>
       )}
 
-      <form className="discover-search" onSubmit={(event) => void loadSearch(event).catch((error) => report(String(error)))}>
+      <form className="discover-search" onSubmit={(event) => void loadSearch(event)}>
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder={mode === "multi" ? "多源搜索番号，例如 SONE-118" : "在发现源中搜索"}
         />
-        <button type="submit" disabled={!query.trim() || busy === "discover"}>
+        <button type="submit" disabled={!query.trim() || blocked}>
           {mode === "multi" ? "多源搜索" : "搜索"}
         </button>
       </form>
@@ -280,7 +286,7 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
       {!multi && (
         <div className="discover-grid">
           {items.length === 0 ? (
-            <p className="empty-detail">选择榜单或搜索后显示远程结果。这些条目不属于作品库。</p>
+            <p className="empty-detail">{loading ? "正在拉取榜单…" : "选择榜单或搜索后显示远程结果。这些条目不属于作品库。"}</p>
           ) : (
             items.map((item) => (
               <article key={`${item.provider}-${item.external_id}`} className="discover-card">

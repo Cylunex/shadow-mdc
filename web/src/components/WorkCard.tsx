@@ -43,7 +43,6 @@ export const WorkCard = memo(function WorkCard({
         <span className="pill">{work.category}</span>
         <StatusBadges
           wantList={work.want_list}
-          inCatalog
           hasLocalMedia={work.has_local_media}
         />
         <h2>{work.title}</h2>

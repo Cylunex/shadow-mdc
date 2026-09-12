@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     translation_target_language: str = "zh-CN"
     translation_plot: bool = True
     artwork_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
+    auto_seed_non_jav_works: bool = True
     user_agent: str = "ShadowMDC/0.1 (+https://github.com/Cylunex/shadow-mdc)"
 
     def ensure_directories(self) -> None:

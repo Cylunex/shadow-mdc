@@ -281,16 +281,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         repo = Repository(session)
         repo.repair_jav_actor_sources()
         repo.sync_all_work_actors()
-        _works_seed = Path(__file__).resolve().parents[2] / "seeds" / "non-jav-works.json"
-        if not _works_seed.is_file():
+        if settings.auto_seed_non_jav_works:
+            # Prefer data_dir override (tests / NAS custom seed), then repo seeds/.
             _works_seed = settings.data_dir / "non-jav-works.json"
-        seed_non_jav_works(
-            repo,
-            seed_path=_works_seed,
-            actor_store=non_jav_actor_store,
-            actor_images_dir=settings.data_dir / "actor-images",
-            artwork_dir=settings.data_dir / "artwork",
-        )
+            if not _works_seed.is_file():
+                _works_seed = Path(__file__).resolve().parents[2] / "seeds" / "non-jav-works.json"
+            seed_non_jav_works(
+                repo,
+                seed_path=_works_seed,
+                actor_store=non_jav_actor_store,
+                actor_images_dir=settings.data_dir / "actor-images",
+                artwork_dir=settings.data_dir / "artwork",
+            )
     client = _http_client(settings, max_connections=settings.translation_concurrency + 4)
     provider_clients = tuple(
         _http_client(settings, max_connections=settings.identify_concurrency + 2) for _ in range(16)

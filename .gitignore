@@ -15,3 +15,5 @@ web/node_modules/
 web/dist/
 *.tsbuildinfo
 .env
+web/package-lock.json
+web/bun.lock

@@ -12,7 +12,7 @@ export const StatusBadges = memo(function StatusBadges(props: Props) {
   const badges = statusBadges(
     computeWorkStatus({
       wantList: Boolean(props.wantList),
-      inCatalog: props.inCatalog !== false,
+      inCatalog: Boolean(props.inCatalog),
       hasLocalMedia: Boolean(props.hasLocalMedia),
       embyLinked: props.embyLinked
     })

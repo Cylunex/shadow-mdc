@@ -5,10 +5,12 @@ import { IdentifyByUrlPanel } from "../components/IdentifyByUrlPanel";
 import type { Library, MediaServerSettings } from "../model";
 import { AliasEditor, CatalogImportEditor, FilterWordsEditor, Libraries, ProviderDiagnostics } from "../panels";
 
+type RefreshMode = "none" | "works" | "actors" | "inbox" | "tasks" | "core" | "all";
+
 type Props = {
   libraries: Library[];
   busy: string | null;
-  run: (key: string, action: () => Promise<void>) => Promise<void>;
+  run: (key: string, action: () => Promise<void>, refresh?: RefreshMode) => Promise<void>;
   report: (message: string) => void;
 };
 
@@ -55,7 +57,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                   const saved = await api.saveMediaServer(media);
                   setMedia(saved);
                   report("媒体服务器设置已保存");
-                });
+                }, "none");
               }}
             >
               <label className="check-line">
