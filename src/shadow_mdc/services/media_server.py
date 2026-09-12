@@ -18,6 +18,8 @@ class MediaServerSettings(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     verify_nfo_fields: bool = False
+    # Optional Emby/Jellyfin deep link; {query} replaced with code/title
+    deep_link_template: str | None = None
 
 
 class RefreshResult(BaseModel):
@@ -132,3 +134,22 @@ async def refresh_media_server(settings: MediaServerSettings, client: httpx.Asyn
     response = await client.post(f"{base}/Library/Refresh", headers=headers, timeout=20.0)
     response.raise_for_status()
     return f"{settings.kind}:Library/Refresh accepted"
+
+
+def build_media_server_deep_link(settings: MediaServerSettings, query: str) -> str | None:
+    """Build an Emby/Jellyfin search deep-link URL when configured."""
+
+    q = query.strip()
+    if not q:
+        return None
+    template = settings.deep_link_template
+    if template:
+        return template.replace("{query}", q).replace("{code}", q)
+    if not settings.base_url:
+        return None
+    base = settings.base_url.rstrip("/")
+    from urllib.parse import quote
+    encoded = quote(q)
+    if settings.kind == "emby":
+        return f"{base}/web/index.html#!/search?search={encoded}"
+    return f"{base}/web/index.html#!/search.html?query={encoded}"

@@ -664,6 +664,12 @@ class Repository:
         return list(self._session.scalars(statement))
 
 
+    def work_ids_with_local_media(self) -> set[str]:
+        rows = self._session.scalars(
+            select(MediaAsset.work_id).where(MediaAsset.work_id.is_not(None)).distinct()
+        )
+        return {str(item) for item in rows if item}
+
     def list_assets_for_work(self, work_id: str) -> list[MediaAsset]:
         return list(
             self._session.scalars(

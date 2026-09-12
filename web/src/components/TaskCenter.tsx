@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { TaskRun } from "../model";
 import { api, appUrl } from "../api";
 import { taskRunsSchema } from "../model";
@@ -14,6 +14,9 @@ type Props = {
 export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: Props) {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [live, setLive] = useState(false);
+  const [kindFilter, setKindFilter] = useState("all");
+  const kinds = useMemo(() => ["all", ...Array.from(new Set(tasks.map((task) => task.kind))).sort()], [tasks]);
+  const visible = useMemo(() => kindFilter === "all" ? tasks : tasks.filter((task) => task.kind === kindFilter), [tasks, kindFilter]);
 
   useEffect(() => {
     if (!autoRefresh) return;
@@ -50,12 +53,19 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
     <div className="task-center">
       <div className="task-center-toolbar">
         <label>
+          类型
+          <select value={kindFilter} onChange={(e) => setKindFilter(e.target.value)} aria-label="按任务类型筛选">
+            {kinds.map((kind) => <option key={kind} value={kind}>{kind === "all" ? "全部类型" : kind}</option>)}
+          </select>
+        </label>
+        <small className="muted">手动下载类任务只进进度，不写入订阅。</small>
+        <label>
           <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
           实时同步进行中的任务{live ? "（SSE）" : "（轮询回退）"}
         </label>
       </div>
       <div className="task-list">
-        {tasks.map((task) => {
+        {visible.map((task) => {
           const summary = task.summary || {};
           const current = Number(summary.progress_current ?? 0);
           const total = Number(summary.progress_total ?? 0);

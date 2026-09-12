@@ -222,6 +222,8 @@ export const workSchema = z.object({
   field_locks: z.array(z.string()).default([]),
   identities: z.array(identitySchema),
   collections: z.array(collectionSummarySchema).default([]),
+  want_list: z.boolean().optional().default(false),
+  has_local_media: z.boolean().optional().default(false),
   created_at: z.string(),
   updated_at: z.string()
 });
@@ -541,3 +543,62 @@ export type DiscoverItem = z.infer<typeof discoverItemSchema>;
 export type MagnetLink = z.infer<typeof magnetLinkSchema>;
 export type WorkMagnet = z.infer<typeof workMagnetSchema>;
 export type MultiSiteSearch = z.infer<typeof multiSiteSearchSchema>;
+
+
+export const actorTagStateSchema = z.object({
+  favorite: z.boolean().default(false),
+  subscribe: z.boolean().default(false),
+  blacklist: z.boolean().default(false)
+});
+export const actorSubscriptionSchema = z.object({
+  actor_key: z.string(),
+  actor_name: z.string(),
+  start_date: z.string(),
+  max_cast: z.number(),
+  enabled: z.boolean(),
+  notes: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string()
+});
+export const subscriptionQueueItemSchema = z.object({
+  id: z.string(),
+  actor_key: z.string(),
+  actor_name: z.string(),
+  work_id: z.string().nullable().optional(),
+  code: z.string().nullable().optional(),
+  title: z.string(),
+  release_date: z.string().nullable().optional(),
+  cast_count: z.number().default(0),
+  status: z.string(),
+  created_at: z.string()
+});
+export const libraryPrefsSchema = z.object({
+  want_list: z.array(z.string()).default([]),
+  actor_tags: z.record(z.string(), actorTagStateSchema).default({}),
+  subscriptions: z.array(actorSubscriptionSchema).default([]),
+  queue: z.array(subscriptionQueueItemSchema).default([])
+});
+export const subscriptionScanSchema = z.object({
+  scanned_subscriptions: z.number(),
+  queued: z.number(),
+  skipped: z.number(),
+  notes: z.array(z.string()).default([])
+});
+export const mediaServerSettingsSchema = z.object({
+  enabled: z.boolean(),
+  kind: z.string(),
+  base_url: z.string().nullable(),
+  api_key: z.string().nullable(),
+  verify_nfo_fields: z.boolean(),
+  deep_link_template: z.string().nullable().optional()
+});
+export const panStatusSchema = z.object({
+  provider: z.string(),
+  configured: z.boolean(),
+  available: z.boolean(),
+  reason: z.string()
+});
+export type LibraryPrefs = z.infer<typeof libraryPrefsSchema>;
+export type ActorSubscription = z.infer<typeof actorSubscriptionSchema>;
+export type SubscriptionQueueItem = z.infer<typeof subscriptionQueueItemSchema>;
+export type MediaServerSettings = z.infer<typeof mediaServerSettingsSchema>;

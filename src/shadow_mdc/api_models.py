@@ -211,6 +211,8 @@ class WorkOut(BaseModel):
     field_locks: list[str] = Field(default_factory=list)
     identities: list[IdentityOut] = Field(default_factory=list)
     collections: list[CollectionSummaryOut] = Field(default_factory=list)
+    want_list: bool = False
+    has_local_media: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -565,6 +567,7 @@ class MediaServerSettingsPayload(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     verify_nfo_fields: bool = False
+    deep_link_template: str | None = None
 
 
 class ActorXHandleEdit(BaseModel):
@@ -646,3 +649,72 @@ class SaveMagnetsRequest(BaseModel):
     magnets: list[MagnetLinkOut] = Field(min_length=1)
     provider: str | None = None
 
+
+
+class ActorTagStateOut(BaseModel):
+    favorite: bool = False
+    subscribe: bool = False
+    blacklist: bool = False
+
+
+class ActorSubscriptionOut(BaseModel):
+    actor_key: str
+    actor_name: str
+    start_date: date
+    max_cast: int = 3
+    enabled: bool = True
+    notes: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class ActorSubscriptionEdit(BaseModel):
+    actor_key: str
+    actor_name: str
+    start_date: date
+    max_cast: int = Field(default=3, ge=1, le=50)
+    enabled: bool = True
+    notes: str | None = None
+
+
+class SubscriptionQueueItemOut(BaseModel):
+    id: str
+    actor_key: str
+    actor_name: str
+    work_id: str | None = None
+    code: str | None = None
+    title: str
+    release_date: date | None = None
+    cast_count: int = 0
+    status: str = "pending"
+    created_at: str
+
+
+class LibraryPrefsOut(BaseModel):
+    want_list: list[str] = Field(default_factory=list)
+    actor_tags: dict[str, ActorTagStateOut] = Field(default_factory=dict)
+    subscriptions: list[ActorSubscriptionOut] = Field(default_factory=list)
+    queue: list[SubscriptionQueueItemOut] = Field(default_factory=list)
+
+
+class WantListEdit(BaseModel):
+    work_id: str
+    wanted: bool
+
+
+class ActorTagsEdit(BaseModel):
+    actor_key: str
+    favorite: bool = False
+    subscribe: bool = False
+    blacklist: bool = False
+
+
+class QueueItemStatusEdit(BaseModel):
+    status: str = Field(pattern="^(pending|accepted|dismissed)$")
+
+
+class SubscriptionScanOut(BaseModel):
+    scanned_subscriptions: int
+    queued: int
+    skipped: int
+    notes: list[str] = Field(default_factory=list)

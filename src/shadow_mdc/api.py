@@ -95,6 +95,15 @@ from .api_models import (
     ProviderSearchHitOut,
     MultiSiteSearchOut,
     SaveMagnetsRequest,
+    ActorTagStateOut,
+    ActorSubscriptionOut,
+    ActorSubscriptionEdit,
+    SubscriptionQueueItemOut,
+    LibraryPrefsOut,
+    WantListEdit,
+    ActorTagsEdit,
+    QueueItemStatusEdit,
+    SubscriptionScanOut,
 )
 from .config import Settings
 from .db.models import Library, MatchCandidateRow, MediaAsset, Work, utc_now
@@ -169,6 +178,7 @@ from .services.media_server import (
     MediaServerConnector,
     MediaServerSettings,
     MediaServerStore,
+    build_media_server_deep_link,
     refresh_media_server,
 )
 from .services.non_jav_actor_catalog import (
@@ -181,6 +191,13 @@ from .services.non_jav_work_seed import seed_non_jav_works
 from .services.discover import DiscoverService
 from .services.task_events import TaskEventHub
 from .services.pan import pan_status
+from .services.library_prefs import ActorTagState, LibraryPrefsStore, new_queue_id
+from .services.subscriptions import (
+    ActorSubscription,
+    SubscriptionQueueItem,
+    filter_works_for_subscription,
+)
+from .services.studio_guard import reject_non_jav_studio_label
 from .media.magnets import MagnetLink
 from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
 from .services.scanner import Scanner
@@ -211,6 +228,7 @@ class Runtime:
     filter_words_store: FilterWordsStore
     field_priority_store: FieldPriorityStore
     media_server_store: MediaServerStore
+    library_prefs_store: LibraryPrefsStore
     task_events: TaskEventHub
     discover: DiscoverService
 
@@ -328,6 +346,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     filter_words_store = FilterWordsStore(settings.data_dir / "filter-words.txt")
     field_priority_store = FieldPriorityStore(settings.data_dir / "field-priority.json")
     media_server_store = MediaServerStore(settings.data_dir / "media-server.json")
+    library_prefs_store = LibraryPrefsStore(settings.data_dir / "library-prefs.json")
     javdb_provider = next(
         (provider for provider in providers._providers.values() if provider.descriptor.id == "javdb"),
         None,
@@ -355,6 +374,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         filter_words_store=filter_words_store,
         field_priority_store=field_priority_store,
         media_server_store=media_server_store,
+        library_prefs_store=library_prefs_store,
         task_events=task_events,
         discover=discover_service,
     )
@@ -621,6 +641,134 @@ def get_pan_status() -> dict[str, object]:
     """Stub for future pan integration; always unavailable until approved."""
 
     return pan_status()
+
+
+@app.get("/api/library-prefs", response_model=LibraryPrefsOut)
+def get_library_prefs(request: Request) -> LibraryPrefsOut:
+    prefs = runtime(request).library_prefs_store.load()
+    return LibraryPrefsOut.model_validate(prefs.model_dump())
+
+
+@app.put("/api/library-prefs/want-list", response_model=LibraryPrefsOut)
+def put_want_list(payload: WantListEdit, request: Request) -> LibraryPrefsOut:
+    prefs = runtime(request).library_prefs_store.set_want(payload.work_id, payload.wanted)
+    return LibraryPrefsOut.model_validate(prefs.model_dump())
+
+
+@app.put("/api/library-prefs/actor-tags", response_model=LibraryPrefsOut)
+def put_actor_tags(payload: ActorTagsEdit, request: Request) -> LibraryPrefsOut:
+    prefs = runtime(request).library_prefs_store.set_actor_tags(
+        payload.actor_key,
+        ActorTagState(
+            favorite=payload.favorite,
+            subscribe=payload.subscribe,
+            blacklist=payload.blacklist,
+        ),
+    )
+    return LibraryPrefsOut.model_validate(prefs.model_dump())
+
+
+@app.put("/api/library-prefs/subscriptions", response_model=LibraryPrefsOut)
+def put_actor_subscription(payload: ActorSubscriptionEdit, request: Request) -> LibraryPrefsOut:
+    prefs = runtime(request).library_prefs_store.upsert_subscription(
+        ActorSubscription.model_validate(payload.model_dump())
+    )
+    return LibraryPrefsOut.model_validate(prefs.model_dump())
+
+
+@app.delete("/api/library-prefs/subscriptions/{actor_key}", response_model=LibraryPrefsOut)
+def delete_actor_subscription(actor_key: str, request: Request) -> LibraryPrefsOut:
+    prefs = runtime(request).library_prefs_store.remove_subscription(actor_key)
+    return LibraryPrefsOut.model_validate(prefs.model_dump())
+
+
+@app.patch("/api/library-prefs/queue/{item_id}", response_model=LibraryPrefsOut)
+def patch_queue_item(item_id: str, payload: QueueItemStatusEdit, request: Request) -> LibraryPrefsOut:
+    prefs = runtime(request).library_prefs_store.update_queue_item(item_id, payload.status)
+    return LibraryPrefsOut.model_validate(prefs.model_dump())
+
+
+@app.post("/api/library-prefs/subscriptions/scan", response_model=SubscriptionScanOut)
+def scan_actor_subscriptions(request: Request, repo: Repo) -> SubscriptionScanOut:
+    """Scan subscribed actors for catalog works after start_date within max_cast."""
+
+    from collections import defaultdict
+    from datetime import date as date_cls
+
+    store = runtime(request).library_prefs_store
+    prefs = store.load()
+    skipped = 0
+    notes: list[str] = []
+    incoming: list[SubscriptionQueueItem] = []
+
+    by_actor: dict[str, list[Work]] = defaultdict(list)
+    for actor, work in repo.list_actor_work_relations():
+        by_actor[actor.name].append(work)
+        by_actor[actor.id].append(work)
+
+    for sub in prefs.subscriptions:
+        if not sub.enabled:
+            skipped += 1
+            continue
+        works = by_actor.get(sub.actor_name) or by_actor.get(sub.actor_key) or []
+        payloads: list[dict[str, object]] = []
+        for work in works:
+            payloads.append(
+                {
+                    "release_date": work.release_date,
+                    "actors": list(work.actors or []),
+                    "title": work.title,
+                    "code": work.primary_code,
+                    "work_id": work.id,
+                    "cast_count": len(work.actors or []),
+                }
+            )
+        matched = filter_works_for_subscription(
+            payloads, start_date=sub.start_date, max_cast=sub.max_cast
+        )
+        for item in matched:
+            release = item.get("release_date")
+            release_date: date_cls | None
+            if isinstance(release, date_cls):
+                release_date = release
+            elif isinstance(release, str) and release:
+                release_date = date_cls.fromisoformat(release[:10])
+            else:
+                release_date = None
+            code_value = item.get("code")
+            incoming.append(
+                SubscriptionQueueItem(
+                    id=new_queue_id(),
+                    actor_key=sub.actor_key,
+                    actor_name=sub.actor_name,
+                    work_id=str(item["work_id"]) if item.get("work_id") else None,
+                    code=code_value if isinstance(code_value, str) else None,
+                    title=str(item.get("title") or ""),
+                    release_date=release_date,
+                    cast_count=int(item.get("cast_count") or 0),
+                    status="pending",
+                )
+            )
+    before = len(prefs.queue)
+    store.append_queue(incoming)
+    after = len(store.load().queue)
+    notes.append(f"queue grew from {before} to {after} (deduped)")
+    return SubscriptionScanOut(
+        scanned_subscriptions=len([item for item in prefs.subscriptions if item.enabled]),
+        queued=after - before,
+        skipped=skipped,
+        notes=notes,
+    )
+
+
+@app.get("/api/works/{work_id}/emby-link")
+def work_emby_link(work_id: str, request: Request, repo: Repo) -> dict[str, str | None]:
+    work = repo.get_work(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    settings = runtime(request).media_server_store.load()
+    query = work.primary_code or work.title
+    return {"url": build_media_server_deep_link(settings, query)}
 
 
 @app.get("/api/providers", response_model=ProviderListOut)
@@ -1182,6 +1330,9 @@ def list_non_jav_actors(request: Request, repo: Repo) -> tuple[NonJavActorOut, .
 @app.post("/api/non-jav-actors", response_model=NonJavActorOut, status_code=201)
 def create_non_jav_actor(payload: NonJavActorEdit, request: Request) -> NonJavActorOut:
     app_runtime = runtime(request)
+    rejection = reject_non_jav_studio_label(payload.name)
+    if rejection is not None:
+        raise HTTPException(status_code=422, detail=rejection)
     if app_runtime.non_jav_actor_store.get(payload.name) is not None:
         raise HTTPException(status_code=409, detail="non-JAV actor already exists")
     try:
@@ -1202,6 +1353,9 @@ def update_non_jav_actor(
     request: Request,
 ) -> NonJavActorOut:
     app_runtime = runtime(request)
+    rejection = reject_non_jav_studio_label(payload.name)
+    if rejection is not None:
+        raise HTTPException(status_code=422, detail=rejection)
     existing = app_runtime.non_jav_actor_store.get(actor_name)
     if existing is None:
         raise HTTPException(status_code=404, detail="non-JAV actor not found")
@@ -1953,13 +2107,22 @@ def get_collection(collection_id: str, repo: Repo) -> CollectionOut:
 
 @app.get("/api/works", response_model=list[WorkOut])
 def list_works(
+    request: Request,
     repo: Repo,
     collection_id: str | None = None,
     collection_kind: CollectionKind | None = None,
     collection: str | None = None,
 ) -> list[WorkOut]:
+    prefs = runtime(request).library_prefs_store.load()
+    want = set(prefs.want_list)
+    local_ids = repo.work_ids_with_local_media()
     return [
-        _work_out(repo, work)
+        _work_out(
+            repo,
+            work,
+            want_list=work.id in want,
+            has_local_media=work.id in local_ids,
+        )
         for work in repo.list_works(
             collection_id=collection_id,
             collection_kind=collection_kind,
@@ -2660,7 +2823,13 @@ def _detect_image(content: bytes) -> tuple[str, str] | None:
     return None
 
 
-def _work_out(repo: Repository, work: Work) -> WorkOut:
+def _work_out(
+    repo: Repository,
+    work: Work,
+    *,
+    want_list: bool | None = None,
+    has_local_media: bool | None = None,
+) -> WorkOut:
     identities = [
         IdentityOut(
             provider=item.provider,
@@ -2713,6 +2882,12 @@ def _work_out(repo: Repository, work: Work) -> WorkOut:
         field_locks=list(work.field_locks or []),
         identities=identities,
         collections=collections,
+        want_list=bool(want_list) if want_list is not None else False,
+        has_local_media=(
+            bool(has_local_media)
+            if has_local_media is not None
+            else bool(repo.list_assets_for_work(work.id))
+        ),
         created_at=work.created_at,
         updated_at=work.updated_at,
     )

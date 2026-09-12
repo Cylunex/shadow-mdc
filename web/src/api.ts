@@ -50,7 +50,11 @@ import {
   discoverSeedSchema,
   multiSiteSearchSchema,
   magnetLinkSchema,
-  workMagnetSchema
+  workMagnetSchema,
+  libraryPrefsSchema,
+  subscriptionScanSchema,
+  mediaServerSettingsSchema,
+  panStatusSchema
 } from "./model";
 import type { FilterWords, IdentityAliases } from "./model";
 
@@ -372,5 +376,42 @@ export const api = {
     const response = await fetch(appUrl(path) ?? path, { method: "POST", body });
     if (!response.ok) throw new Error(await response.text());
     return catalogImportResultSchema.parse(await response.json());
+  },
+  libraryPrefs: () => request(libraryPrefsSchema, "/api/library-prefs"),
+  setWantList: (work_id: string, wanted: boolean) =>
+    request(libraryPrefsSchema, "/api/library-prefs/want-list", {
+      method: "PUT", body: JSON.stringify({ work_id, wanted })
+    }),
+  setActorTags: (payload: { actor_key: string; favorite?: boolean; subscribe?: boolean; blacklist?: boolean }) =>
+    request(libraryPrefsSchema, "/api/library-prefs/actor-tags", {
+      method: "PUT", body: JSON.stringify(payload)
+    }),
+  upsertSubscription: (payload: {
+    actor_key: string; actor_name: string; start_date: string; max_cast: number; enabled: boolean; notes?: string | null;
+  }) => request(libraryPrefsSchema, "/api/library-prefs/subscriptions", {
+    method: "PUT", body: JSON.stringify(payload)
+  }),
+  removeSubscription: (actorKey: string) =>
+    request(libraryPrefsSchema, `/api/library-prefs/subscriptions/${encodeURIComponent(actorKey)}`, { method: "DELETE" }),
+  patchQueueItem: (itemId: string, status: "pending" | "accepted" | "dismissed") =>
+    request(libraryPrefsSchema, `/api/library-prefs/queue/${itemId}`, {
+      method: "PATCH", body: JSON.stringify({ status })
+    }),
+  scanSubscriptions: () =>
+    request(subscriptionScanSchema, "/api/library-prefs/subscriptions/scan", { method: "POST" }),
+  mediaServer: () => request(mediaServerSettingsSchema, "/api/settings/media-server"),
+  saveMediaServer: (payload: {
+    enabled: boolean; kind: string; base_url: string | null; api_key: string | null;
+    verify_nfo_fields: boolean; deep_link_template?: string | null;
+  }) => request(mediaServerSettingsSchema, "/api/settings/media-server", {
+    method: "PUT", body: JSON.stringify(payload)
+  }),
+  panStatus: () => request(panStatusSchema, "/api/pan/status"),
+  workEmbyLink: async (workId: string): Promise<string | null> => {
+    const path = `/api/works/${workId}/emby-link`;
+    const response = await fetch(appUrl(path) ?? path);
+    if (!response.ok) throw new Error(await response.text());
+    const payload = z.object({ url: z.string().nullable() }).parse(await response.json());
+    return payload.url;
   }
 };

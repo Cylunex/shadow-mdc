@@ -101,6 +101,13 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
 
   return (
     <div className="discover-panel">
+      <div className="section-hero compact">
+        <div>
+          <p className="eyebrow">RANKINGS</p>
+          <h1>榜单</h1>
+          <p className="muted">日/周/月与最新目录；未入库角标可一点建档。浏览本身不写作品库。</p>
+        </div>
+      </div>
       <div className="discover-banner">
         <strong>发现 ≠ 作品库</strong>
         <p>
@@ -120,6 +127,21 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
 
       {mode === "browse" && (
         <div className="discover-toolbar">
+          <button
+            type="button"
+            className="danger-solid"
+            disabled={busy === "discover"}
+            onClick={() => {
+              void (async () => {
+                try {
+                  await loadBrowse(list, page);
+                  report("榜单已刷新");
+                } catch (error) {
+                  report(error instanceof Error ? error.message : String(error));
+                }
+              })();
+            }}
+          >更新榜单</button>
           {LISTS.map((entry) => (
             <button
               key={entry.value}
