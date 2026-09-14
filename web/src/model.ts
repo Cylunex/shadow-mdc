@@ -245,9 +245,32 @@ export const workMagnetSchema = magnetLinkSchema.extend({
   created_at: z.string()
 });
 
+
+export const javRankingHonorSchema = z.object({
+  slug: z.string(),
+  name: z.string(),
+  source: z.string().nullable().optional(),
+  scope: z.string().nullable().optional(),
+  year: z.number().nullable().optional(),
+  position: z.number(),
+  label: z.string(),
+  url: z.string().nullable().optional()
+});
+
+export const javRankingInfoSchema = z.object({
+  video_id: z.number(),
+  code: z.string().nullable().optional(),
+  rank: z.number().nullable().optional(),
+  score: z.number().nullable().optional(),
+  detail_url: z.string(),
+  honors: z.array(javRankingHonorSchema).default([]),
+  compact_badge: z.string().nullable().optional()
+});
+
 export const workDetailSchema = workSchema.extend({
   assets: z.array(assetSchema).default([]),
-  magnets: z.array(workMagnetSchema).optional().default([])
+  magnets: z.array(workMagnetSchema).optional().default([]),
+  javranking: javRankingInfoSchema.nullable().optional().default(null)
 });
 
 export const actorProfileSchema = z.object({
@@ -478,6 +501,8 @@ export type Candidate = z.infer<typeof candidateSchema>;
 export type Work = z.infer<typeof workSchema>;
 export type Collection = z.infer<typeof collectionSchema>;
 export type CollectionSummary = z.infer<typeof collectionSummarySchema>;
+export type JavRankingHonor = z.infer<typeof javRankingHonorSchema>;
+export type JavRankingInfo = z.infer<typeof javRankingInfoSchema>;
 export type WorkDetail = z.infer<typeof workDetailSchema>;
 export type InboxBatchResult = z.infer<typeof inboxBatchResultSchema>;
 export type ActorProfile = z.infer<typeof actorProfileSchema>;

@@ -22,6 +22,7 @@ from selectolax.parser import HTMLParser
 
 from ..db.repository import Repository
 from ..identity import extract_code
+from ..normalize_code import normalize_code, to_comparison_key
 from ..media.artwork import ArtworkStore
 from .daily_chart_seed import merge_tags
 from .discover import DiscoverService
@@ -161,14 +162,17 @@ def extract_codes_from_text(text: str) -> list[str]:
     found: list[str] = []
     seen: set[str] = set()
     for match in _CODE_FINDER.finditer(text or ""):
-        code, _family = extract_code(match.group(0))
+        raw = match.group(0)
+        code, _family = extract_code(raw)
+        if not code:
+            code = normalize_code(raw) or None
         if not code:
             continue
-        key = code.upper()
-        if key in seen:
+        key = to_comparison_key(code)
+        if not key or key in seen:
             continue
         seen.add(key)
-        found.append(code)
+        found.append(normalize_code(code) or code)
     return found
 
 

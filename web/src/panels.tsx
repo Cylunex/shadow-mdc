@@ -1072,6 +1072,36 @@ export function WorkDetailPanel(props: {
       className="poster large"
       style={work.image_url ? { backgroundImage: `url("${appUrl(work.image_url)}")` } : undefined}
     />
+    {work.javranking && (
+      <section className="javranking-honors">
+        <div className="javranking-honors-head">
+          <h3>JavRanking 上榜</h3>
+          {work.javranking.compact_badge && (
+            <a
+              className="javranking-badge compact"
+              href={work.javranking.detail_url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >{work.javranking.compact_badge}</a>
+          )}
+        </div>
+        <div className="tags javranking-badges">
+          {(work.javranking.honors ?? []).map((honor) => (
+            <a
+              key={`${honor.slug}-${honor.position}`}
+              className="javranking-badge"
+              href={honor.url || work.javranking?.detail_url || "#"}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={honor.source ? `${honor.label} · ${honor.source}` : honor.label}
+            >{honor.label}</a>
+          ))}
+          {(work.javranking.honors ?? []).length === 0 && (
+            <p className="muted">已收录于 JavRanking，暂无分榜记录</p>
+          )}
+        </div>
+      </section>
+    )}
     <div className="work-detail-actions">
       <button className="secondary" disabled={props.busy === `work-${work.id}`} onClick={props.onRefresh}>刷新元数据</button>
       <button className="ghost" disabled={props.busy === `artwork-${work.id}`} onClick={props.onDownload}>缓存图片</button>

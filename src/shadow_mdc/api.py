@@ -79,6 +79,8 @@ from .api_models import (
     ScreenshotGenerateRequest,
     TaskRunOut,
     WorkDetailOut,
+    JavRankingHonorOut,
+    JavRankingInfoOut,
     WorkLocksRequest,
     WorkLookupOut,
     WorkLookupRequest,
@@ -192,6 +194,7 @@ from .services.discover import DiscoverService
 from .services.task_events import TaskEventHub
 from .services.pan import pan_status
 from .services.library_prefs import ActorTagState, LibraryPrefsStore, new_queue_id
+from .services.javranking_client import JavRankingIndexCache
 from .services.subscriptions import (
     ActorSubscription,
     SubscriptionQueueItem,
@@ -2224,15 +2227,15 @@ async def lookup_work_by_code(
 
 
 @app.get("/api/works/{work_id}", response_model=WorkDetailOut)
-def get_work(work_id: str, repo: Repo) -> WorkDetailOut:
+def get_work(work_id: str, request: Request, repo: Repo) -> WorkDetailOut:
     work = repo.get_work(work_id)
     if work is None:
         raise HTTPException(status_code=404, detail="work not found")
-    return _work_detail_out(repo, work)
+    return _work_detail_out(repo, work, data_dir=runtime(request).settings.data_dir)
 
 
 @app.patch("/api/works/{work_id}", response_model=WorkDetailOut)
-def update_work(work_id: str, payload: WorkUpdateRequest, repo: Repo) -> WorkDetailOut:
+def update_work(work_id: str, payload: WorkUpdateRequest, request: Request, repo: Repo) -> WorkDetailOut:
     work = repo.get_work(work_id)
     if work is None:
         raise HTTPException(status_code=404, detail="work not found")
@@ -2255,11 +2258,11 @@ def update_work(work_id: str, payload: WorkUpdateRequest, repo: Repo) -> WorkDet
         plot=payload.plot,
         lock_edited=payload.lock_edited,
     )
-    return _work_detail_out(repo, work)
+    return _work_detail_out(repo, work, data_dir=runtime(request).settings.data_dir)
 
 
 @app.put("/api/works/{work_id}/locks", response_model=WorkDetailOut)
-def update_work_locks(work_id: str, payload: WorkLocksRequest, repo: Repo) -> WorkDetailOut:
+def update_work_locks(work_id: str, payload: WorkLocksRequest, request: Request, repo: Repo) -> WorkDetailOut:
     work = repo.get_work(work_id)
     if work is None:
         raise HTTPException(status_code=404, detail="work not found")
@@ -2267,13 +2270,14 @@ def update_work_locks(work_id: str, payload: WorkLocksRequest, repo: Repo) -> Wo
     if unknown:
         raise HTTPException(status_code=422, detail=f"unsupported lock fields: {', '.join(unknown)}")
     repo.set_field_locks(work, list(payload.locks))
-    return _work_detail_out(repo, work)
+    return _work_detail_out(repo, work, data_dir=runtime(request).settings.data_dir)
 
 
 @app.post("/api/works/{work_id}/artwork/prefer", response_model=WorkDetailOut)
 def prefer_work_poster(
     work_id: str,
     payload: WorkPosterPreferRequest,
+    request: Request,
     repo: Repo,
 ) -> WorkDetailOut:
     work = repo.get_work(work_id)
@@ -2283,7 +2287,7 @@ def prefer_work_poster(
         repo.prefer_work_poster(work, artwork_index=payload.artwork_index)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _work_detail_out(repo, work)
+    return _work_detail_out(repo, work, data_dir=runtime(request).settings.data_dir)
 
 
 @app.post("/api/works/{work_id}/refresh", response_model=IdentifyOut)
@@ -2895,11 +2899,36 @@ def _work_out(
     )
 
 
-def _work_detail_out(repo: Repository, work: Work) -> WorkDetailOut:
+def _work_detail_out(repo: Repository, work: Work, *, data_dir: Path | None = None) -> WorkDetailOut:
     base = _work_out(repo, work)
     assets = [AssetOut.model_validate(item) for item in repo.list_assets_for_work(work.id)]
     magnets = [WorkMagnetOut.model_validate(item) for item in repo.list_work_magnets(work.id)]
-    return WorkDetailOut(**base.model_dump(), assets=assets, magnets=magnets)
+    javranking = None
+    if data_dir is not None and work.primary_code:
+        info = JavRankingIndexCache(data_dir / "javranking").lookup_honors(work.primary_code)
+        if info is not None:
+            javranking = JavRankingInfoOut(
+                video_id=info.video_id,
+                code=info.code,
+                rank=info.rank,
+                score=info.score,
+                detail_url=info.detail_url,
+                honors=[
+                    JavRankingHonorOut(
+                        slug=item.slug,
+                        name=item.name,
+                        source=item.source,
+                        scope=item.scope,
+                        year=item.year,
+                        position=item.position,
+                        label=item.label,
+                        url=item.url,
+                    )
+                    for item in info.honors
+                ],
+                compact_badge=info.compact_badge,
+            )
+    return WorkDetailOut(**base.model_dump(), assets=assets, magnets=magnets, javranking=javranking)
 
 
 def _work_display_artwork(work: Work, kind: str, *, data_dir: Path | None = None) -> str | None:

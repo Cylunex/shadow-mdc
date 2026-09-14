@@ -452,9 +452,32 @@ class WorkMagnetOut(BaseModel):
     files_count: int | None
     created_at: datetime
 
+
+class JavRankingHonorOut(BaseModel):
+    slug: str
+    name: str
+    source: str | None = None
+    scope: str | None = None
+    year: int | None = None
+    position: int
+    label: str
+    url: str | None = None
+
+
+class JavRankingInfoOut(BaseModel):
+    video_id: int
+    code: str | None = None
+    rank: int | None = None
+    score: float | None = None
+    detail_url: str
+    honors: list[JavRankingHonorOut] = Field(default_factory=list)
+    compact_badge: str | None = None
+
+
 class WorkDetailOut(WorkOut):
     assets: list[AssetOut] = Field(default_factory=list)
     magnets: list[WorkMagnetOut] = Field(default_factory=list)
+    javranking: JavRankingInfoOut | None = None
 
 
 class InboxBatchRequest(BaseModel):
