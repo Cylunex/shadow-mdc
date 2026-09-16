@@ -1,0 +1,66 @@
+{
+  "data": {
+    "ppvContentRanking": {
+      "items": [
+        {
+          "id": "savr01135",
+          "rank": 1,
+          "content": {
+            "id": "savr01135",
+            "title": "【VR】交姦キメセクNTR",
+            "packageImage": {
+              "largeUrl": "https://example.test/savr.jpg"
+            },
+            "actresses": [
+              {
+                "id": "1",
+                "name": "Actor A"
+              }
+            ]
+          }
+        },
+        {
+          "id": "ssis00901",
+          "rank": 2,
+          "content": {
+            "id": "ssis00901",
+            "title": "Non VR Title",
+            "packageImage": {
+              "largeUrl": "https://example.test/a.jpg"
+            },
+            "actresses": []
+          }
+        },
+        {
+          "id": "sivr00483",
+          "rank": 3,
+          "content": {
+            "id": "sivr00483",
+            "title": "【VR】隣に越してきた",
+            "packageImage": {
+              "mediumUrl": "https://example.test/sivr.jpg"
+            },
+            "actresses": [
+              {
+                "id": "2",
+                "name": "Actor B"
+              }
+            ]
+          }
+        },
+        {
+          "id": "mdvr00390",
+          "rank": 4,
+          "content": {
+            "id": "mdvr00390",
+            "title": "【VR】ただいまっ",
+            "packageImage": {
+              "largeUrl": "https://example.test/mdvr.jpg"
+            },
+            "actresses": []
+          }
+        }
+      ]
+    }
+  }
+}

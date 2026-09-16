@@ -13,7 +13,6 @@ from .base import HttpProvider, ProviderError
 from .html import first_text, parse_date
 from .html_fields import field_links, field_text, first_image_artwork, integer_minutes
 
-
 _FANZA_GRAPHQL_URL = "https://api.video.dmm.co.jp/graphql"
 _FANZA_RANKING_QUERY = """
 query ContentRankingPage($limit: Int!, $offset: Int!, $filter: PPVContentRankingFilterInput) {
@@ -67,11 +66,33 @@ query FanzaContentDetail($id: ID!) {
 }
 """
 
+_RANKING_PERIODS: dict[str, str] = {
+    "rankings_daily": "daily",
+    "rankings_weekly": "weekly",
+    "rankings_monthly": "monthly",
+}
+
+# VR-dedicated list names (prefer weekly for the weekly-VR job). GraphQL may reject
+# floor=VR; fetch_ranking then falls back to AV ranking filtered to VR titles.
+_VR_RANKING_LISTS: dict[str, str] = {
+    "rankings_daily_vr": "rankings_daily",
+    "rankings_weekly_vr": "rankings_weekly",
+    "rankings_monthly_vr": "rankings_monthly",
+}
+
 _RANKING_FILTERS: dict[str, dict[str, dict[str, str]]] = {
     "rankings_daily": {"daily": {"floor": "AV"}},
     "rankings_weekly": {"weekly": {"floor": "AV"}},
     "rankings_monthly": {"monthly": {"floor": "AV"}},
 }
+
+# Common FANZA VR label prefixes seen in cid / codes (SIVR-171, 13dsvr01760, …).
+_VR_CID_HINT = re.compile(
+    r"(?i)(?:^|[^a-z])(?:\d{0,5})?(?:"
+    r"sivr|ipvr|mdvr|kavr|savr|vrkm|bibivr|ajvr|dsvr|urvrsp|crvr|juvr|pxvr|"
+    r"fcvr|predvr|hnvr|wavr|pppdvr|ebvr|atvr|mvvr|dtvr|prvr|kmvr|bikmvr"
+    r")\d"
+)
 
 
 class FanzaRankingItem(BaseModel):
@@ -163,30 +184,31 @@ class FanzaProvider(HttpProvider):
         *,
         limit: int = 100,
         offset: int = 0,
+        floor: str | None = None,
     ) -> list[FanzaRankingItem]:
-        """Fetch FANZA/DMM AV ranking (日/週/月) or latest-sales list via public GraphQL."""
+        """Fetch FANZA/DMM ranking (日/週/月) or latest-sales list via public GraphQL.
 
-        if list_name == "latest":
+        ``floor`` defaults to ``AV``. Pass ``VR`` (or use ``rankings_*_vr`` list names)
+        for VR popularity. When the API rejects ``floor=VR`` (current GraphQL enum),
+        fall back to the AV ranking filtered to VR titles/cids.
+        """
+
+        vr_requested = False
+        logical = list_name
+        if list_name in _VR_RANKING_LISTS:
+            logical = _VR_RANKING_LISTS[list_name]
+            vr_requested = True
+        requested_floor = (floor or ("VR" if vr_requested else "AV")).strip().upper() or "AV"
+        if requested_floor == "VR":
+            vr_requested = True
+
+        if logical == "latest":
             payload: dict[str, object] = {
                 "operationName": "NewReleaseRankingPage",
                 "query": _FANZA_LATEST_QUERY,
                 "variables": {"limit": max(1, limit)},
             }
-        elif list_name in _RANKING_FILTERS:
-            payload = {
-                "operationName": "ContentRankingPage",
-                "query": _FANZA_RANKING_QUERY,
-                "variables": {
-                    "limit": max(1, limit),
-                    "offset": max(0, offset),
-                    "filter": _RANKING_FILTERS[list_name],
-                },
-            }
-        else:
-            raise ProviderError(self.descriptor.id, "unsupported", f"unknown ranking list: {list_name}")
-
-        raw = await self._graphql(payload)
-        if list_name == "latest":
+            raw = await self._graphql(payload, referer_term="daily")
             contents = (
                 ((raw.get("data") or {}).get("legacySearchPPV") or {}).get("result") or {}
             ).get("contents")
@@ -199,10 +221,71 @@ class FanzaProvider(HttpProvider):
                     rank=index,
                     base_url=self._base_url,
                 )
-                if parsed is not None:
-                    items.append(parsed)
-            return items
+                if parsed is None:
+                    continue
+                if vr_requested and not is_fanza_vr_item(parsed):
+                    continue
+                items.append(parsed)
+                if len(items) >= limit:
+                    break
+            return _renumber_ranks(items)
 
+        if logical not in _RANKING_PERIODS:
+            raise ProviderError(self.descriptor.id, "unsupported", f"unknown ranking list: {list_name}")
+
+        period = _RANKING_PERIODS[logical]
+        referer_term = period
+        fetch_limit = max(1, limit)
+        fetch_offset = max(0, offset)
+        # When filtering AV→VR, pull a wider page so ~10 VR titles remain.
+        if vr_requested and requested_floor == "VR":
+            fetch_limit = max(fetch_limit, min(100, limit * 8))
+            fetch_offset = 0
+
+        try:
+            items = await self._fetch_content_ranking(
+                period=period,
+                floor=requested_floor,
+                limit=fetch_limit,
+                offset=fetch_offset,
+                referer_term=referer_term,
+            )
+        except ProviderError:
+            # GraphQL currently rejects floor=VR (HTTP 422 / enum validation).
+            # Soft-fallback: AV ranking filtered to VR titles/cids.
+            if not (vr_requested and requested_floor == "VR"):
+                raise
+            items = await self._fetch_content_ranking(
+                period=period,
+                floor="AV",
+                limit=fetch_limit,
+                offset=fetch_offset,
+                referer_term=referer_term,
+            )
+
+        if vr_requested:
+            items = [item for item in items if is_fanza_vr_item(item)]
+        return _renumber_ranks(items[: max(1, limit)])
+
+    async def _fetch_content_ranking(
+        self,
+        *,
+        period: str,
+        floor: str,
+        limit: int,
+        offset: int,
+        referer_term: str,
+    ) -> list[FanzaRankingItem]:
+        payload: dict[str, object] = {
+            "operationName": "ContentRankingPage",
+            "query": _FANZA_RANKING_QUERY,
+            "variables": {
+                "limit": max(1, limit),
+                "offset": max(0, offset),
+                "filter": {period: {"floor": floor}},
+            },
+        }
+        raw = await self._graphql(payload, referer_term=referer_term)
         ranking = (raw.get("data") or {}).get("ppvContentRanking") or {}
         rows = ranking.get("items") if isinstance(ranking, dict) else None
         if not isinstance(rows, list):
@@ -283,13 +366,19 @@ class FanzaProvider(HttpProvider):
             language="ja",
         )
 
-    async def _graphql(self, payload: dict[str, object]) -> dict[str, object]:
+    async def _graphql(
+        self,
+        payload: dict[str, object],
+        *,
+        referer_term: str = "daily",
+    ) -> dict[str, object]:
+        term = referer_term if referer_term in {"daily", "weekly", "monthly"} else "daily"
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
             "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
             "Origin": "https://video.dmm.co.jp",
-            "Referer": "https://video.dmm.co.jp/av/ranking/?term=daily",
+            "Referer": f"https://video.dmm.co.jp/av/ranking/?term={term}",
             "Cookie": "age_check_done=1",
         }
         response = None
@@ -313,10 +402,18 @@ class FanzaProvider(HttpProvider):
                 if attempt < self._retries and (code == 429 or code >= 500):
                     await asyncio.sleep(0.25 * (attempt + 1))
                     continue
+                detail = f"status={code}"
+                # Surface GraphQL validation messages (e.g. invalid PPVFloor=VR → 422).
+                try:
+                    body = exc.response.json()
+                except ValueError:
+                    body = None
+                if isinstance(body, dict) and body.get("errors"):
+                    detail = f"status={code}; {str(body.get('errors'))[:400]}"
                 raise ProviderError(
                     self.descriptor.id,
                     "blocked" if code in {403, 429} else "http",
-                    f"status={code}",
+                    detail,
                 ) from exc
             except httpx.HTTPError as exc:
                 if attempt < self._retries:
@@ -377,6 +474,35 @@ class FanzaProvider(HttpProvider):
             ),
             language="ja",
         )
+
+
+
+def is_fanza_vr_item(item: FanzaRankingItem) -> bool:
+    """True when ranking row looks like a FANZA VR title (title marker or VR cid/code)."""
+
+    title = (item.title or "").strip()
+    # Prefer explicit FANZA VR title marker; avoid matching mid-title "VR" words.
+    if "【VR】" in title or re.match(r"(?i)^(?:【)?vr(?:】|\b)", title):
+        return True
+    cid = (item.content_id or "").strip()
+    if cid and _VR_CID_HINT.search(cid):
+        return True
+    code = (item.code or "").strip().upper()
+    return bool(
+        code
+        and re.match(
+            r"^(?:\d{1,5})?(?:SIVR|IPVR|MDVR|KAVR|SAVR|VRKM|BIBIVR|AJVR|DSVR|URVRSP|CRVR|"
+            r"JUVR|PXVR|FCVR|PREDVR|HNVR|WAVR|PPPDVR|EBVR|ATVR|MVVR|DTVR|PRVR|KMVR|BIKMVR)-",
+            code,
+        )
+    )
+
+
+def _renumber_ranks(items: list[FanzaRankingItem]) -> list[FanzaRankingItem]:
+    return [
+        item.model_copy(update={"rank": index}) if item.rank != index else item
+        for index, item in enumerate(items, start=1)
+    ]
 
 
 def content_id_to_code(content_id: str) -> str | None:
