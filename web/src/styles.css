@@ -601,3 +601,8 @@ a.javranking-badge.compact {
   font-weight: 600;
 }
 a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
+
+.javranking-panel { display: grid; gap: 14px; }
+.javranking-section-block h3 { margin: 0 0 6px; font-size: 13px; color: #9fb4bd; }
+.discover-toolbar.wrap { flex-wrap: wrap; }
+.actor-javranking { margin-top: 8px; }

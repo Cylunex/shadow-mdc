@@ -19,6 +19,7 @@ from .discover import DiscoverService
 from .javranking_client import (
     DEFAULT_BASE_URL,
     DEFAULT_LOCALE,
+    CuratedList,
     JavRankingIndexCache,
     SearchVideo,
 )
@@ -26,6 +27,76 @@ from .javranking_client import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_TAG = "javranking"
+
+def curated_videos_as_search(
+    curated: CuratedList,
+    *,
+    index_videos: Sequence[SearchVideo] | None = None,
+) -> list[SearchVideo]:
+    """Map 神作 TOP100 curated entries onto SearchVideo objects for seeding."""
+
+    by_code: dict[str, SearchVideo] = {}
+    by_id: dict[int, SearchVideo] = {}
+    if index_videos:
+        for video in index_videos:
+            if video.code:
+                key = to_comparison_key(normalize_code(video.code) or video.code)
+                if key:
+                    by_code.setdefault(key, video)
+            by_id[video.video_id] = video
+
+    selected: list[SearchVideo] = []
+    seen: set[str] = set()
+    for entry in curated.videos:
+        code = normalize_code(entry.code or "") or (entry.code or "")
+        key = to_comparison_key(code) if code else ""
+        indexed: SearchVideo | None = None
+        if key and key in by_code:
+            indexed = by_code[key]
+        elif entry.video_id is not None:
+            indexed = by_id.get(entry.video_id)
+        if indexed is not None:
+            video = indexed.model_copy(
+                update={
+                    "code": code or indexed.code,
+                    "rank": entry.position,
+                    "title": indexed.title or entry.title,
+                }
+            )
+        else:
+            if not code:
+                continue
+            video = SearchVideo.model_validate(
+                {
+                    "videoId": entry.video_id or entry.position,
+                    "code": code,
+                    "title": entry.title,
+                    "score": 0.0,
+                    "rank": entry.position,
+                    "coverUrl": None,
+                    "releaseDate": None,
+                    "actorLinks": [],
+                    "rankingAppearances": [
+                        {
+                            "slug": curated.slug,
+                            "name": curated.title,
+                            "source": "JavRanking",
+                            "scope": "all",
+                            "year": None,
+                            "position": entry.position,
+                        }
+                    ],
+                    "hasPreviewVideo": False,
+                }
+            )
+        dedupe = to_comparison_key(video.code or "")
+        if not dedupe or dedupe in seen:
+            continue
+        seen.add(dedupe)
+        selected.append(video)
+    return selected
+
+
 
 
 class JavRankingCandidate(BaseModel):
@@ -208,12 +279,14 @@ async def seed_javranking(
     force_refresh: bool = False,
     min_rank: int | None = None,
     ranking_slug: str | None = None,
+    list_slug: str | None = None,
     seed_provider: str = "javdb",
     base_url: str = DEFAULT_BASE_URL,
     locale: str = DEFAULT_LOCALE,
     index: object | None = None,
+    curated_list: CuratedList | None = None,
 ) -> JavRankingSeedResult:
-    """Fill missing works from JavRanking index, ordered by overall rank."""
+    """Fill missing works from JavRanking index or curated 神作 TOP100 list."""
 
     day = run_day or date.today()
     cache = JavRankingIndexCache(
@@ -237,7 +310,28 @@ async def seed_javranking(
         cache.write_cache(index=loaded, raw_text=raw, revision="inline")
         revision = "inline"
 
-    filtered = videos_for_seed(loaded.videos, min_rank=min_rank, ranking_slug=ranking_slug)
+    resolved_list_slug = list_slug
+    if resolved_list_slug in {"shenzuo", "神作", "top100", "most-awarded"}:
+        resolved_list_slug = "most-awarded-videos"
+    if resolved_list_slug is not None and resolved_list_slug != "most-awarded-videos":
+        raise ValueError(
+            f"unsupported list_slug for seeding (video lists only): {resolved_list_slug}"
+        )
+
+    if curated_list is not None or resolved_list_slug == "most-awarded-videos":
+        curated = curated_list
+        if curated is None:
+            curated = await cache.load_curated_list(
+                "most-awarded-videos", force_refresh=force_refresh
+            )
+        if curated.kind != "videos":
+            raise ValueError(f"list_slug is not a video list: {curated.slug}")
+        filtered = curated_videos_as_search(curated, index_videos=loaded.videos)
+        revision = curated.revision or revision
+        # Ensure ranking tags include curated slug when seeding from list.
+        ranking_slug = ranking_slug or curated.slug
+    else:
+        filtered = videos_for_seed(loaded.videos, min_rank=min_rank, ranking_slug=ranking_slug)
 
     existing_keys: set[str] = set()
     considered: list[JavRankingCandidate] = []
@@ -292,7 +386,7 @@ async def seed_javranking(
 
     for video in targets:
         code = normalize_code(video.code or "") or (video.code or "")
-        tags = ranking_tags(video)
+        tags = ranking_tags(video, extra_slugs=[ranking_slug] if ranking_slug else None)
         if dry_run:
             seeded.append(
                 SeededWorkSummary(

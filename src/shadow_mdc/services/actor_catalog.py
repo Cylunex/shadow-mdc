@@ -2,6 +2,10 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .javranking_client import ActorJavRankingInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -34,6 +38,7 @@ class ActorProfile(BaseModel):
     works: tuple[ActorWorkReference, ...]
     image_url: str | None = None
     x_handle: str | None = None
+    javranking: "ActorJavRankingInfo | None" = None
 
 
 class ActorCatalogPayload(BaseModel):
@@ -350,3 +355,11 @@ def _is_jav_work(work: ActorWorkReference) -> bool:
 def _is_invalid_actor_name(name: str) -> bool:
     normalized = _normalize(name)
     return normalized in _INVALID_ACTOR_NAMES or _DOMAIN_ACTOR.fullmatch(normalized) is not None
+
+
+try:
+    from .javranking_client import ActorJavRankingInfo as _ActorJavRankingInfo
+
+    ActorProfile.model_rebuild(_types_namespace={"ActorJavRankingInfo": _ActorJavRankingInfo})
+except Exception:
+    pass

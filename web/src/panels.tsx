@@ -221,6 +221,32 @@ function JavActors({ actors, prefs, onActorTags, busy }: {
       </div>
       {actor.aliases.length > 0 && <p>别名：{actor.aliases.join("、")}</p>}
       <XHandleLink handle={actor.x_handle} url={(actor as { x_url?: string | null }).x_url} />
+      {actor.javranking && (
+        <div className="javranking-honors actor-javranking">
+          <div className="javranking-honors-head">
+            <h3>JavRanking 战力</h3>
+            {actor.javranking.compact_badge && (
+              <a
+                className="javranking-badge compact"
+                href={actor.javranking.honors[0]?.url || "#"}
+                target="_blank"
+                rel="noreferrer"
+              >{actor.javranking.compact_badge}</a>
+            )}
+          </div>
+          <div className="tags javranking-badges">
+            {(actor.javranking.honors ?? []).map((honor) => (
+              <a
+                key={`${honor.list_slug}-${honor.position}`}
+                className="javranking-badge"
+                href={honor.url || "#"}
+                target="_blank"
+                rel="noreferrer"
+              >{honor.label}</a>
+            ))}
+          </div>
+        </div>
+      )}
       {onActorTags && (() => {
         const key = actor.id ?? actor.name;
         const tag = tags[key] ?? tags[actor.name] ?? { favorite: false, subscribe: false, blacklist: false };

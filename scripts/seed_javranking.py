@@ -8,6 +8,7 @@ Example::
     PYTHONPATH=src .venv/bin/python scripts/seed_javranking.py --limit 10 --dry-run
     PYTHONPATH=src .venv/bin/python scripts/seed_javranking.py --limit 50 --min-rank 250 --sync-nas
     PYTHONPATH=src .venv/bin/python scripts/seed_javranking.py --ranking-slug javdb-top250-2023 --limit 20
+    PYTHONPATH=src .venv/bin/python scripts/seed_javranking.py --list most-awarded-videos --limit 20 --dry-run
 """
 
 from __future__ import annotations
@@ -105,6 +106,7 @@ async def _run(arguments: argparse.Namespace) -> int:
                 force_refresh=arguments.force_refresh,
                 min_rank=arguments.min_rank,
                 ranking_slug=arguments.ranking_slug,
+                list_slug=arguments.list,
             )
     finally:
         await client.aclose()
@@ -187,6 +189,12 @@ def main() -> None:
         "--ranking-slug",
         default=None,
         help="only videos that appear on this ranking slug (e.g. javdb-top250-2022)",
+    )
+    parser.add_argument(
+        "--list",
+        default=None,
+        choices=["most-awarded-videos", "shenzuo", "top100"],
+        help="seed curated 神作 TOP100 (most-awarded-videos); TOP250 via --min-rank/--ranking-slug",
     )
     parser.add_argument(
         "--sync-nas",

@@ -81,6 +81,12 @@ from .api_models import (
     WorkDetailOut,
     JavRankingHonorOut,
     JavRankingInfoOut,
+    JavRankingSectionOut,
+    JavRankingSectionsOut,
+    JavRankingListItemOut,
+    JavRankingListOut,
+    JavRankingSeedRequest,
+    JavRankingSeedOut,
     WorkLocksRequest,
     WorkLookupOut,
     WorkLookupRequest,
@@ -194,7 +200,13 @@ from .services.discover import DiscoverService
 from .services.task_events import TaskEventHub
 from .services.pan import pan_status
 from .services.library_prefs import ActorTagState, LibraryPrefsStore, new_queue_id
-from .services.javranking_client import JavRankingIndexCache
+from .services.javranking_client import (
+    CURATED_LIST_SLUGS,
+    CURATED_LIST_TITLES,
+    JavRankingIndexCache,
+    top250_year_slugs,
+)
+from .services.javranking_seed import seed_javranking
 from .services.subscriptions import (
     ActorSubscription,
     SubscriptionQueueItem,
@@ -1314,10 +1326,247 @@ def update_library(library_id: str, payload: LibraryUpdate, repo: Repo) -> Libra
 @app.get("/api/actors", response_model=tuple[ActorProfile, ...])
 def list_actor_catalog(request: Request, repo: Repo) -> tuple[ActorProfile, ...]:
     app_runtime = runtime(request)
-    return sync_actor_catalog_from_relations(
+    profiles = sync_actor_catalog_from_relations(
         app_runtime.actor_store,
         repo.list_actor_work_relations(),
         app_runtime.alias_store.load(),
+    )
+    return _attach_actor_javranking(profiles, app_runtime.settings.data_dir)
+
+
+
+@app.get("/api/javranking/sections", response_model=JavRankingSectionsOut)
+async def javranking_sections(
+    request: Request,
+    force_refresh: bool = False,
+) -> JavRankingSectionsOut:
+    """Read-only JavRanking section index (TOP250 years + curated lists)."""
+
+    app_runtime = runtime(request)
+    cache = JavRankingIndexCache(
+        app_runtime.settings.data_dir / "javranking",
+        client=app_runtime.http,
+    )
+    index = await cache.load_index(force_refresh=force_refresh)
+    meta = cache.read_meta()
+    sections: list[JavRankingSectionOut] = []
+    for slug, year, name in top250_year_slugs(index.videos):
+        count = sum(
+            1
+            for video in index.videos
+            if any(item.slug == slug for item in video.ranking_appearances)
+        )
+        sections.append(
+            JavRankingSectionOut(
+                id=f"top250:{slug}",
+                title=name,
+                kind="top250-year",
+                slug=slug,
+                year=year,
+                item_count=count,
+                revision=meta.revision if meta is not None else None,
+            )
+        )
+    for slug in CURATED_LIST_SLUGS:
+        try:
+            curated = await cache.load_curated_list(slug, force_refresh=force_refresh)
+        except Exception:
+            curated = cache.read_curated_list(slug)
+        title = CURATED_LIST_TITLES.get(slug, slug)
+        if curated is None:
+            sections.append(
+                JavRankingSectionOut(
+                    id=f"curated:{slug}",
+                    title=title,
+                    kind="curated-videos" if slug == "most-awarded-videos" else "curated-actors",
+                    slug=slug,
+                    item_count=0,
+                )
+            )
+            continue
+        sections.append(
+            JavRankingSectionOut(
+                id=f"curated:{slug}",
+                title=title,
+                kind="curated-videos" if curated.kind == "videos" else "curated-actors",
+                slug=slug,
+                item_count=len(curated.videos) if curated.kind == "videos" else len(curated.actors),
+                revision=curated.revision,
+                fetched_at=curated.fetched_at,
+            )
+        )
+    return JavRankingSectionsOut(
+        sections=sections,
+        index_revision=meta.revision if meta is not None else None,
+    )
+
+
+@app.get("/api/javranking/lists/{slug}", response_model=JavRankingListOut)
+async def javranking_list(
+    slug: str,
+    request: Request,
+    repo: Repo,
+    force_refresh: bool = False,
+) -> JavRankingListOut:
+    app_runtime = runtime(request)
+    cache = JavRankingIndexCache(
+        app_runtime.settings.data_dir / "javranking",
+        client=app_runtime.http,
+    )
+    if slug in CURATED_LIST_SLUGS:
+        curated = await cache.load_curated_list(slug, force_refresh=force_refresh)
+        section = JavRankingSectionOut(
+            id=f"curated:{slug}",
+            title=CURATED_LIST_TITLES.get(slug, curated.title),
+            kind="curated-videos" if curated.kind == "videos" else "curated-actors",
+            slug=slug,
+            item_count=len(curated.videos) if curated.kind == "videos" else len(curated.actors),
+            revision=curated.revision,
+            fetched_at=curated.fetched_at,
+        )
+        items: list[JavRankingListItemOut] = []
+        if curated.kind == "videos":
+            for entry in curated.videos:
+                state = None
+                work_id = None
+                if entry.code:
+                    work = repo.find_work_by_code(entry.code)
+                    if work is not None:
+                        work_id = work.id
+                        state = "in_library" if repo.list_assets_for_work(work.id) else "catalog_only"
+                    else:
+                        state = "not_in_library"
+                items.append(
+                    JavRankingListItemOut(
+                        position=entry.position,
+                        code=entry.code,
+                        title=entry.title,
+                        video_id=entry.video_id,
+                        url=entry.url,
+                        state=state,
+                        work_id=work_id,
+                    )
+                )
+        else:
+            for entry in curated.actors:
+                items.append(
+                    JavRankingListItemOut(
+                        position=entry.position,
+                        code=None,
+                        title=entry.name,
+                        name=entry.name,
+                        actor_slug=entry.slug,
+                        score=entry.score,
+                        url=entry.url,
+                        appearances=len(entry.appearances),
+                    )
+                )
+        return JavRankingListOut(
+            section=section,
+            items=items,
+            revision=curated.revision,
+            source_format=curated.source_format,
+            canonical_url=curated.canonical_url,
+        )
+
+    # TOP250 year slug from search index
+    index = await cache.load_index(force_refresh=force_refresh)
+    meta = cache.read_meta()
+    matched = [item for item in top250_year_slugs(index.videos) if item[0] == slug]
+    if not matched:
+        raise HTTPException(status_code=404, detail="javranking list not found")
+    _slug, year, name = matched[0]
+    videos = [
+        video
+        for video in index.videos
+        if any(appearance.slug == slug for appearance in video.ranking_appearances)
+    ]
+    videos.sort(
+        key=lambda video: next(
+            (appearance.position for appearance in video.ranking_appearances if appearance.slug == slug),
+            10**9,
+        )
+    )
+    items = []
+    for video in videos:
+        position = next(
+            appearance.position for appearance in video.ranking_appearances if appearance.slug == slug
+        )
+        state = None
+        work_id = None
+        if video.code:
+            work = repo.find_work_by_code(video.code)
+            if work is not None:
+                work_id = work.id
+                state = "in_library" if repo.list_assets_for_work(work.id) else "catalog_only"
+            else:
+                state = "not_in_library"
+        items.append(
+            JavRankingListItemOut(
+                position=position,
+                code=video.code,
+                title=video.title,
+                video_id=video.video_id,
+                score=float(video.score) if video.score is not None else None,
+                url=f"{cache.base_url}/{cache.locale}/videos/{video.video_id}/",
+                state=state,
+                work_id=work_id,
+            )
+        )
+    section = JavRankingSectionOut(
+        id=f"top250:{slug}",
+        title=name,
+        kind="top250-year",
+        slug=slug,
+        year=year,
+        item_count=len(items),
+        revision=meta.revision if meta is not None else None,
+    )
+    return JavRankingListOut(section=section, items=items, revision=section.revision)
+
+
+@app.post("/api/javranking/seed", response_model=JavRankingSeedOut)
+async def javranking_seed_endpoint(
+    payload: JavRankingSeedRequest,
+    request: Request,
+    repo: Repo,
+) -> JavRankingSeedOut:
+    """Optional「补入库」for missing works from JavRanking lists (no 115 download)."""
+
+    app_runtime = runtime(request)
+    result = await seed_javranking(
+        discover=app_runtime.discover,
+        repo=repo,
+        data_dir=app_runtime.settings.data_dir,
+        http_client=app_runtime.http,
+        limit=payload.limit,
+        dry_run=payload.dry_run,
+        force_refresh=payload.force_refresh,
+        min_rank=payload.min_rank,
+        ranking_slug=payload.ranking_slug,
+        list_slug=payload.list_slug,
+        artwork_max_bytes=app_runtime.settings.artwork_max_bytes,
+    )
+    return JavRankingSeedOut(
+        run_date=result.run_date,
+        dry_run=result.dry_run,
+        limit=result.limit,
+        revision=result.revision,
+        seeded_count=len(result.seeded),
+        skipped_count=len(result.skipped),
+        failure_count=len(result.failures),
+        seeded=[
+            {
+                "code": item.code,
+                "title": item.title,
+                "rank": item.rank,
+                "created": item.created,
+                "work_id": item.work_id,
+            }
+            for item in result.seeded
+        ],
+        failures=[{"code": item.code, "title": item.title, "error": item.error} for item in result.failures],
+        run_log_path=result.run_log_path,
     )
 
 
@@ -2897,6 +3146,22 @@ def _work_out(
         created_at=work.created_at,
         updated_at=work.updated_at,
     )
+
+
+
+def _attach_actor_javranking(
+    profiles: tuple[ActorProfile, ...],
+    data_dir: Path,
+) -> tuple[ActorProfile, ...]:
+    cache = JavRankingIndexCache(data_dir / "javranking")
+    enriched: list[ActorProfile] = []
+    for profile in profiles:
+        info = cache.lookup_actor_honors(profile.name, aliases=profile.aliases)
+        if info is None:
+            enriched.append(profile)
+            continue
+        enriched.append(profile.model_copy(update={"javranking": info}))
+    return tuple(enriched)
 
 
 def _work_detail_out(repo: Repository, work: Work, *, data_dir: Path | None = None) -> WorkDetailOut:

@@ -473,6 +473,83 @@ class JavRankingInfoOut(BaseModel):
     honors: list[JavRankingHonorOut] = Field(default_factory=list)
     compact_badge: str | None = None
 
+class ActorJavRankingHonorOut(BaseModel):
+    list_slug: str
+    list_title: str
+    position: int
+    score: float | None = None
+    appearances: int = 0
+    label: str
+    url: str | None = None
+
+
+class ActorJavRankingInfoOut(BaseModel):
+    name: str
+    slug: str | None = None
+    honors: list[ActorJavRankingHonorOut] = Field(default_factory=list)
+    compact_badge: str | None = None
+
+
+class JavRankingSectionOut(BaseModel):
+    id: str
+    title: str
+    kind: str  # curated-videos | curated-actors | top250-year
+    slug: str
+    year: int | None = None
+    item_count: int = 0
+    revision: str | None = None
+    fetched_at: float | None = None
+
+
+class JavRankingSectionsOut(BaseModel):
+    sections: list[JavRankingSectionOut] = Field(default_factory=list)
+    index_revision: str | None = None
+
+
+class JavRankingListItemOut(BaseModel):
+    position: int
+    code: str | None = None
+    title: str
+    video_id: int | None = None
+    score: float | None = None
+    name: str | None = None
+    actor_slug: str | None = None
+    url: str | None = None
+    state: str | None = None  # for videos: in_library / catalog_only / not_in_library
+    work_id: str | None = None
+    appearances: int | None = None
+
+
+class JavRankingListOut(BaseModel):
+    section: JavRankingSectionOut
+    items: list[JavRankingListItemOut] = Field(default_factory=list)
+    revision: str | None = None
+    source_format: str | None = None
+    canonical_url: str | None = None
+
+
+class JavRankingSeedRequest(BaseModel):
+    list_slug: str | None = None
+    ranking_slug: str | None = None
+    min_rank: int | None = Field(default=None, ge=1)
+    limit: int = Field(default=20, ge=1, le=200)
+    dry_run: bool = False
+    force_refresh: bool = False
+
+
+class JavRankingSeedOut(BaseModel):
+    run_date: str
+    dry_run: bool
+    limit: int
+    revision: str | None = None
+    seeded_count: int = 0
+    skipped_count: int = 0
+    failure_count: int = 0
+    seeded: list[dict[str, object]] = Field(default_factory=list)
+    failures: list[dict[str, object]] = Field(default_factory=list)
+    run_log_path: str | None = None
+
+
 
 class WorkDetailOut(WorkOut):
     assets: list[AssetOut] = Field(default_factory=list)

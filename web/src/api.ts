@@ -54,7 +54,10 @@ import {
   libraryPrefsSchema,
   subscriptionScanSchema,
   mediaServerSettingsSchema,
-  panStatusSchema
+  panStatusSchema,
+  javRankingSectionsSchema,
+  javRankingListSchema,
+  javRankingSeedResultSchema
 } from "./model";
 import type { FilterWords, IdentityAliases } from "./model";
 
@@ -158,6 +161,26 @@ export const api = {
   },
   discoverSeed: (payload: { provider: string; external_id?: string; source_url?: string; code?: string }) =>
     request(discoverSeedSchema, "/api/discover/seed", { method: "POST", body: JSON.stringify(payload) }),
+  javrankingSections: (forceRefresh = false) => {
+    const query = forceRefresh ? "?force_refresh=true" : "";
+    return request(javRankingSectionsSchema, `/api/javranking/sections${query}`);
+  },
+  javrankingList: (slug: string, forceRefresh = false) => {
+    const query = forceRefresh ? "?force_refresh=true" : "";
+    return request(javRankingListSchema, `/api/javranking/lists/${encodeURIComponent(slug)}${query}`);
+  },
+  javrankingSeed: (payload: {
+    list_slug?: string;
+    ranking_slug?: string;
+    min_rank?: number;
+    limit?: number;
+    dry_run?: boolean;
+    force_refresh?: boolean;
+  }) =>
+    request(javRankingSeedResultSchema, "/api/javranking/seed", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
   discoverMagnets: (provider: string, externalId: string, sourceUrl?: string) => {
     const query = sourceUrl ? `?${new URLSearchParams({ source_url: sourceUrl })}` : "";
     return request(z.array(magnetLinkSchema), `/api/discover/${provider}/${externalId}/magnets${query}`);

@@ -273,6 +273,23 @@ export const workDetailSchema = workSchema.extend({
   javranking: javRankingInfoSchema.nullable().optional().default(null)
 });
 
+export const actorJavRankingHonorSchema = z.object({
+  list_slug: z.string(),
+  list_title: z.string(),
+  position: z.number(),
+  score: z.number().nullable().optional(),
+  appearances: z.number().optional().default(0),
+  label: z.string(),
+  url: z.string().nullable().optional()
+});
+
+export const actorJavRankingInfoSchema = z.object({
+  name: z.string(),
+  slug: z.string().nullable().optional(),
+  honors: z.array(actorJavRankingHonorSchema).default([]),
+  compact_badge: z.string().nullable().optional()
+});
+
 export const actorProfileSchema = z.object({
   id: z.string().nullable(),
   name: z.string(),
@@ -288,7 +305,8 @@ export const actorProfileSchema = z.object({
   })),
   image_url: z.string().nullable().optional(),
   x_handle: z.string().nullable().optional(),
-  x_url: z.string().nullable().optional()
+  x_url: z.string().nullable().optional(),
+  javranking: actorJavRankingInfoSchema.nullable().optional().default(null)
 });
 export const actorProfilesSchema = z.array(actorProfileSchema);
 
@@ -501,8 +519,62 @@ export type Candidate = z.infer<typeof candidateSchema>;
 export type Work = z.infer<typeof workSchema>;
 export type Collection = z.infer<typeof collectionSchema>;
 export type CollectionSummary = z.infer<typeof collectionSummarySchema>;
+
+export const javRankingSectionSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  kind: z.string(),
+  slug: z.string(),
+  year: z.number().nullable().optional(),
+  item_count: z.number().default(0),
+  revision: z.string().nullable().optional(),
+  fetched_at: z.number().nullable().optional()
+});
+export const javRankingSectionsSchema = z.object({
+  sections: z.array(javRankingSectionSchema).default([]),
+  index_revision: z.string().nullable().optional()
+});
+export const javRankingListItemSchema = z.object({
+  position: z.number(),
+  code: z.string().nullable().optional(),
+  title: z.string(),
+  video_id: z.number().nullable().optional(),
+  score: z.number().nullable().optional(),
+  name: z.string().nullable().optional(),
+  actor_slug: z.string().nullable().optional(),
+  url: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  work_id: z.string().nullable().optional(),
+  appearances: z.number().nullable().optional()
+});
+export const javRankingListSchema = z.object({
+  section: javRankingSectionSchema,
+  items: z.array(javRankingListItemSchema).default([]),
+  revision: z.string().nullable().optional(),
+  source_format: z.string().nullable().optional(),
+  canonical_url: z.string().nullable().optional()
+});
+export const javRankingSeedResultSchema = z.object({
+  run_date: z.string(),
+  dry_run: z.boolean(),
+  limit: z.number(),
+  revision: z.string().nullable().optional(),
+  seeded_count: z.number(),
+  skipped_count: z.number(),
+  failure_count: z.number(),
+  seeded: z.array(z.record(z.string(), z.unknown())).default([]),
+  failures: z.array(z.record(z.string(), z.unknown())).default([]),
+  run_log_path: z.string().nullable().optional()
+});
+
 export type JavRankingHonor = z.infer<typeof javRankingHonorSchema>;
 export type JavRankingInfo = z.infer<typeof javRankingInfoSchema>;
+export type ActorJavRankingInfo = z.infer<typeof actorJavRankingInfoSchema>;
+export type JavRankingSection = z.infer<typeof javRankingSectionSchema>;
+export type JavRankingSections = z.infer<typeof javRankingSectionsSchema>;
+export type JavRankingListItem = z.infer<typeof javRankingListItemSchema>;
+export type JavRankingList = z.infer<typeof javRankingListSchema>;
+export type JavRankingSeedResult = z.infer<typeof javRankingSeedResultSchema>;
 export type WorkDetail = z.infer<typeof workDetailSchema>;
 export type InboxBatchResult = z.infer<typeof inboxBatchResultSchema>;
 export type ActorProfile = z.infer<typeof actorProfileSchema>;
