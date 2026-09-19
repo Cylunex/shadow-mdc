@@ -1,4 +1,4 @@
-"""Normalize provider genre tags to stable Chinese display labels.
+"""Normalize provider genre tags to stable display labels (CN or loanword).
 
 Only translates / aliases / filters existing provider tags — never invents genres
 for works that lack them. Internal seed and source markers are blacklisted from
@@ -15,27 +15,52 @@ from collections.abc import Iterable, Sequence
 COMMON_FILTER_TAGS: tuple[str, ...] = (
     "黑丝",
     "丝袜",
+    "网袜",
     "高跟鞋",
+    "内衣",
     "巨乳",
     "美腿",
+    "美尻",
     "制服",
+    "Cosplay",
     "眼镜",
     "口交",
+    "深喉",
     "中出",
+    "颜射",
+    "射精",
+    "潮吹",
     "痴女",
     "人妻",
+    "MILF",
+    "熟女",
     "OL",
     "护士",
     "学生",
     "女仆",
     "老师",
-    "熟女",
+    "继母",
     "贫乳",
-    "美尻",
-    "潮吹",
-    "颜射",
+    "娇小",
+    "苗条",
     "多人",
     "女同",
+    "素人",
+    "亚洲",
+    "日本",
+    "POV",
+    "NTR",
+    "BBC",
+    "BBW",
+    "BDSM",
+    "捆绑",
+    "玩具",
+    "自慰",
+    "按摩",
+    "露出",
+    "户外",
+    "里番",
+    "动漫",
     "VR",
     "4K",
     "单体作品",
@@ -115,12 +140,27 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "stockings",
         "tights",
     ),
+    "网袜": (
+        "网袜",
+        "網襪",
+        "網タイツ",
+        "fishnet",
+        "fishnets",
+        "fishnet stockings",
+    ),
     "高跟鞋": (
         "高跟鞋",
         "ハイヒール",
         "ピンヒール",
         "high heels",
+        "high-heels",
         "heels",
+    ),
+    "内衣": (
+        "内衣",
+        "內衣",
+        "ランジェリー",
+        "lingerie",
     ),
     "巨乳": (
         "巨乳",
@@ -131,6 +171,9 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "おっぱい",
         "巨乳フェチ",
         "big tits",
+        "big-tits",
+        "big-boobs",
+        "big boobs",
         "busty",
         "huge breasts",
     ),
@@ -148,6 +191,7 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "尻フェチ",
         "美臀",
         "big ass",
+        "big-ass",
         "booty",
     ),
     "美腿": (
@@ -158,10 +202,44 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "legs",
         "beautiful legs",
     ),
+    "娇小": (
+        "娇小",
+        "嬌小",
+        "petite",
+    ),
+    "苗条": (
+        "苗条",
+        "苗條",
+        "スレンダー",
+        "slender",
+        "skinny",
+    ),
+    "微胖": (
+        "微胖",
+        "ぽっちゃり",
+        "chubby",
+    ),
+    "多毛": (
+        "多毛",
+        "剛毛",
+        "hairy",
+        "bush",
+    ),
+    "刮毛": (
+        "刮毛",
+        "パイパン",
+        "shaved",
+        "shaved pussy",
+    ),
     "制服": (
         "制服",
-        "コスプレ",
         "uniform",
+    ),
+    "Cosplay": (
+        "Cosplay",
+        "コスプレ",
+        "cosplay",
+        "コスプ",
     ),
     "眼镜": (
         "眼镜",
@@ -173,10 +251,21 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "口交",
         "フェラ",
         "フェラチオ",
-        "イラマチオ",
-        "ごっくん",
         "blowjob",
         "oral",
+    ),
+    "深喉": (
+        "深喉",
+        "イラマチオ",
+        "deepthroat",
+        "deep throat",
+        "deep-throat",
+    ),
+    "吞精": (
+        "吞精",
+        "ごっくん",
+        "swallow",
+        "cum swallow",
     ),
     "中出": (
         "中出",
@@ -195,6 +284,12 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "facial",
         "bukkake",
     ),
+    "射精": (
+        "射精",
+        "cumshot",
+        "cum shot",
+        "cum-shot",
+    ),
     "潮吹": (
         "潮吹",
         "潮吹き",
@@ -211,10 +306,15 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
     "人妻": (
         "人妻",
         "人妻・主婦",
-        "已婚婦女",
+        "既婚婦女",
         "人妇",
+        "主婦",
         "married woman",
         "wife",
+        "義母",
+    ),
+    "MILF": (
+        "MILF",
         "milf",
     ),
     "熟女": (
@@ -222,12 +322,22 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "mature",
         "mature woman",
     ),
+    "继母": (
+        "继母",
+        "繼母",
+        "stepmom",
+        "step-mom",
+        "stepmother",
+        "step mother",
+    ),
     "OL": (
         "OL",
         "女上司",
         "秘书",
         "秘書",
         "office lady",
+        "office",
+        "secretary",
     ),
     "护士": (
         "护士",
@@ -278,6 +388,33 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "レズキス",
         "lesbian",
         "yuri",
+        "girl-on-girl",
+        "girl on girl",
+    ),
+    "情侣": (
+        "情侣",
+        "情侶",
+        "カップル",
+        "couple",
+        "couples",
+    ),
+    "素人": (
+        "素人",
+        "amateur",
+    ),
+    "亚洲": (
+        "亚洲",
+        "亞洲",
+        "アジア",
+        "アジア系",
+        "asian",
+        "asia",
+    ),
+    "日本": (
+        "日本",
+        "日本人",
+        "japanese",
+        "japan",
     ),
     "VR": (
         "VR",
@@ -319,12 +456,6 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "cute",
         "beautiful girl",
     ),
-    "苗条": (
-        "苗条",
-        "苗條",
-        "スレンダー",
-        "slender",
-    ),
     "接吻": (
         "接吻",
         "キス・接吻",
@@ -337,10 +468,30 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "オーガズム",
         "orgasm",
     ),
-    "骑乘位": (
+    "后入": (
+        "后入",
+        "後入",
+        "バック",
+        "後背位",
+        "doggystyle",
+        "doggy style",
+        "doggy-style",
+    ),
+    "骑乘": (
+        "骑乘",
         "骑乘位",
         "騎乗位",
         "cowgirl",
+    ),
+    "反骑乘": (
+        "反骑乘",
+        "逆騎乗位",
+        "reverse-cowgirl",
+        "reverse cowgirl",
+    ),
+    "正常位": (
+        "正常位",
+        "missionary",
     ),
     "乳交": (
         "乳交",
@@ -355,13 +506,68 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "寝取られ",
         "netorare",
         "cuckold",
+        "绿帽",
+        "綠帽",
     ),
-    "主观": (
+    "POV": (
+        "POV",
+        "pov",
         "主观",
         "主觀",
         "主観",
-        "pov",
-        "POV",
+    ),
+    "BBC": (
+        "BBC",
+        "bbc",
+        "big black cock",
+        "big-black-cock",
+    ),
+    "BBW": (
+        "BBW",
+        "bbw",
+    ),
+    "Interracial": (
+        "Interracial",
+        "interracial",
+        "異人種",
+    ),
+    "Latina": (
+        "Latina",
+        "latina",
+        "latino",
+        "latin",
+    ),
+    "Ebony": (
+        "Ebony",
+        "ebony",
+        "black girl",
+    ),
+    "Blonde": (
+        "Blonde",
+        "blonde",
+        "blond",
+        "金髪",
+    ),
+    "Brunette": (
+        "Brunette",
+        "brunette",
+        "brown hair",
+        "黒髪",
+    ),
+    "Redhead": (
+        "Redhead",
+        "redhead",
+        "red hair",
+        "赤髪",
+    ),
+    "Shemale": (
+        "Shemale",
+        "shemale",
+        "transexual",
+        "transsexual",
+        "TS",
+        "ts",
+        "ニューハーフ",
     ),
     "姐姐": (
         "姐姐",
@@ -378,9 +584,10 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "足コキ",
         "footjob",
     ),
-    "素人": (
-        "素人",
-        "amateur",
+    "手交": (
+        "手交",
+        "手コキ",
+        "handjob",
     ),
     "戏剧": (
         "戏剧",
@@ -418,11 +625,6 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "姉・妹",
         "sister",
     ),
-    "手交": (
-        "手交",
-        "手コキ",
-        "handjob",
-    ),
     "自拍": (
         "自拍",
         "ハメ撮り",
@@ -440,22 +642,29 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "アイドル",
         "idol",
     ),
-    "拘束": (
+    "捆绑": (
+        "捆绑",
+        "捆綁",
         "拘束",
         "監禁",
         "bondage",
         "restrained",
+    ),
+    "癖好": (
+        "癖好",
+        "フェチ",
+        "fetish",
     ),
     "肛交": (
         "肛交",
         "アナル",
         "anal",
     ),
-    "SM": (
-        "SM",
-        "sm",
+    "BDSM": (
         "BDSM",
         "bdsm",
+        "SM",
+        "sm",
     ),
     "按摩": (
         "按摩",
@@ -505,6 +714,114 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "自慰",
         "オナニー",
         "masturbation",
+        "solo",
+        "独自",
+    ),
+    "玩具": (
+        "玩具",
+        "おもちゃ",
+        "toys",
+        "dildo",
+        "vibrator",
+        "バイブ",
+        "ディルド",
+    ),
+    "试镜": (
+        "试镜",
+        "試鏡",
+        "オーディション",
+        "casting",
+    ),
+    "酒店": (
+        "酒店",
+        "ホテル",
+        "hotel",
+    ),
+    "海滩": (
+        "海滩",
+        "海灘",
+        "ビーチ",
+        "beach",
+    ),
+    "淋浴": (
+        "淋浴",
+        "シャワー",
+        "shower",
+    ),
+    "浴室": (
+        "浴室",
+        "風呂",
+        "bathroom",
+        "bath",
+    ),
+    "厨房": (
+        "厨房",
+        "廚房",
+        "キッチン",
+        "kitchen",
+    ),
+    "车震": (
+        "车震",
+        "車震",
+        "車内",
+        "car",
+        "car sex",
+    ),
+    "露出": (
+        "露出",
+        "公衆",
+        "public",
+        "公共",
+    ),
+    "户外": (
+        "户外",
+        "戶外",
+        "野外",
+        "outdoor",
+        "outdoors",
+    ),
+    "摄像头": (
+        "摄像头",
+        "攝像頭",
+        "webcam",
+        "cam",
+    ),
+    "里番": (
+        "里番",
+        "裏番",
+        "hentai",
+    ),
+    "动漫": (
+        "动漫",
+        "動漫",
+        "アニメ",
+        "anime",
+        "cartoon",
+    ),
+    "孕妇": (
+        "孕妇",
+        "孕婦",
+        "妊婦",
+        "pregnant",
+    ),
+    "母乳": (
+        "母乳",
+        "授乳",
+        "lactation",
+        "breastfeeding",
+    ),
+    "纹身": (
+        "纹身",
+        "紋身",
+        "タトゥー",
+        "tattoo",
+        "tattoos",
+    ),
+    "穿孔": (
+        "穿孔",
+        "ピアス",
+        "piercing",
+        "piercings",
     ),
     "童贞": (
         "童贞",
@@ -530,37 +847,59 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+
 # Preferred display order for known genres (then remaining alpha).
 _DISPLAY_PRIORITY: tuple[str, ...] = (
     *COMMON_FILTER_TAGS,
     "高清",
     "独占配信",
     "美少女",
-    "苗条",
+    "微胖",
+    "多毛",
+    "刮毛",
     "接吻",
     "高潮",
-    "骑乘位",
+    "后入",
+    "骑乘",
+    "反骑乘",
+    "正常位",
     "乳交",
-    "NTR",
-    "主观",
-    "姐姐",
+    "吞精",
+    "手交",
     "足交",
-    "素人",
+    "姐姐",
+    "情侣",
     "戏剧",
     "合集",
     "出道作",
     "姐妹",
-    "手交",
     "自拍",
     "偶像",
-    "拘束",
+    "癖好",
     "肛交",
-    "SM",
-    "按摩",
     "近亲",
     "空姐",
     "女医",
     "女搜查官",
+    "试镜",
+    "酒店",
+    "海滩",
+    "淋浴",
+    "浴室",
+    "厨房",
+    "车震",
+    "摄像头",
+    "孕妇",
+    "母乳",
+    "纹身",
+    "穿孔",
+    "Interracial",
+    "Latina",
+    "Ebony",
+    "Blonde",
+    "Brunette",
+    "Redhead",
+    "Shemale",
 )
 
 
@@ -598,7 +937,7 @@ def is_noise_tag(raw: str | None) -> bool:
 
 
 def canonicalize_tag(raw: str | None) -> str | None:
-    """Map one raw tag to a canonical CN label, or None if noise / empty.
+    """Map one raw tag to a canonical display label, or None if noise / empty.
 
     Unknown non-noise tags are returned unchanged (trimmed NFKC) so provider
     genres without a synonym still appear.
@@ -614,7 +953,7 @@ def canonicalize_tag(raw: str | None) -> str | None:
 
 
 def normalize_tags(raw: Iterable[str] | None) -> list[str]:
-    """Translate / alias / filter tags → deterministic, deduped CN-first list."""
+    """Translate / alias / filter tags → deterministic, deduped display list."""
 
     if not raw:
         return []
