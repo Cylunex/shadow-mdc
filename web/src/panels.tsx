@@ -889,6 +889,7 @@ function AssetReview(props: {
 export function Works(props: {
   works: Work[];
   busy: string | null;
+  initialSelectedTags?: string[];
   refreshMetadata: (work: Work) => Promise<void>;
   downloadArtwork: (work: Work) => Promise<void>;
   lookupWork: (query: string) => Promise<void>;
@@ -912,7 +913,12 @@ export function Works(props: {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<DisplayCategory>("all");
   const [collectionFilter, setCollectionFilter] = useState("all");
-  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [selectedTags, setSelectedTags] = useState<string[]>(() => props.initialSelectedTags ?? []);
+  useEffect(() => {
+    if (props.initialSelectedTags && props.initialSelectedTags.length > 0) {
+      setSelectedTags(props.initialSelectedTags);
+    }
+  }, [props.initialSelectedTags]);
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<WorkDetail | null>(null);

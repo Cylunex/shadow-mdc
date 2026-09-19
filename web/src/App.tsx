@@ -6,6 +6,7 @@ import { TaskCenter } from "./components/TaskCenter";
 import { TopNav, type AppView } from "./components/TopNav";
 import type { ActorProfile, Asset, Candidate, Library, LibraryPrefs, NonJavActor, TaskRun, Work } from "./model";
 import { Actors, Inbox, Works } from "./panels";
+import { CategoriesView } from "./views/CategoriesView";
 import { SettingsView } from "./views/SettingsView";
 import { SubscriptionsView } from "./views/SubscriptionsView";
 
@@ -15,6 +16,7 @@ function errorMessage(error: unknown): string {
 
 export function App() {
   const [view, setView] = useState<AppView>("works");
+  const [worksTagFilter, setWorksTagFilter] = useState<string[] | undefined>(undefined);
   const [taskTab, setTaskTab] = useState<"inbox" | "runs">("runs");
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -163,6 +165,7 @@ export function App() {
       <TopNav
         view={view}
         onChange={(next) => {
+          if (next === "works") setWorksTagFilter(undefined);
           setView(next);
           if (next === "tasks" && inbox.length > 0) setTaskTab("inbox");
         }}
@@ -238,10 +241,23 @@ export function App() {
           />
         )}
 
+        {view === "categories" && (
+          <CategoriesView
+            report={setMessage}
+            onOpenTag={(tag) => {
+              setWorksTagFilter([tag]);
+              setView("works");
+              setMessage(`已筛选标签：${tag}`);
+            }}
+          />
+        )}
+
         {view === "works" && (
           <Works
+            key={worksTagFilter ? worksTagFilter.join("|") : "works-all"}
             works={works}
             busy={busy}
+            initialSelectedTags={worksTagFilter}
             onToggleWant={(work) => run(`want-${work.id}`, async () => {
               const next = await api.setWantList(work.id, !work.want_list);
               setPrefs(next);

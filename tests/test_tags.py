@@ -287,3 +287,10 @@ def test_pornhub_platform_junk_blacklisted() -> None:
     ):
         assert canonicalize_tag(junk) is None, junk
         assert is_noise_tag(junk), junk
+
+
+def test_ph_cn_and_eporner_extra_synonyms() -> None:
+    assert canonicalize_tag("虚拟现实") == "VR"
+    assert canonicalize_tag("VR Porn") == "VR"
+    assert canonicalize_tag("Students") == "学生"
+    assert canonicalize_tag("nurses") == "护士"

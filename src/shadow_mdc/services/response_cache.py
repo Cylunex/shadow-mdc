@@ -23,6 +23,7 @@ T = TypeVar("T")
 TTL_STATIC = 60 * 60 * 24 * 30  # ~30 days — yearly TOP / rankings until invalidate
 TTL_COLLECTIONS = 60 * 60 * 24 * 7  # 7 days
 TTL_TAGS = 60 * 10  # 10 minutes
+TTL_CATEGORIES = 60 * 10  # 10 minutes
 TTL_ACTORS = 60 * 15  # 15 minutes
 
 KEY_PREFIX = "shadow_mdc:api:"
@@ -233,6 +234,10 @@ def javranking_sections_key() -> str:
 
 def javranking_list_key(slug: str) -> str:
     return f"javranking:list:{slug}"
+
+
+def categories_key(*, only_with_works: bool) -> str:
+    return f"categories:list:with_works={int(only_with_works)}"
 
 
 def works_tags_key(limit: int) -> str:

@@ -53,3 +53,4 @@ class Settings(BaseSettings):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "artwork").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "actor-images").mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "category-covers").mkdir(parents=True, exist_ok=True)

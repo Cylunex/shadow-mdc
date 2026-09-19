@@ -43,6 +43,7 @@ import {
   workLookupSchema,
   worksSchema,
   workTagFacetsSchema,
+  categoriesPageSchema,
   collectionsSchema,
   collectionSchema,
   collectionSeedResultSchema,
@@ -261,6 +262,10 @@ export const api = {
   },
   workTagFacets: (limit = 40) =>
     request(workTagFacetsSchema, `/api/works/tags?limit=${limit}`),
+  categories: (params: { onlyWithWorks?: boolean } = {}) => {
+    const query = params.onlyWithWorks ? "?only_with_works=true" : "";
+    return request(categoriesPageSchema, `/api/categories${query}`);
+  },
   collections: (params?: { kind?: string; q?: string; seed_if_empty?: boolean }) => {
     const query = new URLSearchParams();
     if (params?.kind) query.set("kind", params.kind);

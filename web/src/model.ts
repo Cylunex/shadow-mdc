@@ -246,6 +246,19 @@ export const workTagFacetsSchema = z.object({
 });
 export type WorkTagFacet = z.infer<typeof workTagFacetSchema>;
 
+export const categoryItemSchema = z.object({
+  slug: z.string(),
+  label: z.string(),
+  image_url: z.string().nullable().optional().default(null),
+  work_count: z.number().default(0),
+  aliases: z.array(z.string()).optional().default([])
+});
+export const categoriesPageSchema = z.object({
+  categories: z.array(categoryItemSchema).default([])
+});
+export type CategoryItem = z.infer<typeof categoryItemSchema>;
+
+
 export const magnetLinkSchema = z.object({
   provider: z.string(),
   info_hash: z.string(),

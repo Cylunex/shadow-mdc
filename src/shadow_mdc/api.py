@@ -35,6 +35,8 @@ from .api_models import (
     BulkTranslateOut,
     BulkTranslateRequest,
     CandidateOut,
+    CategoriesOut,
+    CategoryOut,
     CatalogExportRequest,
     CatalogExportResultOut,
     CatalogImportPathRequest,
@@ -231,15 +233,22 @@ from .services.x_handle import (
     x_profile_url,
 )
 from .tags import display_chips, facet_tags, work_matches_tags
+from .services.category_catalog import (
+    build_category_list,
+    facet_count_map,
+    resolve_cover_file,
+)
 from .services.response_cache import (
     TTL_COLLECTIONS,
     TTL_STATIC,
+    TTL_CATEGORIES,
     TTL_TAGS,
     ResponseCache,
     collection_detail_key,
     collections_list_key,
     javranking_list_key,
     javranking_sections_key,
+    categories_key,
     works_tags_key,
 )
 
@@ -2479,6 +2488,54 @@ def list_work_tag_facets(
     )
     cache.set_json(cache_key, output.model_dump(mode="json"), ttl_seconds=TTL_TAGS)
     return output
+
+
+@app.get("/api/categories", response_model=CategoriesOut)
+def list_categories(
+    request: Request,
+    repo: Repo,
+    only_with_works: Annotated[bool, Query()] = False,
+) -> CategoriesOut:
+    """Curated category grid: local covers + library facet counts."""
+
+    app_runtime = runtime(request)
+    cache = app_runtime.response_cache
+    cache_key = categories_key(only_with_works=only_with_works)
+    cached = cache.get_json(cache_key)
+    if cached is not None:
+        return CategoriesOut.model_validate(cached)
+    counts = facet_count_map([work.tags for work in repo.list_works()])
+    rows = build_category_list(
+        app_runtime.settings.data_dir,
+        facet_counts=counts,
+        only_with_works=only_with_works,
+    )
+    output = CategoriesOut(
+        categories=[
+            CategoryOut(
+                slug=row.slug,
+                label=row.label,
+                image_url=row.image_url,
+                work_count=row.work_count,
+                aliases=list(row.aliases),
+            )
+            for row in rows
+        ]
+    )
+    cache.set_json(cache_key, output.model_dump(mode="json"), ttl_seconds=TTL_CATEGORIES)
+    return output
+
+
+@app.get("/api/category-covers/{filename}")
+def category_cover_image(filename: str, request: Request) -> Response:
+    app_runtime = runtime(request)
+    image_path = resolve_cover_file(app_runtime.settings.data_dir, filename)
+    if image_path is None:
+        raise HTTPException(status_code=404, detail="image not found")
+    return FileResponse(
+        image_path,
+        media_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
+    )
 
 
 @app.post("/api/works/lookup", response_model=WorkLookupOut)

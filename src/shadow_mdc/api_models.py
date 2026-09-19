@@ -843,6 +843,18 @@ class WorkTagFacetsOut(BaseModel):
     tags: list[WorkTagFacetOut] = Field(default_factory=list)
 
 
+class CategoryOut(BaseModel):
+    slug: str
+    label: str
+    image_url: str | None = None
+    work_count: int = 0
+    aliases: list[str] = Field(default_factory=list)
+
+
+class CategoriesOut(BaseModel):
+    categories: list[CategoryOut] = Field(default_factory=list)
+
+
 class WantListEdit(BaseModel):
 
     work_id: str

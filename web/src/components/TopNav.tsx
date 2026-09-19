@@ -1,10 +1,11 @@
 import { memo } from "react";
 
-export type AppView = "actors" | "works" | "rankings" | "subscriptions" | "tasks" | "settings";
+export type AppView = "actors" | "works" | "categories" | "rankings" | "subscriptions" | "tasks" | "settings";
 
 const ITEMS: ReadonlyArray<{ id: AppView; label: string; en: string; icon: string }> = [
   { id: "actors", label: "演员", en: "ACTORS", icon: "◇" },
   { id: "works", label: "影片", en: "LIBRARY", icon: "▣" },
+  { id: "categories", label: "分类", en: "CATEGORIES", icon: "▤" },
   { id: "rankings", label: "榜单", en: "RANKINGS", icon: "◆" },
   { id: "subscriptions", label: "订阅", en: "QUEUE", icon: "✦" },
   { id: "tasks", label: "任务", en: "OPS", icon: "▥" },

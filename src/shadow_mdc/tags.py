@@ -372,6 +372,7 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "看護婦・ナース",
         "ナース",
         "nurse",
+        "nurses",
     ),
     "学生": (
         "学生",
@@ -381,6 +382,7 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "女学生",
         "schoolgirl",
         "student",
+        "students",
         "校园",
         "校園",
         "大学",
@@ -461,11 +463,18 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "VR専用",
         "ハイクオリティVR",
         "8KVR",
+        "虚拟现实",
+        "虛擬現實",
+        "VR Porn",
+        "vr porn",
     ),
     "4K": (
         "4K",
         "4k",
         "UHD",
+        "4k Ultra HD",
+        "4K Ultra HD",
+        "4k-porn",
     ),
     "单体作品": (
         "单体作品",
@@ -502,6 +511,7 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "キス・接吻",
         "キス",
         "kiss",
+        "kissing",
     ),
     "高潮": (
         "高潮",
@@ -629,9 +639,13 @@ _CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
         "shemale",
         "transexual",
         "transsexual",
+        "Trans",
+        "trans",
         "TS",
         "ts",
         "ニューハーフ",
+        "跨性别",
+        "跨性別",
     ),
     "姐姐": (
         "姐姐",
@@ -1042,6 +1056,13 @@ def is_noise_tag(raw: str | None) -> bool:
     if key in _EXACT_BLACKLIST:
         return True
     return any(key.startswith(prefix) for prefix in _PREFIX_BLACKLIST)
+
+
+def synonyms_for(canonical: str) -> tuple[str, ...]:
+    """Return known synonym forms for a canonical label (excluding itself)."""
+
+    values = _CANONICAL_SYNONYMS.get(canonical, ())
+    return tuple(item for item in values if item != canonical)
 
 
 def canonicalize_tag(raw: str | None) -> str | None:
