@@ -236,6 +236,15 @@ export const workSchema = z.object({
 });
 export const worksSchema = z.array(workSchema);
 
+export const workTagFacetSchema = z.object({
+  name: z.string(),
+  count: z.number()
+});
+export const workTagFacetsSchema = z.object({
+  tags: z.array(workTagFacetSchema).default([])
+});
+export type WorkTagFacet = z.infer<typeof workTagFacetSchema>;
+
 export const magnetLinkSchema = z.object({
   provider: z.string(),
   info_hash: z.string(),

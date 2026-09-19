@@ -673,3 +673,26 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .display-tags {
   margin-bottom: 0.5rem;
 }
+
+.genre-tag-capsules { margin-top: 4px; }
+.display-tags .display-tag-chip {
+  background: #202a2e;
+  border: 1px solid color-mix(in srgb, #2dd4bf 35%, transparent);
+  border-radius: 999px;
+  color: #b9c4c8;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 10px;
+}
+.display-tags .display-tag-chip:hover,
+.display-tags .display-tag-chip:focus-visible {
+  background: color-mix(in srgb, #2dd4bf 22%, #202a2e);
+  color: #e7fffb;
+  outline: none;
+}
+.tag-capsules.genre-tag-capsules button.active {
+  background: color-mix(in srgb, #2dd4bf 28%, #152022);
+  border-color: #2dd4bf;
+  color: #e7fffb;
+}

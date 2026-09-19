@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Annotated
 
 import httpx
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,7 +20,9 @@ from sqlalchemy.exc import IntegrityError
 from . import __version__
 from .api_models import (
     ActorMergeRequest,
+    ActorSubscriptionEdit,
     ActorSummaryOut,
+    ActorTagsEdit,
     ActorXHandleEdit,
     AssetInboxHintsOut,
     AssetInboxMediaOut,
@@ -42,6 +44,11 @@ from .api_models import (
     CollectionSummaryOut,
     DirectoryActorAssignOut,
     DirectoryActorAssignRequest,
+    DiscoverDetailOut,
+    DiscoverItemOut,
+    DiscoverPageOut,
+    DiscoverSeedOut,
+    DiscoverSeedRequest,
     FieldPriorityPayload,
     FilterWordsPayload,
     HealthOut,
@@ -53,12 +60,23 @@ from .api_models import (
     InboxBatchResultOut,
     InboxMatchEvidenceOut,
     InboxMatchSummaryOut,
+    JavRankingHonorOut,
+    JavRankingInfoOut,
+    JavRankingListItemOut,
+    JavRankingListOut,
+    JavRankingSectionOut,
+    JavRankingSectionsOut,
+    JavRankingSeedOut,
+    JavRankingSeedRequest,
     LexiconExportOut,
     LibraryCreate,
     LibraryOut,
+    LibraryPrefsOut,
     LibraryUpdate,
+    MagnetLinkOut,
     ManualCandidateRequest,
     MediaServerSettingsPayload,
+    MultiSiteSearchOut,
     NfoImportRequest,
     NfoImportResultOut,
     NonJavActorEdit,
@@ -73,48 +91,29 @@ from .api_models import (
     ProviderHealthItemOut,
     ProviderHealthOut,
     ProviderListOut,
-    ScanOut,
-    ScanRequest,
+    ProviderSearchHitOut,
+    QueueItemStatusEdit,
     SampleGenerateOut,
     SampleGenerateRequest,
+    SaveMagnetsRequest,
+    ScanOut,
+    ScanRequest,
     ScreenshotGenerateOut,
     ScreenshotGenerateRequest,
-    WorkSampleGenerateOut,
+    SubscriptionScanOut,
     TaskRunOut,
+    WantListEdit,
     WorkDetailOut,
-    JavRankingHonorOut,
-    JavRankingInfoOut,
-    JavRankingSectionOut,
-    JavRankingSectionsOut,
-    JavRankingListItemOut,
-    JavRankingListOut,
-    JavRankingSeedRequest,
-    JavRankingSeedOut,
     WorkLocksRequest,
     WorkLookupOut,
     WorkLookupRequest,
+    WorkMagnetOut,
     WorkOut,
     WorkPosterPreferRequest,
+    WorkSampleGenerateOut,
+    WorkTagFacetOut,
+    WorkTagFacetsOut,
     WorkUpdateRequest,
-    WorkMagnetOut,
-    DiscoverItemOut,
-    DiscoverPageOut,
-    DiscoverDetailOut,
-    DiscoverSeedRequest,
-    DiscoverSeedOut,
-    MagnetLinkOut,
-    ProviderSearchHitOut,
-    MultiSiteSearchOut,
-    SaveMagnetsRequest,
-    ActorTagStateOut,
-    ActorSubscriptionOut,
-    ActorSubscriptionEdit,
-    SubscriptionQueueItemOut,
-    LibraryPrefsOut,
-    WantListEdit,
-    ActorTagsEdit,
-    QueueItemStatusEdit,
-    SubscriptionScanOut,
 )
 from .config import Settings
 from .db.models import Library, MatchCandidateRow, MediaAsset, Work, utc_now
@@ -141,11 +140,11 @@ from .enums import (
 from .identity import IdentityAliasRules, build_identity_hints, extract_code, normalize_identity_value
 from .matching import normalize_title, rank_candidates, score_candidate
 from .media.artwork import ArtworkDownloadResult, ArtworkStore
+from .media.magnets import MagnetLink
 from .media.nfo import build_nfo, parse_nfo
 from .media.organizer import Organizer, plan_move_cleanup
 from .media.parts import part_group_key
 from .media.screenshots import capture_screenshot
-from .services.work_samples import enrich_work_samples, sample_urls_for_work
 from .providers import (
     AirAvProvider,
     AvSoxProvider,
@@ -178,8 +177,17 @@ from .services.directory_actor_rules import (
     DirectoryActorRule,
     DirectoryActorRuleStore,
 )
+from .services.discover import DiscoverService
 from .services.field_priority import FieldPriorityConfig, FieldPriorityStore
 from .services.identify import IdentifyService
+from .services.javranking_client import (
+    CURATED_LIST_SLUGS,
+    CURATED_LIST_TITLES,
+    JavRankingIndexCache,
+    top250_year_slugs,
+)
+from .services.javranking_seed import seed_javranking
+from .services.library_prefs import ActorTagState, LibraryPrefsStore, new_queue_id
 from .services.local_catalog import (
     build_local_catalog_record,
     family_for_category,
@@ -200,37 +208,29 @@ from .services.non_jav_actor_catalog import (
     enrich_non_jav_actor_aliases,
 )
 from .services.non_jav_work_seed import seed_non_jav_works
-from .services.discover import DiscoverService
-from .services.task_events import TaskEventHub
 from .services.pan import pan_status
-from .services.library_prefs import ActorTagState, LibraryPrefsStore, new_queue_id
-from .services.javranking_client import (
-    CURATED_LIST_SLUGS,
-    CURATED_LIST_TITLES,
-    JavRankingIndexCache,
-    top250_year_slugs,
-)
-from .services.javranking_seed import seed_javranking
+from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
+from .services.scanner import Scanner
+from .services.studio_guard import reject_non_jav_studio_label
 from .services.subscriptions import (
     ActorSubscription,
     SubscriptionQueueItem,
     filter_works_for_subscription,
 )
-from .services.studio_guard import reject_non_jav_studio_label
-from .media.magnets import MagnetLink
-from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
-from .services.scanner import Scanner
+from .services.task_events import TaskEventHub
 from .services.translation import (
     GoogleTitleTranslator,
     TranslationCache,
     build_translation_backends,
 )
+from .services.work_samples import enrich_work_samples, sample_urls_for_work
 from .services.x_handle import (
     XHandleError,
     require_verified_x_handle,
     sanitize_stored_x_handle,
     x_profile_url,
 )
+from .tags import display_chips, facet_tags, work_matches_tags
 
 
 @dataclass(frozen=True)
@@ -917,7 +917,7 @@ async def discover_browse(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status_code=502, detail=f"discover browse failed: {exc}") from exc
     return DiscoverPageOut(
         provider=page_data.provider,
@@ -940,7 +940,7 @@ async def discover_search(
         page_data = await runtime(request).discover.search(repo, query=q, provider=provider, page=page)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status_code=502, detail=f"discover search failed: {exc}") from exc
     return DiscoverPageOut(
         provider=page_data.provider,
@@ -966,7 +966,7 @@ async def discover_multi_search(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status_code=502, detail=f"multi-site search failed: {exc}") from exc
     return MultiSiteSearchOut(
         query=result.query,
@@ -1004,7 +1004,7 @@ async def discover_seed(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status_code=502, detail=f"discover seed failed: {exc}") from exc
     return DiscoverSeedOut.model_validate(result.model_dump())
 
@@ -1020,7 +1020,7 @@ async def discover_detail(
         detail = await runtime(request).discover.detail(repo, provider=provider, external_id=external_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status_code=502, detail=f"discover detail failed: {exc}") from exc
     return DiscoverDetailOut(
         item=_discover_item_out(detail.item),
@@ -1045,7 +1045,7 @@ async def discover_magnets(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status_code=502, detail=f"magnet list failed: {exc}") from exc
     return [_magnet_out(item) for item in magnets]
 
@@ -2370,23 +2370,42 @@ def list_works(
     collection_id: str | None = None,
     collection_kind: CollectionKind | None = None,
     collection: str | None = None,
+    tag: Annotated[list[str] | None, Query()] = None,
 ) -> list[WorkOut]:
     prefs = runtime(request).library_prefs_store.load()
     want = set(prefs.want_list)
     local_ids = repo.work_ids_with_local_media()
-    return [
-        _work_out(
-            repo,
-            work,
-            want_list=work.id in want,
-            has_local_media=work.id in local_ids,
+    selected_tags = [item.strip() for item in (tag or []) if item and item.strip()]
+    results: list[WorkOut] = []
+    for work in repo.list_works(
+        collection_id=collection_id,
+        collection_kind=collection_kind,
+        collection_name=collection,
+    ):
+        if selected_tags and not work_matches_tags(work.tags, selected_tags):
+            continue
+        results.append(
+            _work_out(
+                repo,
+                work,
+                want_list=work.id in want,
+                has_local_media=work.id in local_ids,
+            )
         )
-        for work in repo.list_works(
-            collection_id=collection_id,
-            collection_kind=collection_kind,
-            collection_name=collection,
-        )
-    ]
+    return results
+
+
+@app.get("/api/works/tags", response_model=WorkTagFacetsOut)
+def list_work_tag_facets(
+    repo: Repo,
+    limit: Annotated[int, Query(ge=1, le=200)] = 40,
+) -> WorkTagFacetsOut:
+    """Popular normalized genre tags for the films filter bar."""
+
+    facets = facet_tags((work.tags for work in repo.list_works()), limit=limit)
+    return WorkTagFacetsOut(
+        tags=[WorkTagFacetOut(name=name, count=count) for name, count in facets]
+    )
 
 
 @app.post("/api/works/lookup", response_model=WorkLookupOut)
@@ -3373,29 +3392,16 @@ def _work_detail_out(repo: Repository, work: Work, *, data_dir: Path | None = No
 
 
 def _display_tags(work: Work) -> list[str]:
-    """Light structured chips from existing metadata — display only, no embeddings."""
+    """Normalized genre chips plus light studio/series metadata for the UI."""
 
-    values: list[str] = []
-    seen: set[str] = set()
-
-    def add(raw: str | None) -> None:
-        if not raw:
-            return
-        text_value = raw.strip()
-        key = text_value.casefold()
-        if not text_value or key in seen:
-            return
-        seen.add(key)
-        values.append(text_value)
-
-    add(work.category)
-    add(work.family if work.family and work.family != "unknown" else None)
-    add(work.studio)
-    add(work.label)
-    add(work.series)
-    for tag in (work.tags or [])[:8]:
-        add(str(tag))
-    return values[:16]
+    return display_chips(
+        category=work.category,
+        family=work.family,
+        studio=work.studio,
+        label=work.label,
+        series=work.series,
+        tags=work.tags,
+    )
 
 
 def _work_display_artwork(work: Work, kind: str, *, data_dir: Path | None = None) -> str | None:

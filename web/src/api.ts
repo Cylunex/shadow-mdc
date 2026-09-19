@@ -42,6 +42,7 @@ import {
   workSchema,
   workLookupSchema,
   worksSchema,
+  workTagFacetsSchema,
   collectionsSchema,
   collectionSchema,
   collectionSeedResultSchema,
@@ -242,14 +243,24 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ asset_ids: assetIds, actor, category })
     }),
-  works: (params?: { collection_id?: string; collection_kind?: string; collection?: string }) => {
+  works: (params?: {
+    collection_id?: string;
+    collection_kind?: string;
+    collection?: string;
+    tags?: string[];
+  }) => {
     const query = new URLSearchParams();
     if (params?.collection_id) query.set("collection_id", params.collection_id);
     if (params?.collection_kind) query.set("collection_kind", params.collection_kind);
     if (params?.collection) query.set("collection", params.collection);
+    for (const tag of params?.tags ?? []) {
+      if (tag.trim()) query.append("tag", tag.trim());
+    }
     const suffix = query.toString() ? `?${query}` : "";
     return request(worksSchema, `/api/works${suffix}`);
   },
+  workTagFacets: (limit = 40) =>
+    request(workTagFacetsSchema, `/api/works/tags?limit=${limit}`),
   collections: (params?: { kind?: string; q?: string; seed_if_empty?: boolean }) => {
     const query = new URLSearchParams();
     if (params?.kind) query.set("kind", params.kind);

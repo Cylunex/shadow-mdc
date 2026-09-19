@@ -17,6 +17,11 @@ const DIRECTORY_FILE_PAGE_SIZE = 10;
 const ACTOR_PAGE_SIZE = 24;
 const NON_JAV_ACTOR_PAGE_SIZE = 30;
 const WORK_PAGE_SIZE = 48;
+const COMMON_GENRE_FILTER_TAGS = [
+  "黑丝", "丝袜", "高跟鞋", "巨乳", "美腿", "制服", "眼镜", "口交", "中出",
+  "痴女", "人妻", "OL", "护士", "学生", "女仆", "老师", "熟女", "贫乳", "美尻",
+  "潮吹", "颜射", "多人", "女同", "VR", "4K", "单体作品"
+] as const;
 
 const displayCategoryOptions: ReadonlyArray<{ value: DisplayCategory; label: string }> = [
   { value: "all", label: "全部分类" },
@@ -907,12 +912,49 @@ export function Works(props: {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<DisplayCategory>("all");
   const [collectionFilter, setCollectionFilter] = useState("all");
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<WorkDetail | null>(null);
   const categories = ["Japan", "China", "Korea", "Europe", "Other"] as const;
   const deferredQuery = useDeferredValue(query);
   const normalizedQuery = deferredQuery.trim().toLocaleLowerCase();
+  const genreFacets = useMemo(() => {
+    const counts = new Map<string, number>();
+    const categories = new Set(["Japan", "China", "Korea", "Europe", "Other"]);
+    for (const work of works) {
+      const meta = new Set(
+        [work.category, work.family, work.studio, work.label, work.series]
+          .filter((value): value is string => Boolean(value && value.trim()))
+          .map((value) => value.trim())
+      );
+      const seen = new Set<string>();
+      for (const tag of work.display_tags ?? []) {
+        const name = tag.trim();
+        if (!name || seen.has(name) || categories.has(name) || meta.has(name)) continue;
+        seen.add(name);
+        counts.set(name, (counts.get(name) ?? 0) + 1);
+      }
+    }
+    const preferred = new Set<string>(COMMON_GENRE_FILTER_TAGS);
+    const ranked = [...counts.entries()]
+      .sort((left, right) => {
+        const leftPref = preferred.has(left[0]) ? 0 : 1;
+        const rightPref = preferred.has(right[0]) ? 0 : 1;
+        return leftPref - rightPref || right[1] - left[1] || left[0].localeCompare(right[0], "zh");
+      });
+    const top = ranked.slice(0, 36);
+    const present = new Set(top.map(([name]) => name));
+    for (const name of COMMON_GENRE_FILTER_TAGS) {
+      const count = counts.get(name) ?? 0;
+      if (count > 0 && !present.has(name)) {
+        top.push([name, count]);
+        present.add(name);
+      }
+    }
+    top.sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], "zh"));
+    return top;
+  }, [works]);
   const collectionOptions = useMemo(() => {
     const counts = new Map<string, number>();
     for (const work of works) {
@@ -928,6 +970,8 @@ export function Works(props: {
   const visibleWorks = useMemo(() => works.filter((work) => {
     const categoryMatches = category === "all" || work.category === category;
     const collectionMatches = collectionFilter === "all" || (work.collections ?? []).some((item) => `${item.kind}:${item.name}` === collectionFilter);
+    const display = new Set(work.display_tags ?? []);
+    const tagMatches = selectedTags.length === 0 || selectedTags.every((tag) => display.has(tag));
     const text = [
       work.title,
       work.original_title ?? "",
@@ -935,11 +979,18 @@ export function Works(props: {
       work.studio ?? "",
       work.series ?? "",
       ...work.actors,
-      ...work.tags
+      ...work.tags,
+      ...(work.display_tags ?? [])
     ].join(" ").toLocaleLowerCase();
-    return categoryMatches && collectionMatches && (!normalizedQuery || text.includes(normalizedQuery));
-  }), [works, category, collectionFilter, normalizedQuery]);
-  useEffect(() => setPage(1), [category, collectionFilter, deferredQuery]);
+    return categoryMatches && collectionMatches && tagMatches && (!normalizedQuery || text.includes(normalizedQuery));
+  }), [works, category, collectionFilter, selectedTags, normalizedQuery]);
+  useEffect(() => setPage(1), [category, collectionFilter, selectedTags, deferredQuery]);
+
+  function toggleGenreTag(tag: string) {
+    setSelectedTags((current) =>
+      current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]
+    );
+  }
   useEffect(() => {
     if (!selectedId) {
       setDetail(null);
@@ -980,6 +1031,26 @@ export function Works(props: {
         ))}
       </select>
       {collectionFilter !== "all" && <button type="button" className="ghost" onClick={() => setCollectionFilter("all")}>清除合集</button>}
+    </div>
+    <div className="tag-capsules genre-tag-capsules" aria-label="类型标签筛选">
+      <span>类型筛选:</span>
+      <button
+        type="button"
+        className={selectedTags.length === 0 ? "active" : "ghost"}
+        onClick={() => setSelectedTags([])}
+      >全部</button>
+      {genreFacets.map(([name, count]) => (
+        <button
+          key={name}
+          type="button"
+          className={selectedTags.includes(name) ? "active" : "ghost"}
+          onClick={() => toggleGenreTag(name)}
+          title={`筛选含「${name}」的作品（多选为 AND）`}
+        >{name} · {count}</button>
+      ))}
+      {selectedTags.length > 0 && (
+        <button type="button" className="ghost" onClick={() => setSelectedTags([])}>清除类型</button>
+      )}
     </div>
     <DisplayFilterBar
       query={query}
@@ -1024,6 +1095,10 @@ export function Works(props: {
           onSave={props.saveWork}
           onLocks={props.saveLocks}
           onPreferPoster={props.preferPoster}
+          onSelectGenreTag={(tag) => {
+            setSelectedTags((current) => current.includes(tag) ? current : [...current, tag]);
+            setPage(1);
+          }}
           onDeleteMagnet={async (workId, magnetId) => {
             await props.deleteMagnet(workId, magnetId);
             try {
@@ -1079,6 +1154,7 @@ export function WorkDetailPanel(props: {
   onRefresh: () => void;
   onDownload: () => void;
   onGenerateSamples?: () => void;
+  onSelectGenreTag?: (tag: string) => void;
 }) {
   const work = props.detail;
   const [title, setTitle] = useState(work.title);
@@ -1160,8 +1236,20 @@ export function WorkDetailPanel(props: {
       </div>
     )}
     {(work.display_tags ?? []).length > 0 && (
-      <div className="tags display-tags">
-        {(work.display_tags ?? []).map((tag) => <span key={tag}>{tag}</span>)}
+      <div className="tags display-tags" aria-label="作品标签">
+        {(work.display_tags ?? []).map((tag) => (
+          props.onSelectGenreTag ? (
+            <button
+              key={tag}
+              type="button"
+              className="display-tag-chip"
+              onClick={() => props.onSelectGenreTag?.(tag)}
+              title={`按「${tag}」筛选影片`}
+            >{tag}</button>
+          ) : (
+            <span key={tag}>{tag}</span>
+          )
+        ))}
       </div>
     )}
     <div className="work-detail-actions">

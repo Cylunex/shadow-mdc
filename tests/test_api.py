@@ -999,3 +999,72 @@ def test_inbox_batch_accept_uses_top_candidate(
         assert works[0]["title"] == "Batch Accept Title"
         assert candidate["id"]
 
+
+
+def test_works_tag_filter_and_facets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{data_dir / 'tags.db'}")
+
+    with TestClient(app) as client:
+        with app.state.runtime.database.session() as session:
+            repo = Repository(session)
+            busty = repo.upsert_provider_record(
+                ProviderRecord(
+                    provider="fixture",
+                    external_id="tag-busty",
+                    code="TAG-001",
+                    title="Busty Creampie",
+                    family=ContentFamily.JAV,
+                    tags=("巨乳", "中出し", "jav-yearly-seed"),
+                ),
+                overwrite=True,
+            )
+            stockings = repo.upsert_provider_record(
+                ProviderRecord(
+                    provider="fixture",
+                    external_id="tag-stocking",
+                    code="TAG-002",
+                    title="Black Stockings",
+                    family=ContentFamily.JAV,
+                    tags=("黒ストッキング", "ハイヒール", "theporndb"),
+                ),
+                overwrite=True,
+            )
+            session.commit()
+            busty_id = busty.id
+            stockings_id = stockings.id
+
+        all_works = client.get("/api/works").json()
+        assert {item["id"] for item in all_works} >= {busty_id, stockings_id}
+        busty_out = next(item for item in all_works if item["id"] == busty_id)
+        assert "巨乳" in busty_out["display_tags"]
+        assert "中出" in busty_out["display_tags"]
+        assert "jav-yearly-seed" not in busty_out["display_tags"]
+
+        by_cn = client.get("/api/works", params=[("tag", "巨乳"), ("tag", "中出")]).json()
+        assert [item["id"] for item in by_cn] == [busty_id]
+
+        by_synonym = client.get("/api/works", params=[("tag", "大奶")]).json()
+        assert {item["id"] for item in by_synonym} == {busty_id}
+
+        by_heels = client.get("/api/works", params=[("tag", "高跟鞋")]).json()
+        assert {item["id"] for item in by_heels} == {stockings_id}
+
+        by_black = client.get("/api/works", params=[("tag", "黑丝")]).json()
+        assert {item["id"] for item in by_black} == {stockings_id}
+
+        and_miss = client.get("/api/works", params=[("tag", "巨乳"), ("tag", "黑丝")]).json()
+        assert and_miss == []
+
+        facets = client.get("/api/works/tags", params={"limit": 40}).json()
+        names = {item["name"] for item in facets["tags"]}
+        assert "巨乳" in names
+        assert "中出" in names
+        assert "黑丝" in names
+        assert "高跟鞋" in names
+        assert "jav-yearly-seed" not in names
+        assert "theporndb" not in names

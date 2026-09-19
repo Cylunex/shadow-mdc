@@ -833,7 +833,17 @@ class LibraryPrefsOut(BaseModel):
     queue: list[SubscriptionQueueItemOut] = Field(default_factory=list)
 
 
+class WorkTagFacetOut(BaseModel):
+    name: str
+    count: int
+
+
+class WorkTagFacetsOut(BaseModel):
+    tags: list[WorkTagFacetOut] = Field(default_factory=list)
+
+
 class WantListEdit(BaseModel):
+
     work_id: str
     wanted: bool
 
