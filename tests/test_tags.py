@@ -226,3 +226,64 @@ def test_seed_chinese_korean_remain_blacklisted() -> None:
     assert canonicalize_tag("korean") is None
     assert is_noise_tag("chinese")
     assert is_noise_tag("korean")
+
+
+def test_pornhub_cn_synonyms_and_pov_display() -> None:
+    assert canonicalize_tag("第一视角") == "POV"
+    assert canonicalize_tag("肥臀") == "美尻"
+    assert canonicalize_tag("亚洲人") == "亚洲"
+    assert canonicalize_tag("日本人") == "日本"
+    assert canonicalize_tag("韩国人") == "韩国"
+    assert canonicalize_tag("内射中出") == "中出"
+    assert canonicalize_tag("性玩具") == "玩具"
+    assert canonicalize_tag("色情日漫") == "里番"
+    assert canonicalize_tag("卡通") == "动漫"
+    assert canonicalize_tag("校园") == "学生"
+    assert canonicalize_tag("大学") == "学生"
+    assert canonicalize_tag("恋足") == "足交"
+    assert canonicalize_tag("公众野战") == "露出"
+    assert canonicalize_tag("乱交群欢") == "多人"
+    assert canonicalize_tag("轮交") == "多人"
+    assert canonicalize_tag("3P") == "多人"
+    assert canonicalize_tag("集体颜射") == "颜射"
+    assert canonicalize_tag("辣妈") == "MILF"
+    assert canonicalize_tag("爆菊") == "肛交"
+    assert canonicalize_tag("深发女") == "Brunette"
+    assert canonicalize_tag("金发女") == "Blonde"
+    assert canonicalize_tag("红毛") == "Redhead"
+    assert canonicalize_tag("黑人女") == "Ebony"
+    assert canonicalize_tag("拉丁裔美女") == "Latina"
+    assert canonicalize_tag("跨种族") == "Interracial"
+    assert canonicalize_tag("女性自慰") == "自慰"
+    assert canonicalize_tag("恋物癖") == "癖好"
+    assert canonicalize_tag("纹身女") == "纹身"
+    assert canonicalize_tag("双龙入洞") == "双龙"
+    assert canonicalize_tag("娇妻偷吃") == "NTR"
+
+
+def test_roleplay_split_from_cosplay() -> None:
+    assert canonicalize_tag("角色扮演") == "角色扮演"
+    assert canonicalize_tag("roleplay") == "角色扮演"
+    assert canonicalize_tag("Cosplay") == "Cosplay"
+    assert canonicalize_tag("コスプレ") == "Cosplay"
+    assert canonicalize_tag("角色扮演") != "Cosplay"
+
+
+def test_pornhub_platform_junk_blacklisted() -> None:
+    for junk in (
+        "已认证素人",
+        "已认证模特",
+        "已认证情侣",
+        "独家",
+        "色情明星",
+        "60帧",
+        "内嵌字幕",
+        "播客",
+        "赌博",
+        "音乐",
+        "搞笑",
+        "片场直击",
+        "视频激情",
+    ):
+        assert canonicalize_tag(junk) is None, junk
+        assert is_noise_tag(junk), junk
