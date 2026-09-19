@@ -1032,8 +1032,9 @@ async def discover_seed(
 ) -> DiscoverSeedOut:
     """Optional curated Work seed from remote metadata — still not library media."""
 
+    app_runtime = runtime(request)
     try:
-        result = await runtime(request).discover.seed(
+        result = await app_runtime.discover.seed(
             repo,
             provider=payload.provider,
             external_id=payload.external_id,
@@ -1046,6 +1047,10 @@ async def discover_seed(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"discover seed failed: {exc}") from exc
+    # Ensure bilingual title/plot when translation is enabled (same field set as lookup/refresh).
+    work = repo.get_work(result.work_id)
+    if work is not None:
+        await app_runtime.translator.translate_work(repo, work)
     return DiscoverSeedOut.model_validate(result.model_dump())
 
 

@@ -6,6 +6,8 @@ import type { Work, WorkDetail, WorkRelated } from "../model";
 
 const EDITABLE_LOCK_FIELDS = ["title", "actors", "studio", "series", "tags", "plot"] as const;
 
+type LangMode = "translated" | "original";
+
 function formatRuntime(seconds: number | null | undefined): string | null {
   if (seconds == null || seconds <= 0) return null;
   const mins = Math.round(seconds / 60);
@@ -17,6 +19,29 @@ function formatRuntime(seconds: number | null | undefined): string | null {
 
 function sourceOf(work: WorkDetail, field: string): string {
   return work.field_sources[field] ?? "—";
+}
+
+function LangToggle(props: {
+  mode: LangMode;
+  onChange: (mode: LangMode) => void;
+  hasOriginal: boolean;
+  label?: string;
+}) {
+  if (!props.hasOriginal) return null;
+  return (
+    <div className="lang-toggle" role="group" aria-label={props.label ?? "语言切换"}>
+      <button
+        type="button"
+        className={props.mode === "translated" ? "lang-toggle-btn active" : "lang-toggle-btn"}
+        onClick={() => props.onChange("translated")}
+      >译文</button>
+      <button
+        type="button"
+        className={props.mode === "original" ? "lang-toggle-btn active" : "lang-toggle-btn"}
+        onClick={() => props.onChange("original")}
+      >原文</button>
+    </div>
+  );
 }
 
 function RelatedStrip(props: {
@@ -66,6 +91,15 @@ function RelatedStrip(props: {
   );
 }
 
+function MetaRow(props: { label: string; children: ReactNode; empty?: boolean }) {
+  return (
+    <div className="work-page-meta-row">
+      <dt>{props.label}</dt>
+      <dd className={props.empty ? "meta-empty" : undefined}>{props.children}</dd>
+    </div>
+  );
+}
+
 export function WorkDetailView(props: {
   workId: string;
   busy: string | null;
@@ -93,6 +127,8 @@ export function WorkDetailView(props: {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
+  const [titleMode, setTitleMode] = useState<LangMode>("translated");
+  const [plotMode, setPlotMode] = useState<LangMode>("translated");
 
   const reload = async (workId: string) => {
     setLoading(true);
@@ -115,7 +151,8 @@ export function WorkDetailView(props: {
 
   useEffect(() => {
     void reload(props.workId);
-    // scroll detail page to top when switching works
+    setTitleMode("translated");
+    setPlotMode("translated");
     window.scrollTo(0, 0);
   }, [props.workId]);
 
@@ -151,42 +188,42 @@ export function WorkDetailView(props: {
 
   const runtimeLabel = formatRuntime(work?.runtime_seconds);
 
-  const metaRows = useMemo(() => {
-    if (!work) return [] as Array<{ label: string; value: ReactNode }>;
-    const rows: Array<{ label: string; value: ReactNode }> = [];
-    if (work.studio) rows.push({ label: "片商", value: work.studio });
-    if (work.label) rows.push({ label: "厂牌", value: work.label });
-    if (work.series) rows.push({ label: "系列", value: work.series });
-    if (work.release_date) rows.push({ label: "发行", value: work.release_date });
-    if (runtimeLabel) rows.push({ label: "时长", value: runtimeLabel });
-    if (work.directors.length > 0) {
-      rows.push({ label: "导演", value: work.directors.join("、") });
+  const hasOriginalTitle = Boolean(
+    work?.original_title && work.original_title.trim() && work.original_title !== work.title
+  );
+  const hasOriginalPlot = Boolean(
+    work?.original_plot && work.original_plot.trim() && work.original_plot !== (work.plot ?? "")
+  );
+
+  const displayTitle = useMemo(() => {
+    if (!work) return "";
+    if (titleMode === "original" && hasOriginalTitle) return work.original_title ?? work.title;
+    return work.title;
+  }, [work, titleMode, hasOriginalTitle]);
+
+  const displayPlot = useMemo(() => {
+    if (!work) return null;
+    if (plotMode === "original" && hasOriginalPlot) return work.original_plot ?? null;
+    return work.plot ?? null;
+  }, [work, plotMode, hasOriginalPlot]);
+
+  const ratingLabel = useMemo(() => {
+    if (!work) return null;
+    const parts: string[] = [];
+    if (work.rating_value != null) {
+      parts.push(
+        `★ ${work.rating_value}${work.rating_max != null ? `/${work.rating_max}` : ""}` +
+          (work.rating_count != null ? ` · ${work.rating_count}` : "")
+      );
     }
-    if (work.actors.length > 0) {
-      rows.push({
-        label: "演员",
-        value: (
-          <div className="work-page-actor-chips">
-            {work.actors.map((name) => (
-              props.onOpenActor ? (
-                <button
-                  key={name}
-                  type="button"
-                  className="display-tag-chip"
-                  onClick={() => props.onOpenActor?.(name)}
-                  title={`查看演员：${name}`}
-                >{name}</button>
-              ) : (
-                <span key={name} className="display-tag-chip static">{name}</span>
-              )
-            ))}
-          </div>
-        )
-      });
+    if (work.javranking?.score != null) {
+      parts.push(
+        `JR ${work.javranking.score}` +
+          (work.javranking.rank != null ? ` · #${work.javranking.rank}` : "")
+      );
     }
-    if (work.category) rows.push({ label: "分类", value: work.category });
-    return rows;
-  }, [work, runtimeLabel, props.onOpenActor]);
+    return parts.length ? parts.join(" · ") : null;
+  }, [work]);
 
   if (loading && !work) {
     return (
@@ -213,6 +250,8 @@ export function WorkDetailView(props: {
       </section>
     );
   }
+
+  const displayTags = work.display_tags ?? work.tags ?? [];
 
   return (
     <section className="work-page">
@@ -270,51 +309,126 @@ export function WorkDetailView(props: {
               <img className="work-page-fanart" src={fanartUrl} alt="" />
             )}
           </div>
+
           <div className="work-page-hero-meta">
             <p className="eyebrow">WORK DETAIL</p>
-            {work.primary_code && <p className="work-page-code">{work.primary_code}</p>}
-            <h1>{work.title}</h1>
-            {work.original_title && work.original_title !== work.title && (
-              <p className="original-title">原文：{work.original_title}</p>
-            )}
             <div className="work-page-badge-row">
               <StatusBadges
                 wantList={work.want_list}
                 hasLocalMedia={work.has_local_media}
                 inCatalog
               />
-              {(work.rating_value != null || (work.javranking && work.javranking.score != null)) && (
-                <div className="score-badge-row">
-                  {work.rating_value != null && (
-                    <span className="score-badge" title={work.rating_source ? `来源 ${work.rating_source}` : undefined}>
-                      ★ {work.rating_value}
-                      {work.rating_max != null ? `/${work.rating_max}` : ""}
-                      {work.rating_count != null ? ` · ${work.rating_count}` : ""}
-                    </span>
-                  )}
-                  {work.javranking?.score != null && (
-                    <span className="score-badge secondary" title="JavRanking score">
-                      JR {work.javranking.score}
-                      {work.javranking.rank != null ? ` · #${work.javranking.rank}` : ""}
-                    </span>
-                  )}
-                </div>
+              {work.javranking?.compact_badge && (
+                <a
+                  className="javranking-badge compact"
+                  href={work.javranking.detail_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >{work.javranking.compact_badge}</a>
               )}
-              <span className="pill">{work.category}</span>
             </div>
 
-            {work.javranking && (
+            <dl className="work-page-meta-table work-page-meta-table--labeled">
+              <MetaRow label="番号" empty={!work.primary_code}>
+                {work.primary_code
+                  ? <span className="work-page-code-inline">{work.primary_code}</span>
+                  : "—"}
+              </MetaRow>
+
+              <div className="work-page-meta-row work-page-meta-row--title">
+                <dt>标题</dt>
+                <dd>
+                  <div className="meta-title-head">
+                    <LangToggle
+                      mode={titleMode}
+                      onChange={setTitleMode}
+                      hasOriginal={hasOriginalTitle}
+                      label="标题语言"
+                    />
+                  </div>
+                  <h1 className="work-page-title">{displayTitle}</h1>
+                  {hasOriginalTitle && titleMode === "translated" && (
+                    <p className="original-title muted-hint">原文可切换查看</p>
+                  )}
+                </dd>
+              </div>
+
+              <MetaRow label="演员" empty={work.actors.length === 0}>
+                {work.actors.length === 0 ? "—" : (
+                  <div className="work-page-actor-chips">
+                    {work.actors.map((name) => (
+                      props.onOpenActor ? (
+                        <button
+                          key={name}
+                          type="button"
+                          className="display-tag-chip"
+                          onClick={() => props.onOpenActor?.(name)}
+                          title={`查看演员：${name}`}
+                        >{name}</button>
+                      ) : (
+                        <span key={name} className="display-tag-chip static">{name}</span>
+                      )
+                    ))}
+                  </div>
+                )}
+              </MetaRow>
+
+              <MetaRow label="日期" empty={!work.release_date}>
+                {work.release_date ?? "—"}
+              </MetaRow>
+
+              <MetaRow label="时长" empty={!runtimeLabel}>
+                {runtimeLabel ?? "—"}
+              </MetaRow>
+
+              <MetaRow label="导演" empty={work.directors.length === 0}>
+                {work.directors.length > 0 ? work.directors.join("、") : "—"}
+              </MetaRow>
+
+              <MetaRow label="片商" empty={!work.studio}>
+                {work.studio ?? "—"}
+                {work.label && work.label !== work.studio ? (
+                  <span className="muted-hint"> · 厂牌 {work.label}</span>
+                ) : null}
+              </MetaRow>
+
+              <MetaRow label="系列" empty={!work.series}>
+                {work.series ?? "—"}
+              </MetaRow>
+
+              <MetaRow label="评分" empty={!ratingLabel}>
+                {ratingLabel ?? "—"}
+              </MetaRow>
+
+              <MetaRow label="分类" empty={!work.category}>
+                {work.category ? <span className="pill">{work.category}</span> : "—"}
+              </MetaRow>
+
+              <MetaRow label="标签" empty={displayTags.length === 0}>
+                {displayTags.length === 0 ? "—" : (
+                  <div className="tags display-tags" aria-label="作品标签">
+                    {displayTags.map((tag) => (
+                      props.onSelectGenreTag ? (
+                        <button
+                          key={tag}
+                          type="button"
+                          className="display-tag-chip"
+                          onClick={() => props.onSelectGenreTag?.(tag)}
+                          title={`按「${tag}」筛选影片`}
+                        >{tag}</button>
+                      ) : (
+                        <span key={tag}>{tag}</span>
+                      )
+                    ))}
+                  </div>
+                )}
+              </MetaRow>
+            </dl>
+
+            {work.javranking && (work.javranking.honors ?? []).length > 0 && (
               <section className="javranking-honors">
                 <div className="javranking-honors-head">
-                  <h3>JavRanking 上榜</h3>
-                  {work.javranking.compact_badge && (
-                    <a
-                      className="javranking-badge compact"
-                      href={work.javranking.detail_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >{work.javranking.compact_badge}</a>
-                  )}
+                  <h3>荣誉徽章</h3>
                 </div>
                 <div className="tags javranking-badges">
                   {(work.javranking.honors ?? []).map((honor) => (
@@ -327,61 +441,41 @@ export function WorkDetailView(props: {
                       title={honor.source ? `${honor.label} · ${honor.source}` : honor.label}
                     >{honor.label}</a>
                   ))}
-                  {(work.javranking.honors ?? []).length === 0 && (
-                    <p className="muted">已收录于 JavRanking，暂无分榜记录</p>
-                  )}
                 </div>
               </section>
-            )}
-
-            <dl className="work-page-meta-table">
-              {metaRows.map((row) => (
-                <div key={row.label} className="work-page-meta-row">
-                  <dt>{row.label}</dt>
-                  <dd>{row.value}</dd>
-                </div>
-              ))}
-            </dl>
-
-            {(work.display_tags ?? []).length > 0 && (
-              <div className="tags display-tags" aria-label="作品标签">
-                {(work.display_tags ?? []).map((tag) => (
-                  props.onSelectGenreTag ? (
-                    <button
-                      key={tag}
-                      type="button"
-                      className="display-tag-chip"
-                      onClick={() => props.onSelectGenreTag?.(tag)}
-                      title={`按「${tag}」筛选影片`}
-                    >{tag}</button>
-                  ) : (
-                    <span key={tag}>{tag}</span>
-                  )
-                ))}
-              </div>
             )}
           </div>
         </header>
 
         <div className="work-page-body">
           <section className="work-page-section plot-bilingual">
-            <h2>剧情</h2>
+            <div className="section-head-row">
+              <h2>简介</h2>
+              <LangToggle
+                mode={plotMode}
+                onChange={setPlotMode}
+                hasOriginal={hasOriginalPlot}
+                label="简介语言"
+              />
+            </div>
             <div className="work-page-plot">
-              {work.plot
-                ? <p>{work.plot}</p>
-                : <p className="muted">暂无剧情译文</p>}
-              {work.original_plot && work.original_plot !== work.plot && (
-                <details>
-                  <summary>原文 · original plot <small>来源 {sourceOf(work, "original_plot")}</small></summary>
-                  <p className="plot-original">{work.original_plot}</p>
-                </details>
+              {displayPlot
+                ? <p>{displayPlot}</p>
+                : <p className="muted">{plotMode === "original" ? "暂无原文简介" : "暂无简介译文"}</p>}
+              {hasOriginalPlot && (
+                <p className="muted-hint plot-lang-hint">
+                  当前显示{plotMode === "original" ? "原文" : "译文"}
+                  {plotMode === "translated" ? ` · 来源 ${sourceOf(work, "plot")}` : ` · 来源 ${sourceOf(work, "original_plot")}`}
+                </p>
               )}
             </div>
           </section>
 
-          {(work.sample_urls ?? []).length > 0 && (
-            <section className="work-page-section sample-gallery">
-              <h2>样本 / 预览 ({(work.sample_urls ?? []).length})</h2>
+          <section className="work-page-section sample-gallery">
+            <h2>片段图片 {(work.sample_urls ?? []).length > 0 ? `(${(work.sample_urls ?? []).length})` : ""}</h2>
+            {(work.sample_urls ?? []).length === 0 ? (
+              <p className="muted">暂无样本帧。可点上方「生成样本帧」尝试抓取。</p>
+            ) : (
               <div className="sample-grid work-page-sample-grid">
                 {(work.sample_urls ?? []).map((url, index) => (
                   <a
@@ -395,12 +489,33 @@ export function WorkDetailView(props: {
                   </a>
                 ))}
               </div>
-            </section>
-          )}
+            )}
+          </section>
+
+          <section className="work-page-section review-highlights">
+            <h2>精选评价 {(work.reviews ?? []).length > 0 ? `(${(work.reviews ?? []).length})` : ""}</h2>
+            {(work.reviews ?? []).length === 0 ? (
+              <p className="muted">暂无短评摘录</p>
+            ) : (
+              <ul className="review-list">
+                {(work.reviews ?? []).map((item, index) => (
+                  <li key={`${String(item.provider)}-${index}`}>
+                    <p>{String(item.text ?? "")}</p>
+                    <small className="muted">
+                      {[item.provider, item.author, item.score != null ? `★ ${item.score}` : undefined]
+                        .filter((value): value is string | number => value != null && value !== "")
+                        .map(String)
+                        .join(" · ")}
+                    </small>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
 
           <section className="work-page-section magnet-panel">
             <div className="magnet-panel-head">
-              <h2>资源 / 磁力 ({(work.magnets ?? []).length})</h2>
+              <h2>磁力链接 ({(work.magnets ?? []).length})</h2>
               <button
                 type="button"
                 className="secondary"
@@ -460,25 +575,6 @@ export function WorkDetailView(props: {
             works={related.by_tag}
             onOpenWork={props.onOpenWork}
           />
-
-          {(work.reviews ?? []).length > 0 && (
-            <section className="work-page-section review-highlights">
-              <h2>短评 / 摘录</h2>
-              <ul className="review-list">
-                {(work.reviews ?? []).map((item, index) => (
-                  <li key={`${String(item.provider)}-${index}`}>
-                    <p>{String(item.text ?? "")}</p>
-                    <small className="muted">
-                      {[item.provider, item.author, item.score != null ? `★ ${item.score}` : undefined]
-                        .filter((value): value is string | number => value != null && value !== "")
-                        .map(String)
-                        .join(" · ")}
-                    </small>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
 
           {editOpen && (
             <section className="work-page-section work-page-edit">
@@ -581,7 +677,7 @@ export function WorkDetailView(props: {
             </section>
           )}
 
-          <section className="work-page-section">
+          <section className="work-page-section work-page-aux">
             <h2>关联资产 ({work.assets.length})</h2>
             {work.assets.length === 0
               ? <p className="muted">暂无本地媒体文件</p>
@@ -594,7 +690,7 @@ export function WorkDetailView(props: {
               )}
           </section>
 
-          <section className="work-page-section">
+          <section className="work-page-section work-page-aux">
             <h2>合集</h2>
             <div className="tags">
               {(work.collections ?? []).map((item) => (
@@ -604,7 +700,7 @@ export function WorkDetailView(props: {
             </div>
           </section>
 
-          <section className="work-page-section">
+          <section className="work-page-section work-page-aux">
             <h2>身份</h2>
             <ul className="asset-list">
               {work.identities.map((identity) => (

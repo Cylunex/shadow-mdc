@@ -1,3 +1,4 @@
+import re
 import shutil
 import unicodedata
 from collections.abc import Iterator
@@ -198,6 +199,51 @@ class Database:
         finally:
             session.close()
 
+
+
+_KANA_RE = re.compile(r"[\u3040-\u30ff]")
+
+
+def _looks_japanese(text: str | None) -> bool:
+    return bool(text and _KANA_RE.search(text))
+
+
+def _merge_plot_fields(
+    work: Work,
+    record_plot: str,
+    *,
+    provider: str,
+    sources: dict[str, str],
+    overwrite: bool,
+) -> None:
+    """Prefer keeping a Japanese synopsis as original_plot when Chinese plot wins."""
+
+    incoming = record_plot.strip()
+    if not incoming:
+        return
+    current = (work.plot or "").strip()
+    current_original = (getattr(work, "original_plot", None) or "").strip()
+
+    if _looks_japanese(incoming):
+        if not current_original and not _field_locked(work, "original_plot"):
+            work.original_plot = incoming
+            sources["original_plot"] = provider
+        # If we only have Chinese (or empty) plot, also keep Japanese as display until translated.
+        if not current:
+            work.plot = incoming
+            sources["plot"] = provider
+        elif _looks_japanese(current) and (overwrite or not current):
+            work.plot = incoming
+            sources["plot"] = provider
+        return
+
+    # Incoming looks non-Japanese (often zh from jav321/airav).
+    if overwrite or not current:
+        if _looks_japanese(current) and not current_original and not _field_locked(work, "original_plot"):
+            work.original_plot = current
+            sources["original_plot"] = sources.get("plot", "unknown")
+        work.plot = incoming
+        sources["plot"] = provider
 
 class Repository:
     def __init__(self, session: Session):
@@ -1185,10 +1231,14 @@ class Repository:
             work.series = record.series
             if record.series:
                 sources["series"] = incoming.get("series", record.provider)
-        if not _field_locked(work, "plot"):
-            work.plot = record.plot
-            if record.plot:
-                sources["plot"] = incoming.get("plot", record.provider)
+        if not _field_locked(work, "plot") and record.plot:
+            _merge_plot_fields(
+                work,
+                record.plot,
+                provider=incoming.get("plot", record.provider),
+                sources=sources,
+                overwrite=True,
+            )
         if not _field_locked(work, "actors"):
             work.actors = list(record.actors)
             if record.actors:
@@ -1256,9 +1306,14 @@ class Repository:
         if record.series and not _field_locked(work, "series") and (overwrite or not work.series):
             work.series = record.series
             sources["series"] = record.provider
-        if record.plot and not _field_locked(work, "plot") and (overwrite or not work.plot):
-            work.plot = record.plot
-            sources["plot"] = record.provider
+        if record.plot and not _field_locked(work, "plot"):
+            _merge_plot_fields(
+                work,
+                record.plot,
+                provider=record.provider,
+                sources=sources,
+                overwrite=overwrite,
+            )
 
         if record.actors and not _field_locked(work, "actors"):
             actor_source = str(sources.get("actors", ""))

@@ -12,6 +12,7 @@ type Props = {
   busy: string | null;
   report: (message: string) => void;
   onSeeded: () => Promise<void>;
+  onOpenWork?: (workId: string) => void;
 };
 
 type RankTab = "awards" | "yearly" | "browse";
@@ -25,12 +26,16 @@ const LISTS: ReadonlyArray<{ value: string; label: string }> = [
 
 function stateLabel(state: DiscoverItem["state"] | string | null | undefined): string {
   if (state === "in_library") return "已有本地媒体";
-  if (state === "catalog_only") return "仅元数据种子";
+  if (state === "catalog_only") return "已入库";
   if (state === "not_in_library") return "未入库";
   return "未入库";
 }
 
-export function DiscoverPanel({ busy, report, onSeeded }: Props) {
+function isCataloged(state: string | null | undefined, workId?: string | null): boolean {
+  return Boolean(workId) || state === "catalog_only" || state === "in_library";
+}
+
+export function DiscoverPanel({ busy, report, onSeeded, onOpenWork }: Props) {
   const [tab, setTab] = useState<RankTab>("awards");
   const [list, setList] = useState("latest");
   const [page, setPage] = useState(1);
@@ -381,19 +386,39 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
             ) : !jrList || jrList.items.length === 0 ? (
               <p className="empty-detail">选择上方分区查看只读榜单。</p>
             ) : (
-              jrList.items.map((item) => (
+              jrList.items.map((item) => {
+                const linked = Boolean(item.work_id);
+                const cataloged = isCataloged(item.state, item.work_id);
+                return (
                 <article
                   key={`${jrList.section.slug}-${item.position}-${item.code ?? item.name ?? item.title}`}
-                  className="discover-card dense-rank-card"
+                  className={`discover-card dense-rank-card${linked ? " is-linked" : ""}`}
+                  role={linked ? "button" : undefined}
+                  tabIndex={linked ? 0 : undefined}
+                  onClick={() => {
+                    if (linked && item.work_id && onOpenWork) onOpenWork(item.work_id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (!linked || !item.work_id || !onOpenWork) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onOpenWork(item.work_id);
+                    }
+                  }}
                 >
                   <div
                     className="poster"
                     style={item.thumb_url ? { backgroundImage: `url("${item.thumb_url}")` } : undefined}
                   >
                     <span className="rank-badge overlay-rank">#{item.position}</span>
+                    {cataloged && <span className="in-library-badge">已入库</span>}
                   </div>
                   <div>
-                    {item.state && <span className="pill">{stateLabel(item.state)}</span>}
+                    {item.state && (
+                      <span className={`pill${cataloged ? " pill-in-library" : ""}`}>
+                        {stateLabel(item.state)}
+                      </span>
+                    )}
                     <h2>{item.code ? `${item.code}` : item.title}</h2>
                     <p className="rank-card-title">{item.code ? item.title : null}</p>
                     <p>
@@ -404,7 +429,16 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
                         .filter(Boolean)
                         .join(" · ")}
                     </p>
-                    <div className="discover-actions">
+                    <div className="discover-actions" onClick={(event) => event.stopPropagation()}>
+                      {linked && item.work_id && onOpenWork && (
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => onOpenWork(item.work_id!)}
+                        >
+                          打开作品
+                        </button>
+                      )}
                       {item.code && (
                         <button type="button" className="ghost" onClick={() => void copyText(item.code!, "番号")}>
                           复制番号
@@ -412,13 +446,14 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
                       )}
                       {item.url && (
                         <a className="ghost" href={item.url} target="_blank" rel="noreferrer">
-                          打开详情
+                          外部详情
                         </a>
                       )}
                     </div>
                   </div>
                 </article>
-              ))
+                );
+              })
             )}
           </div>
         </div>

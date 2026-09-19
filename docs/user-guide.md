@@ -366,3 +366,18 @@ Shadow MDC 只管理用户已有本地媒体的元数据与公开图片，不提
 「多源番号搜索」会聚合已配置来源；若来源页面暴露磁力，可勾选后**保存到 Work**（一对多 `work_magnets`），或一键复制。应用本身不下载种子内容、不提交网盘离线任务。云盘（如 115 Open Platform）需开发者审批后再接入，当前 `/api/pan/status` 仅返回不可用占位。
 
 作品库网格优先使用 `data/artwork/<work_id>/thumb.*` 列表缩略图；扫描时若旁路已有 `.nfo` 与 poster/fanart，会优先用于重建元数据与图片缓存。运行记录可通过 SSE（`/api/tasks/events`）实时刷新。
+
+## 入库字段完整性（lookup / identify / seed）
+
+新作品经「番号查找」「识别接受」「发现建档」写入时，应尽量填齐与作品详情页一致的字段集：
+
+- 双语标题：`title` + `original_title`（开启翻译时）
+- 双语简介：`plot` + `original_plot`（`SHADOW_MDC_TRANSLATION_PLOT=true` 时）
+- 演员、片商、系列、标签、评分、封面/artwork
+
+实现约定：
+
+- `/api/works/lookup`、`/api/works/{id}/refresh`、候选接受路径会在写入后调用 `translator.translate_work`
+- `/api/discover/seed` 在建档后同样触发翻译，避免仅种下原文标题/简介
+- 神作 TOP100 可用 `scripts/enrich_shenzuo_top100.py` 对缺失字段做幂等补全，再 `scripts/sync_catalog_to_nas.sh` 同步到 NAS
+

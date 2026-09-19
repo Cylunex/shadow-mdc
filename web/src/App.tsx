@@ -427,6 +427,7 @@ export function App() {
           <DiscoverPanel
             busy={busy}
             report={setMessage}
+            onOpenWork={openWorkDetail}
             onSeeded={async () => {
               await refreshWorks();
             }}
