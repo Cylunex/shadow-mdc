@@ -294,7 +294,11 @@ async def _run(arguments: argparse.Namespace) -> int:
         settings = settings.model_copy(update=updates)
     settings.ensure_directories()
 
-    list_path = Path(arguments.list) if arguments.list else LIST_PATH
+    if arguments.list is not None:
+        list_path = Path(arguments.list)
+    else:
+        candidate = settings.data_dir / "javranking" / "list-most-awarded-videos.json"
+        list_path = candidate if candidate.is_file() else LIST_PATH
     entries = load_top100(list_path)
     if arguments.limit is not None:
         entries = entries[: max(1, arguments.limit)]
