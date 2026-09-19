@@ -221,7 +221,7 @@ def _maybe_sync_nas(*, data_dir: Path, dry_run: bool) -> int:
 
 
 def needs_refresh(work: Work) -> bool:
-    required = ("actors", "studio", "release_date", "plot", "original_plot", "runtime_seconds", "rating_value")
+    required = ("actors", "studio", "release_date", "plot", "original_plot", "runtime_seconds")  # rating optional
     return any(not field_present(work, name) for name in required)
 
 
