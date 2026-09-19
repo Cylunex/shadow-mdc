@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     translation_plot: bool = True
     artwork_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     auto_seed_non_jav_works: bool = True
+    # Redis for API response cache. Empty / unset → in-process TTL dict.
+    # Production NAS: redis://192.168.0.21:6379/0
+    # Local/dev fallback: redis://127.0.0.1:6379/0 when reachable.
+    redis_url: str | None = "redis://127.0.0.1:6379/0"
     user_agent: str = "ShadowMDC/0.1 (+https://github.com/Cylunex/shadow-mdc)"
 
     def ensure_directories(self) -> None:

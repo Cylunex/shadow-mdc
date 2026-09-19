@@ -27,6 +27,8 @@
 
 ## 快速开始
 
+API 响应缓存（可选 Redis）：设置 `SHADOW_MDC_REDIS_URL`（本地默认 `redis://127.0.0.1:6379/0`，NAS 生产 `redis://192.168.0.21:6379/0`）。未配置或 Redis 不可达时自动回落到进程内 TTL 字典。年度 TOP / JavRanking 等静态列表长 TTL，种子写入后失效。
+
 ```bash
 just setup
 just dev

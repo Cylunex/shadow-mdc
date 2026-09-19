@@ -192,9 +192,13 @@ class WorkTranslator:
         self._translate_plot = translate_plot
 
     async def translate_work(self, repository: Repository, work: Work) -> TranslationResult:
-        """Back-compat: translate title only and return a single result."""
+        """Translate title (and plot when enabled). Return first translated result for counters."""
 
-        results = await self.translate_fields(repository, work, fields=("title",))
+        fields: tuple[str, ...] = ("title", "plot") if self._translate_plot else ("title",)
+        results = await self.translate_fields(repository, work, fields=fields)
+        for result in results:
+            if result.status == "translated":
+                return result
         return results[0]
 
     async def translate_fields(
@@ -365,7 +369,7 @@ def needs_translation(value: str, family: str) -> bool:
 
 def _field_source_text(work: Work, field_name: str) -> str:
     if field_name == "plot":
-        return (work.plot or "").strip()
+        return (work.original_plot or work.plot or "").strip()
     return (work.original_title or work.title or "").strip()
 
 
@@ -382,7 +386,9 @@ def _apply_translation(
         repository.apply_title_translation(work, source=source, translated=translated, provider=provider)
         return
     if field_name == "plot":
-        repository.apply_plot_translation(work, translated=translated, provider=provider)
+        repository.apply_plot_translation(
+            work, source=source, translated=translated, provider=provider
+        )
 
 
 def _google_translated_text(payload: object) -> str:

@@ -301,9 +301,28 @@ button.danger { border-color: #6d3333; color: #ffb1b1; }
 .evidence-line { font-size: 11px; line-height: 1.4; }
 .pill.muted { background: #1a2428; color: var(--muted); }
 .works-layout { display: block; }
-.works-layout.with-detail { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(320px, 380px); align-items: start; }
+.works-layout.with-detail { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(340px, 420px); align-items: start; }
 .work.selected { outline: 1px solid var(--accent); }
-.work-detail { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; display: grid; gap: 12px; padding: 18px; position: sticky; top: 16px; }
+.work-detail {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
+  display: grid; gap: 12px; padding: 18px;
+  position: sticky; top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  align-content: start;
+}
+.work-detail .plot-bilingual { display: grid; gap: 8px; }
+.work-detail .plot-bilingual details {
+  background: #0b1214; border: 1px solid #243035; border-radius: 10px; padding: 8px 10px;
+}
+.work-detail .plot-bilingual details summary {
+  cursor: pointer; color: var(--muted); font-size: 12px; user-select: none;
+}
+.work-detail .plot-bilingual .plot-original {
+  margin: 8px 0 0; white-space: pre-wrap; color: #c5d2d7; font-size: 13px; line-height: 1.5;
+}
 .work-detail-head, .work-detail-actions { display: flex; gap: 8px; justify-content: space-between; align-items: center; }
 .work-detail label { display: grid; gap: 6px; }
 .work-detail label span { color: var(--muted); font-size: 12px; }
@@ -447,18 +466,24 @@ button.danger { border-color: #6d3333; color: #ffb1b1; }
 .top-nav {
   position: sticky; top: 0; z-index: 40;
   display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 16px;
-  padding: 14px clamp(16px, 3vw, 36px);
+  padding: 16px clamp(20px, 3.5vw, 48px);
   background: rgba(10, 14, 16, 0.82); backdrop-filter: blur(14px);
   border-bottom: 1px solid rgba(45, 212, 191, 0.12);
 }
 .top-nav-brand { display: flex; align-items: center; gap: 10px; }
 .top-nav-brand strong { display: block; font-size: 15px; }
 .top-nav-brand small { color: var(--muted); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; }
-.top-nav-items { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; }
+.top-nav-items { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; }
 .top-nav-item {
-  display: inline-flex; align-items: center; gap: 8px;
+  display: inline-flex; align-items: center; gap: 10px;
   background: transparent; color: var(--muted); border: 1px solid transparent;
-  border-radius: 999px; padding: 8px 14px; font-weight: 600;
+  border-radius: 999px; padding: 11px 20px; font-weight: 600;
+  min-height: 44px;
+}
+.top-nav-item:hover {
+  border-color: rgba(45, 212, 191, 0.28);
+  color: #d7ece8;
+  background: rgba(45, 212, 191, 0.06);
 }
 .top-nav-item .top-nav-label { display: grid; text-align: left; line-height: 1.1; }
 .top-nav-item .top-nav-label b { font-size: 13px; color: inherit; }
@@ -695,4 +720,78 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   background: color-mix(in srgb, #2dd4bf 28%, #152022);
   border-color: #2dd4bf;
   color: #e7fffb;
+}
+
+/* —— Display polish (films / rankings / discover) —— */
+.work-grid {
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+.discover-grid {
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+}
+.tag-capsules button,
+.group-chip-bar button,
+.display-tags .display-tag-chip {
+  border: 1px solid rgba(45, 212, 191, 0.22);
+  background: #152025;
+  color: #d4e6ea;
+  font-weight: 650;
+  letter-spacing: .02em;
+  transition: border-color .12s ease, background .12s ease, transform .12s ease;
+}
+.tag-capsules button:hover,
+.group-chip-bar button:hover,
+.display-tags .display-tag-chip:hover {
+  border-color: rgba(45, 212, 191, 0.55);
+  background: #1a3332;
+  transform: translateY(-1px);
+}
+.tag-capsules button.active,
+.group-chip-bar button.active,
+.tag-capsules.genre-tag-capsules button.active {
+  background: linear-gradient(120deg, #2dd4bf, #22d3ee);
+  color: #042f2e;
+  border-color: transparent;
+  box-shadow: 0 0 16px rgba(45, 212, 191, 0.28);
+}
+.discover-card {
+  position: relative;
+  transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease;
+}
+.discover-card:hover {
+  border-color: rgba(45, 212, 191, 0.5);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+.rank-badge,
+.discover-card > div > .pill:first-child {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.2em;
+  background: linear-gradient(145deg, #f59e0b, #ef4444);
+  color: #fff;
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: .04em;
+  border-radius: 8px;
+  padding: 4px 9px;
+  box-shadow: 0 2px 10px rgba(239, 68, 68, 0.35);
+}
+.score-chip {
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(250, 204, 21, 0.45);
+  color: #fde68a;
+  font-weight: 700;
+}
+.work:hover .poster img,
+.discover-card:hover img {
+  filter: brightness(1.06);
+}
+.code-chip {
+  background: rgba(0, 0, 0, 0.78);
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  font-weight: 700;
 }

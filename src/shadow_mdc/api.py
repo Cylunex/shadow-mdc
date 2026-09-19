@@ -231,6 +231,17 @@ from .services.x_handle import (
     x_profile_url,
 )
 from .tags import display_chips, facet_tags, work_matches_tags
+from .services.response_cache import (
+    TTL_COLLECTIONS,
+    TTL_STATIC,
+    TTL_TAGS,
+    ResponseCache,
+    collection_detail_key,
+    collections_list_key,
+    javranking_list_key,
+    javranking_sections_key,
+    works_tags_key,
+)
 
 
 @dataclass(frozen=True)
@@ -250,6 +261,7 @@ class Runtime:
     library_prefs_store: LibraryPrefsStore
     task_events: TaskEventHub
     discover: DiscoverService
+    response_cache: ResponseCache
 
 
 @dataclass
@@ -382,6 +394,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         fanza_provider if isinstance(fanza_provider, FanzaProvider) else None,
     )
     task_events = TaskEventHub()
+    response_cache = ResponseCache(settings.redis_url)
     app.state.runtime = Runtime(
         settings=settings,
         database=database,
@@ -398,6 +411,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         library_prefs_store=library_prefs_store,
         task_events=task_events,
         discover=discover_service,
+        response_cache=response_cache,
     )
     try:
         yield
@@ -1347,6 +1361,12 @@ async def javranking_sections(
     """Read-only JavRanking section index (TOP250 years + curated lists)."""
 
     app_runtime = runtime(request)
+    response_cache = app_runtime.response_cache
+    sections_key = javranking_sections_key()
+    if not force_refresh:
+        cached = response_cache.get_json(sections_key)
+        if cached is not None:
+            return JavRankingSectionsOut.model_validate(cached)
     cache = JavRankingIndexCache(
         app_runtime.settings.data_dir / "javranking",
         client=app_runtime.http,
@@ -1399,10 +1419,14 @@ async def javranking_sections(
                 fetched_at=curated.fetched_at,
             )
         )
-    return JavRankingSectionsOut(
+    output = JavRankingSectionsOut(
         sections=sections,
         index_revision=meta.revision if meta is not None else None,
     )
+    response_cache.set_json(
+        sections_key, output.model_dump(mode="json"), ttl_seconds=TTL_STATIC
+    )
+    return output
 
 
 @app.get("/api/javranking/lists/{slug}", response_model=JavRankingListOut)
@@ -1413,6 +1437,18 @@ async def javranking_list(
     force_refresh: bool = False,
 ) -> JavRankingListOut:
     app_runtime = runtime(request)
+    response_cache = app_runtime.response_cache
+    list_key = javranking_list_key(slug)
+    if not force_refresh:
+        cached = response_cache.get_json(list_key)
+        if cached is not None:
+            return JavRankingListOut.model_validate(cached)
+
+    def _store_javranking_list(payload: JavRankingListOut) -> JavRankingListOut:
+        response_cache.set_json(
+            list_key, payload.model_dump(mode="json"), ttl_seconds=TTL_STATIC
+        )
+        return payload
     cache = JavRankingIndexCache(
         app_runtime.settings.data_dir / "javranking",
         client=app_runtime.http,
@@ -1465,12 +1501,14 @@ async def javranking_list(
                         appearances=len(entry.appearances),
                     )
                 )
-        return JavRankingListOut(
-            section=section,
-            items=items,
-            revision=curated.revision,
-            source_format=curated.source_format,
-            canonical_url=curated.canonical_url,
+        return _store_javranking_list(
+            JavRankingListOut(
+                section=section,
+                items=items,
+                revision=curated.revision,
+                source_format=curated.source_format,
+                canonical_url=curated.canonical_url,
+            )
         )
 
     # TOP250 year slug from search index
@@ -1526,7 +1564,9 @@ async def javranking_list(
         item_count=len(items),
         revision=meta.revision if meta is not None else None,
     )
-    return JavRankingListOut(section=section, items=items, revision=section.revision)
+    return _store_javranking_list(
+        JavRankingListOut(section=section, items=items, revision=section.revision)
+    )
 
 
 @app.post("/api/javranking/seed", response_model=JavRankingSeedOut)
@@ -1551,6 +1591,10 @@ async def javranking_seed_endpoint(
         list_slug=payload.list_slug,
         artwork_max_bytes=app_runtime.settings.artwork_max_bytes,
     )
+    if not payload.dry_run:
+        app_runtime.response_cache.invalidate_prefix("javranking:")
+        app_runtime.response_cache.invalidate_prefix("collections:")
+        app_runtime.response_cache.invalidate_prefix("works:tags:")
     return JavRankingSeedOut(
         run_date=result.run_date,
         dry_run=result.dry_run,
@@ -2307,13 +2351,21 @@ async def accept_candidate(candidate_id: str, request: Request, repo: Repo) -> W
 
 @app.get("/api/collections", response_model=list[CollectionOut])
 def list_collections(
+    request: Request,
     repo: Repo,
     kind: CollectionKind | None = None,
     q: str | None = None,
     seed_if_empty: bool = False,
 ) -> list[CollectionOut]:
+    cache = runtime(request).response_cache
+    cache_key = collections_list_key(kind=kind.value if kind else None, q=q)
+    if not seed_if_empty:
+        cached = cache.get_json(cache_key)
+        if cached is not None:
+            return [CollectionOut.model_validate(item) for item in cached]
     if seed_if_empty and not repo.list_collections():
         repo.seed_collections_from_works()
+        cache.invalidate_prefix("collections:")
     output: list[CollectionOut] = []
     for item in repo.list_collections(kind=kind, q=q):
         work_count = len(repo.list_works(collection_id=item.id))
@@ -2329,12 +2381,18 @@ def list_collections(
                 updated_at=item.updated_at,
             )
         )
+    cache.set_json(
+        cache_key,
+        [item.model_dump(mode="json") for item in output],
+        ttl_seconds=TTL_COLLECTIONS,
+    )
     return output
 
 
 @app.post("/api/collections/seed", response_model=CollectionSeedResultOut)
-def seed_collections(repo: Repo) -> CollectionSeedResultOut:
+def seed_collections(request: Request, repo: Repo) -> CollectionSeedResultOut:
     result = repo.seed_collections_from_works()
+    runtime(request).response_cache.invalidate_prefix("collections:")
     return CollectionSeedResultOut(
         collections_total=int(result.get("collections_total", 0)),
         collections_created=int(result.get("collections_created", 0)),
@@ -2347,11 +2405,16 @@ def seed_collections(repo: Repo) -> CollectionSeedResultOut:
 
 
 @app.get("/api/collections/{collection_id}", response_model=CollectionOut)
-def get_collection(collection_id: str, repo: Repo) -> CollectionOut:
+def get_collection(collection_id: str, request: Request, repo: Repo) -> CollectionOut:
+    cache = runtime(request).response_cache
+    cache_key = collection_detail_key(collection_id)
+    cached = cache.get_json(cache_key)
+    if cached is not None:
+        return CollectionOut.model_validate(cached)
     item = repo.get_collection(collection_id)
     if item is None:
         raise HTTPException(status_code=404, detail="collection not found")
-    return CollectionOut(
+    output = CollectionOut(
         id=item.id,
         name=item.name,
         kind=CollectionKind(item.kind),
@@ -2361,6 +2424,8 @@ def get_collection(collection_id: str, repo: Repo) -> CollectionOut:
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
+    cache.set_json(cache_key, output.model_dump(mode="json"), ttl_seconds=TTL_COLLECTIONS)
+    return output
 
 
 @app.get("/api/works", response_model=list[WorkOut])
@@ -2397,15 +2462,23 @@ def list_works(
 
 @app.get("/api/works/tags", response_model=WorkTagFacetsOut)
 def list_work_tag_facets(
+    request: Request,
     repo: Repo,
     limit: Annotated[int, Query(ge=1, le=200)] = 40,
 ) -> WorkTagFacetsOut:
     """Popular normalized genre tags for the films filter bar."""
 
+    cache = runtime(request).response_cache
+    cache_key = works_tags_key(limit)
+    cached = cache.get_json(cache_key)
+    if cached is not None:
+        return WorkTagFacetsOut.model_validate(cached)
     facets = facet_tags((work.tags for work in repo.list_works()), limit=limit)
-    return WorkTagFacetsOut(
+    output = WorkTagFacetsOut(
         tags=[WorkTagFacetOut(name=name, count=count) for name, count in facets]
     )
+    cache.set_json(cache_key, output.model_dump(mode="json"), ttl_seconds=TTL_TAGS)
+    return output
 
 
 @app.post("/api/works/lookup", response_model=WorkLookupOut)
@@ -3313,6 +3386,7 @@ def _work_out(
         label=work.label,
         series=work.series,
         plot=work.plot,
+        original_plot=getattr(work, "original_plot", None),
         actors=work.actors,
         actor_entities=actor_entities,
         directors=work.directors,

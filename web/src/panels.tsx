@@ -1306,9 +1306,17 @@ export function WorkDetailPanel(props: {
     <label><span>标签 <small>来源 {sourceOf("tags")}</small></span>
       <input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="逗号分隔" />
     </label>
-    <label><span>剧情 <small>来源 {sourceOf("plot")}</small></span>
-      <textarea value={plot} onChange={(event) => setPlot(event.target.value)} rows={5} />
-    </label>
+    <div className="plot-bilingual">
+      <label><span>剧情 · 译文 <small>来源 {sourceOf("plot")}</small></span>
+        <textarea value={plot} onChange={(event) => setPlot(event.target.value)} rows={5} />
+      </label>
+      {work.original_plot && work.original_plot !== plot && (
+        <details>
+          <summary>原文 · original plot <small>来源 {sourceOf("original_plot")}</small></summary>
+          <p className="plot-original">{work.original_plot}</p>
+        </details>
+      )}
+    </div>
     <div className="lock-grid">
       <strong>字段锁</strong>
       <small>锁定后刷新/再刮削不会覆盖该字段</small>

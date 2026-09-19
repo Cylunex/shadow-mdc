@@ -200,6 +200,7 @@ class WorkOut(BaseModel):
     label: str | None
     series: str | None
     plot: str | None
+    original_plot: str | None = None
     actors: list[str]
     actor_entities: list[ActorSummaryOut] = Field(default_factory=list)
     directors: list[str]

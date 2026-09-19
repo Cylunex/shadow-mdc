@@ -108,3 +108,54 @@ async def test_local_catalog_title_is_not_translated(tmp_path: Path) -> None:
     assert result.status == "skipped"
     assert result.detail == "local title"
     assert requests == 0
+
+
+@pytest.mark.asyncio
+async def test_plot_translation_preserves_original_plot(tmp_path: Path) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        source = request.url.params.get("q") or ""
+        if "隠された秘密" in source:
+            translated = "这是中文剧情译文"
+        else:
+            translated = "邻居的垃圾房"
+        return httpx.Response(
+            200,
+            json=[[[translated, source, None, None]], None, "ja"],
+        )
+
+    database = Database(f"sqlite:///{tmp_path / 'translation.db'}")
+    database.initialize()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        translator = GoogleTitleTranslator(
+            client,
+            TranslationCache(tmp_path / "translations.db"),
+            enabled=True,
+            endpoint="https://translate.example/translate_a/single",
+            target_language="zh-CN",
+            translate_plot=True,
+        )
+        with database.session() as session:
+            repo = Repository(session)
+            source_title = "隣人のゴミ部屋"
+            source_plot = "隣人のゴミ部屋に隠された秘密。"
+            work = repo.upsert_provider_record(
+                ProviderRecord(
+                    provider="fixture",
+                    external_id="fixture-plot-1",
+                    code="TEST-PLOT-001",
+                    title=source_title,
+                    original_title=source_title,
+                    plot=source_plot,
+                    family=ContentFamily.JAV,
+                    language="ja",
+                ),
+                overwrite=True,
+            )
+            result = await translator.translate_work(repo, work)
+            assert result.status == "translated"
+            assert work.title == "邻居的垃圾房"
+            assert work.original_title == source_title
+            assert work.original_plot == source_plot
+            assert work.plot == "这是中文剧情译文"
+            assert work.field_sources["plot"].startswith("translation:")
+            assert work.field_sources.get("original_plot")

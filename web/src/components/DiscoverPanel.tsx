@@ -364,7 +364,7 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
               jrList.items.map((item) => (
                 <article key={`${jrList.section.slug}-${item.position}-${item.code ?? item.name ?? item.title}`} className="discover-card">
                   <div>
-                    <span className="pill">#{item.position}</span>
+                    <span className="rank-badge">#{item.position}</span>
                     {item.state && <span className="pill">{stateLabel(item.state)}</span>}
                     <h2>{item.code ? `${item.code} · ${item.title}` : item.title}</h2>
                     <p>

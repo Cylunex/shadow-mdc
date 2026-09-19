@@ -211,6 +211,7 @@ export const workSchema = z.object({
   label: z.string().nullable(),
   series: z.string().nullable(),
   plot: z.string().nullable(),
+  original_plot: z.string().nullable().optional(),
   actors: z.array(z.string()),
   actor_entities: z.array(actorSummarySchema),
   directors: z.array(z.string()),

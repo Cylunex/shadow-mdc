@@ -73,6 +73,7 @@ class Work(Base):
     label: Mapped[str | None] = mapped_column(String(300))
     series: Mapped[str | None] = mapped_column(String(300))
     plot: Mapped[str | None] = mapped_column(Text)
+    original_plot: Mapped[str | None] = mapped_column(Text)
     actors: Mapped[list[str]] = mapped_column(JSON, default=list)
     directors: Mapped[list[str]] = mapped_column(JSON, default=list)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)

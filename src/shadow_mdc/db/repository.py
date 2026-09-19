@@ -45,6 +45,7 @@ LOCKABLE_WORK_FIELDS = frozenset(
         "series",
         "tags",
         "plot",
+        "original_plot",
         "label",
         "release_date",
         "runtime_seconds",
@@ -128,6 +129,8 @@ class Database:
                 connection.exec_driver_sql(
                     "ALTER TABLE works ADD COLUMN reviews JSON NOT NULL DEFAULT '[]'"
                 )
+            if "original_plot" not in work_columns:
+                connection.exec_driver_sql("ALTER TABLE works ADD COLUMN original_plot TEXT")
             asset_columns = {
                 str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(media_assets)")
             }
@@ -1023,12 +1026,16 @@ class Repository:
         self,
         work: Work,
         *,
+        source: str,
         translated: str,
         provider: str,
     ) -> None:
         if _field_locked(work, "plot"):
             return
         sources = dict(work.field_sources or {})
+        if work.original_plot is None and not _field_locked(work, "original_plot"):
+            work.original_plot = source
+            sources["original_plot"] = sources.get("plot", "unknown")
         work.plot = translated
         sources["plot"] = f"translation:{provider}"
         work.field_sources = sources

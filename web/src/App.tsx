@@ -279,7 +279,7 @@ export function App() {
             translateWorks={() => run("translate-works", async () => {
               const result = await api.translateWorks();
               const error = result.errors.length > 0 ? `；${result.errors[0]}` : "";
-              setMessage(`标题翻译：成功 ${result.translated}，无需翻译 ${result.skipped}，失败 ${result.failed}，剩余 ${result.remaining}${error}`);
+              setMessage(`补翻译（标题/剧情）：成功 ${result.translated}，无需翻译 ${result.skipped}，失败 ${result.failed}，剩余 ${result.remaining}${error}`);
             }, "works")}
             saveWork={(workId, payload) => run(`edit-${workId}`, async () => {
               await api.updateWork(workId, payload);
