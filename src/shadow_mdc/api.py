@@ -75,8 +75,11 @@ from .api_models import (
     ProviderListOut,
     ScanOut,
     ScanRequest,
+    SampleGenerateOut,
+    SampleGenerateRequest,
     ScreenshotGenerateOut,
     ScreenshotGenerateRequest,
+    WorkSampleGenerateOut,
     TaskRunOut,
     WorkDetailOut,
     JavRankingHonorOut,
@@ -142,6 +145,7 @@ from .media.nfo import build_nfo, parse_nfo
 from .media.organizer import Organizer, plan_move_cleanup
 from .media.parts import part_group_key
 from .media.screenshots import capture_screenshot
+from .services.work_samples import enrich_work_samples, sample_urls_for_work
 from .providers import (
     AirAvProvider,
     AvSoxProvider,
@@ -2681,6 +2685,170 @@ async def download_work_artwork(work_id: str, request: Request, repo: Repo) -> A
     return result
 
 
+
+@app.get("/api/works/{work_id}/samples/{index}", response_class=FileResponse)
+def work_sample_file(work_id: str, index: int, request: Request, repo: Repo) -> Response:
+    if index < 0:
+        raise HTTPException(status_code=404, detail="sample not found")
+    work = repo.get_work(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    samples = [
+        item
+        for item in work.artwork
+        if str(item.get("kind", "")).casefold() == "sample"
+        and isinstance(item.get("local_path"), str)
+        and Path(str(item["local_path"])).is_file()
+    ]
+    if index >= len(samples):
+        raise HTTPException(status_code=404, detail="sample not found")
+    path = Path(str(samples[index]["local_path"])).resolve()
+    root = (runtime(request).settings.data_dir / "artwork" / work_id).resolve()
+    if not path.is_relative_to(root):
+        raise HTTPException(status_code=404, detail="sample not found")
+    return FileResponse(path)
+
+
+@app.post("/api/works/{work_id}/samples", response_model=WorkSampleGenerateOut)
+async def generate_work_samples(
+    work_id: str,
+    request: Request,
+    repo: Repo,
+    target_count: int = 5,
+) -> WorkSampleGenerateOut:
+    """Provider sample galleries first; local ffmpeg only fills the gap."""
+
+    work = repo.get_work(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    app_runtime = runtime(request)
+    target = max(1, min(int(target_count), 12))
+    result = await enrich_work_samples(
+        repo,
+        work,
+        artwork_root=app_runtime.settings.data_dir / "artwork",
+        http_client=app_runtime.http,
+        max_bytes=app_runtime.settings.artwork_max_bytes,
+        target_count=target,
+    )
+    refreshed = repo.get_work(work_id) or work
+    return WorkSampleGenerateOut(
+        work_id=result.work_id,
+        web_downloaded=result.web_downloaded,
+        web_cached=result.web_cached,
+        local_generated=result.local_generated,
+        sample_count=result.sample_count,
+        sample_urls=sample_urls_for_work(refreshed),
+        skipped_strm=result.skipped_strm,
+        skipped_no_media=result.skipped_no_media,
+        errors=result.errors,
+    )
+
+
+@app.post(
+    "/api/libraries/{library_id}/samples",
+    response_model=SampleGenerateOut,
+)
+async def generate_library_samples(
+    library_id: str,
+    payload: SampleGenerateRequest,
+    request: Request,
+    repo: Repo,
+) -> SampleGenerateOut:
+    """Batch sample enrichment: web galleries first, local ffmpeg fallback."""
+
+    library = repo.get_library(library_id)
+    if library is None:
+        raise HTTPException(status_code=404, detail="library not found")
+    task = repo.create_task_run(kind="samples", scope=library.root_path)
+    attempted = 0
+    enriched = 0
+    web_downloaded = 0
+    local_generated = 0
+    skipped_cached = 0
+    skipped_strm = 0
+    skipped_no_media = 0
+    failed = 0
+    errors: list[str] = []
+    app_runtime = runtime(request)
+    seen_works: set[str] = set()
+    library_root = Path(library.root_path).resolve()
+    for asset in repo.list_library_assets(library.id, identified_only=True):
+        if not Path(asset.path).resolve().is_relative_to(library_root):
+            continue
+        if asset.work_id is None or asset.work_id in seen_works:
+            continue
+        work = repo.get_work(asset.work_id)
+        if work is None:
+            continue
+        seen_works.add(work.id)
+        if attempted >= payload.limit:
+            continue
+        # Skip when already have enough cached local/remote samples.
+        existing = sum(
+            1
+            for item in work.artwork
+            if str(item.get("kind", "")).casefold() == "sample"
+            and (
+                (isinstance(item.get("local_path"), str) and Path(str(item["local_path"])).is_file())
+                or isinstance(item.get("url"), str)
+            )
+        )
+        if existing >= payload.target_count:
+            skipped_cached += 1
+            continue
+        attempted += 1
+        try:
+            result = await enrich_work_samples(
+                repo,
+                work,
+                artwork_root=app_runtime.settings.data_dir / "artwork",
+                http_client=app_runtime.http,
+                max_bytes=app_runtime.settings.artwork_max_bytes,
+                target_count=payload.target_count,
+                asset=asset,
+            )
+            web_downloaded += result.web_downloaded
+            local_generated += result.local_generated
+            if result.skipped_strm and result.local_generated == 0 and result.sample_count == 0:
+                skipped_strm += 1
+            if result.skipped_no_media:
+                skipped_no_media += 1
+            if result.sample_count > 0 or result.web_downloaded or result.local_generated:
+                enriched += 1
+            if result.errors:
+                failed += 1
+                errors.extend(result.errors)
+        except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+            failed += 1
+            errors.append(f"{asset.path}: {exc}")
+    repo.finish_task_run(
+        task,
+        status="partial" if failed else "succeeded",
+        summary={
+            "attempted": attempted,
+            "enriched": enriched,
+            "web_downloaded": web_downloaded,
+            "local_generated": local_generated,
+            "skipped_cached": skipped_cached,
+            "skipped_strm": skipped_strm,
+            "skipped_no_media": skipped_no_media,
+            "failed": failed,
+        },
+    )
+    return SampleGenerateOut(
+        attempted=attempted,
+        enriched=enriched,
+        web_downloaded=web_downloaded,
+        local_generated=local_generated,
+        skipped_cached=skipped_cached,
+        skipped_strm=skipped_strm,
+        skipped_no_media=skipped_no_media,
+        failed=failed,
+        errors=tuple(errors[:20]),
+    )
+
+
 @app.post(
     "/api/libraries/{library_id}/screenshots",
     response_model=ScreenshotGenerateOut,
@@ -3133,6 +3301,13 @@ def _work_out(
         artwork=work.artwork,
         image_url=_work_display_artwork(work, "poster"),
         fanart_url=_work_display_artwork(work, "fanart"),
+        sample_urls=sample_urls_for_work(work),
+        rating_value=getattr(work, "rating_value", None),
+        rating_max=getattr(work, "rating_max", None),
+        rating_count=getattr(work, "rating_count", None),
+        rating_source=getattr(work, "rating_source", None),
+        reviews=list(getattr(work, "reviews", None) or []),
+        display_tags=_display_tags(work),
         field_sources=dict(work.field_sources or {}),
         field_locks=list(work.field_locks or []),
         identities=identities,
@@ -3194,6 +3369,33 @@ def _work_detail_out(repo: Repository, work: Work, *, data_dir: Path | None = No
                 compact_badge=info.compact_badge,
             )
     return WorkDetailOut(**base.model_dump(), assets=assets, magnets=magnets, javranking=javranking)
+
+
+
+def _display_tags(work: Work) -> list[str]:
+    """Light structured chips from existing metadata — display only, no embeddings."""
+
+    values: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str | None) -> None:
+        if not raw:
+            return
+        text_value = raw.strip()
+        key = text_value.casefold()
+        if not text_value or key in seen:
+            return
+        seen.add(key)
+        values.append(text_value)
+
+    add(work.category)
+    add(work.family if work.family and work.family != "unknown" else None)
+    add(work.studio)
+    add(work.label)
+    add(work.series)
+    for tag in (work.tags or [])[:8]:
+        add(str(tag))
+    return values[:16]
 
 
 def _work_display_artwork(work: Work, kind: str, *, data_dir: Path | None = None) -> str | None:

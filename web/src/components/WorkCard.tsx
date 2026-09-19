@@ -38,6 +38,11 @@ export const WorkCard = memo(function WorkCard({
           <div className="poster-fallback" aria-hidden />
         )}
         {work.primary_code && <span className="code-chip">{work.primary_code}</span>}
+        {work.rating_value != null && (
+          <span className="score-chip" title={work.rating_source ?? undefined}>
+            ★ {work.rating_value}
+          </span>
+        )}
       </div>
       <div className="work-body">
         <span className="pill">{work.category}</span>

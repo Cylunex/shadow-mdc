@@ -11,7 +11,8 @@ from ..enums import ContentFamily, QueryMode
 from ..identity import extract_code
 from .base import HttpProvider, ProviderError
 from .html import first_text, parse_date
-from .html_fields import field_links, field_text, first_image_artwork, integer_minutes
+from .html_fields import field_links, field_text, first_image_artwork, integer_minutes, sample_image_artwork
+from .ratings import parse_hreview_rating, parse_short_reviews
 
 _FANZA_GRAPHQL_URL = "https://api.video.dmm.co.jp/graphql"
 _FANZA_RANKING_QUERY = """
@@ -150,8 +151,9 @@ class FanzaProvider(HttpProvider):
 
         for content_id in content_ids:
             url = f"{self._base_url}/digital/videoa/-/detail/=/cid={quote(content_id)}/"
+            record: ProviderRecord | None = None
             try:
-                return [await self._detail_graphql(content_id, fallback_code=requested_code)]
+                record = await self._detail_graphql(content_id, fallback_code=requested_code)
             except ProviderError as exc:
                 if exc.reason == "http" and "status=404" in exc.detail:
                     continue
@@ -167,15 +169,27 @@ class FanzaProvider(HttpProvider):
                 )
             except ProviderError as exc:
                 if exc.reason == "http" and "status=404" in exc.detail:
+                    if record is not None:
+                        return [record]
                     continue
+                if record is not None:
+                    return [record]
                 raise
             lowered = html.casefold()
             if "not available in your region" in lowered or "/login/" in lowered:
+                if record is not None:
+                    return [record]
                 raise ProviderError(self.descriptor.id, "blocked", "region or login restriction")
             root = HTMLParser(html)
             if root.css_first(".hreview") is None:
+                if record is not None:
+                    return [record]
                 continue
-            return [self._parse(root, url, requested_code or content_id, content_id)]
+            html_record = self._parse(root, url, requested_code or content_id, content_id)
+            if record is None:
+                return [html_record]
+            # Merge provider sample stills + ratings from HTML onto GraphQL base.
+            return [_merge_fanza_enrichment(record, html_record)]
         return []
 
     async def fetch_ranking(
@@ -324,9 +338,18 @@ class FanzaProvider(HttpProvider):
             raise ProviderError(self.descriptor.id, "parse", "valid JAV code missing")
         package = content.get("packageImage") if isinstance(content.get("packageImage"), dict) else {}
         thumb = package.get("largeUrl") or package.get("mediumUrl")
-        artwork: tuple[Artwork, ...] = ()
+        artwork_list: list[Artwork] = []
         if thumb:
-            artwork = (Artwork(url=str(thumb), kind="poster"),)
+            artwork_list.append(Artwork(url=str(thumb), kind="poster"))
+        raw_samples = content.get("sampleImages")
+        if isinstance(raw_samples, list):
+            for sample in raw_samples:
+                if not isinstance(sample, dict):
+                    continue
+                sample_url = sample.get("largeUrl") or sample.get("mediumUrl")
+                if sample_url:
+                    artwork_list.append(Artwork(url=str(sample_url), kind="sample"))
+        artwork = tuple(artwork_list)
         actresses = tuple(
             str(a.get("name")).strip()
             for a in (content.get("actresses") or [])
@@ -450,6 +473,28 @@ class FanzaProvider(HttpProvider):
         runtime = integer_minutes(field_text(root, ("収録時間",)))
         plot = first_text(root, (".mg-b20.lh4", ".mg-b20.lh4 p", ".product-description"))
         actors = tuple(dict.fromkeys((*field_links(root, ("出演者",)), *tuple(_texts(root, "#performer a")))))
+        cover = first_image_artwork(
+            root,
+            self._base_url,
+            ("#sample-video a", "img[name=package-image]"),
+        )
+        samples = sample_image_artwork(
+            root,
+            self._base_url,
+            (
+                "#sample-image-block a img",
+                "#sample-image-block a",
+                "#sample-image a img",
+                "#sample-image a",
+                ".sample-image-block a img",
+                ".sample-image-block a",
+                "a[name^=package-src-] img",
+                "a[name^=package-src-]",
+            ),
+            limit=12,
+        )
+        rating_value, rating_count, rating_max = parse_hreview_rating(root)
+        reviews = parse_short_reviews(root, provider=self.descriptor.id)
         return ProviderRecord(
             provider=self.descriptor.id,
             external_id=content_id,
@@ -467,12 +512,12 @@ class FanzaProvider(HttpProvider):
             actors=actors,
             directors=field_links(root, ("監督",)),
             tags=field_links(root, ("ジャンル",)),
-            artwork=first_image_artwork(
-                root,
-                self._base_url,
-                ("#sample-video a", "img[name=package-image]"),
-            ),
+            artwork=tuple((*cover, *samples)),
             language="ja",
+            rating=rating_value,
+            rating_max=rating_max,
+            rating_count=rating_count,
+            reviews=reviews,
         )
 
 

@@ -606,3 +606,70 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .javranking-section-block h3 { margin: 0 0 6px; font-size: 13px; color: #9fb4bd; }
 .discover-toolbar.wrap { flex-wrap: wrap; }
 .actor-javranking { margin-top: 8px; }
+
+
+.score-badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.4rem 0 0.6rem;
+}
+.score-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, gold 28%, transparent);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.score-badge.secondary {
+  background: color-mix(in srgb, steelblue 28%, transparent);
+}
+.score-chip {
+  position: absolute;
+  right: 0.45rem;
+  bottom: 0.45rem;
+  padding: 0.12rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #ffd76a;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.sample-gallery .sample-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 0.45rem;
+}
+.sample-thumb {
+  display: block;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 0.4rem;
+  background: #1a1a1a;
+}
+.sample-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.review-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+.review-list li {
+  padding: 0.55rem 0.65rem;
+  border-radius: 0.45rem;
+  background: color-mix(in srgb, canvasText 6%, transparent);
+}
+.review-list p {
+  margin: 0 0 0.25rem;
+  font-size: 0.9rem;
+}
+.display-tags {
+  margin-bottom: 0.5rem;
+}

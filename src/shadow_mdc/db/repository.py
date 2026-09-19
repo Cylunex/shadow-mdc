@@ -114,6 +114,20 @@ class Database:
                 connection.exec_driver_sql(
                     "ALTER TABLE works ADD COLUMN field_locks JSON NOT NULL DEFAULT '[]'"
                 )
+            if "rating_value" not in work_columns:
+                connection.exec_driver_sql("ALTER TABLE works ADD COLUMN rating_value FLOAT")
+            if "rating_max" not in work_columns:
+                connection.exec_driver_sql("ALTER TABLE works ADD COLUMN rating_max FLOAT")
+            if "rating_count" not in work_columns:
+                connection.exec_driver_sql("ALTER TABLE works ADD COLUMN rating_count INTEGER")
+            if "rating_source" not in work_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE works ADD COLUMN rating_source VARCHAR(100)"
+                )
+            if "reviews" not in work_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE works ADD COLUMN reviews JSON NOT NULL DEFAULT '[]'"
+                )
             asset_columns = {
                 str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(media_assets)")
             }
@@ -943,6 +957,49 @@ class Repository:
         work.artwork = [*generated, *retained]
         self._session.flush()
 
+    def set_sample_frames(
+        self,
+        work: Work,
+        *,
+        samples: list[dict[str, object]],
+        replace_local: bool = False,
+    ) -> None:
+        """Register sample stills (provider URLs or local ffmpeg) under work.artwork."""
+
+        if replace_local:
+            retained = [
+                dict(item)
+                for item in work.artwork
+                if not (
+                    str(item.get("kind", "")).casefold() == "sample"
+                    and str(item.get("source", "")).startswith("local-")
+                )
+            ]
+            work.artwork = [*retained, *[dict(item) for item in samples]]
+            self._session.flush()
+            return
+
+        retained = [dict(item) for item in work.artwork]
+        existing_urls = {
+            str(item.get("url")) for item in retained if isinstance(item.get("url"), str)
+        }
+        existing_paths = {
+            str(item.get("local_path"))
+            for item in retained
+            if isinstance(item.get("local_path"), str)
+        }
+        merged = list(retained)
+        for sample in samples:
+            url = sample.get("url")
+            path_value = sample.get("local_path")
+            if isinstance(url, str) and url in existing_urls:
+                continue
+            if isinstance(path_value, str) and path_value in existing_paths:
+                continue
+            merged.append(dict(sample))
+        work.artwork = merged
+        self._session.flush()
+
     def apply_title_translation(
         self,
         work: Work,
@@ -1215,8 +1272,28 @@ class Repository:
             work.tags = _merge_unique(work.tags, record.tags, replace=overwrite)
             if overwrite or "tags" not in sources:
                 sources["tags"] = record.provider
-        if record.artwork and not work.artwork:
-            work.artwork = _merge_artwork(work.artwork, record, replace=False)
+        if record.artwork:
+            if not work.artwork:
+                work.artwork = _merge_artwork(work.artwork, record, replace=False)
+            else:
+                # Keep first cover/poster set; still attach new sample stills from providers.
+                samples = tuple(item for item in record.artwork if item.kind == "sample")
+                if samples:
+                    work.artwork = _merge_artwork(
+                        work.artwork,
+                        record.model_copy(update={"artwork": samples}),
+                        replace=False,
+                    )
+        if record.rating is not None and (overwrite or work.rating_value is None):
+            work.rating_value = float(record.rating)
+            work.rating_max = float(record.rating_max) if record.rating_max is not None else None
+            work.rating_count = int(record.rating_count) if record.rating_count is not None else None
+            work.rating_source = record.provider
+            sources["rating"] = record.provider
+        if record.reviews:
+            work.reviews = _merge_reviews(list(work.reviews or []), record.reviews, replace=overwrite)
+            if overwrite or "reviews" not in sources:
+                sources["reviews"] = record.provider
         work.field_sources = sources
         self._sync_work_actors(work)
 
@@ -1544,4 +1621,40 @@ def _merge_artwork(
         if key not in seen:
             seen.add(key)
             values.append(payload)
+    return values
+
+
+def _merge_reviews(
+    current: list[dict[str, object]],
+    incoming: tuple[object, ...],
+    *,
+    replace: bool,
+) -> list[dict[str, object]]:
+    values: list[dict[str, object]] = [] if replace else [dict(item) for item in current]
+    seen = {
+        (str(item.get("provider", "")), str(item.get("text", "")).strip())
+        for item in values
+    }
+    for item in incoming:
+        payload = item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)  # type: ignore[arg-type]
+        if not isinstance(payload, dict):
+            continue
+        text = str(payload.get("text", "")).strip()
+        provider = str(payload.get("provider", "")).strip()
+        if not text or not provider:
+            continue
+        key = (provider, text)
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(
+            {
+                "provider": provider,
+                "text": text[:2000],
+                "author": payload.get("author"),
+                "score": payload.get("score"),
+            }
+        )
+        if len(values) >= 20:
+            break
     return values

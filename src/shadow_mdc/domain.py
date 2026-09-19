@@ -77,6 +77,17 @@ class Artwork(BaseModel):
     height: int | None = Field(default=None, ge=1)
 
 
+class ReviewHighlight(BaseModel):
+    """Short provider review/comment snippet — never invented."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=2000)
+    author: str | None = None
+    score: float | None = Field(default=None, ge=0)
+
+
 class ProviderRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -100,6 +111,10 @@ class ProviderRecord(BaseModel):
     artwork: tuple[Artwork, ...] = ()
     fingerprints: dict[str, str] = Field(default_factory=dict)
     language: str | None = None
+    rating: float | None = Field(default=None, ge=0)
+    rating_max: float | None = Field(default=None, gt=0)
+    rating_count: int | None = Field(default=None, ge=0)
+    reviews: tuple[ReviewHighlight, ...] = ()
 
 
 class MatchEvidence(BaseModel):

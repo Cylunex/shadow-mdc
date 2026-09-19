@@ -9,6 +9,7 @@ from ..enums import ContentFamily, QueryMode
 from ..identity import extract_code
 from .base import HttpProvider, ProviderError
 from .html import first_text, image_artwork, link_texts, meta_content, parse_date, parse_runtime_seconds
+from .html_fields import sample_image_artwork
 
 
 class JavBusProvider(HttpProvider):
@@ -65,6 +66,22 @@ class JavBusProvider(HttpProvider):
             studio=studio,
             actors=link_texts(root, ('a[href*="/star/"]',)),
             tags=link_texts(root, ('a[href*="/genre/"]',)),
-            artwork=image_artwork(root, url),
+            artwork=tuple(
+                (
+                    *image_artwork(root, url),
+                    *sample_image_artwork(
+                        root,
+                        url,
+                        (
+                            "#sample-waterfall a.sample-box",
+                            "#sample-waterfall a.sample-box img",
+                            ".sample-waterfall a",
+                            "#sample-waterfall a",
+                            "a.sample-box",
+                        ),
+                        limit=12,
+                    ),
+                )
+            ),
             language="zh",
         )

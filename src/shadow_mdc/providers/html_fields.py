@@ -56,3 +56,38 @@ def integer_minutes(value: str | None) -> int | None:
 
 def _normalize_label(value: str) -> str:
     return re.sub(r"\s+", "", value).rstrip(":\uff1a").casefold()
+
+
+def sample_image_artwork(
+    root: HTMLParser,
+    base_url: str,
+    selectors: Iterable[str],
+    *,
+    limit: int = 12,
+) -> tuple[Artwork, ...]:
+    """Collect provider sample/preview stills as kind=sample (deduped)."""
+
+    values: list[Artwork] = []
+    seen: set[str] = set()
+    for selector in selectors:
+        for node in root.css(selector):
+            raw = (
+                node.attributes.get("href")
+                or node.attributes.get("data-src")
+                or node.attributes.get("src")
+                or node.attributes.get("data-original")
+            )
+            if not raw:
+                continue
+            url = urljoin(base_url.rstrip("/") + "/", raw)
+            if not url.startswith(("http://", "https://")) or url in seen:
+                continue
+            # Skip obvious non-image links.
+            lowered = url.casefold()
+            if any(token in lowered for token in (".mp4", ".m3u8", ".webm", "javascript:")):
+                continue
+            seen.add(url)
+            values.append(Artwork.model_validate({"url": url, "kind": "sample"}))
+            if len(values) >= limit:
+                return tuple(values)
+    return tuple(values)

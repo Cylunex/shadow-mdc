@@ -34,7 +34,9 @@ import {
   providerListSchema,
   providerDiagnoseSchema,
   scanSchema,
+  sampleGenerateSchema,
   screenshotGenerateSchema,
+  workSampleGenerateSchema,
   taskRunsSchema,
   workDetailSchema,
   workSchema,
@@ -124,6 +126,15 @@ export const api = {
     request(screenshotGenerateSchema, `/api/libraries/${libraryId}/screenshots`, {
       method: "POST",
       body: JSON.stringify({ limit })
+    }),
+  generateLibrarySamples: (libraryId: string, limit = 50, targetCount = 5) =>
+    request(sampleGenerateSchema, `/api/libraries/${libraryId}/samples`, {
+      method: "POST",
+      body: JSON.stringify({ limit, target_count: targetCount })
+    }),
+  generateWorkSamples: (workId: string, targetCount = 5) =>
+    request(workSampleGenerateSchema, `/api/works/${workId}/samples?target_count=${targetCount}`, {
+      method: "POST"
     }),
   identifyLibrary: (
     libraryId: string,

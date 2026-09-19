@@ -207,6 +207,13 @@ class WorkOut(BaseModel):
     artwork: list[dict[str, object]]
     image_url: str | None = None
     fanart_url: str | None = None
+    sample_urls: list[str] = Field(default_factory=list)
+    rating_value: float | None = None
+    rating_max: float | None = None
+    rating_count: int | None = None
+    rating_source: str | None = None
+    reviews: list[dict[str, object]] = Field(default_factory=list)
+    display_tags: list[str] = Field(default_factory=list)
     field_sources: dict[str, str]
     field_locks: list[str] = Field(default_factory=list)
     identities: list[IdentityOut] = Field(default_factory=list)
@@ -302,6 +309,35 @@ class ScreenshotGenerateOut(BaseModel):
 
 class ScreenshotGenerateRequest(BaseModel):
     limit: int = Field(default=50, ge=1, le=500)
+
+
+class SampleGenerateRequest(BaseModel):
+    limit: int = Field(default=50, ge=1, le=500)
+    target_count: int = Field(default=5, ge=1, le=12)
+
+
+class SampleGenerateOut(BaseModel):
+    attempted: int
+    enriched: int
+    web_downloaded: int
+    local_generated: int
+    skipped_cached: int
+    skipped_strm: int
+    skipped_no_media: int
+    failed: int
+    errors: tuple[str, ...]
+
+
+class WorkSampleGenerateOut(BaseModel):
+    work_id: str
+    web_downloaded: int
+    web_cached: int
+    local_generated: int
+    sample_count: int
+    sample_urls: list[str] = Field(default_factory=list)
+    skipped_strm: bool = False
+    skipped_no_media: bool = False
+    errors: tuple[str, ...] = ()
 
 
 class OrganizeRequest(BaseModel):

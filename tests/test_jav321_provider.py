@@ -42,7 +42,8 @@ async def test_jav321_parses_exact_code_metadata() -> None:
     assert record.runtime_seconds == 179 * 60
     assert record.tags == ("ドラマ",)
     assert record.plot == "身の周りの世話から全てをご奉仕してくれる、最高の三日間を描いた作品です。"
-    assert [item.kind for item in record.artwork] == ["fanart", "thumb"]
+    assert [item.kind for item in record.artwork][:2] == ["fanart", "thumb"]
+    assert sum(1 for item in record.artwork if item.kind == "sample") >= 2
     assert all(str(item.url).startswith("https://www.jav321.com/") for item in record.artwork)
 
 

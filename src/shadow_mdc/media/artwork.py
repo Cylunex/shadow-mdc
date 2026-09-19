@@ -60,7 +60,8 @@ class ArtworkStore:
                     existing=existing,
                 )
                 local_paths[url] = str(path)
-                ensure_list_thumbnail(work_root, path)
+                if kind != "sample":
+                    ensure_list_thumbnail(work_root, path)
                 cached += int(was_cached)
                 downloaded += int(not was_cached)
             except (ValueError, OSError, httpx.HTTPError) as exc:
@@ -92,6 +93,15 @@ class ArtworkStore:
             if not existing.is_file():
                 continue
             kind = _artwork_kind(str(item.get("kind", "thumb")))
+            if kind == "sample":
+                samples_root = work_root / "samples"
+                samples_root.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256(url.encode()).hexdigest()[:12]
+                cached = samples_root / f"sample_{digest}{_safe_extension(existing.suffix)}"
+                if existing.resolve() != cached.resolve():
+                    shutil.copy2(existing, cached)
+                adopted[url] = str(cached)
+                continue
             cached = next(work_root.glob(f"{kind}.*"), None)
             if cached is None:
                 work_root.mkdir(parents=True, exist_ok=True)
@@ -110,6 +120,9 @@ class ArtworkStore:
         existing: Path | None,
     ) -> tuple[Path, bool]:
         _validate_remote_url(url)
+        if kind == "sample":
+            return await self._acquire_sample(work_root, url, existing=existing)
+
         cached = next(work_root.glob(f"{kind}.*"), None)
         if cached is not None and cached.is_file():
             return cached, True
@@ -155,9 +168,68 @@ class ArtworkStore:
                 raise
         return destination, False
 
+    async def _acquire_sample(
+        self,
+        work_root: Path,
+        url: str,
+        *,
+        existing: Path | None,
+    ) -> tuple[Path, bool]:
+        samples_root = work_root / "samples"
+        samples_root.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(url.encode()).hexdigest()[:12]
+        cached = next(samples_root.glob(f"sample_{digest}.*"), None)
+        if cached is not None and cached.is_file():
+            return cached, True
+        if existing is not None and existing.is_file():
+            extension = _safe_extension(existing.suffix)
+            destination = samples_root / f"sample_{digest}{extension}"
+            if existing.resolve() != destination.resolve():
+                shutil.copy2(existing, destination)
+            return destination, True
+
+        if self._client is None:
+            raise RuntimeError("artwork download client is unavailable")
+        async with self._client.stream("GET", url) as response:
+            response.raise_for_status()
+            _validate_remote_url(str(response.url))
+            content_type = response.headers.get("content-type", "").split(";", 1)[0].casefold()
+            downloaded_extension = _CONTENT_EXTENSIONS.get(content_type)
+            if downloaded_extension is None:
+                raise ValueError(f"unsupported artwork content type: {content_type or 'missing'}")
+            declared = response.headers.get("content-length")
+            if declared and int(declared) > self._max_bytes:
+                raise ValueError("artwork exceeds configured size limit")
+            destination = samples_root / f"sample_{digest}{downloaded_extension}"
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f"sample.{digest}.",
+                suffix=".tmp",
+                dir=samples_root,
+            )
+            size = 0
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    async for chunk in response.aiter_bytes():
+                        size += len(chunk)
+                        if size > self._max_bytes:
+                            raise ValueError("artwork exceeds configured size limit")
+                        stream.write(chunk)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, destination)
+            except Exception:
+                Path(temporary).unlink(missing_ok=True)
+                raise
+        return destination, False
+
 
 def _artwork_kind(value: str) -> str:
-    return "fanart" if value.casefold() in {"fanart", "background", "backdrop"} else "poster"
+    lowered = value.casefold()
+    if lowered in {"fanart", "background", "backdrop"}:
+        return "fanart"
+    if lowered == "sample":
+        return "sample"
+    return "poster"
 
 
 def _safe_extension(value: str) -> str:

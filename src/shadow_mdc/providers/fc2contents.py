@@ -128,8 +128,8 @@ def _artwork(root: HTMLParser, base_url: str) -> tuple[Artwork, ...]:
             seen.add(url)
 
     for node in root.css("ul.items_article_SampleImagesArea a[href]"):
-        add(node.attributes.get("href"), "fanart")
-        if len(values) >= 3:
+        add(node.attributes.get("href"), "sample")
+        if len([item for item in values if item.kind == "sample"]) >= 12:
             break
     add(meta_content(root, "og:image"), "thumb")
     thumb = root.css_first(".items_article_MainitemThumb img")

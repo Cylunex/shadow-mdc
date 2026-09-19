@@ -152,7 +152,7 @@ def _plot(root: HTMLParser) -> str | None:
 
 def _artwork(root: HTMLParser, base_url: str) -> tuple[Artwork, ...]:
     urls: list[str] = []
-    for node in root.css("img.img-responsive[src]"):
+    for node in root.css("img.img-responsive[src], #photos img[src], .col-md-3 img[src]"):
         raw = node.attributes.get("src")
         if not raw:
             continue
@@ -163,10 +163,22 @@ def _artwork(root: HTMLParser, base_url: str) -> tuple[Artwork, ...]:
         return ()
     fanart = next((url for url in urls if url.casefold().endswith("pl.jpg")), urls[0])
     poster = next((url for url in urls if url.casefold().endswith("ps.jpg")), urls[0])
-    return (
+    values: list[Artwork] = [
         Artwork.model_validate({"url": fanart, "kind": "fanart"}),
         Artwork.model_validate({"url": poster, "kind": "thumb"}),
-    )
+    ]
+    seen = {fanart, poster}
+    for url in urls:
+        if url in seen:
+            continue
+        lowered = url.casefold()
+        # DMM-style sample stills: *-1.jpg … or jp-N.jpg
+        if any(token in lowered for token in ("jp-", "-1.jpg", "-2.jpg", "-3.jpg", "/sample")) or (
+            lowered.endswith(".jpg") and not lowered.endswith(("pl.jpg", "ps.jpg"))
+        ):
+            values.append(Artwork.model_validate({"url": url, "kind": "sample"}))
+            seen.add(url)
+    return tuple(values)
 
 
 def _image_url(raw: str, base_url: str) -> str:

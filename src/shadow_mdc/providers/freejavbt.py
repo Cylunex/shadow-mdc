@@ -9,7 +9,7 @@ from ..enums import ContentFamily, QueryMode
 from ..identity import extract_code
 from .base import HttpProvider, ProviderError
 from .html import first_text, link_texts, parse_date, parse_runtime_seconds
-from .html_fields import first_image_artwork
+from .html_fields import first_image_artwork, sample_image_artwork
 
 
 class FreeJavBtProvider(HttpProvider):
@@ -64,13 +64,28 @@ class FreeJavBtProvider(HttpProvider):
                 series=first_text(root, ('a[href*="series"]',)),
                 actors=link_texts(root, ("a.actress",)),
                 tags=link_texts(root, ("a.genre",)),
-                artwork=first_image_artwork(
-                    root,
-                    self._base_url,
+                artwork=tuple(
                     (
-                        "img.video-cover",
-                        "img.col-lg-2.col-md-2.col-sm-6.col-12",
-                    ),
+                        *first_image_artwork(
+                            root,
+                            self._base_url,
+                            (
+                                "img.video-cover",
+                                "img.col-lg-2.col-md-2.col-sm-6.col-12",
+                            ),
+                        ),
+                        *sample_image_artwork(
+                            root,
+                            self._base_url,
+                            (
+                                ".sample-images a img",
+                                ".sample-images a",
+                                "img.col-lg-2.col-md-2.col-sm-6.col-12",
+                                "#sample-images img",
+                            ),
+                            limit=12,
+                        ),
+                    )
                 ),
                 language="zh",
             )

@@ -120,17 +120,47 @@ def _entity_names(value: object) -> tuple[str, ...]:
 
 
 def _artwork(item: dict[str, object]) -> tuple[Artwork, ...]:
-    urls: list[str] = []
-    direct = _string(item.get("jacket_full_url"))
-    if direct:
-        urls.append(direct)
+    values: list[Artwork] = []
+    seen: set[str] = set()
+
+    def add(url: str | None, kind: str) -> None:
+        if url and url.startswith(("http://", "https://")) and url not in seen:
+            seen.add(url)
+            values.append(Artwork.model_validate({"url": url, "kind": kind}))
+
+    add(_string(item.get("jacket_full_url")), "fanart")
     images = item.get("images")
     if isinstance(images, dict):
         jacket = images.get("jacket_image")
         if isinstance(jacket, dict):
-            urls.extend(value for key in ("large2", "large", "medium") if (value := _string(jacket.get(key))))
-    unique = tuple(dict.fromkeys(url for url in urls if url.startswith(("http://", "https://"))))
-    return tuple(Artwork.model_validate({"url": url, "kind": "fanart"}) for url in unique[:1])
+            for key in ("large2", "large", "medium"):
+                add(_string(jacket.get(key)), "fanart")
+        gallery = images.get("sample") or images.get("gallery") or images.get("sample_image")
+        if isinstance(gallery, list):
+            for entry in gallery:
+                if isinstance(entry, str):
+                    add(entry, "sample")
+                elif isinstance(entry, dict):
+                    add(
+                        _string(entry.get("large"))
+                        or _string(entry.get("image"))
+                        or _string(entry.get("url")),
+                        "sample",
+                    )
+    for key in ("sample_image_urls", "gallery", "sample_images"):
+        raw = item.get(key)
+        if isinstance(raw, list):
+            for entry in raw:
+                if isinstance(entry, str):
+                    add(entry, "sample")
+                elif isinstance(entry, dict):
+                    add(
+                        _string(entry.get("large"))
+                        or _string(entry.get("image"))
+                        or _string(entry.get("url")),
+                        "sample",
+                    )
+    return tuple(values)
 
 
 def _string(value: object) -> str | None:

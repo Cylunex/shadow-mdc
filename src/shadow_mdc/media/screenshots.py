@@ -5,6 +5,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+DEFAULT_SAMPLE_RATIOS: tuple[float, ...] = (0.10, 0.35, 0.55, 0.75, 0.90)
+
 
 @dataclass(frozen=True)
 class ScreenshotCapture:
@@ -12,6 +14,16 @@ class ScreenshotCapture:
 
     fanart: Path
     poster: Path
+    timestamp_seconds: float
+
+
+@dataclass(frozen=True)
+class SampleFrame:
+    """One local multi-frame sample extracted via ffmpeg."""
+
+    path: Path
+    index: int
+    ratio: float
     timestamp_seconds: float
 
 
@@ -39,38 +51,91 @@ def capture_screenshot(
     temporary = destination / "fanart.capture.jpg"
     timestamp = _capture_timestamp(duration_seconds)
     try:
-        result = subprocess.run(
-            [
-                executable,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-ss",
-                f"{timestamp:.3f}",
-                "-i",
-                str(source_path),
-                "-frames:v",
-                "1",
-                "-vf",
-                "scale=1280:-2:force_original_aspect_ratio=decrease",
-                "-q:v",
-                "2",
-                "-y",
-                str(temporary),
-            ],
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=90,
-        )
-        if result.returncode != 0 or not temporary.is_file() or temporary.stat().st_size == 0:
-            detail = result.stderr.strip() or "ffmpeg did not produce an image"
-            raise RuntimeError(f"screenshot capture failed: {detail[:500]}")
+        _run_ffmpeg_frame(executable, source_path, temporary, timestamp)
         temporary.replace(fanart)
         shutil.copy2(fanart, poster)
     finally:
         temporary.unlink(missing_ok=True)
     return ScreenshotCapture(fanart=fanart, poster=poster, timestamp_seconds=timestamp)
+
+
+def capture_sample_frames(
+    source: str | Path,
+    output_dir: str | Path,
+    *,
+    duration_seconds: float | None,
+    ratios: tuple[float, ...] = DEFAULT_SAMPLE_RATIOS,
+    limit: int | None = None,
+) -> tuple[SampleFrame, ...]:
+    """Extract N local frames at duration ratios. STRM is unsupported."""
+
+    source_path = Path(source).resolve()
+    if source_path.suffix.casefold() == ".strm":
+        raise ValueError("STRM is a remote pointer and cannot yield local samples")
+    if not source_path.is_file():
+        raise FileNotFoundError(source_path)
+    executable = shutil.which("ffmpeg")
+    if executable is None:
+        raise RuntimeError("ffmpeg is required to generate local sample frames")
+
+    destination = Path(output_dir).resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    selected = ratios[:limit] if limit is not None else ratios
+    frames: list[SampleFrame] = []
+    for index, ratio in enumerate(selected, start=1):
+        timestamp = _ratio_timestamp(duration_seconds, ratio)
+        filename = f"sample_{index:02d}.jpg"
+        target = destination / filename
+        temporary = destination / f"{filename}.tmp"
+        try:
+            _run_ffmpeg_frame(executable, source_path, temporary, timestamp)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        frames.append(
+            SampleFrame(
+                path=target,
+                index=index,
+                ratio=float(ratio),
+                timestamp_seconds=timestamp,
+            )
+        )
+    return tuple(frames)
+
+
+def _run_ffmpeg_frame(
+    executable: str,
+    source_path: Path,
+    temporary: Path,
+    timestamp: float,
+) -> None:
+    result = subprocess.run(
+        [
+            executable,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{timestamp:.3f}",
+            "-i",
+            str(source_path),
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=1280:-2:force_original_aspect_ratio=decrease",
+            "-q:v",
+            "2",
+            "-y",
+            str(temporary),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=90,
+    )
+    if result.returncode != 0 or not temporary.is_file() or temporary.stat().st_size == 0:
+        detail = result.stderr.strip() or "ffmpeg did not produce an image"
+        raise RuntimeError(f"screenshot capture failed: {detail[:500]}")
 
 
 def _capture_timestamp(duration_seconds: float | None) -> float:
@@ -80,3 +145,12 @@ def _capture_timestamp(duration_seconds: float | None) -> float:
         return duration_seconds * 0.5
     # Avoid opening/closing credits and avoid very long seeks on remote disks.
     return min(max(3.0, duration_seconds * 0.2), 300.0, duration_seconds - 1.0)
+
+
+def _ratio_timestamp(duration_seconds: float | None, ratio: float) -> float:
+    clamped = min(max(float(ratio), 0.01), 0.99)
+    if duration_seconds is None or duration_seconds <= 0:
+        return max(1.0, 10.0 * clamped * 10)
+    if duration_seconds <= 4:
+        return duration_seconds * clamped
+    return min(max(1.0, duration_seconds * clamped), duration_seconds - 0.5)

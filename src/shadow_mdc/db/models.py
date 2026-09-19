@@ -79,6 +79,11 @@ class Work(Base):
     artwork: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     field_sources: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     field_locks: Mapped[list[str]] = mapped_column(JSON, default=list)
+    rating_value: Mapped[float | None] = mapped_column(Float)
+    rating_max: Mapped[float | None] = mapped_column(Float)
+    rating_count: Mapped[int | None] = mapped_column(Integer)
+    rating_source: Mapped[str | None] = mapped_column(String(100))
+    reviews: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 

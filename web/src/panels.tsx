@@ -1040,6 +1040,19 @@ export function Works(props: {
             const work = works.find((item) => item.id === detail.id);
             if (work) void props.downloadArtwork(work);
           }}
+          onGenerateSamples={() => {
+            void (async () => {
+              try {
+                const result = await api.generateWorkSamples(detail.id);
+                setDetail(await api.workDetail(detail.id));
+                window.alert(
+                  `样本：网页 ${result.web_downloaded}，本地补帧 ${result.local_generated}，合计 ${result.sample_count}`
+                );
+              } catch (error) {
+                window.alert(error instanceof Error ? error.message : String(error));
+              }
+            })();
+          }}
         />
       )}
     </div>
@@ -1065,6 +1078,7 @@ export function WorkDetailPanel(props: {
   onDeleteMagnet: (workId: string, magnetId: string) => Promise<void>;
   onRefresh: () => void;
   onDownload: () => void;
+  onGenerateSamples?: () => void;
 }) {
   const work = props.detail;
   const [title, setTitle] = useState(work.title);
@@ -1128,10 +1142,67 @@ export function WorkDetailPanel(props: {
         </div>
       </section>
     )}
+    {(work.rating_value != null || (work.javranking && work.javranking.score != null)) && (
+      <div className="score-badge-row">
+        {work.rating_value != null && (
+          <span className="score-badge" title={work.rating_source ? `来源 ${work.rating_source}` : undefined}>
+            ★ {work.rating_value}
+            {work.rating_max != null ? `/${work.rating_max}` : ""}
+            {work.rating_count != null ? ` · ${work.rating_count}` : ""}
+          </span>
+        )}
+        {work.javranking?.score != null && (
+          <span className="score-badge secondary" title="JavRanking score">
+            JR {work.javranking.score}
+            {work.javranking.rank != null ? ` · #${work.javranking.rank}` : ""}
+          </span>
+        )}
+      </div>
+    )}
+    {(work.display_tags ?? []).length > 0 && (
+      <div className="tags display-tags">
+        {(work.display_tags ?? []).map((tag) => <span key={tag}>{tag}</span>)}
+      </div>
+    )}
     <div className="work-detail-actions">
       <button className="secondary" disabled={props.busy === `work-${work.id}`} onClick={props.onRefresh}>刷新元数据</button>
       <button className="ghost" disabled={props.busy === `artwork-${work.id}`} onClick={props.onDownload}>缓存图片</button>
+      <button
+        className="ghost"
+        disabled={props.busy === `samples-${work.id}` || !props.onGenerateSamples}
+        onClick={() => props.onGenerateSamples?.()}
+      >生成样本帧</button>
     </div>
+    {(work.sample_urls ?? []).length > 0 && (
+      <section className="sample-gallery">
+        <h3>样本 / 预览 ({(work.sample_urls ?? []).length})</h3>
+        <div className="sample-grid">
+          {(work.sample_urls ?? []).map((url, index) => (
+            <a key={`${url}-${index}`} href={appUrl(url) ?? url} target="_blank" rel="noopener noreferrer" className="sample-thumb">
+              <img src={appUrl(url) ?? url} alt="" loading="lazy" decoding="async" />
+            </a>
+          ))}
+        </div>
+      </section>
+    )}
+    {(work.reviews ?? []).length > 0 && (
+      <section className="review-highlights">
+        <h3>短评 / 摘录</h3>
+        <ul className="review-list">
+          {(work.reviews ?? []).map((item, index) => (
+            <li key={`${String(item.provider)}-${index}`}>
+              <p>{String(item.text ?? "")}</p>
+              <small className="muted">
+                {[item.provider, item.author, item.score != null ? `★ ${item.score}` : undefined]
+                  .filter((value): value is string | number => value != null && value !== "")
+                  .map(String)
+                  .join(" · ")}
+              </small>
+            </li>
+          ))}
+        </ul>
+      </section>
+    )}
     <label><span>标题 <small>来源 {sourceOf("title")}</small></span>
       <input value={title} onChange={(event) => setTitle(event.target.value)} />
     </label>
@@ -1415,6 +1486,23 @@ export function Libraries(props: {
                 );
               }, "works")}
             >生成非 JAV 截图</button>
+            <button
+              className="ghost"
+              disabled={props.busy === `samples-${library.id}`}
+              title="优先拉取来源站点样本图，不足再用本地 ffmpeg 补帧"
+              onClick={() => void props.run(`samples-${library.id}`, async () => {
+                const result = await api.generateLibrarySamples(library.id);
+                const errorSummary = result.errors.length > 0
+                  ? `；失败示例：${result.errors.slice(0, 2).join("；")}`
+                  : "";
+                props.report(
+                  `样本帧：完成 ${result.enriched}/${result.attempted}，` +
+                  `网页 ${result.web_downloaded}，本地补帧 ${result.local_generated}，` +
+                  `已够用 ${result.skipped_cached}，无媒体 ${result.skipped_no_media}，` +
+                  `失败 ${result.failed}${errorSummary}`
+                );
+              }, "works")}
+            >生成样本帧</button>
           </div>
           <LibraryOrganizer library={library} busy={props.busy} run={props.run} report={props.report} />
         </article>

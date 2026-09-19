@@ -218,6 +218,13 @@ export const workSchema = z.object({
   artwork: z.array(z.record(z.string(), z.unknown())),
   image_url: z.string().nullable(),
   fanart_url: z.string().nullable(),
+  sample_urls: z.array(z.string()).optional().default([]),
+  rating_value: z.number().nullable().optional(),
+  rating_max: z.number().nullable().optional(),
+  rating_count: z.number().nullable().optional(),
+  rating_source: z.string().nullable().optional(),
+  reviews: z.array(z.record(z.string(), z.unknown())).optional().default([]),
+  display_tags: z.array(z.string()).optional().default([]),
   field_sources: z.record(z.string(), z.string()),
   field_locks: z.array(z.string()).default([]),
   identities: z.array(identitySchema),
@@ -433,6 +440,30 @@ export const screenshotGenerateSchema = z.object({
   skipped_untrusted: z.number(),
   failed: z.number(),
   errors: z.array(z.string())
+});
+
+export const sampleGenerateSchema = z.object({
+  attempted: z.number(),
+  enriched: z.number(),
+  web_downloaded: z.number(),
+  local_generated: z.number(),
+  skipped_cached: z.number(),
+  skipped_strm: z.number(),
+  skipped_no_media: z.number(),
+  failed: z.number(),
+  errors: z.array(z.string())
+});
+
+export const workSampleGenerateSchema = z.object({
+  work_id: z.string(),
+  web_downloaded: z.number(),
+  web_cached: z.number(),
+  local_generated: z.number(),
+  sample_count: z.number(),
+  sample_urls: z.array(z.string()).optional().default([]),
+  skipped_strm: z.boolean().optional().default(false),
+  skipped_no_media: z.boolean().optional().default(false),
+  errors: z.array(z.string()).optional().default([])
 });
 
 export const taskRunSchema = z.object({
