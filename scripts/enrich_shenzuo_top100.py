@@ -287,6 +287,8 @@ async def _run(arguments: argparse.Namespace) -> int:
         updates["database_url"] = arguments.database_url
     if arguments.proxy:
         updates["proxy_url"] = arguments.proxy
+    updates.setdefault("request_timeout_seconds", 12.0)
+    updates.setdefault("request_retries", 0)
     settings = Settings()
     if updates:
         settings = settings.model_copy(update=updates)
@@ -307,19 +309,25 @@ async def _run(arguments: argparse.Namespace) -> int:
         for _ in range(12)
     )
     source = iter(provider_clients)
+    # Lean set: reliable without hanging on blocked/geo-gated sources.
+    # Include javdb when proxy is configured (NAS).
+    provider_list = [
+        R18DevProvider(next(source), settings.r18dev_base_url, settings.request_retries),
+        FanzaProvider(next(source), settings.fanza_base_url, settings.request_retries),
+        JavBusProvider(next(source), settings.javbus_base_url, settings.request_retries),
+        Jav321Provider(next(source), settings.jav321_base_url, settings.request_retries),
+    ]
+    if proxy:
+        provider_list.extend(
+            [
+                JavDBProvider(next(source), settings.javdb_base_url, settings.request_retries),
+                JavLibraryProvider(next(source), settings.javlibrary_base_url, settings.request_retries),
+                AirAvProvider(next(source), settings.airav_base_url, settings.request_retries),
+            ]
+        )
     providers = ProviderRegistry(
-        [
-            R18DevProvider(next(source), settings.r18dev_base_url, settings.request_retries),
-            FanzaProvider(next(source), settings.fanza_base_url, settings.request_retries),
-            JavLibraryProvider(next(source), settings.javlibrary_base_url, settings.request_retries),
-            AirAvProvider(next(source), settings.airav_base_url, settings.request_retries),
-            AvSoxProvider(next(source), settings.avsox_base_url, settings.request_retries),
-            FreeJavBtProvider(next(source), settings.freejavbt_base_url, settings.request_retries),
-            JavDBProvider(next(source), settings.javdb_base_url, settings.request_retries),
-            JavBusProvider(next(source), settings.javbus_base_url, settings.request_retries),
-            Jav321Provider(next(source), settings.jav321_base_url, settings.request_retries),
-        ],
-        max_concurrent_calls=settings.provider_concurrency,
+        provider_list,
+        max_concurrent_calls=min(8, settings.provider_concurrency),
     )
     javdb = next(
         (p for p in providers._providers.values() if isinstance(p, JavDBProvider)),
@@ -389,7 +397,16 @@ async def _run(arguments: argparse.Namespace) -> int:
                         if arguments.dry_run:
                             summary["actions"]["refreshed"] += 1
                         else:
-                            work = await refresh_work_metadata(providers=providers, repo=repo, work=work)
+                            try:
+                                work = await asyncio.wait_for(
+                                    refresh_work_metadata(providers=providers, repo=repo, work=work),
+                                    timeout=float(arguments.refresh_timeout),
+                                )
+                            except TimeoutError:
+                                print(
+                                    f"[{entry.position:03d}] {entry.code} refresh timeout after {arguments.refresh_timeout}s",
+                                    flush=True,
+                                )
                             summary["actions"]["refreshed"] += 1
 
                     if not arguments.dry_run and not arguments.no_translate:
@@ -466,6 +483,7 @@ def main() -> None:
     parser.add_argument("--no-translate", action="store_true")
     parser.add_argument("--no-posters", action="store_true")
     parser.add_argument("--sync-nas", action="store_true")
+    parser.add_argument("--refresh-timeout", type=float, default=45.0, help="per-work provider refresh timeout seconds")
     arguments = parser.parse_args()
     if arguments.limit is not None and arguments.limit < 1:
         raise SystemExit("--limit must be >= 1")
