@@ -14,6 +14,8 @@ type Props = {
   onSeeded: () => Promise<void>;
 };
 
+type RankTab = "awards" | "yearly" | "browse";
+
 const LISTS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "latest", label: "最新" },
   { value: "rankings_daily", label: "日榜" },
@@ -29,7 +31,7 @@ function stateLabel(state: DiscoverItem["state"] | string | null | undefined): s
 }
 
 export function DiscoverPanel({ busy, report, onSeeded }: Props) {
-  const [mode, setMode] = useState<"browse" | "multi" | "javranking">("browse");
+  const [tab, setTab] = useState<RankTab>("awards");
   const [list, setList] = useState("latest");
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
@@ -41,14 +43,19 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
   const [jrSlug, setJrSlug] = useState<string>("most-awarded-videos");
   const [jrList, setJrList] = useState<JavRankingList | null>(null);
   const [jrSeeding, setJrSeeding] = useState(false);
+  const [jrLoaded, setJrLoaded] = useState(false);
   const blocked = loading || busy === "discover" || jrSeeding;
 
   const jrGroups = useMemo(() => {
     const curatedVideos = jrSections.filter((item) => item.kind === "curated-videos");
     const curatedActors = jrSections.filter((item) => item.kind === "curated-actors");
-    const top250 = jrSections.filter((item) => item.kind === "top250-year");
+    const top250 = [...jrSections.filter((item) => item.kind === "top250-year")].sort(
+      (a, b) => (b.year ?? 0) - (a.year ?? 0)
+    );
     return { curatedVideos, curatedActors, top250 };
   }, [jrSections]);
+
+  const latestYearSlug = jrGroups.top250[0]?.slug ?? null;
 
   async function withLoading(action: () => Promise<void>) {
     setLoading(true);
@@ -68,21 +75,29 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
     report(`发现浏览 ${result.items.length} 条（不写入作品库）`);
   }
 
-  async function loadJavRankingSections(forceRefresh = false) {
+  async function loadJavRankingSections(forceRefresh = false, preferredSlug?: string) {
     const result = await api.javrankingSections(forceRefresh);
     setJrSections(result.sections);
+    setJrLoaded(true);
+    const top250 = result.sections
+      .filter((item) => item.kind === "top250-year")
+      .sort((a, b) => (b.year ?? 0) - (a.year ?? 0));
+    const top250Ready = top250.filter((item) => (item.item_count ?? 0) > 0);
     const preferred =
-      result.sections.find((item) => item.slug === jrSlug)?.slug
-      ?? result.sections.find((item) => item.slug === "most-awarded-videos")?.slug
-      ?? result.sections[0]?.slug;
+      (preferredSlug && result.sections.find((item) => item.slug === preferredSlug)?.slug) ||
+      result.sections.find((item) => item.slug === jrSlug)?.slug ||
+      (preferredSlug?.startsWith("javdb-top250") ? top250Ready[0]?.slug : undefined) ||
+      result.sections.find((item) => item.slug === "most-awarded-videos")?.slug ||
+      top250Ready[0]?.slug ||
+      result.sections[0]?.slug;
     if (preferred) {
       setJrSlug(preferred);
       const detail = await api.javrankingList(preferred, forceRefresh);
       setJrList(detail);
-      report(`JavRanking 分区 ${result.sections.length} · 当前 ${detail.items.length} 条（只读）`);
+      report(`榜单分区 ${result.sections.length} · 当前 ${detail.items.length} 条（只读）`);
     } else {
       setJrList(null);
-      report("JavRanking 暂无可用分区");
+      report("暂无可用榜单分区");
     }
   }
 
@@ -90,30 +105,31 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
     setJrSlug(slug);
     const detail = await api.javrankingList(slug, forceRefresh);
     setJrList(detail);
-    report(`JavRanking「${detail.section.title}」${detail.items.length} 条（只读）`);
+    report(`「${detail.section.title}」${detail.items.length} 条（只读）`);
   }
 
   useEffect(() => {
-    void withLoading(() => loadBrowse("latest", 1));
-    // Mount: load latest chart once.
+    void withLoading(() => loadJavRankingSections(false, "most-awarded-videos"));
+    // Mount: default open 神作.
   }, []);
+
+  async function ensureJrThen(action: () => Promise<void>) {
+    if (!jrLoaded) {
+      await loadJavRankingSections(false);
+    }
+    await action();
+  }
 
   async function loadSearch(event: FormEvent) {
     event.preventDefault();
     if (!query.trim()) return;
     await withLoading(async () => {
-      if (mode === "multi") {
-        const result = await api.discoverMultiSearch(query.trim(), true);
-        setMulti(result);
-        setItems([]);
-        setSelectedMagnets({});
-        report(`多源番号搜索 ${result.hits.length} 条命中`);
-        return;
-      }
-      const result = await api.discoverSearch(query.trim(), { provider: "javdb", page: 1 });
-      setItems(result.items);
-      setMulti(null);
-      report(`发现搜索 ${result.items.length} 条（不写入作品库）`);
+      setTab("browse");
+      const result = await api.discoverMultiSearch(query.trim(), true);
+      setMulti(result);
+      setItems([]);
+      setSelectedMagnets({});
+      report(`多源番号搜索 ${result.hits.length} 条命中`);
     });
   }
 
@@ -151,9 +167,9 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
       }
       const result = await api.javrankingSeed(payload);
       report(
-        `补入库完成：新建/写入 ${result.seeded_count} · 跳过 ${result.skipped_count} · 失败 ${result.failure_count}`
+        `补入库完成：新建 ${result.seeded_count} · 跳过 ${result.skipped_count} · 失败 ${result.failure_count}`
       );
-      await loadJavRankingList(section.slug, false);
+      await loadJavRankingList(section.slug, true);
       await onSeeded();
     } catch (error) {
       report(error instanceof Error ? error.message : String(error));
@@ -163,13 +179,17 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
   }
 
   async function copyText(value: string, label: string) {
-    await navigator.clipboard.writeText(value);
-    report(`已复制${label}`);
+    try {
+      await navigator.clipboard.writeText(value);
+      report(`已复制${label}`);
+    } catch {
+      report(`复制${label}失败`);
+    }
   }
 
   function toggleMagnet(magnet: MagnetLink) {
-    setSelectedMagnets((current) => {
-      const next = { ...current };
+    setSelectedMagnets((prev) => {
+      const next = { ...prev };
       if (next[magnet.info_hash]) delete next[magnet.info_hash];
       else next[magnet.info_hash] = magnet;
       return next;
@@ -186,19 +206,24 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
       report("未选择磁力");
       return;
     }
-    await api.saveWorkMagnets(workId, magnets, provider);
-    report(`已保存 ${magnets.length} 条磁力到作品（仅本地记录，不下载）`);
-    setSelectedMagnets({});
-    await onSeeded();
+    await withLoading(async () => {
+      await api.saveWorkMagnets(workId, magnets, provider);
+      report(`已保存 ${magnets.length} 条磁力到作品（仅本地记录，不下载）`);
+      setSelectedMagnets({});
+      await onSeeded();
+    });
   }
 
+  const showAwards = tab === "awards";
+  const showYearly = tab === "yearly";
+  const showBrowse = tab === "browse";
+
   return (
-    <div className="discover-panel">
-      <div className="section-hero compact">
+    <div className="panel discover-panel">
+      <div className="panel-header">
         <div>
-          <p className="eyebrow">RANKINGS</p>
           <h1>榜单</h1>
-          <p className="muted">日/周/月、JavRanking 神作/战力与最新目录；未入库角标可一点建档。浏览本身不写作品库。</p>
+          <p className="muted">神作·战力、年榜 TOP250（2008+）、发现浏览；浏览本身不写作品库。</p>
         </div>
       </div>
       <div className="discover-banner">
@@ -209,164 +234,168 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
         </p>
       </div>
 
-      <div className="discover-toolbar">
-        <button type="button" className={mode === "browse" ? "active" : "ghost"} onClick={() => setMode("browse")}>
-          榜单浏览
+      <div className="discover-toolbar rank-tabs">
+        <button
+          type="button"
+          className={showAwards ? "active" : "ghost"}
+          disabled={blocked}
+          onClick={() => {
+            setTab("awards");
+            void withLoading(() =>
+              ensureJrThen(async () => {
+                const slug =
+                  jrGroups.curatedVideos[0]?.slug ||
+                  jrSections.find((s) => s.slug === "most-awarded-videos")?.slug ||
+                  "most-awarded-videos";
+                await loadJavRankingList(slug);
+              })
+            );
+          }}
+        >
+          神作·战力
+          {jrGroups.curatedVideos[0] ? ` · ${jrGroups.curatedVideos[0].item_count}` : ""}
         </button>
         <button
           type="button"
-          className={mode === "javranking" ? "active" : "ghost"}
+          className={showYearly ? "active" : "ghost"}
+          disabled={blocked}
           onClick={() => {
-            setMode("javranking");
-            void withLoading(() => loadJavRankingSections(false));
+            setTab("yearly");
+            void withLoading(() =>
+              ensureJrThen(async () => {
+                const slug = latestYearSlug || jrGroups.top250[0]?.slug;
+                if (slug) await loadJavRankingList(slug);
+              })
+            );
           }}
         >
-          JavRanking
+          年榜 TOP250
+          {jrGroups.top250.length ? ` · ${jrGroups.top250.length}年` : ""}
         </button>
-        <button type="button" className={mode === "multi" ? "active" : "ghost"} onClick={() => setMode("multi")}>
-          多源番号搜索
+        <button
+          type="button"
+          className={showBrowse ? "active" : "ghost"}
+          disabled={blocked}
+          onClick={() => {
+            setTab("browse");
+            void withLoading(() => loadBrowse(list, page));
+          }}
+        >
+          发现浏览
         </button>
       </div>
 
-      {mode === "browse" && (
-        <div className="discover-toolbar">
-          <button
-            type="button"
-            className="danger-solid"
-            disabled={blocked}
-            onClick={() => {
-              void withLoading(async () => {
-                await loadBrowse(list, page);
-                report("榜单已刷新");
-              });
-            }}
-          >更新榜单</button>
-          {LISTS.map((entry) => (
-            <button
-              key={entry.value}
-              type="button"
-              className={list === entry.value ? "active" : "ghost"}
-              disabled={blocked}
-              onClick={() => {
-                setList(entry.value);
-                setPage(1);
-                void withLoading(() => loadBrowse(entry.value, 1));
-              }}
-            >
-              {entry.label}
-            </button>
-          ))}
-          <button
-            type="button"
-            className="secondary"
-            disabled={blocked}
-            onClick={() => {
-              void withLoading(() => loadBrowse(list, page));
-            }}
-          >
-            刷新列表
-          </button>
-          <button
-            type="button"
-            className="ghost"
-            disabled={page <= 1}
-            onClick={() => {
-              const next = Math.max(1, page - 1);
-              setPage(next);
-              void withLoading(() => loadBrowse(list, next));
-            }}
-          >
-            上一页
-          </button>
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => {
-              const next = page + 1;
-              setPage(next);
-              void withLoading(() => loadBrowse(list, next));
-            }}
-          >
-            下一页
-          </button>
-        </div>
-      )}
-
-      {mode === "javranking" && (
+      {(showAwards || showYearly) && (
         <div className="javranking-panel">
           <div className="discover-toolbar">
             <button
               type="button"
               className="secondary"
               disabled={blocked}
-              onClick={() => void withLoading(() => loadJavRankingSections(true))}
+              onClick={() => void withLoading(() => loadJavRankingSections(true, jrSlug))}
             >
-              刷新 JavRanking
+              刷新榜单缓存
             </button>
             {(jrList?.section.kind === "curated-videos" || jrList?.section.kind === "top250-year") && (
               <button type="button" className="danger-solid" disabled={blocked} onClick={() => void seedJavRankingMissing()}>
                 补入库缺失
               </button>
             )}
+            {jrList && (
+              <span className="muted">
+                {jrList.section.title} · {jrList.items.length} 条
+                {jrList.revision ? ` · rev ${jrList.revision.slice(0, 8)}` : ""}
+              </span>
+            )}
           </div>
-          <div className="javranking-section-block">
-            <h3>神作 TOP100</h3>
-            <div className="discover-toolbar wrap">
-              {jrGroups.curatedVideos.map((section) => (
-                <button
-                  key={section.id}
-                  type="button"
-                  className={jrSlug === section.slug ? "active" : "ghost"}
-                  disabled={blocked}
-                  onClick={() => void withLoading(() => loadJavRankingList(section.slug))}
-                >
-                  {section.title} · {section.item_count}
-                </button>
-              ))}
+
+          {showAwards && (
+            <>
+              <div className="javranking-section-block">
+                <h3>神作 TOP100</h3>
+                <div className="discover-toolbar wrap">
+                  {jrGroups.curatedVideos.length === 0 && !loading && (
+                    <p className="muted">暂无神作榜数据</p>
+                  )}
+                  {jrGroups.curatedVideos.map((section) => (
+                    <button
+                      key={section.id}
+                      type="button"
+                      className={jrSlug === section.slug ? "active" : "ghost"}
+                      disabled={blocked}
+                      onClick={() => void withLoading(() => loadJavRankingList(section.slug))}
+                    >
+                      {section.title} · {section.item_count}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="javranking-section-block">
+                <h3>演员战力</h3>
+                <div className="discover-toolbar wrap">
+                  {jrGroups.curatedActors.map((section) => (
+                    <button
+                      key={section.id}
+                      type="button"
+                      className={jrSlug === section.slug ? "active" : "ghost"}
+                      disabled={blocked}
+                      onClick={() => void withLoading(() => loadJavRankingList(section.slug))}
+                    >
+                      {section.title} · {section.item_count}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {showYearly && (
+            <div className="javranking-section-block">
+              <h3>年榜 TOP250 · {jrGroups.top250.length} 个年份</h3>
+              <div className="year-chip-bar sticky-year-bar">
+                {jrGroups.top250.length === 0 && !loading && (
+                  <p className="muted">暂无年榜；请在 box 运行 export_javdb_yearly_top250.py 后 rsync 到 NAS</p>
+                )}
+                {[...jrGroups.top250]
+                  .sort((a, b) => (a.year ?? 0) - (b.year ?? 0))
+                  .map((section) => (
+                  <button
+                    key={section.id}
+                    type="button"
+                    className={jrSlug === section.slug ? "active" : "ghost"}
+                    disabled={blocked || (section.item_count ?? 0) === 0}
+                    title={section.title}
+                    onClick={() => void withLoading(() => loadJavRankingList(section.slug))}
+                  >
+                    {section.year ?? section.title}
+                    <span className="chip-count">{section.item_count || "—"}</span>
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-          <div className="javranking-section-block">
-            <h3>演员战力</h3>
-            <div className="discover-toolbar wrap">
-              {jrGroups.curatedActors.map((section) => (
-                <button
-                  key={section.id}
-                  type="button"
-                  className={jrSlug === section.slug ? "active" : "ghost"}
-                  disabled={blocked}
-                  onClick={() => void withLoading(() => loadJavRankingList(section.slug))}
-                >
-                  {section.title} · {section.item_count}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="javranking-section-block">
-            <h3>TOP250 年份榜</h3>
-            <div className="discover-toolbar wrap">
-              {jrGroups.top250.map((section) => (
-                <button
-                  key={section.id}
-                  type="button"
-                  className={jrSlug === section.slug ? "active" : "ghost"}
-                  disabled={blocked}
-                  onClick={() => void withLoading(() => loadJavRankingList(section.slug))}
-                >
-                  {section.year ?? section.title} · {section.item_count}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="discover-grid">
-            {!jrList || jrList.items.length === 0 ? (
-              <p className="empty-detail">{loading ? "正在拉取 JavRanking…" : "选择上方分区查看只读榜单。"}</p>
+          )}
+
+          <div className={`discover-grid ${showYearly ? "dense-rank-grid" : ""}`}>
+            {loading && (!jrList || jrList.items.length === 0) ? (
+              <p className="empty-detail">正在拉取榜单…</p>
+            ) : !jrList || jrList.items.length === 0 ? (
+              <p className="empty-detail">选择上方分区查看只读榜单。</p>
             ) : (
               jrList.items.map((item) => (
-                <article key={`${jrList.section.slug}-${item.position}-${item.code ?? item.name ?? item.title}`} className="discover-card">
+                <article
+                  key={`${jrList.section.slug}-${item.position}-${item.code ?? item.name ?? item.title}`}
+                  className="discover-card dense-rank-card"
+                >
+                  <div
+                    className="poster"
+                    style={item.thumb_url ? { backgroundImage: `url("${item.thumb_url}")` } : undefined}
+                  >
+                    <span className="rank-badge overlay-rank">#{item.position}</span>
+                  </div>
                   <div>
-                    <span className="rank-badge">#{item.position}</span>
                     {item.state && <span className="pill">{stateLabel(item.state)}</span>}
-                    <h2>{item.code ? `${item.code} · ${item.title}` : item.title}</h2>
+                    <h2>{item.code ? `${item.code}` : item.title}</h2>
+                    <p className="rank-card-title">{item.code ? item.title : null}</p>
                     <p>
                       {[
                         item.score != null ? `战力 ${item.score}` : null,
@@ -395,113 +424,179 @@ export function DiscoverPanel({ busy, report, onSeeded }: Props) {
         </div>
       )}
 
-      {mode !== "javranking" && (
-        <form className="discover-search" onSubmit={(event) => void loadSearch(event)}>
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={mode === "multi" ? "多源搜索番号，例如 SONE-118" : "在发现源中搜索"}
-          />
-          <button type="submit" disabled={!query.trim() || blocked}>
-            {mode === "multi" ? "多源搜索" : "搜索"}
-          </button>
-        </form>
-      )}
+      {showBrowse && (
+        <>
+          <div className="discover-toolbar">
+            <button
+              type="button"
+              className="danger-solid"
+              disabled={blocked}
+              onClick={() => {
+                void withLoading(async () => {
+                  await loadBrowse(list, page);
+                  report("榜单已刷新");
+                });
+              }}
+            >
+              更新榜单
+            </button>
+            {LISTS.map((entry) => (
+              <button
+                key={entry.value}
+                type="button"
+                className={list === entry.value ? "active" : "ghost"}
+                disabled={blocked}
+                onClick={() => {
+                  setList(entry.value);
+                  setPage(1);
+                  void withLoading(() => loadBrowse(entry.value, 1));
+                }}
+              >
+                {entry.label}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="secondary"
+              disabled={blocked}
+              onClick={() => {
+                void withLoading(() => loadBrowse(list, page));
+              }}
+            >
+              刷新列表
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              disabled={page <= 1}
+              onClick={() => {
+                const next = Math.max(1, page - 1);
+                setPage(next);
+                void withLoading(() => loadBrowse(list, next));
+              }}
+            >
+              上一页
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => {
+                const next = page + 1;
+                setPage(next);
+                void withLoading(() => loadBrowse(list, next));
+              }}
+            >
+              下一页
+            </button>
+          </div>
 
-      {mode !== "javranking" && multi && (
-        <div className="discover-multi">
-          <p className="muted">
-            查询 {multi.query}
-            {multi.code ? ` · 规范化 ${multi.code}` : ""} · {multi.hits.length} 个来源命中
-          </p>
-          {multi.failures.length > 0 && <p className="muted">部分来源失败：{multi.failures.join("；")}</p>}
-          {multi.hits.map((hit) => (
-            <article key={`${hit.provider}-${hit.item.external_id}`} className="discover-hit">
-              <header>
-                <span className="pill">{hit.provider}</span>
-                <strong>{hit.item.title}</strong>
-                <span className="muted">{stateLabel(hit.item.state)}</span>
-              </header>
-              <p>{[hit.item.code, hit.item.release_date].filter(Boolean).join(" · ")}</p>
-              <div className="discover-actions">
-                {hit.item.code && (
-                  <button type="button" className="ghost" onClick={() => void copyText(hit.item.code!, "番号")}>
-                    复制番号
-                  </button>
-                )}
-                <button type="button" className="secondary" onClick={() => void seedItem(hit.item)}>
-                  建档元数据
-                </button>
-                {hit.item.work_id && Object.keys(selectedMagnets).length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => void saveSelectedToWork(hit.item.work_id, hit.provider)}
-                  >
-                    保存所选磁力到作品
-                  </button>
-                )}
-              </div>
-              {hit.magnets_error && <p className="muted">磁力读取失败：{hit.magnets_error}</p>}
-              {hit.magnets.length > 0 && (
-                <div className="magnet-list">
-                  <h3>磁力（仅展示/保存）</h3>
-                  {hit.magnets.map((magnet) => (
-                    <label key={magnet.info_hash} className="magnet-row">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(selectedMagnets[magnet.info_hash])}
-                        onChange={() => toggleMagnet(magnet)}
-                      />
-                      <span>
-                        {(magnet.name || magnet.info_hash.slice(0, 12)) +
-                          (magnet.has_subtitle ? " · 字幕" : "") +
-                          (magnet.hd ? " · HD" : "")}
-                      </span>
-                      <button type="button" className="ghost" onClick={() => void copyText(magnet.uri, "磁力")}>
-                        复制
-                      </button>
-                    </label>
-                  ))}
-                </div>
-              )}
-            </article>
-          ))}
-        </div>
-      )}
+          <form className="discover-search" onSubmit={(event) => void loadSearch(event)}>
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="多源搜索番号，例如 SONE-118"
+            />
+            <button type="submit" disabled={!query.trim() || blocked}>
+              多源搜索
+            </button>
+          </form>
 
-      {mode === "browse" && !multi && (
-        <div className="discover-grid">
-          {items.length === 0 ? (
-            <p className="empty-detail">{loading ? "正在拉取榜单…" : "选择榜单或搜索后显示远程结果。这些条目不属于作品库。"}</p>
-          ) : (
-            items.map((item) => (
-              <article key={`${item.provider}-${item.external_id}`} className="discover-card">
-                <div
-                  className="poster"
-                  style={item.thumb_url ? { backgroundImage: `url("${item.thumb_url}")` } : undefined}
-                />
-                <div>
-                  <span className="pill">{stateLabel(item.state)}</span>
-                  <h2>{item.title}</h2>
-                  <p>{[item.code, item.release_date].filter(Boolean).join(" · ")}</p>
+          {multi && (
+            <div className="discover-multi">
+              <p className="muted">
+                查询 {multi.query}
+                {multi.code ? ` · 规范化 ${multi.code}` : ""} · {multi.hits.length} 个来源命中
+              </p>
+              {multi.failures.length > 0 && <p className="muted">部分来源失败：{multi.failures.join("；")}</p>}
+              {multi.hits.map((hit) => (
+                <article key={`${hit.provider}-${hit.item.external_id}`} className="discover-hit">
+                  <header>
+                    <span className="pill">{hit.provider}</span>
+                    <strong>{hit.item.title}</strong>
+                    <span className="muted">{stateLabel(hit.item.state)}</span>
+                  </header>
+                  <p>{[hit.item.code, hit.item.release_date].filter(Boolean).join(" · ")}</p>
                   <div className="discover-actions">
-                    {item.code && (
-                      <button type="button" className="ghost" onClick={() => void copyText(item.code!, "番号")}>
+                    {hit.item.code && (
+                      <button type="button" className="ghost" onClick={() => void copyText(hit.item.code!, "番号")}>
                         复制番号
                       </button>
                     )}
-                    <button type="button" className="secondary" onClick={() => void seedItem(item)}>
+                    <button type="button" className="secondary" onClick={() => void seedItem(hit.item)}>
                       建档元数据
                     </button>
-                    <a className="ghost" href={item.source_url} target="_blank" rel="noreferrer">
-                      打开详情
-                    </a>
+                    {hit.item.work_id && Object.keys(selectedMagnets).length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => void saveSelectedToWork(hit.item.work_id, hit.provider)}
+                      >
+                        保存所选磁力到作品
+                      </button>
+                    )}
                   </div>
-                </div>
-              </article>
-            ))
+                  {hit.magnets_error && <p className="muted">磁力读取失败：{hit.magnets_error}</p>}
+                  {hit.magnets.length > 0 && (
+                    <div className="magnet-list">
+                      <h3>磁力（仅展示/保存）</h3>
+                      {hit.magnets.map((magnet) => (
+                        <label key={magnet.info_hash} className="magnet-row">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(selectedMagnets[magnet.info_hash])}
+                            onChange={() => toggleMagnet(magnet)}
+                          />
+                          <span>
+                            {(magnet.name || magnet.info_hash.slice(0, 12)) +
+                              (magnet.has_subtitle ? " · 字幕" : "") +
+                              (magnet.hd ? " · HD" : "")}
+                          </span>
+                          <button type="button" className="ghost" onClick={() => void copyText(magnet.uri, "磁力")}>
+                            复制
+                          </button>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
           )}
-        </div>
+
+          {!multi && (
+            <div className="discover-grid">
+              {items.length === 0 ? (
+                <p className="empty-detail">{loading ? "正在拉取榜单…" : "选择榜单或搜索后显示远程结果。这些条目不属于作品库。"}</p>
+              ) : (
+                items.map((item) => (
+                  <article key={`${item.provider}-${item.external_id}`} className="discover-card">
+                    <div
+                      className="poster"
+                      style={item.thumb_url ? { backgroundImage: `url("${item.thumb_url}")` } : undefined}
+                    />
+                    <div>
+                      <span className="pill">{stateLabel(item.state)}</span>
+                      <h2>{item.title}</h2>
+                      <p>{[item.code, item.release_date].filter(Boolean).join(" · ")}</p>
+                      <div className="discover-actions">
+                        {item.code && (
+                          <button type="button" className="ghost" onClick={() => void copyText(item.code!, "番号")}>
+                            复制番号
+                          </button>
+                        )}
+                        <button type="button" className="secondary" onClick={() => void seedItem(item)}>
+                          建档元数据
+                        </button>
+                        <a className="ghost" href={item.source_url} target="_blank" rel="noreferrer">
+                          打开详情
+                        </a>
+                      </div>
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

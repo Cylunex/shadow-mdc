@@ -188,6 +188,22 @@ from .services.javranking_client import (
     JavRankingIndexCache,
     top250_year_slugs,
 )
+from .services.javdb_yearly_top250 import (
+    current_calendar_year,
+    export_year_from_search_index,
+    extract_year_from_search_videos,
+    last_completed_year,
+    listing_from_items,
+    parse_year_slug,
+    read_yearly_list,
+    write_yearly_list,
+)
+from .services.javdb_yearly_top250_seed import (
+    discover_yearly_top250_on_disk,
+    merge_top250_year_sections,
+    slug_year,
+    yearly_title,
+)
 from .services.javranking_seed import seed_javranking
 from .services.library_prefs import ActorTagState, LibraryPrefsStore, new_queue_id
 from .services.local_catalog import (
@@ -1367,7 +1383,13 @@ async def javranking_sections(
     request: Request,
     force_refresh: bool = False,
 ) -> JavRankingSectionsOut:
-    """Read-only JavRanking section index (TOP250 years + curated lists)."""
+    """Read-only JavRanking section index (TOP250 years + curated lists).
+
+    Historical yearly TOP250 is served from local ``data/javranking/yearly/``
+    only. ``force_refresh`` may revalidate curated lists and optionally refresh
+    the **current calendar year** TOP250 through the configured proxy; past
+    years are never re-fetched remotely.
+    """
 
     app_runtime = runtime(request)
     response_cache = app_runtime.response_cache
@@ -1376,19 +1398,55 @@ async def javranking_sections(
         cached = response_cache.get_json(sections_key)
         if cached is not None:
             return JavRankingSectionsOut.model_validate(cached)
+    data_dir = app_runtime.settings.data_dir
+    cache_dir = data_dir / "javranking"
     cache = JavRankingIndexCache(
-        app_runtime.settings.data_dir / "javranking",
+        cache_dir,
         client=app_runtime.http,
     )
-    index = await cache.load_index(force_refresh=force_refresh)
     meta = cache.read_meta()
     sections: list[JavRankingSectionOut] = []
-    for slug, year, name in top250_year_slugs(index.videos):
-        count = sum(
-            1
-            for video in index.videos
-            if any(item.slug == slug for item in video.ranking_appearances)
-        )
+
+    # Optional current-year refresh from remote index (proxy); never touch past years.
+    current_year = current_calendar_year()
+    index_year_rows: list[tuple[str, int | None, str]] = []
+    if force_refresh:
+        try:
+            index = await cache.load_index(force_refresh=True)
+            meta = cache.read_meta()
+            items = extract_year_from_search_videos(index.videos, current_year)
+            if items:
+                listing = listing_from_items(
+                    current_year,
+                    items,
+                    source="remote",
+                    frozen=False,
+                )
+                write_yearly_list(data_dir, listing, force=True)
+            index_year_rows = top250_year_slugs(index.videos)
+        except Exception:
+            # Soft-fail: still serve local yearly files + curated lists.
+            cached_index = cache.read_cached_index()
+            if cached_index is not None:
+                index_year_rows = top250_year_slugs(cached_index.videos)
+    else:
+        cached_index = cache.read_cached_index()
+        if cached_index is not None:
+            index_year_rows = top250_year_slugs(cached_index.videos)
+        # Ensure current year local file exists when search-index already has it.
+        if read_yearly_list(data_dir, current_year) is None:
+            export_year_from_search_index(data_dir, current_year, force=False)
+
+    disk_yearly = discover_yearly_top250_on_disk(cache_dir)
+    merged_years = merge_top250_year_sections(index_year_rows, disk_yearly)
+    for slug, year, name, disk_count in merged_years:
+        revision = None
+        count = disk_count if disk_count is not None else 0
+        if year is not None:
+            local = read_yearly_list(data_dir, int(year))
+            if local is not None:
+                count = len(local.items)
+                revision = local.revision
         sections.append(
             JavRankingSectionOut(
                 id=f"top250:{slug}",
@@ -1397,7 +1455,7 @@ async def javranking_sections(
                 slug=slug,
                 year=year,
                 item_count=count,
-                revision=meta.revision if meta is not None else None,
+                revision=revision,
             )
         )
     for slug in CURATED_LIST_SLUGS:
@@ -1492,6 +1550,7 @@ async def javranking_list(
                         title=entry.title,
                         video_id=entry.video_id,
                         url=entry.url,
+                        thumb_url=getattr(entry, "cover_url", None),
                         state=state,
                         work_id=work_id,
                     )
@@ -1520,7 +1579,124 @@ async def javranking_list(
             )
         )
 
-    # TOP250 year slug from search index
+    # Local-first yearly TOP250 (canonical yearly/*.json, then curated list mirror).
+    year_from_slug = parse_year_slug(slug) or slug_year(slug)
+    if year_from_slug is not None:
+        data_dir = app_runtime.settings.data_dir
+        # Current year may optionally refresh from remote index; past years never.
+        if force_refresh and year_from_slug == current_calendar_year():
+            try:
+                index = await cache.load_index(force_refresh=True)
+                items_y = extract_year_from_search_videos(index.videos, year_from_slug)
+                if items_y:
+                    listing = listing_from_items(
+                        year_from_slug,
+                        items_y,
+                        source="remote",
+                        frozen=False,
+                    )
+                    write_yearly_list(data_dir, listing, force=True)
+            except Exception:
+                pass
+
+        local = read_yearly_list(data_dir, year_from_slug)
+        if local is not None and local.items:
+            section = JavRankingSectionOut(
+                id=f"top250:{slug}",
+                title=local.title or yearly_title(year_from_slug),
+                kind="top250-year",
+                slug=local.slug,
+                year=local.year,
+                item_count=len(local.items),
+                revision=local.revision,
+            )
+            items = []
+            for entry in local.items:
+                state = None
+                work_id = None
+                if entry.code:
+                    work = repo.find_work_by_code(entry.code)
+                    if work is not None:
+                        work_id = work.id
+                        state = "in_library" if repo.list_assets_for_work(work.id) else "catalog_only"
+                    else:
+                        state = "not_in_library"
+                items.append(
+                    JavRankingListItemOut(
+                        position=entry.rank,
+                        code=entry.code,
+                        title=entry.title,
+                        video_id=None,
+                        url=None,
+                        thumb_url=entry.icon_url,
+                        release_date=entry.date,
+                        state=state,
+                        work_id=work_id,
+                    )
+                )
+            return _store_javranking_list(
+                JavRankingListOut(
+                    section=section,
+                    items=items,
+                    revision=local.revision,
+                    source_format=local.source,
+                )
+            )
+
+        # Legacy curated list mirror (list-javdb-top250-*.json)
+        disk_list = cache.read_curated_list(slug)
+        if disk_list is not None and disk_list.kind == "videos" and disk_list.videos:
+            section = JavRankingSectionOut(
+                id=f"top250:{slug}",
+                title=disk_list.title or yearly_title(year_from_slug),
+                kind="top250-year",
+                slug=slug,
+                year=year_from_slug,
+                item_count=len(disk_list.videos),
+                revision=disk_list.revision,
+                fetched_at=disk_list.fetched_at,
+            )
+            items = []
+            for entry in disk_list.videos:
+                state = None
+                work_id = None
+                if entry.code:
+                    work = repo.find_work_by_code(entry.code)
+                    if work is not None:
+                        work_id = work.id
+                        state = "in_library" if repo.list_assets_for_work(work.id) else "catalog_only"
+                    else:
+                        state = "not_in_library"
+                items.append(
+                    JavRankingListItemOut(
+                        position=entry.position,
+                        code=entry.code,
+                        title=entry.title,
+                        video_id=entry.video_id,
+                        url=entry.url,
+                        thumb_url=getattr(entry, "cover_url", None),
+                        state=state,
+                        work_id=work_id,
+                    )
+                )
+            return _store_javranking_list(
+                JavRankingListOut(
+                    section=section,
+                    items=items,
+                    revision=disk_list.revision,
+                    source_format=disk_list.source_format,
+                    canonical_url=disk_list.canonical_url,
+                )
+            )
+
+        # Past years: never fall through to remote index.
+        if year_from_slug <= last_completed_year():
+            raise HTTPException(
+                status_code=404,
+                detail=f"yearly TOP250 not found locally for {year_from_slug}",
+            )
+
+    # TOP250 year slug from search index (current year fallback only)
     index = await cache.load_index(force_refresh=force_refresh)
     meta = cache.read_meta()
     matched = [item for item in top250_year_slugs(index.videos) if item[0] == slug]
@@ -1560,6 +1736,8 @@ async def javranking_list(
                 video_id=video.video_id,
                 score=float(video.score) if video.score is not None else None,
                 url=f"{cache.base_url}/{cache.locale}/videos/{video.video_id}/",
+                thumb_url=video.cover_url,
+                release_date=video.release_date,
                 state=state,
                 work_id=work_id,
             )

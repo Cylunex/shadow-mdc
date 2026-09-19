@@ -332,6 +332,40 @@ async def seed_javranking(
         ranking_slug = ranking_slug or curated.slug
     else:
         filtered = videos_for_seed(loaded.videos, min_rank=min_rank, ranking_slug=ranking_slug)
+        # Fall back to local yearly TOP250 (yearly/*.json or curated list mirror).
+        if ranking_slug and not filtered:
+            from .javdb_yearly_top250 import parse_year_slug, read_yearly_list
+            from .javranking_client import CuratedList, CuratedVideoEntry
+
+            year = parse_year_slug(ranking_slug)
+            local = read_yearly_list(data_dir, year) if year is not None else None
+            if local is not None and local.items:
+                disk = CuratedList(
+                    slug=local.slug,
+                    title=local.title,
+                    kind="videos",
+                    locale=DEFAULT_LOCALE,
+                    base_url=DEFAULT_BASE_URL,
+                    revision=local.revision,
+                    fetched_at=0.0,
+                    source_format=local.source,
+                    videos=tuple(
+                        CuratedVideoEntry(
+                            position=item.rank,
+                            code=item.code,
+                            title=item.title,
+                            cover_url=item.icon_url,
+                        )
+                        for item in local.items
+                    ),
+                )
+                filtered = curated_videos_as_search(disk, index_videos=loaded.videos)
+                revision = local.revision or revision
+            else:
+                disk = cache.read_curated_list(ranking_slug)
+                if disk is not None and disk.kind == "videos" and disk.videos:
+                    filtered = curated_videos_as_search(disk, index_videos=loaded.videos)
+                    revision = disk.revision or revision
 
     existing_keys: set[str] = set()
     considered: list[JavRankingCandidate] = []

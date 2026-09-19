@@ -176,6 +176,7 @@ class CuratedVideoEntry(BaseModel):
     title: str
     video_id: int | None = None
     url: str | None = None
+    cover_url: str | None = None
 
 
 class CuratedActorAppearance(BaseModel):

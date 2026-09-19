@@ -552,6 +552,8 @@ class JavRankingListItemOut(BaseModel):
     name: str | None = None
     actor_slug: str | None = None
     url: str | None = None
+    thumb_url: str | None = None
+    release_date: str | None = None
     state: str | None = None  # for videos: in_library / catalog_only / not_in_library
     work_id: str | None = None
     appearances: int | None = None

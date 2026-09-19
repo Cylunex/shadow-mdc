@@ -597,6 +597,8 @@ export const javRankingListItemSchema = z.object({
   name: z.string().nullable().optional(),
   actor_slug: z.string().nullable().optional(),
   url: z.string().nullable().optional(),
+  thumb_url: z.string().nullable().optional(),
+  release_date: z.string().nullable().optional(),
   state: z.string().nullable().optional(),
   work_id: z.string().nullable().optional(),
   appearances: z.number().nullable().optional()
