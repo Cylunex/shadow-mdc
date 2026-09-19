@@ -221,7 +221,7 @@ def _maybe_sync_nas(*, data_dir: Path, dry_run: bool) -> int:
 
 
 def needs_refresh(work: Work) -> bool:
-    required = ("actors", "studio", "release_date", "plot", "original_plot", "runtime_seconds")  # rating optional
+    required = ("actors", "studio", "release_date", "plot", "original_plot")  # runtime/rating optional
     return any(not field_present(work, name) for name in required)
 
 
@@ -425,9 +425,15 @@ async def _run(arguments: argparse.Namespace) -> int:
                             summary["actions"]["refreshed"] += 1
 
                     if not arguments.dry_run and not arguments.no_translate:
-                        result = await translator.translate_work(repo, work)
-                        if result.status == "translated":
-                            summary["actions"]["translated"] += 1
+                        try:
+                            result = await asyncio.wait_for(
+                                translator.translate_work(repo, work),
+                                timeout=20.0,
+                            )
+                            if result.status == "translated":
+                                summary["actions"]["translated"] += 1
+                        except TimeoutError:
+                            print(f"[{entry.position:03d}] {entry.code} translate timeout", flush=True)
                         work = repo.get_work(work.id) or work
 
                     if (
