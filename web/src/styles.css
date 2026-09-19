@@ -111,7 +111,7 @@ input:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
 .candidate h3 { font-size: 15px; line-height: 1.35; margin: 12px 0 7px; }
 .candidate button { margin-top: 14px; width: 100%; }
 
-.work-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); }
+.work-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .work-sections { display: grid; gap: 28px; }
 .work-section { display: grid; gap: 12px; }
 .work-section-title { align-items: center; display: flex; gap: 10px; }
@@ -121,14 +121,15 @@ input:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 18px;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 148px 1fr;
+  align-items: stretch;
   min-height: 0;
   overflow: hidden;
 }
 .poster { background: linear-gradient(145deg, #1e2c31, #101719); background-position: center; background-size: cover; }
-.work > div:last-child { padding: 12px; }
-.work h2 { font-size: 14px; line-height: 1.35; margin: 4px 0 6px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.work > div:last-child { padding: 14px 16px; }
+.work h2 { font-size: 16px; line-height: 1.35; margin: 6px 0 8px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 14px; }
 .tags span { background: #202a2e; border-radius: 5px; color: #b9c4c8; font-size: 11px; padding: 4px 7px; }
 .work-refresh { font-size: 12px; margin-top: 14px; padding: 7px 10px; }
@@ -540,19 +541,20 @@ button.danger { border-color: #6d3333; color: #ffb1b1; }
 .work .poster {
   position: relative;
   overflow: hidden;
-  width: 100%;
-  aspect-ratio: 2 / 3;
-  flex-shrink: 0;
-  background: linear-gradient(145deg, #1e2c31, #101719);
+  width: 148px;
+  min-height: 198px;
+  align-self: stretch;
+  background: #0c1214;
 }
 .work .poster img {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  object-position: center top;
+  object-fit: contain;
+  object-position: center center;
   display: block;
+  background: #0c1214;
 }
 .poster-fallback {
   position: absolute;
@@ -566,7 +568,7 @@ button.danger { border-color: #6d3333; color: #ffb1b1; }
   position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%);
   background: rgba(0,0,0,.72); border-radius: 999px; padding: 3px 8px; font-size: 11px; white-space: nowrap;
 }
-.work-body { padding: 10px 12px 12px; display: grid; gap: 5px; content-visibility: auto; contain-intrinsic-size: auto 120px; }
+.work-body { padding: 14px 16px; display: grid; gap: 6px; align-content: start; content-visibility: auto; contain-intrinsic-size: auto 160px; }
 .work-card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .work-grid, .actor-grid { contain: layout style; }
 .work, .actor-card, .subscription-card, .queue-card, .discover-card {
@@ -754,8 +756,8 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 
 /* —— Display polish (films / rankings / discover) —— */
 .work-grid {
-  gap: 12px;
-  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
 }
 .discover-grid {
   gap: 10px;
