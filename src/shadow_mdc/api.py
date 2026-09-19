@@ -106,6 +106,7 @@ from .api_models import (
     TaskRunOut,
     WantListEdit,
     WorkDetailOut,
+    WorkRelatedOut,
     WorkLocksRequest,
     WorkLookupOut,
     WorkLookupRequest,
@@ -248,7 +249,7 @@ from .services.x_handle import (
     sanitize_stored_x_handle,
     x_profile_url,
 )
-from .tags import display_chips, facet_tags, work_matches_tags
+from .tags import display_chips, facet_tags, normalize_tags, work_matches_tags
 from .services.category_catalog import (
     build_category_list,
     facet_count_map,
@@ -2812,6 +2813,76 @@ def get_work(work_id: str, request: Request, repo: Repo) -> WorkDetailOut:
     if work is None:
         raise HTTPException(status_code=404, detail="work not found")
     return _work_detail_out(repo, work, data_dir=runtime(request).settings.data_dir)
+
+
+
+@app.get("/api/works/{work_id}/related", response_model=WorkRelatedOut)
+def get_related_works(
+    work_id: str,
+    request: Request,
+    repo: Repo,
+    limit: Annotated[int, Query(ge=1, le=48)] = 18,
+) -> WorkRelatedOut:
+    """Same-actor and same-genre works for the dedicated detail page strips."""
+
+    work = repo.get_work(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    prefs = runtime(request).library_prefs_store.load()
+    want = set(prefs.want_list)
+    local_ids = repo.work_ids_with_local_media()
+    actor_keys = {
+        _normalize_person_name(name)
+        for name in (work.actors or [])
+        if name and str(name).strip()
+    }
+    actor_keys.discard("")
+    genre_tags = set(normalize_tags(work.tags))
+
+    actor_scored: list[tuple[int, Work]] = []
+    tag_scored: list[tuple[int, Work]] = []
+    for candidate in repo.list_works():
+        if candidate.id == work.id:
+            continue
+        if actor_keys:
+            shared_actors = sum(
+                1
+                for name in (candidate.actors or [])
+                if _normalize_person_name(name) in actor_keys
+            )
+            if shared_actors:
+                actor_scored.append((shared_actors, candidate))
+        if genre_tags:
+            shared_tags = len(genre_tags.intersection(normalize_tags(candidate.tags)))
+            if shared_tags:
+                tag_scored.append((shared_tags, candidate))
+
+    def _rank(rows: list[tuple[int, Work]]) -> list[Work]:
+        rows.sort(
+            key=lambda item: (
+                -item[0],
+                item[1].release_date is None,
+                -(item[1].release_date.toordinal() if item[1].release_date else 0),
+                item[1].title,
+            )
+        )
+        return [item[1] for item in rows[:limit]]
+
+    def _outs(rows: list[Work]) -> list[WorkOut]:
+        return [
+            _work_out(
+                repo,
+                item,
+                want_list=item.id in want,
+                has_local_media=item.id in local_ids,
+            )
+            for item in rows
+        ]
+
+    return WorkRelatedOut(
+        by_actor=_outs(_rank(actor_scored)),
+        by_tag=_outs(_rank(tag_scored)),
+    )
 
 
 @app.patch("/api/works/{work_id}", response_model=WorkDetailOut)

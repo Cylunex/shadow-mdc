@@ -39,6 +39,7 @@ import {
   workSampleGenerateSchema,
   taskRunsSchema,
   workDetailSchema,
+  workRelatedSchema,
   workSchema,
   workLookupSchema,
   worksSchema,
@@ -278,6 +279,8 @@ export const api = {
   seedCollections: () =>
     request(collectionSeedResultSchema, "/api/collections/seed", { method: "POST" }),
   workDetail: (workId: string) => request(workDetailSchema, `/api/works/${workId}`),
+  workRelated: (workId: string, limit = 18) =>
+    request(workRelatedSchema, `/api/works/${workId}/related?limit=${limit}`),
   updateWork: (
     workId: string,
     payload: {

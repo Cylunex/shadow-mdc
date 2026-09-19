@@ -9,14 +9,35 @@ import { Actors, Inbox, Works } from "./panels";
 import { CategoriesView } from "./views/CategoriesView";
 import { SettingsView } from "./views/SettingsView";
 import { SubscriptionsView } from "./views/SubscriptionsView";
+import { WorkDetailView } from "./views/WorkDetailView";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function readWorkIdFromUrl(): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get("work");
+  } catch {
+    return null;
+  }
+}
+
+function writeWorkIdToUrl(workId: string | null): void {
+  const url = new URL(window.location.href);
+  if (workId) url.searchParams.set("work", workId);
+  else url.searchParams.delete("work");
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (next !== current) window.history.pushState({ workId }, "", next);
+}
+
 export function App() {
-  const [view, setView] = useState<AppView>("works");
+  const initialWorkId = typeof window !== "undefined" ? readWorkIdFromUrl() : null;
+  const [view, setView] = useState<AppView>(initialWorkId ? "work-detail" : "works");
+  const [selectedWorkId, setSelectedWorkId] = useState<string | null>(initialWorkId);
   const [worksTagFilter, setWorksTagFilter] = useState<string[] | undefined>(undefined);
+  const [worksListScroll, setWorksListScroll] = useState(0);
   const [taskTab, setTaskTab] = useState<"inbox" | "runs">("runs");
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -83,7 +104,7 @@ export function App() {
     void (async () => {
       try {
         let refreshed = false;
-        if (view === "works" && !loaded.works) {
+        if ((view === "works" || view === "work-detail") && !loaded.works) {
           await refreshWorks();
           refreshed = true;
         } else if (view === "actors" && !loaded.actors) {
@@ -155,6 +176,36 @@ export function App() {
     }, "all");
   }
 
+
+  const openWorkDetail = useCallback((workId: string) => {
+    if (view === "works") setWorksListScroll(window.scrollY);
+    setSelectedWorkId(workId);
+    setView("work-detail");
+    writeWorkIdToUrl(workId);
+  }, [view]);
+
+  const closeWorkDetail = useCallback(() => {
+    setSelectedWorkId(null);
+    setView("works");
+    writeWorkIdToUrl(null);
+    requestAnimationFrame(() => window.scrollTo(0, worksListScroll));
+  }, [worksListScroll]);
+
+  useEffect(() => {
+    function onPopState() {
+      const workId = readWorkIdFromUrl();
+      if (workId) {
+        setSelectedWorkId(workId);
+        setView("work-detail");
+      } else if (view === "work-detail") {
+        setSelectedWorkId(null);
+        setView("works");
+      }
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [view]);
+
   const badges = {
     tasks: inbox.length || undefined,
     subscriptions: prefs.queue.filter((item) => item.status === "pending").length || undefined
@@ -165,7 +216,14 @@ export function App() {
       <TopNav
         view={view}
         onChange={(next) => {
-          if (next === "works") setWorksTagFilter(undefined);
+          if (next === "works") {
+            setWorksTagFilter(undefined);
+            setSelectedWorkId(null);
+            writeWorkIdToUrl(null);
+          } else if (next !== "work-detail") {
+            setSelectedWorkId(null);
+            writeWorkIdToUrl(null);
+          }
           setView(next);
           if (next === "tasks" && inbox.length > 0) setTaskTab("inbox");
         }}
@@ -182,7 +240,7 @@ export function App() {
                 try {
                   setLoaded({});
                   await refreshCore();
-                  if (view === "works") await refreshWorks();
+                  if (view === "works" || view === "work-detail") await refreshWorks();
                   if (view === "actors") await refreshActors();
                   if (view === "tasks") await refreshInbox();
                   setMessage("已强制刷新");
@@ -258,6 +316,7 @@ export function App() {
             works={works}
             busy={busy}
             initialSelectedTags={worksTagFilter}
+            onOpenWork={openWorkDetail}
             onToggleWant={(work) => run(`want-${work.id}`, async () => {
               const next = await api.setWantList(work.id, !work.want_list);
               setPrefs(next);
@@ -274,10 +333,6 @@ export function App() {
                   ? `已更新 ${work.primary_code ?? work.title} 的在线元数据`
                   : `未找到可自动接受的在线结果${failures ? `；失败来源：${failures}` : ""}`
               );
-            }, "works")}
-            downloadArtwork={(work) => run(`artwork-${work.id}`, async () => {
-              const result = await api.downloadArtwork(work.id);
-              setMessage(`图片缓存：新下载 ${result.downloaded}，已有 ${result.cached}，失败 ${result.failed}`);
             }, "works")}
             lookupWork={(query) => run("lookup-work", async () => {
               const trimmed = query.trim();
@@ -297,26 +352,74 @@ export function App() {
               const error = result.errors.length > 0 ? `；${result.errors[0]}` : "";
               setMessage(`补翻译（标题/剧情）：成功 ${result.translated}，无需翻译 ${result.skipped}，失败 ${result.failed}，剩余 ${result.remaining}${error}`);
             }, "works")}
-            saveWork={(workId, payload) => run(`edit-${workId}`, async () => {
-              await api.updateWork(workId, payload);
-              setMessage("作品字段已保存（仅改 Work，来源快照不变）");
-            }, "works")}
-            saveLocks={(workId, locks) => run(`locks-${workId}`, async () => {
-              await api.updateWorkLocks(workId, locks);
-              setMessage(`已更新字段锁：${locks.length ? locks.join("、") : "无"}`);
-            }, "works")}
-            preferPoster={(workId, index) => run(`poster-${workId}`, async () => {
-              await api.preferWorkPoster(workId, index);
-              setMessage("已选用缓存海报");
-            }, "works")}
-            deleteMagnet={(workId, magnetId) => run(`magnet-del-${magnetId}`, async () => {
-              await api.deleteWorkMagnet(workId, magnetId);
-              setMessage("已移除磁力链接");
-            }, "none")}
             seedCollections={() => run("seed-collections", async () => {
               const result = await api.seedCollections();
               setMessage(`合集索引：共 ${result.collections_total}，新建 ${result.collections_created}`);
             }, "works")}
+          />
+        )}
+
+        {view === "work-detail" && selectedWorkId && (
+          <WorkDetailView
+            workId={selectedWorkId}
+            busy={busy}
+            onBack={closeWorkDetail}
+            onOpenWork={openWorkDetail}
+            report={setMessage}
+            onSelectGenreTag={(tag) => {
+              setWorksTagFilter([tag]);
+              setSelectedWorkId(null);
+              writeWorkIdToUrl(null);
+              setView("works");
+              setMessage(`已筛选标签：${tag}`);
+            }}
+            onOpenActor={(name) => {
+              setView("actors");
+              setSelectedWorkId(null);
+              writeWorkIdToUrl(null);
+              setMessage(`已打开演员库（可搜索：${name}）`);
+            }}
+            onSave={(workId, payload) => run(`edit-${workId}`, async () => {
+              await api.updateWork(workId, payload);
+              setMessage("作品字段已保存（仅改 Work，来源快照不变）");
+            }, "works")}
+            onLocks={(workId, locks) => run(`locks-${workId}`, async () => {
+              await api.updateWorkLocks(workId, locks);
+              setMessage(`已更新字段锁：${locks.length ? locks.join("、") : "无"}`);
+            }, "works")}
+            onPreferPoster={(workId, index) => run(`poster-${workId}`, async () => {
+              await api.preferWorkPoster(workId, index);
+              setMessage("已选用缓存海报");
+            }, "works")}
+            onDeleteMagnet={(workId, magnetId) => run(`magnet-del-${magnetId}`, async () => {
+              await api.deleteWorkMagnet(workId, magnetId);
+              setMessage("已移除磁力链接");
+            }, "none")}
+            onRefresh={(workId) => {
+              const work = works.find((item) => item.id === workId);
+              if (!work) {
+                void run(`work-${workId}`, async () => {
+                  const result = await api.refreshWork(workId);
+                  setMessage(result.accepted_work_id ? "已刷新元数据" : "未找到可自动接受的在线结果");
+                }, "works");
+                return;
+              }
+              void run(`work-${work.id}`, async () => {
+                const result = await api.refreshWork(work.id);
+                const failures = result.failures.map((failure) => failure.provider).join("、");
+                setMessage(
+                  result.accepted_work_id
+                    ? `已更新 ${work.primary_code ?? work.title} 的在线元数据`
+                    : `未找到可自动接受的在线结果${failures ? `；失败来源：${failures}` : ""}`
+                );
+              }, "works");
+            }}
+            onDownload={(workId) => {
+              void run(`artwork-${workId}`, async () => {
+                const result = await api.downloadArtwork(workId);
+                setMessage(`图片缓存：新下载 ${result.downloaded}，已有 ${result.cached}，失败 ${result.failed}`);
+              }, "works");
+            }}
           />
         )}
 

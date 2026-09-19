@@ -596,6 +596,13 @@ class WorkDetailOut(WorkOut):
     javranking: JavRankingInfoOut | None = None
 
 
+class WorkRelatedOut(BaseModel):
+    """Same-actor and same-genre strips for the work detail page."""
+
+    by_actor: list[WorkOut] = Field(default_factory=list)
+    by_tag: list[WorkOut] = Field(default_factory=list)
+
+
 class InboxBatchRequest(BaseModel):
     asset_ids: tuple[str, ...] = Field(min_length=1, max_length=500)
 

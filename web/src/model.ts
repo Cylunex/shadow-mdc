@@ -303,6 +303,11 @@ export const workDetailSchema = workSchema.extend({
   javranking: javRankingInfoSchema.nullable().optional().default(null)
 });
 
+export const workRelatedSchema = z.object({
+  by_actor: z.array(workSchema).default([]),
+  by_tag: z.array(workSchema).default([])
+});
+
 export const actorJavRankingHonorSchema = z.object({
   list_slug: z.string(),
   list_title: z.string(),
@@ -632,6 +637,7 @@ export type JavRankingListItem = z.infer<typeof javRankingListItemSchema>;
 export type JavRankingList = z.infer<typeof javRankingListSchema>;
 export type JavRankingSeedResult = z.infer<typeof javRankingSeedResultSchema>;
 export type WorkDetail = z.infer<typeof workDetailSchema>;
+export type WorkRelated = z.infer<typeof workRelatedSchema>;
 export type InboxBatchResult = z.infer<typeof inboxBatchResultSchema>;
 export type ActorProfile = z.infer<typeof actorProfileSchema>;
 export type NonJavActor = z.infer<typeof nonJavActorSchema>;

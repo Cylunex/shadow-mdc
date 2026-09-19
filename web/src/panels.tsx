@@ -4,7 +4,7 @@ import { api, appUrl } from "./api";
 import { XHandleLink } from "./components/XHandleLink";
 import type { NonJavActorEditPayload, OrganizePayload } from "./api";
 import { identityAliasesSchema } from "./model";
-import type { ActorProfile, Asset, BatchPlan, Candidate, IdentityAliases, Library, LibraryPrefs, NonJavActor, TaskRun, Work, WorkDetail } from "./model";
+import type { ActorProfile, Asset, BatchPlan, Candidate, IdentityAliases, Library, LibraryPrefs, NonJavActor, TaskRun, Work } from "./model";
 import { WorkCard } from "./components/WorkCard";
 
 type DisplayCategory = "all" | "Japan" | "China" | "Korea" | "Europe" | "Other";
@@ -890,21 +890,10 @@ export function Works(props: {
   works: Work[];
   busy: string | null;
   initialSelectedTags?: string[];
+  onOpenWork: (workId: string) => void;
   refreshMetadata: (work: Work) => Promise<void>;
-  downloadArtwork: (work: Work) => Promise<void>;
   lookupWork: (query: string) => Promise<void>;
   translateWorks: () => Promise<void>;
-  saveWork: (workId: string, payload: {
-    title?: string;
-    actors?: string[];
-    studio?: string | null;
-    series?: string | null;
-    tags?: string[];
-    plot?: string | null;
-  }) => Promise<void>;
-  saveLocks: (workId: string, locks: string[]) => Promise<void>;
-  preferPoster: (workId: string, index: number) => Promise<void>;
-  deleteMagnet: (workId: string, magnetId: string) => Promise<void>;
   seedCollections: () => Promise<void>;
   onToggleWant?: (work: Work) => Promise<void>;
 }) {
@@ -920,8 +909,6 @@ export function Works(props: {
     }
   }, [props.initialSelectedTags]);
   const [page, setPage] = useState(1);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<WorkDetail | null>(null);
   const categories = ["Japan", "China", "Korea", "Europe", "Other"] as const;
   const deferredQuery = useDeferredValue(query);
   const normalizedQuery = deferredQuery.trim().toLocaleLowerCase();
@@ -997,15 +984,6 @@ export function Works(props: {
       current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]
     );
   }
-  useEffect(() => {
-    if (!selectedId) {
-      setDetail(null);
-      return;
-    }
-    void api.workDetail(selectedId)
-      .then(setDetail)
-      .catch(() => setDetail(null));
-  }, [selectedId, works]);
   const currentPage = Math.min(page, Math.max(1, Math.ceil(visibleWorks.length / WORK_PAGE_SIZE)));
   const renderedWorks = visibleWorks.slice(
     (currentPage - 1) * WORK_PAGE_SIZE,
@@ -1067,372 +1045,31 @@ export function Works(props: {
       setQuery={setQuery}
       setCategory={setCategory}
     /></>}
-    <div className={detail ? "works-layout with-detail" : "works-layout"}>
-      <div>
-        {works.length === 0
-          ? <Empty title="作品库为空" detail="可按番号查询 JAV，或依赖非 JAV 种子作品 / 扫描媒体库后接受候选。打开演员库可查看已写入的非 JAV 作品。" />
-          : visibleWorks.length === 0
-            ? <Empty title="没有匹配的作品" detail="可以清空关键词或切换展示分类。" />
-            : <div className="work-sections">{categories.map((sectionCategory) => {
-        const categoryWorks = renderedWorks.filter((work) => work.category === sectionCategory);
-        if (categoryWorks.length === 0) return null;
-        return <section className="work-section" key={sectionCategory}>
-          <div className="work-section-title"><h2>{sectionCategory}</h2><span>{categoryWorks.length}</span></div>
-          <div className="work-grid">{categoryWorks.map((work) => (
-            <WorkCard
-              key={work.id}
-              work={work}
-              selected={selectedId === work.id}
-              busy={props.busy}
-              onSelect={setSelectedId}
-              onRefresh={(item) => void props.refreshMetadata(item)}
-              onToggleWant={props.onToggleWant ? (item) => void props.onToggleWant?.(item) : undefined}
-            />
-          ))}</div>
-        </section>;
-          })}</div>}
-        <Pagination page={currentPage} total={visibleWorks.length} pageSize={WORK_PAGE_SIZE} setPage={setPage} />
-      </div>
-      {detail && (
-        <WorkDetailPanel
-          detail={detail}
-          busy={props.busy}
-          onClose={() => setSelectedId(null)}
-          onSave={props.saveWork}
-          onLocks={props.saveLocks}
-          onPreferPoster={props.preferPoster}
-          onSelectGenreTag={(tag) => {
-            setSelectedTags((current) => current.includes(tag) ? current : [...current, tag]);
-            setPage(1);
-          }}
-          onDeleteMagnet={async (workId, magnetId) => {
-            await props.deleteMagnet(workId, magnetId);
-            try {
-              setDetail(await api.workDetail(workId));
-            } catch {
-              setDetail(null);
-            }
-          }}
-          onRefresh={() => {
-            const work = works.find((item) => item.id === detail.id);
-            if (work) void props.refreshMetadata(work);
-          }}
-          onDownload={() => {
-            const work = works.find((item) => item.id === detail.id);
-            if (work) void props.downloadArtwork(work);
-          }}
-          onGenerateSamples={() => {
-            void (async () => {
-              try {
-                const result = await api.generateWorkSamples(detail.id);
-                setDetail(await api.workDetail(detail.id));
-                window.alert(
-                  `样本：网页 ${result.web_downloaded}，本地补帧 ${result.local_generated}，合计 ${result.sample_count}`
-                );
-              } catch (error) {
-                window.alert(error instanceof Error ? error.message : String(error));
-              }
-            })();
-          }}
-        />
-      )}
+    <div className="works-layout">
+      {works.length === 0
+        ? <Empty title="作品库为空" detail="可按番号查询 JAV，或依赖非 JAV 种子作品 / 扫描媒体库后接受候选。打开演员库可查看已写入的非 JAV 作品。" />
+        : visibleWorks.length === 0
+          ? <Empty title="没有匹配的作品" detail="可以清空关键词或切换展示分类。" />
+          : <div className="work-sections">{categories.map((sectionCategory) => {
+      const categoryWorks = renderedWorks.filter((work) => work.category === sectionCategory);
+      if (categoryWorks.length === 0) return null;
+      return <section className="work-section" key={sectionCategory}>
+        <div className="work-section-title"><h2>{sectionCategory}</h2><span>{categoryWorks.length}</span></div>
+        <div className="work-grid">{categoryWorks.map((work) => (
+          <WorkCard
+            key={work.id}
+            work={work}
+            busy={props.busy}
+            onSelect={props.onOpenWork}
+            onRefresh={(item) => void props.refreshMetadata(item)}
+            onToggleWant={props.onToggleWant ? (item) => void props.onToggleWant?.(item) : undefined}
+          />
+        ))}</div>
+      </section>;
+        })}</div>}
+      <Pagination page={currentPage} total={visibleWorks.length} pageSize={WORK_PAGE_SIZE} setPage={setPage} />
     </div>
   </>;
-}
-
-const EDITABLE_LOCK_FIELDS = ["title", "actors", "studio", "series", "tags", "plot"] as const;
-
-export function WorkDetailPanel(props: {
-  detail: WorkDetail;
-  busy: string | null;
-  onClose: () => void;
-  onSave: (workId: string, payload: {
-    title?: string;
-    actors?: string[];
-    studio?: string | null;
-    series?: string | null;
-    tags?: string[];
-    plot?: string | null;
-  }) => Promise<void>;
-  onLocks: (workId: string, locks: string[]) => Promise<void>;
-  onPreferPoster: (workId: string, index: number) => Promise<void>;
-  onDeleteMagnet: (workId: string, magnetId: string) => Promise<void>;
-  onRefresh: () => void;
-  onDownload: () => void;
-  onGenerateSamples?: () => void;
-  onSelectGenreTag?: (tag: string) => void;
-}) {
-  const work = props.detail;
-  const [title, setTitle] = useState(work.title);
-  const [actors, setActors] = useState(work.actors.join(", "));
-  const [studio, setStudio] = useState(work.studio ?? "");
-  const [series, setSeries] = useState(work.series ?? "");
-  const [tags, setTags] = useState(work.tags.join(", "));
-  const [plot, setPlot] = useState(work.plot ?? "");
-  const [locks, setLocks] = useState<string[]>(work.field_locks ?? []);
-  useEffect(() => {
-    setTitle(work.title);
-    setActors(work.actors.join(", "));
-    setStudio(work.studio ?? "");
-    setSeries(work.series ?? "");
-    setTags(work.tags.join(", "));
-    setPlot(work.plot ?? "");
-    setLocks(work.field_locks ?? []);
-  }, [work]);
-  function sourceOf(field: string): string {
-    return work.field_sources[field] ?? "—";
-  }
-  return <aside className="work-detail">
-    <div className="work-detail-head">
-      <div>
-        <p className="eyebrow">WORK DETAIL</p>
-        <h2>{work.primary_code ?? work.title}</h2>
-      </div>
-      <button className="ghost" type="button" onClick={props.onClose}>关闭</button>
-    </div>
-    <div
-      className="poster large"
-      style={work.image_url ? { backgroundImage: `url("${appUrl(work.image_url)}")` } : undefined}
-    />
-    {work.javranking && (
-      <section className="javranking-honors">
-        <div className="javranking-honors-head">
-          <h3>JavRanking 上榜</h3>
-          {work.javranking.compact_badge && (
-            <a
-              className="javranking-badge compact"
-              href={work.javranking.detail_url}
-              target="_blank"
-              rel="noopener noreferrer"
-            >{work.javranking.compact_badge}</a>
-          )}
-        </div>
-        <div className="tags javranking-badges">
-          {(work.javranking.honors ?? []).map((honor) => (
-            <a
-              key={`${honor.slug}-${honor.position}`}
-              className="javranking-badge"
-              href={honor.url || work.javranking?.detail_url || "#"}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={honor.source ? `${honor.label} · ${honor.source}` : honor.label}
-            >{honor.label}</a>
-          ))}
-          {(work.javranking.honors ?? []).length === 0 && (
-            <p className="muted">已收录于 JavRanking，暂无分榜记录</p>
-          )}
-        </div>
-      </section>
-    )}
-    {(work.rating_value != null || (work.javranking && work.javranking.score != null)) && (
-      <div className="score-badge-row">
-        {work.rating_value != null && (
-          <span className="score-badge" title={work.rating_source ? `来源 ${work.rating_source}` : undefined}>
-            ★ {work.rating_value}
-            {work.rating_max != null ? `/${work.rating_max}` : ""}
-            {work.rating_count != null ? ` · ${work.rating_count}` : ""}
-          </span>
-        )}
-        {work.javranking?.score != null && (
-          <span className="score-badge secondary" title="JavRanking score">
-            JR {work.javranking.score}
-            {work.javranking.rank != null ? ` · #${work.javranking.rank}` : ""}
-          </span>
-        )}
-      </div>
-    )}
-    {(work.display_tags ?? []).length > 0 && (
-      <div className="tags display-tags" aria-label="作品标签">
-        {(work.display_tags ?? []).map((tag) => (
-          props.onSelectGenreTag ? (
-            <button
-              key={tag}
-              type="button"
-              className="display-tag-chip"
-              onClick={() => props.onSelectGenreTag?.(tag)}
-              title={`按「${tag}」筛选影片`}
-            >{tag}</button>
-          ) : (
-            <span key={tag}>{tag}</span>
-          )
-        ))}
-      </div>
-    )}
-    <div className="work-detail-actions">
-      <button className="secondary" disabled={props.busy === `work-${work.id}`} onClick={props.onRefresh}>刷新元数据</button>
-      <button className="ghost" disabled={props.busy === `artwork-${work.id}`} onClick={props.onDownload}>缓存图片</button>
-      <button
-        className="ghost"
-        disabled={props.busy === `samples-${work.id}` || !props.onGenerateSamples}
-        onClick={() => props.onGenerateSamples?.()}
-      >生成样本帧</button>
-    </div>
-    {(work.sample_urls ?? []).length > 0 && (
-      <section className="sample-gallery">
-        <h3>样本 / 预览 ({(work.sample_urls ?? []).length})</h3>
-        <div className="sample-grid">
-          {(work.sample_urls ?? []).map((url, index) => (
-            <a key={`${url}-${index}`} href={appUrl(url) ?? url} target="_blank" rel="noopener noreferrer" className="sample-thumb">
-              <img src={appUrl(url) ?? url} alt="" loading="lazy" decoding="async" />
-            </a>
-          ))}
-        </div>
-      </section>
-    )}
-    {(work.reviews ?? []).length > 0 && (
-      <section className="review-highlights">
-        <h3>短评 / 摘录</h3>
-        <ul className="review-list">
-          {(work.reviews ?? []).map((item, index) => (
-            <li key={`${String(item.provider)}-${index}`}>
-              <p>{String(item.text ?? "")}</p>
-              <small className="muted">
-                {[item.provider, item.author, item.score != null ? `★ ${item.score}` : undefined]
-                  .filter((value): value is string | number => value != null && value !== "")
-                  .map(String)
-                  .join(" · ")}
-              </small>
-            </li>
-          ))}
-        </ul>
-      </section>
-    )}
-    <label><span>标题 <small>来源 {sourceOf("title")}</small></span>
-      <input value={title} onChange={(event) => setTitle(event.target.value)} />
-    </label>
-    <label><span>演员 <small>来源 {sourceOf("actors")}</small></span>
-      <input value={actors} onChange={(event) => setActors(event.target.value)} placeholder="逗号分隔" />
-    </label>
-    <label><span>片商 <small>来源 {sourceOf("studio")}</small></span>
-      <input value={studio} onChange={(event) => setStudio(event.target.value)} />
-    </label>
-    <label><span>系列 <small>来源 {sourceOf("series")}</small></span>
-      <input value={series} onChange={(event) => setSeries(event.target.value)} />
-    </label>
-    <label><span>标签 <small>来源 {sourceOf("tags")}</small></span>
-      <input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="逗号分隔" />
-    </label>
-    <div className="plot-bilingual">
-      <label><span>剧情 · 译文 <small>来源 {sourceOf("plot")}</small></span>
-        <textarea value={plot} onChange={(event) => setPlot(event.target.value)} rows={5} />
-      </label>
-      {work.original_plot && work.original_plot !== plot && (
-        <details>
-          <summary>原文 · original plot <small>来源 {sourceOf("original_plot")}</small></summary>
-          <p className="plot-original">{work.original_plot}</p>
-        </details>
-      )}
-    </div>
-    <div className="lock-grid">
-      <strong>字段锁</strong>
-      <small>锁定后刷新/再刮削不会覆盖该字段</small>
-      {EDITABLE_LOCK_FIELDS.map((field) => (
-        <label key={field} className="check-line">
-          <input
-            type="checkbox"
-            checked={locks.includes(field)}
-            onChange={(event) => {
-              setLocks((current) => event.target.checked
-                ? [...current, field]
-                : current.filter((item) => item !== field));
-            }}
-          />
-          {field}
-        </label>
-      ))}
-    </div>
-    <div className="work-detail-actions">
-      <button
-        disabled={props.busy === `edit-${work.id}`}
-        onClick={() => void props.onSave(work.id, {
-          title,
-          actors: actors.split(/[,，]/).map((item) => item.trim()).filter(Boolean),
-          studio: studio.trim() || null,
-          series: series.trim() || null,
-          tags: tags.split(/[,，]/).map((item) => item.trim()).filter(Boolean),
-          plot: plot.trim() || null
-        })}
-      >保存到 Work</button>
-      <button
-        className="secondary"
-        disabled={props.busy === `locks-${work.id}`}
-        onClick={() => void props.onLocks(work.id, locks)}
-      >保存锁</button>
-    </div>
-    <section className="magnet-panel">
-      <div className="magnet-panel-head">
-        <h3>资源 / 磁力 ({(work.magnets ?? []).length})</h3>
-        <button
-          type="button"
-          className="secondary"
-          onClick={() => {
-            void (async () => {
-              const url = await api.workEmbyLink(work.id);
-              if (url) window.open(url, "_blank", "noopener,noreferrer");
-              else window.alert("尚未配置 Emby/Jellyfin 地址");
-            })();
-          }}
-        >打开 Emby</button>
-      </div>
-      <p className="muted">一对多保存在本地，仅供复制/保存；应用不下载。可在「榜单 → 多源搜索」勾选后保存到作品。</p>
-      {(work.magnets ?? []).length === 0
-        ? <p className="muted">暂无已保存磁力。可在「榜单 → 多源番号搜索」勾选后保存到作品。</p>
-        : <div className="magnet-list">{(work.magnets ?? []).map((magnet) => (
-          <div className="magnet-row" key={magnet.id}>
-            <span>{(magnet.name || magnet.info_hash.slice(0, 12)) + (magnet.has_subtitle ? " · 字幕" : "") + (magnet.hd ? " · HD" : "")}</span>
-            <small className="muted">{magnet.provider}</small>
-            <button type="button" className="ghost" onClick={() => void navigator.clipboard.writeText(magnet.uri)}>复制</button>
-            <button
-              type="button"
-              className="ghost"
-              disabled={props.busy === `magnet-del-${magnet.id}`}
-              onClick={() => void props.onDeleteMagnet(work.id, magnet.id)}
-            >移除</button>
-          </div>
-        ))}</div>}
-    </section>
-    <section>
-      <h3>关联资产 ({work.assets.length})</h3>
-      {work.assets.length === 0
-        ? <p className="muted">暂无本地媒体文件</p>
-        : <ul className="asset-list">{work.assets.map((asset) => (
-          <li key={asset.id}><code>{asset.path}</code><span>{asset.state}</span></li>
-        ))}</ul>}
-    </section>
-    <section>
-      <h3>缓存海报</h3>
-      <div className="poster-pick">
-        {work.artwork.map((item, index) => {
-          const local = typeof item.local_path === "string" ? item.local_path : null;
-          const preferred = item.preferred === true;
-          return <button
-            key={`${index}-${String(item.url ?? local ?? index)}`}
-            type="button"
-            className={preferred ? "secondary" : "ghost"}
-            disabled={!local || props.busy === `poster-${work.id}`}
-            onClick={() => void props.onPreferPoster(work.id, index)}
-          >{preferred ? "当前海报" : local ? `选用 #${index + 1}` : `无缓存 #${index + 1}`}</button>;
-        })}
-        {work.artwork.length === 0 && <p className="muted">暂无图片条目</p>}
-      </div>
-    </section>
-    <section>
-      <h3>合集</h3>
-      <div className="tags">{(work.collections ?? []).map((item) => (
-        <span key={item.id}>{item.kind} · {item.name}</span>
-      ))}
-      {(work.collections ?? []).length === 0 && <p className="muted">尚未关联系列/片商/平台合集</p>}
-      </div>
-    </section>
-    <section>
-      <h3>身份</h3>
-      <ul className="asset-list">{work.identities.map((identity) => (
-        <li key={`${identity.provider}-${identity.kind}-${identity.value}`}>
-          <code>{identity.provider}/{identity.kind}</code><span>{identity.value}</span>
-        </li>
-      ))}</ul>
-    </section>
-  </aside>;
 }
 
 export function Libraries(props: {
