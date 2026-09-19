@@ -284,8 +284,17 @@ def seed(
                         missing_cover += 1
                         print(f"MISS {label} (all sources failed)", file=sys.stderr)
         else:
-            missing_cover += 1
-            print(f"NO-SRC {label}", file=sys.stderr)
+            # Keep a previously seeded cover when refs have no matching title.
+            prior = existing_by_label.get(label)
+            if prior and prior.image_file and (out_dir / prior.image_file).is_file():
+                image_file = prior.image_file
+                source = prior.source
+                source_title = prior.source_title
+                skipped += 1
+                print(f"KEEP {label} ← existing {image_file}")
+            else:
+                missing_cover += 1
+                print(f"NO-SRC {label}", file=sys.stderr)
 
         entries.append(
             CategoryCoverEntry(

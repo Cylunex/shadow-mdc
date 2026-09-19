@@ -294,3 +294,35 @@ def test_ph_cn_and_eporner_extra_synonyms() -> None:
     assert canonicalize_tag("VR Porn") == "VR"
     assert canonicalize_tag("Students") == "学生"
     assert canonicalize_tag("nurses") == "护士"
+
+
+def test_expanded_position_and_scene_synonyms() -> None:
+    assert canonicalize_tag("Titty Fucking") == "乳交"
+    assert canonicalize_tag("titjob") == "乳交"
+    assert canonicalize_tag("Cum Swallowing") == "吞精"
+    assert canonicalize_tag("Gokkun") == "吞精"
+    assert canonicalize_tag("Riding") == "骑乘"
+    assert canonicalize_tag("Shaving") == "刮毛"
+    assert canonicalize_tag("Stepsister") == "姐妹"
+    assert canonicalize_tag("Housewife") == "人妻"
+    assert canonicalize_tag("School Uniform") == "制服"
+    assert canonicalize_tag("Female Masturbation") == "自慰"
+    assert canonicalize_tag("Babysitter") == "女仆"
+    assert canonicalize_tag("Ass") == "美尻"
+    assert canonicalize_tag("Lactating") == "母乳"
+    assert canonicalize_tag("Oiled") == "油腻"
+    assert canonicalize_tag("Soap") == "泡泡浴"
+    assert canonicalize_tag("Cheating") == "不倫"
+    assert canonicalize_tag("出轨") == "不倫"
+    assert canonicalize_tag("Affairs") == "不倫"
+    assert canonicalize_tag("Humiliation") == "羞辱"
+    assert canonicalize_tag("Dirty Talk") == "淫语"
+    assert canonicalize_tag("Virgin") == "童贞"
+    assert canonicalize_tag("Doctor") == "女医"
+
+
+def test_featured_adjacent_filter_tags_present() -> None:
+    from shadow_mdc.tags import COMMON_FILTER_TAGS
+
+    for name in ("乳交", "后入", "骑乘", "情侣", "自拍", "不倫", "高清", "浴室"):
+        assert name in COMMON_FILTER_TAGS

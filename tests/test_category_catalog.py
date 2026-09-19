@@ -42,6 +42,24 @@ from shadow_mdc.tags import canonicalize_tag
         ("Cosplay", "Cosplay"),
         ("BBC", "BBC"),
         ("BDSM", "BDSM"),
+        ("Titty Fucking", "乳交"),
+        ("Cum Swallowing", "吞精"),
+        ("Doggy Style", "后入"),
+        ("Cowgirl", "骑乘"),
+        ("Missionary", "正常位"),
+        ("Cheating", "不倫"),
+        ("出轨", "不倫"),
+        ("Oiled", "油腻"),
+        ("Lactating", "母乳"),
+        ("Stepsister", "姐妹"),
+        ("Housewife", "人妻"),
+        ("Shaving", "刮毛"),
+        ("Dirty Talk", "淫语"),
+        ("Humiliation", "羞辱"),
+        ("Virgin", "童贞"),
+        ("Doctor", "女医"),
+        ("Webcam", "摄像头"),
+        ("Bathroom", "浴室"),
     ],
 )
 def test_category_source_titles_map_to_canonical(raw: str, expected: str) -> None:
@@ -49,7 +67,7 @@ def test_category_source_titles_map_to_canonical(raw: str, expected: str) -> Non
 
 
 def test_featured_labels_are_curated_size() -> None:
-    assert 40 <= len(FEATURED_CATEGORY_LABELS) <= 90
+    assert 40 <= len(FEATURED_CATEGORY_LABELS) <= 150
     assert len(FEATURED_CATEGORY_LABELS) == len(set(FEATURED_CATEGORY_LABELS))
 
 
