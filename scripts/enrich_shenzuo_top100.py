@@ -258,17 +258,24 @@ async def ensure_seeded(
     repo: Repository,
     entry: TopEntry,
     dry_run: bool,
+    use_javdb: bool = False,
+    seed_timeout: float = 25.0,
 ) -> tuple[Work | None, str]:
     existing = repo.find_work_by_code(entry.code)
     if existing is not None:
         return existing, "exists"
     if dry_run:
         return None, "would_seed"
-    # Prefer javdb then fanza
+    providers = ["javbus", "fanza", "jav321"]
+    if use_javdb:
+        providers = ["javbus", "javdb", "fanza", "jav321"]
     last_error: Exception | None = None
-    for provider in ("javbus", "javdb", "fanza", "jav321"):
+    for provider in providers:
         try:
-            result = await discover.seed(repo, provider=provider, code=entry.code)
+            result = await asyncio.wait_for(
+                discover.seed(repo, provider=provider, code=entry.code),
+                timeout=seed_timeout,
+            )
             work = repo.get_work(result.work_id)
             if work is None:
                 raise LookupError(f"seeded work missing: {result.work_id}")
@@ -381,7 +388,11 @@ async def _run(arguments: argparse.Namespace) -> int:
                 with database.session() as session:
                     repo = Repository(session)
                     work, seed_status = await ensure_seeded(
-                        discover=discover, repo=repo, entry=entry, dry_run=arguments.dry_run
+                        discover=discover,
+                        repo=repo,
+                        entry=entry,
+                        dry_run=arguments.dry_run,
+                        use_javdb=bool(proxy),
                     )
                     if seed_status.startswith("seeded"):
                         summary["actions"]["seeded"] += 1
