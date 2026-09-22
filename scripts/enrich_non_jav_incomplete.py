@@ -526,19 +526,49 @@ async def _run(arguments: argparse.Namespace) -> int:
                     family = ContentFamily(work.family) if work.family in ContentFamily._value2member_map_ else ContentFamily.WESTERN
                     category = MediaCategory(work.category) if work.category in MediaCategory._value2member_map_ else MediaCategory.EUROPE
                     record = scene_to_record(scene, family=family, category=category)
-                    # Only fill gaps: merge with overwrite=False so existing fields stay.
-                    # But plot/actors empty should accept provider. upsert overwrite=False already prefers empty.
-                    updated = repo.upsert_provider_record(record, overwrite=False)
-                    # Force-fill empty plot from description when still empty and record has it
+                    # NEVER create new works — only fill gaps on the target row.
+                    updated = work
+                    sources = dict(updated.field_sources or {})
                     if not (updated.plot or getattr(updated, "original_plot", None)) and record.plot:
                         repo.update_work_fields(updated, plot=record.plot, lock_edited=False)
                         updated = repo.get_work(updated.id) or updated
+                        sources = dict(updated.field_sources or {})
+                        sources["plot"] = "theporndb"
+                        updated.field_sources = sources
                     if not updated.actors and record.actors:
                         repo.update_work_fields(updated, actors=list(record.actors), lock_edited=False)
                         updated = repo.get_work(updated.id) or updated
                     if not updated.tags and record.tags:
                         repo.update_work_fields(updated, tags=list(record.tags), lock_edited=False)
                         updated = repo.get_work(updated.id) or updated
+                    if updated.release_date is None and record.release_date is not None:
+                        updated.release_date = record.release_date
+                        sources = dict(updated.field_sources or {})
+                        sources["release_date"] = "theporndb"
+                        updated.field_sources = sources
+                    if updated.rating_value is None and record.rating is not None and float(record.rating) > 0:
+                        updated.rating_value = float(record.rating)
+                        updated.rating_max = float(record.rating_max) if record.rating_max else 5.0
+                        updated.rating_source = "theporndb"
+                        sources = dict(updated.field_sources or {})
+                        sources["rating"] = "theporndb"
+                        updated.field_sources = sources
+                    if (not updated.artwork) and record.artwork:
+                        updated.artwork = [
+                            {"url": item.url, "kind": item.kind, "source": "theporndb"}
+                            for item in record.artwork
+                            if item.url
+                        ]
+                        sources = dict(updated.field_sources or {})
+                        sources["artwork"] = "theporndb"
+                        updated.field_sources = sources
+                    # Persist identity link without creating a second work.
+                    try:
+                        repo._add_record_identities(updated, record)  # noqa: SLF001
+                    except Exception:
+                        pass
+                    repo._session.flush()
+                    updated = repo.get_work(updated.id) or updated
 
                     gaps_after_meta = field_gaps(updated)
                     for name in ("plot", "actors", "release_date", "tags", "cover", "rating"):
