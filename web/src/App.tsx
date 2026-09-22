@@ -101,6 +101,34 @@ export function App() {
   }, [refreshCore]);
 
   useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "k") return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        // allow re-focus even from other inputs
+      }
+      event.preventDefault();
+      const lookup = document.getElementById("shadow-mdc-lookup") as HTMLInputElement | null;
+      const search = document.getElementById("shadow-mdc-search") as HTMLInputElement | null;
+      const el = lookup ?? search;
+      if (el) {
+        el.focus();
+        el.select();
+      } else {
+        setView("works");
+        window.setTimeout(() => {
+          const next = (document.getElementById("shadow-mdc-lookup")
+            ?? document.getElementById("shadow-mdc-search")) as HTMLInputElement | null;
+          next?.focus();
+          next?.select();
+        }, 50);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
     void (async () => {
       try {
         let refreshed = false;
@@ -254,7 +282,19 @@ export function App() {
           </button>
         </div>
 
-        {view === "actors" && (
+        {view === "actors" && !loaded.actors && (
+          <div className="skeleton-grid" aria-busy="true" aria-label="演员加载中">
+            {Array.from({ length: 6 }, (_, index) => (
+              <div className="skeleton-card" key={index}>
+                <div className="skeleton-poster skeleton-poster--portrait" />
+                <div className="skeleton-lines">
+                  <span /><span /><span />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {view === "actors" && loaded.actors && (
           <Actors
             actors={actors}
             nonJavActors={nonJavActors}
@@ -310,7 +350,19 @@ export function App() {
           />
         )}
 
-        {view === "works" && (
+        {view === "works" && !loaded.works && (
+          <div className="skeleton-grid" aria-busy="true" aria-label="作品加载中">
+            {Array.from({ length: 6 }, (_, index) => (
+              <div className="skeleton-card" key={index}>
+                <div className="skeleton-poster" />
+                <div className="skeleton-lines">
+                  <span /><span /><span />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {view === "works" && loaded.works && (
           <Works
             key={worksTagFilter ? worksTagFilter.join("|") : "works-all"}
             works={works}

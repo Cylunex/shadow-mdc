@@ -1453,3 +1453,82 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   .work-page-meta-row { grid-template-columns: 48px minmax(0, 1fr); }
   .year-chip-bar.sticky-year-bar { top: 0; }
 }
+
+
+/* —— Opt 2026-09-22: skeletons, offline chips —— */
+.skeleton-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+.skeleton-card {
+  display: grid;
+  grid-template-columns: 148px 1fr;
+  min-height: 198px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  overflow: hidden;
+}
+.skeleton-poster {
+  background: linear-gradient(90deg, #1a2428 0%, #243238 50%, #1a2428 100%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+.skeleton-poster--portrait { min-height: 160px; }
+.skeleton-lines {
+  display: grid;
+  gap: 10px;
+  padding: 18px 16px;
+  align-content: start;
+}
+.skeleton-lines span {
+  display: block;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #1a2428 0%, #243238 50%, #1a2428 100%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+.skeleton-lines span:nth-child(1) { width: 72%; }
+.skeleton-lines span:nth-child(2) { width: 48%; }
+.skeleton-lines span:nth-child(3) { width: 58%; }
+@keyframes skeleton-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+.offline-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  background: #1b3526;
+  color: #9fe0b8;
+  border: 1px solid #2f5a40;
+  white-space: nowrap;
+}
+.offline-chip.status-failed,
+.offline-chip.status-error {
+  background: #3a1c1c;
+  color: #ffb1b1;
+  border-color: #6d3333;
+}
+.offline-chip.status-running,
+.offline-chip.status-pending,
+.offline-chip.status-downloading {
+  background: #2a2a12;
+  color: #f5e6a3;
+  border-color: #5a5420;
+}
+.offline-task-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+.danger-text { color: #ffb1b1; }
+.work-offline-strip .magnet-row { grid-template-columns: 1fr auto auto; }

@@ -1574,6 +1574,23 @@ class Repository:
         )
         return list(self._session.scalars(statement))
 
+    def collections_by_work_ids(self, work_ids: list[str] | tuple[str, ...]) -> dict[str, list[Collection]]:
+        """Batch-load collections for many works (avoids N+1 on list endpoints)."""
+
+        ids = [str(item) for item in work_ids if item]
+        if not ids:
+            return {}
+        statement = (
+            select(WorkCollection.work_id, Collection)
+            .join(Collection, Collection.id == WorkCollection.collection_id)
+            .where(WorkCollection.work_id.in_(ids))
+            .order_by(Collection.kind, Collection.name)
+        )
+        result: dict[str, list[Collection]] = {work_id: [] for work_id in ids}
+        for work_id, collection in self._session.execute(statement):
+            result.setdefault(str(work_id), []).append(collection)
+        return result
+
     def upsert_collection(
         self,
         *,

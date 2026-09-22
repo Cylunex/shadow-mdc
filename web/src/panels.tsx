@@ -57,10 +57,12 @@ export function DisplayFilterBar(props: {
 }) {
   return <div className="display-filter" aria-label="展示筛选">
     <input
+      id="shadow-mdc-search"
       value={props.query}
       onChange={(event) => props.setQuery(event.target.value)}
       placeholder={props.placeholder}
       aria-label="展示搜索"
+      data-command-search="1"
     />
     <select
       value={props.category}
@@ -993,14 +995,14 @@ export function Works(props: {
     <div className="command-bar">
       <div className="command-bar-head">
         <strong>本地影片检索</strong>
-        <small>番号/URL/FC2 一键查档；磁力仅保存/复制。手动下载类任务不写入订阅。</small>
+        <small>番号/URL/FC2 一键查档（⌘/Ctrl+K 聚焦搜索）；磁力仅保存/复制。手动下载类任务不写入订阅。</small>
       </div>
       <form className="command-bar-row" onSubmit={(event) => {
         event.preventDefault();
         const query = code.trim();
         if (query) void props.lookupWork(query);
       }}>
-        <input value={code} onChange={(event) => setCode(event.target.value)} placeholder="番号、FC2 或详情 URL" />
+        <input id="shadow-mdc-lookup" value={code} onChange={(event) => setCode(event.target.value)} placeholder="番号、FC2 或详情 URL · ⌘K" />
         <button disabled={!code.trim() || props.busy === "lookup-work"}>一键查档</button>
         <button type="button" className="secondary" disabled={props.busy === "translate-works"} onClick={() => void props.translateWorks()}>补翻译</button>
         <button type="button" className="ghost" disabled={props.busy === "seed-collections"} onClick={() => void props.seedCollections()}>重建合集</button>

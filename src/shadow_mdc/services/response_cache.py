@@ -25,6 +25,7 @@ TTL_COLLECTIONS = 60 * 60 * 24 * 7  # 7 days
 TTL_TAGS = 60 * 10  # 10 minutes
 TTL_CATEGORIES = 60 * 10  # 10 minutes
 TTL_ACTORS = 60 * 15  # 15 minutes
+TTL_WORKS = 60 * 2  # 2 minutes — library cards; overlay want_list at serve
 
 KEY_PREFIX = "shadow_mdc:api:"
 
@@ -246,3 +247,20 @@ def works_tags_key(limit: int) -> str:
 
 def actors_list_key() -> str:
     return "actors:list"
+
+
+def works_list_key(
+    *,
+    collection_id: str | None,
+    collection_kind: str | None,
+    collection: str | None,
+    tags: tuple[str, ...],
+) -> str:
+    tag_part = ",".join(sorted(tags))
+    return (
+        f"works:list:cid={collection_id or ''}:"
+        f"ck={collection_kind or ''}:"
+        f"cn={collection or ''}:"
+        f"tags={tag_part}"
+    )
+

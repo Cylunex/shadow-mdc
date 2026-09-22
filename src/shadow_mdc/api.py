@@ -127,7 +127,7 @@ from .api_models import (
     WorkUpdateRequest,
 )
 from .config import Settings
-from .db.models import Library, MatchCandidateRow, MediaAsset, Work, utc_now
+from .db.models import Collection, Library, MatchCandidateRow, MediaAsset, Work, utc_now
 from .db.repository import LOCKABLE_WORK_FIELDS, Database, Repository
 from .domain import (
     FileOperation,
@@ -249,16 +249,20 @@ from .services.pan import (
 from .services.pan_poller import PanOfflinePoller
 from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
 from .services.response_cache import (
+    TTL_ACTORS,
     TTL_CATEGORIES,
     TTL_COLLECTIONS,
     TTL_STATIC,
     TTL_TAGS,
+    TTL_WORKS,
     ResponseCache,
+    actors_list_key,
     categories_key,
     collection_detail_key,
     collections_list_key,
     javranking_list_key,
     javranking_sections_key,
+    works_list_key,
     works_tags_key,
 )
 from .services.scanner import Scanner
@@ -1265,6 +1269,7 @@ async def discover_seed(
     work = repo.get_work(result.work_id)
     if work is not None:
         await app_runtime.translator.translate_work(repo, work)
+    _invalidate_library_caches(app_runtime.response_cache)
     return DiscoverSeedOut.model_validate(result.model_dump())
 
 
@@ -1589,12 +1594,23 @@ def update_library(library_id: str, payload: LibraryUpdate, repo: Repo) -> Libra
 @app.get("/api/actors", response_model=tuple[ActorProfile, ...])
 def list_actor_catalog(request: Request, repo: Repo) -> tuple[ActorProfile, ...]:
     app_runtime = runtime(request)
+    cache = app_runtime.response_cache
+    cache_key = actors_list_key()
+    cached = cache.get_json(cache_key)
+    if cached is not None:
+        return tuple(ActorProfile.model_validate(item) for item in cached)
     profiles = sync_actor_catalog_from_relations(
         app_runtime.actor_store,
         repo.list_actor_work_relations(),
         app_runtime.alias_store.load(),
     )
-    return _attach_actor_javranking(profiles, app_runtime.settings.data_dir)
+    enriched = _attach_actor_javranking(profiles, app_runtime.settings.data_dir)
+    cache.set_json(
+        cache_key,
+        [item.model_dump(mode="json") for item in enriched],
+        ttl_seconds=TTL_ACTORS,
+    )
+    return enriched
 
 
 
@@ -2001,7 +2017,7 @@ async def javranking_seed_endpoint(
     if not payload.dry_run:
         app_runtime.response_cache.invalidate_prefix("javranking:")
         app_runtime.response_cache.invalidate_prefix("collections:")
-        app_runtime.response_cache.invalidate_prefix("works:tags:")
+        _invalidate_library_caches(app_runtime.response_cache)
     return JavRankingSeedOut(
         run_date=result.run_date,
         dry_run=result.dry_run,
@@ -2844,27 +2860,56 @@ def list_works(
     collection: str | None = None,
     tag: Annotated[list[str] | None, Query()] = None,
 ) -> list[WorkOut]:
-    prefs = runtime(request).library_prefs_store.load()
+    """Lean library cards: omit plot/reviews/identities; batch collections; short TTL cache."""
+
+    app_runtime = runtime(request)
+    prefs = app_runtime.library_prefs_store.load()
     want = set(prefs.want_list)
-    local_ids = repo.work_ids_with_local_media()
-    selected_tags = [item.strip() for item in (tag or []) if item and item.strip()]
-    results: list[WorkOut] = []
-    for work in repo.list_works(
+    selected_tags = tuple(
+        sorted({item.strip() for item in (tag or []) if item and item.strip()})
+    )
+    cache = app_runtime.response_cache
+    cache_key = works_list_key(
         collection_id=collection_id,
-        collection_kind=collection_kind,
-        collection_name=collection,
-    ):
-        if selected_tags and not work_matches_tags(work.tags, selected_tags):
-            continue
-        results.append(
-            _work_out(
-                repo,
-                work,
-                want_list=work.id in want,
-                has_local_media=work.id in local_ids,
-            )
+        collection_kind=collection_kind.value if collection_kind else None,
+        collection=collection,
+        tags=selected_tags,
+    )
+    cached = cache.get_json(cache_key)
+    if cached is not None:
+        return [
+            WorkOut.model_validate({**item, "want_list": item.get("id") in want})
+            for item in cached
+        ]
+
+    local_ids = repo.work_ids_with_local_media()
+    works = [
+        work
+        for work in repo.list_works(
+            collection_id=collection_id,
+            collection_kind=collection_kind,
+            collection_name=collection,
         )
-    return results
+        if not selected_tags or work_matches_tags(work.tags, list(selected_tags))
+    ]
+    collections_map = repo.collections_by_work_ids([work.id for work in works])
+    results = [
+        _work_list_out(
+            work,
+            collections=collections_map.get(work.id, []),
+            want_list=False,
+            has_local_media=work.id in local_ids,
+        )
+        for work in works
+    ]
+    cache.set_json(
+        cache_key,
+        [item.model_dump(mode="json") for item in results],
+        ttl_seconds=TTL_WORKS,
+    )
+    return [
+        item.model_copy(update={"want_list": item.id in want}) for item in results
+    ]
 
 
 @app.get("/api/works/tags", response_model=WorkTagFacetsOut)
@@ -3019,6 +3064,7 @@ async def lookup_work_by_code(
             "work_id": work.id,
         },
     )
+    _invalidate_library_caches(runtime(request).response_cache)
     return WorkLookupOut(
         work=_work_out(repo, work),
         matched_records=len(accepted),
@@ -3088,10 +3134,11 @@ def get_related_works(
         return [item[1] for item in rows[:limit]]
 
     def _outs(rows: list[Work]) -> list[WorkOut]:
+        collections_map = repo.collections_by_work_ids([item.id for item in rows])
         return [
-            _work_out(
-                repo,
+            _work_list_out(
                 item,
+                collections=collections_map.get(item.id, []),
                 want_list=item.id in want,
                 has_local_media=item.id in local_ids,
             )
@@ -3128,7 +3175,9 @@ def update_work(work_id: str, payload: WorkUpdateRequest, request: Request, repo
         plot=payload.plot,
         lock_edited=payload.lock_edited,
     )
-    return _work_detail_out(repo, work, data_dir=runtime(request).settings.data_dir)
+    app_runtime = runtime(request)
+    _invalidate_library_caches(app_runtime.response_cache)
+    return _work_detail_out(repo, work, data_dir=app_runtime.settings.data_dir)
 
 
 @app.put("/api/works/{work_id}/locks", response_model=WorkDetailOut)
@@ -3194,6 +3243,7 @@ async def refresh_work_metadata(work_id: str, request: Request, repo: Repo) -> I
         accepted_ids.append(candidate.record.external_id)
     if accepted_work is not None:
         await app_runtime.translator.translate_work(repo, accepted_work)
+        _invalidate_library_caches(app_runtime.response_cache)
     return IdentifyOut(
         asset_id=asset.id if asset is not None else work.id,
         candidate_ids=tuple(accepted_ids),
@@ -3236,6 +3286,8 @@ async def translate_work_titles(
             "remaining": max(0, len(works) - len(selected)),
         },
     )
+    if translated:
+        _invalidate_library_caches(runtime(request).response_cache)
     return BulkTranslateOut(
         attempted=len(selected),
         translated=translated,
@@ -3861,6 +3913,85 @@ def _detect_image(content: bytes) -> tuple[str, str] | None:
     if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
         return ".webp", "image/webp"
     return None
+
+
+
+def _invalidate_library_caches(cache: ResponseCache) -> None:
+    """Drop short-lived library list caches after catalog mutations."""
+
+    cache.invalidate_prefix("works:list:")
+    cache.invalidate_prefix("works:tags:")
+    cache.invalidate_prefix("actors:")
+    cache.invalidate_prefix("categories:")
+
+
+def _work_list_out(
+    work: Work,
+    *,
+    collections: list[Collection] | None = None,
+    want_list: bool = False,
+    has_local_media: bool = False,
+) -> WorkOut:
+    """Card-oriented WorkOut: no plot/reviews/identities/artwork blobs, no per-work DB hits."""
+
+    actor_entities = [
+        ActorSummaryOut(
+            id=f"name:{name}",
+            name=name,
+            image_url=None,
+            x_handle=None,
+            x_url=None,
+        )
+        for name in (work.actors or [])[:8]
+        if isinstance(name, str) and name.strip()
+    ]
+    collection_rows = collections if collections is not None else []
+    collection_outs = [
+        CollectionSummaryOut(
+            id=item.id,
+            name=item.name,
+            kind=CollectionKind(item.kind),
+            aliases=list(item.aliases or []),
+        )
+        for item in collection_rows
+    ]
+    return WorkOut(
+        id=work.id,
+        title=work.title,
+        original_title=work.original_title,
+        primary_code=work.primary_code,
+        family=work.family,
+        category=MediaCategory(work.category),
+        release_date=work.release_date,
+        runtime_seconds=work.runtime_seconds,
+        studio=work.studio,
+        label=work.label,
+        series=work.series,
+        plot=None,
+        original_plot=None,
+        actors=list(work.actors or []),
+        actor_entities=actor_entities,
+        directors=list(work.directors or []),
+        tags=list(work.tags or []),
+        artwork=[],
+        image_url=_work_display_artwork(work, "poster"),
+        fanart_url=None,
+        sample_urls=[],
+        rating_value=getattr(work, "rating_value", None),
+        rating_max=getattr(work, "rating_max", None),
+        rating_count=getattr(work, "rating_count", None),
+        rating_source=getattr(work, "rating_source", None),
+        reviews=[],
+        display_tags=_display_tags(work),
+        field_sources={},
+        field_locks=[],
+        identities=[],
+        collections=collection_outs,
+        want_list=bool(want_list),
+        has_local_media=bool(has_local_media),
+        created_at=work.created_at,
+        updated_at=work.updated_at,
+    )
 
 
 def _work_out(

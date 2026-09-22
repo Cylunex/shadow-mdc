@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { TaskRun } from "../model";
+import type { PanOfflineTask, TaskRun } from "../model";
 import { api, appUrl } from "../api";
 import { taskRunsSchema } from "../model";
 
@@ -15,6 +15,13 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [live, setLive] = useState(false);
   const [kindFilter, setKindFilter] = useState("all");
+  const [offlineTasks, setOfflineTasks] = useState<PanOfflineTask[]>([]);
+  useEffect(() => {
+    void api.panOfflineTasks()
+      .then(setOfflineTasks)
+      .catch(() => setOfflineTasks([]));
+  }, [tasks]);
+
   const kinds = useMemo(() => ["all", ...Array.from(new Set(tasks.map((task) => task.kind))).sort()], [tasks]);
   const visible = useMemo(() => kindFilter === "all" ? tasks : tasks.filter((task) => task.kind === kindFilter), [tasks, kindFilter]);
 
@@ -45,12 +52,38 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
     return () => source.close();
   }, [autoRefresh, onChanged, onTasksSnapshot, tasks]);
 
+  const offlinePanel = offlineTasks.length > 0 ? (
+    <section className="offline-task-panel" aria-label="115 离线任务">
+      <div className="work-related-head">
+        <h2>115 离线 / STRM</h2>
+        <span className="muted">{offlineTasks.length}</span>
+      </div>
+      <div className="magnet-list">
+        {offlineTasks.slice(0, 10).map((task) => (
+          <div className="magnet-row" key={task.id}>
+            <span>{task.remote_name || task.info_hash.slice(0, 16)}</span>
+            <small className="muted">{task.status} · {Math.round(task.progress || 0)}%</small>
+            {task.strm_path ? <small className="muted">STRM 已写</small> : null}
+            {task.error ? <small className="danger-text">{task.error}</small> : null}
+          </div>
+        ))}
+      </div>
+      <p className="muted">完整配置与刷新在「设置 → 115 / OpenList」。</p>
+    </section>
+  ) : null;
+
   if (tasks.length === 0) {
-    return <p className="empty-detail">还没有运行记录。扫描、识别、翻译和整理会显示在这里，可取消或登记重试。</p>;
+    return (
+      <div className="task-center">
+        {offlinePanel}
+        <p className="empty-detail">还没有运行记录。扫描、识别、翻译和整理会显示在这里，可取消或登记重试。</p>
+      </div>
+    );
   }
 
   return (
     <div className="task-center">
+      {offlinePanel}
       <div className="task-center-toolbar">
         <label>
           类型

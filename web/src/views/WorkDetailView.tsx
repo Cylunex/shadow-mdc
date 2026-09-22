@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api, appUrl } from "../api";
 import { StatusBadges } from "../components/StatusBadges";
-import type { Work, WorkDetail, WorkRelated } from "../model";
+import type { PanOfflineTask, Work, WorkDetail, WorkRelated } from "../model";
 
 const EDITABLE_LOCK_FIELDS = ["title", "actors", "studio", "series", "tags", "plot"] as const;
 
@@ -124,6 +124,7 @@ export function WorkDetailView(props: {
 }) {
   const [detail, setDetail] = useState<WorkDetail | null>(null);
   const [related, setRelated] = useState<WorkRelated>({ by_actor: [], by_tag: [] });
+  const [offlineTasks, setOfflineTasks] = useState<PanOfflineTask[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
@@ -134,15 +135,18 @@ export function WorkDetailView(props: {
     setLoading(true);
     setLoadError(null);
     try {
-      const [next, relatedNext] = await Promise.all([
+      const [next, relatedNext, offlineNext] = await Promise.all([
         api.workDetail(workId),
-        api.workRelated(workId, 18).catch(() => ({ by_actor: [], by_tag: [] } as WorkRelated))
+        api.workRelated(workId, 18).catch(() => ({ by_actor: [], by_tag: [] } as WorkRelated)),
+        api.workOfflineTasks(workId).catch(() => [] as PanOfflineTask[])
       ]);
       setDetail(next);
       setRelated(relatedNext);
+      setOfflineTasks(offlineNext);
     } catch (error) {
       setDetail(null);
       setRelated({ by_actor: [], by_tag: [] });
+      setOfflineTasks([]);
       setLoadError(error instanceof Error ? error.message : String(error));
     } finally {
       setLoading(false);
@@ -533,7 +537,22 @@ export function WorkDetailView(props: {
               ? <p className="muted">暂无已保存磁力。可在「榜单 → 多源番号搜索」勾选后保存到作品。</p>
               : (
                 <div className="magnet-list">
-                  {(work.magnets ?? []).map((magnet) => (
+                  {(work.magnets ?? []).map((magnet) => {
+                    const offline = offlineTasks.find((task) =>
+                      task.magnet_id === magnet.id
+                      || (task.info_hash && magnet.info_hash
+                        && task.info_hash.toLowerCase() === magnet.info_hash.toLowerCase())
+                    );
+                    const offlineLabel = offline
+                      ? (offline.strm_path
+                        ? "STRM 已生成"
+                        : offline.status === "completed" || offline.status === "done"
+                          ? "离线完成"
+                          : offline.status === "failed" || offline.status === "error"
+                            ? `离线失败${offline.error ? `：${offline.error}` : ""}`
+                            : `离线中 ${Math.round(offline.progress || 0)}%`)
+                      : null;
+                    return (
                     <div className="magnet-row" key={magnet.id}>
                       <span>
                         {(magnet.name || magnet.info_hash.slice(0, 12))
@@ -541,6 +560,11 @@ export function WorkDetailView(props: {
                           + (magnet.hd ? " · HD" : "")}
                       </span>
                       <small className="muted">{magnet.provider}</small>
+                      {offlineLabel && (
+                        <span className={`offline-chip status-${(offline?.status || "running").toLowerCase()}`} title={offline?.strm_path ?? offline?.error ?? undefined}>
+                          {offlineLabel}
+                        </span>
+                      )}
                       <button
                         type="button"
                         className="ghost"
@@ -549,18 +573,22 @@ export function WorkDetailView(props: {
                       <button
                         type="button"
                         className="secondary"
-                        disabled={props.busy === `offline-${magnet.id}`}
+                        disabled={props.busy === `offline-${magnet.id}` || Boolean(offline && !offline.error && offline.status !== "failed")}
                         onClick={() => {
                           void (async () => {
                             try {
                               const task = await api.submitWorkOffline(work.id, { magnet_id: magnet.id });
+                              setOfflineTasks((current) => {
+                                const without = current.filter((item) => item.id !== task.id && item.info_hash !== task.info_hash);
+                                return [task, ...without];
+                              });
                               props.report?.(`已提交 115 离线：${task.info_hash.slice(0, 12)}… (${task.status})`);
                             } catch (error) {
                               props.report?.(error instanceof Error ? error.message : String(error));
                             }
                           })();
                         }}
-                      >推到 115 离线</button>
+                      >{offline && !offline.error && offline.status !== "failed" ? "已推送" : "推到 115 离线"}</button>
                       <button
                         type="button"
                         className="ghost"
@@ -573,10 +601,30 @@ export function WorkDetailView(props: {
                         }}
                       >移除</button>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
           </section>
+
+          {offlineTasks.length > 0 && (
+            <section className="work-page-section work-offline-strip">
+              <div className="work-related-head">
+                <h2>115 离线任务</h2>
+                <span className="muted">{offlineTasks.length}</span>
+              </div>
+              <div className="magnet-list">
+                {offlineTasks.slice(0, 8).map((task) => (
+                  <div className="magnet-row" key={task.id}>
+                    <span>{task.remote_name || task.info_hash.slice(0, 16)}</span>
+                    <small className="muted">{task.status} · {Math.round(task.progress || 0)}%</small>
+                    {task.strm_path && <small className="muted">STRM: {task.strm_path}</small>}
+                    {task.error && <small className="danger-text">{task.error}</small>}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           <RelatedStrip
             title="同演员作品"
