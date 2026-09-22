@@ -755,9 +755,70 @@ export const panStatusSchema = z.object({
   provider: z.string(),
   configured: z.boolean(),
   available: z.boolean(),
-  reason: z.string()
+  reason: z.string(),
+  connected: z.boolean().optional(),
+  client_id: z.string().optional(),
+  offline_directory_id: z.string().nullable().optional(),
+  strm_enabled: z.boolean().optional(),
+  strm_output_root: z.string().nullable().optional(),
+  strm_url_prefix: z.string().optional(),
+  account: z.object({
+    user_id: z.string().nullable().optional(),
+    user_name: z.string().nullable().optional(),
+    expires_at: z.string().nullable().optional()
+  }).nullable().optional()
+});
+export const panLoginSchema = z.object({
+  id: z.string(),
+  qr_code: z.string()
+});
+export const panLoginStatusSchema = z.object({
+  state: z.string(),
+  error: z.string().nullable().optional()
+});
+export const panSettingsSchema = z.object({
+  offline_directory_id: z.string().nullable(),
+  strm_enabled: z.boolean(),
+  strm_output_root: z.string().nullable(),
+  strm_url_prefix: z.string(),
+  use_proxy: z.boolean()
+});
+export const panOfflineTaskSchema = z.object({
+  id: z.string(),
+  work_id: z.string(),
+  magnet_id: z.string().nullable().optional(),
+  info_hash: z.string(),
+  url: z.string().nullable().optional(),
+  directory_id: z.string(),
+  status: z.string(),
+  progress: z.number(),
+  file_id: z.string().nullable().optional(),
+  remote_name: z.string().nullable().optional(),
+  remote_path: z.string().nullable().optional(),
+  strm_path: z.string().nullable().optional(),
+  error: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string()
+});
+export const panFilesSchema = z.object({
+  directory_id: z.string(),
+  page: z.number(),
+  limit: z.number(),
+  total: z.number(),
+  items: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    is_directory: z.boolean(),
+    size: z.number().nullable().optional(),
+    pick_code: z.unknown().optional(),
+    parent_id: z.string().nullable().optional()
+  })),
+  path: z.array(z.unknown()).optional()
 });
 export type LibraryPrefs = z.infer<typeof libraryPrefsSchema>;
 export type ActorSubscription = z.infer<typeof actorSubscriptionSchema>;
 export type SubscriptionQueueItem = z.infer<typeof subscriptionQueueItemSchema>;
 export type MediaServerSettings = z.infer<typeof mediaServerSettingsSchema>;
+export type PanStatus = z.infer<typeof panStatusSchema>;
+export type PanSettings = z.infer<typeof panSettingsSchema>;
+export type PanOfflineTask = z.infer<typeof panOfflineTaskSchema>;

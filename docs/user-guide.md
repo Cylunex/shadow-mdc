@@ -363,7 +363,20 @@ Shadow MDC 只管理用户已有本地媒体的元数据与公开图片，不提
 
 侧栏「发现」浏览远程榜单/搜索目录，**不会**因为浏览就写入作品库。只有主动「建档元数据」才会创建/更新 Work 元数据种子；本地媒体仍需扫描入库后才算「已有本地媒体」。
 
-「多源番号搜索」会聚合已配置来源；若来源页面暴露磁力，可勾选后**保存到 Work**（一对多 `work_magnets`），或一键复制。应用本身不下载种子内容、不提交网盘离线任务。云盘（如 115 Open Platform）需开发者审批后再接入，当前 `/api/pan/status` 仅返回不可用占位。
+「多源番号搜索」会聚合已配置来源；若来源页面暴露磁力，可勾选后**保存到 Work**（一对多 `work_magnets`），或一键复制。磁力始终保存在本地；向 115 提交离线是**单独动作**（作品页「推到 115 离线」）。
+
+### 115 云下载与 STRM
+
+设置页「115 网盘」支持 Open Platform **设备码 + PKCE** 二维码登录（不在聊天中粘贴 token）：
+
+1. 点击「二维码登录」，用 115 App 扫码；轮询状态 `waiting → scanned → ok`。
+2. 选择离线目录 cid（可浏览文件夹或手填），保存。
+3. 可选：启用 STRM，配置本地输出根目录与 OpenList 前缀（如 `http://openlist:5244/d/115`；Emby 侧签名需关闭）。
+4. 在作品磁力列表点「推到 115 离线」；后台轮询任务，完成后按 `{CODE}/{CODE}.strm` 写入并触发 Emby/Jellyfin 路径刷新。
+
+环境变量：`SHADOW_MDC_PAN_CLIENT_ID`（默认社区临时 id `100197303`，**建议申请自有应用**）、可选 `SHADOW_MDC_PAN_CLIENT_SECRET`。凭证落盘 `data/pan/credentials.json`（chmod 600），配置在 `data/pan/config.json`。默认 **不**把 115 流量送进 `SHADOW_MDC_PROXY_URL`（可在设置中打开，但有风控风险）。
+
+相关 API：`GET /api/pan/status`、`POST /api/pan/login`、`GET /api/pan/login/{id}`、`GET|DELETE /api/pan/account`、`GET /api/pan/files`、`PUT /api/pan/directory`、`GET|PUT /api/pan/settings`、`POST|GET /api/works/{id}/offline`、`GET /api/pan/offline/tasks`。
 
 作品库网格优先使用 `data/artwork/<work_id>/thumb.*` 列表缩略图；扫描时若旁路已有 `.nfo` 与 poster/fanart，会优先用于重建元数据与图片缓存。运行记录可通过 SSE（`/api/tasks/events`）实时刷新。
 

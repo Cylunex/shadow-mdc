@@ -35,12 +35,12 @@ from .api_models import (
     BulkTranslateOut,
     BulkTranslateRequest,
     CandidateOut,
-    CategoriesOut,
-    CategoryOut,
     CatalogExportRequest,
     CatalogExportResultOut,
     CatalogImportPathRequest,
     CatalogImportResultOut,
+    CategoriesOut,
+    CategoryOut,
     CollectionOut,
     CollectionSeedResultOut,
     CollectionSummaryOut,
@@ -86,6 +86,11 @@ from .api_models import (
     NonJavActorWorkOut,
     OrganizeApplyRequest,
     OrganizeRequest,
+    PanDirectoryRequest,
+    PanLoginOut,
+    PanLoginStatusOut,
+    PanOfflineTaskOut,
+    PanSettingsPayload,
     PlanOut,
     ProviderDiagnoseOut,
     ProviderDiagnoseRequest,
@@ -106,13 +111,14 @@ from .api_models import (
     TaskRunOut,
     WantListEdit,
     WorkDetailOut,
-    WorkRelatedOut,
     WorkLocksRequest,
     WorkLookupOut,
     WorkLookupRequest,
     WorkMagnetOut,
+    WorkOfflineRequest,
     WorkOut,
     WorkPosterPreferRequest,
+    WorkRelatedOut,
     WorkSampleGenerateOut,
     WorkTagFacetOut,
     WorkTagFacetsOut,
@@ -176,6 +182,11 @@ from .services.actor_catalog import (
 from .services.alias_store import IdentityAliasStore
 from .services.catalog_export import export_catalog_bundle, state_path
 from .services.catalog_import import CatalogImportRequest, import_catalog_bundle
+from .services.category_catalog import (
+    build_category_list,
+    facet_count_map,
+    resolve_cover_file,
+)
 from .services.directory_actor_rules import (
     DirectoryActorRule,
     DirectoryActorRuleStore,
@@ -183,12 +194,6 @@ from .services.directory_actor_rules import (
 from .services.discover import DiscoverService
 from .services.field_priority import FieldPriorityConfig, FieldPriorityStore
 from .services.identify import IdentifyService
-from .services.javranking_client import (
-    CURATED_LIST_SLUGS,
-    CURATED_LIST_TITLES,
-    JavRankingIndexCache,
-    top250_year_slugs,
-)
 from .services.javdb_yearly_top250 import (
     current_calendar_year,
     export_year_from_search_index,
@@ -204,6 +209,12 @@ from .services.javdb_yearly_top250_seed import (
     merge_top250_year_sections,
     slug_year,
     yearly_title,
+)
+from .services.javranking_client import (
+    CURATED_LIST_SLUGS,
+    CURATED_LIST_TITLES,
+    JavRankingIndexCache,
+    top250_year_slugs,
 )
 from .services.javranking_seed import seed_javranking
 from .services.library_prefs import ActorTagState, LibraryPrefsStore, new_queue_id
@@ -227,8 +238,27 @@ from .services.non_jav_actor_catalog import (
     enrich_non_jav_actor_aliases,
 )
 from .services.non_jav_work_seed import seed_non_jav_works
-from .services.pan import pan_status
+from .services.pan import (
+    PanApiError,
+    PanNotConfiguredError,
+    PanService,
+    pan_status,
+)
+from .services.pan_poller import PanOfflinePoller
 from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
+from .services.response_cache import (
+    TTL_CATEGORIES,
+    TTL_COLLECTIONS,
+    TTL_STATIC,
+    TTL_TAGS,
+    ResponseCache,
+    categories_key,
+    collection_detail_key,
+    collections_list_key,
+    javranking_list_key,
+    javranking_sections_key,
+    works_tags_key,
+)
 from .services.scanner import Scanner
 from .services.studio_guard import reject_non_jav_studio_label
 from .services.subscriptions import (
@@ -250,24 +280,6 @@ from .services.x_handle import (
     x_profile_url,
 )
 from .tags import display_chips, facet_tags, normalize_tags, work_matches_tags
-from .services.category_catalog import (
-    build_category_list,
-    facet_count_map,
-    resolve_cover_file,
-)
-from .services.response_cache import (
-    TTL_COLLECTIONS,
-    TTL_STATIC,
-    TTL_CATEGORIES,
-    TTL_TAGS,
-    ResponseCache,
-    collection_detail_key,
-    collections_list_key,
-    javranking_list_key,
-    javranking_sections_key,
-    categories_key,
-    works_tags_key,
-)
 
 
 @dataclass(frozen=True)
@@ -284,6 +296,8 @@ class Runtime:
     filter_words_store: FilterWordsStore
     field_priority_store: FieldPriorityStore
     media_server_store: MediaServerStore
+    pan_service: PanService
+    pan_poller: PanOfflinePoller
     library_prefs_store: LibraryPrefsStore
     task_events: TaskEventHub
     discover: DiscoverService
@@ -405,6 +419,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     filter_words_store = FilterWordsStore(settings.data_dir / "filter-words.txt")
     field_priority_store = FieldPriorityStore(settings.data_dir / "field-priority.json")
     media_server_store = MediaServerStore(settings.data_dir / "media-server.json")
+    pan_service = PanService(
+        data_dir=settings.data_dir,
+        client_id=settings.pan_client_id,
+        client_secret=settings.pan_client_secret,
+        proxy_url=settings.proxy_url,
+        user_agent=settings.user_agent,
+    )
     library_prefs_store = LibraryPrefsStore(settings.data_dir / "library-prefs.json")
     javdb_provider = next(
         (provider for provider in providers._providers.values() if provider.descriptor.id == "javdb"),
@@ -420,6 +441,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         fanza_provider if isinstance(fanza_provider, FanzaProvider) else None,
     )
     task_events = TaskEventHub()
+    pan_poller = PanOfflinePoller(
+        database=database,
+        pan=pan_service,
+        media_server_store=media_server_store,
+        http=client,
+        task_events=task_events,
+    )
     response_cache = ResponseCache(settings.redis_url)
     app.state.runtime = Runtime(
         settings=settings,
@@ -434,14 +462,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         filter_words_store=filter_words_store,
         field_priority_store=field_priority_store,
         media_server_store=media_server_store,
+        pan_service=pan_service,
+        pan_poller=pan_poller,
         library_prefs_store=library_prefs_store,
         task_events=task_events,
         discover=discover_service,
         response_cache=response_cache,
     )
+    pan_poller.start()
     try:
         yield
     finally:
+        await pan_poller.stop()
+        await pan_service.aclose()
         await asyncio.gather(client.aclose(), *(source.aclose() for source in provider_clients))
 
 
@@ -698,10 +731,172 @@ def health() -> HealthOut:
 
 
 @app.get("/api/pan/status")
-def get_pan_status() -> dict[str, object]:
-    """Stub for future pan integration; always unavailable until approved."""
+def get_pan_status(request: Request) -> dict[str, object]:
+    """115 connection status: configured/available and offline/strm hints."""
 
-    return pan_status()
+    try:
+        return runtime(request).pan_service.status()
+    except Exception:
+        return pan_status()
+
+
+@app.post("/api/pan/login", response_model=PanLoginOut)
+async def pan_login(request: Request) -> PanLoginOut:
+    result = await runtime(request).pan_service.start_login()
+    return PanLoginOut(id=result["id"], qr_code=result["qr_code"])
+
+
+@app.get("/api/pan/login/{login_id}", response_model=PanLoginStatusOut)
+async def pan_login_status(login_id: str, request: Request) -> PanLoginStatusOut:
+    result = await runtime(request).pan_service.login_status(login_id)
+    return PanLoginStatusOut(state=str(result.get("state") or "waiting"), error=result.get("error"))  # type: ignore[arg-type]
+
+
+@app.get("/api/pan/account")
+def pan_account(request: Request) -> dict[str, object]:
+    return runtime(request).pan_service.account()
+
+
+@app.delete("/api/pan/account", status_code=204)
+def pan_disconnect(request: Request) -> Response:
+    runtime(request).pan_service.disconnect()
+    return Response(status_code=204)
+
+
+@app.get("/api/pan/files")
+async def pan_files(
+    request: Request,
+    directory_id: str = "0",
+    page: int = Query(1, ge=1),
+) -> dict[str, object]:
+    pan = runtime(request).pan_service
+    if not pan.status().get("connected"):
+        raise HTTPException(status_code=400, detail="115 not connected")
+    try:
+        return await pan.get_client().list_directory(directory_id, page=page)
+    except PanNotConfiguredError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PanApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.put("/api/pan/directory")
+def pan_set_directory(payload: PanDirectoryRequest, request: Request) -> dict[str, object]:
+    settings = runtime(request).pan_service.set_directory(payload.id)
+    return {"id": settings.offline_directory_id}
+
+
+@app.get("/api/pan/settings", response_model=PanSettingsPayload)
+def pan_get_settings(request: Request) -> PanSettingsPayload:
+    return PanSettingsPayload.model_validate(runtime(request).pan_service.config_store.load().model_dump())
+
+
+@app.put("/api/pan/settings", response_model=PanSettingsPayload)
+def pan_put_settings(payload: PanSettingsPayload, request: Request) -> PanSettingsPayload:
+    saved = runtime(request).pan_service.save_settings(payload.model_dump())
+    return PanSettingsPayload.model_validate(saved.model_dump())
+
+
+@app.get("/api/pan/offline/tasks", response_model=list[PanOfflineTaskOut])
+def pan_offline_tasks(repo: Repo, limit: int = Query(50, ge=1, le=200)) -> list[PanOfflineTaskOut]:
+    return [PanOfflineTaskOut.model_validate(item) for item in repo.list_pan_offline_tasks(limit=limit)]
+
+
+@app.post("/api/works/{work_id}/offline", response_model=PanOfflineTaskOut, status_code=202)
+async def submit_work_offline(
+    work_id: str,
+    payload: WorkOfflineRequest,
+    request: Request,
+    repo: Repo,
+) -> PanOfflineTaskOut:
+    work = repo.get_work(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    pan = runtime(request).pan_service
+    status = pan.status()
+    if not status.get("connected"):
+        raise HTTPException(status_code=400, detail="115 not connected — complete QR login in Settings")
+    directory_id = pan.config_store.load().offline_directory_id
+    if not directory_id:
+        raise HTTPException(status_code=400, detail="set offline directory id first")
+
+    url: str | None = None
+    magnet_id: str | None = payload.magnet_id
+    info_hash_hint: str | None = None
+    if payload.magnet_id:
+        magnets = {item.id: item for item in repo.list_work_magnets(work_id)}
+        magnet = magnets.get(payload.magnet_id)
+        if magnet is None:
+            raise HTTPException(status_code=404, detail="magnet not found")
+        url = magnet.uri
+        info_hash_hint = magnet.info_hash
+    elif payload.url:
+        url = payload.url.strip()
+    else:
+        raise HTTPException(status_code=400, detail="magnet_id or url required")
+    if not url:
+        raise HTTPException(status_code=400, detail="empty magnet url")
+
+    # Duplicate local task
+    if info_hash_hint:
+        existing = repo.find_pan_offline_by_hash(work_id, info_hash_hint)
+        if existing is not None and existing.status == "running":
+            return PanOfflineTaskOut.model_validate(existing)
+
+    try:
+        results = await pan.get_client().enqueue_remote_urls([url], directory_id=directory_id)
+    except PanNotConfiguredError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PanApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        detail = f"115 offline submit failed: {type(exc).__name__}"
+        raise HTTPException(status_code=502, detail=detail) from exc
+
+    if not results:
+        raise HTTPException(status_code=502, detail="115 offline submit returned no result")
+    first = results[0]
+    if not first.get("state") and not first.get("info_hash"):
+        raise HTTPException(
+            status_code=502,
+            detail=str(first.get("message") or "115 offline submit rejected"),
+        )
+    info_hash = str(first.get("info_hash") or info_hash_hint or "").upper()
+    if not info_hash:
+        raise HTTPException(status_code=502, detail="115 offline submit missing info_hash")
+
+    existing = repo.find_pan_offline_by_hash(work_id, info_hash)
+    if existing is not None:
+        existing.status = "running"
+        existing.progress = 0.0
+        existing.error = None
+        existing.directory_id = directory_id
+        existing.url = url
+        existing.magnet_id = magnet_id
+        existing.updated_at = utc_now()
+        repo._session.flush()
+        task_row = existing
+    else:
+        task_row = repo.create_pan_offline_task(
+            work_id=work_id,
+            info_hash=info_hash,
+            directory_id=directory_id,
+            url=url,
+            magnet_id=magnet_id,
+        )
+    # Nudge poller via task events
+    runtime(request).task_events.notify()
+    return PanOfflineTaskOut.model_validate(task_row)
+
+
+@app.get("/api/works/{work_id}/offline", response_model=list[PanOfflineTaskOut])
+def list_work_offline(work_id: str, repo: Repo) -> list[PanOfflineTaskOut]:
+    if repo.get_work(work_id) is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    return [
+        PanOfflineTaskOut.model_validate(item)
+        for item in repo.list_pan_offline_tasks(work_id=work_id, limit=100)
+    ]
 
 
 @app.get("/api/library-prefs", response_model=LibraryPrefsOut)

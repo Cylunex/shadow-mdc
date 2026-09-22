@@ -797,6 +797,54 @@ class SaveMagnetsRequest(BaseModel):
 
 
 
+class PanLoginOut(BaseModel):
+    id: str
+    qr_code: str
+
+
+class PanLoginStatusOut(BaseModel):
+    state: str
+    error: str | None = None
+
+
+class PanDirectoryRequest(BaseModel):
+    id: str = Field(min_length=1)
+
+
+class PanSettingsPayload(BaseModel):
+    offline_directory_id: str | None = None
+    strm_enabled: bool = False
+    strm_output_root: str | None = None
+    strm_url_prefix: str = "http://openlist:5244/d/115"
+    use_proxy: bool = False
+
+
+class WorkOfflineRequest(BaseModel):
+    magnet_id: str | None = None
+    url: str | None = None
+
+
+class PanOfflineTaskOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    work_id: str
+    magnet_id: str | None = None
+    info_hash: str
+    url: str | None = None
+    directory_id: str
+    status: str
+    progress: float
+    file_id: str | None = None
+    remote_name: str | None = None
+    remote_path: str | None = None
+    strm_path: str | None = None
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+
 class ActorTagStateOut(BaseModel):
     favorite: bool = False
     subscribe: bool = False

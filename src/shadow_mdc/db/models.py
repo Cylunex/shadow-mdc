@@ -259,3 +259,29 @@ class WorkCollection(Base):
         primary_key=True,
     )
 
+
+class PanOfflineTask(Base):
+    """Local tracking for 115 cloud offline downloads (separate from work_magnets)."""
+
+    __tablename__ = "pan_offline_tasks"
+    __table_args__ = (
+        Index("ix_pan_offline_work", "work_id"),
+        Index("ix_pan_offline_status", "status"),
+        Index("ix_pan_offline_hash", "info_hash"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    work_id: Mapped[str] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"))
+    magnet_id: Mapped[str | None] = mapped_column(String(36))
+    info_hash: Mapped[str] = mapped_column(String(64))
+    url: Mapped[str | None] = mapped_column(Text)
+    directory_id: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(30), default="running")  # running|done|failed
+    progress: Mapped[float] = mapped_column(Float, default=0.0)
+    file_id: Mapped[str | None] = mapped_column(String(64))
+    remote_name: Mapped[str | None] = mapped_column(Text)
+    remote_path: Mapped[str | None] = mapped_column(Text)
+    strm_path: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

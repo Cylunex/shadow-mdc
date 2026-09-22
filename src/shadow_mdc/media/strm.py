@@ -32,6 +32,33 @@ def read_strm_locator(path: str | Path) -> str:
     return _normalize_locator(locator, strm_path.parent)
 
 
+def write_strm(path: str | Path, locator: str) -> Path:
+    """Write a single-line UTF-8 .strm file (no BOM). Creates parent dirs."""
+
+    text = locator.strip()
+    if not text:
+        raise ValueError("STRM media locator is empty")
+    if len(text) > MAX_LOCATOR_LENGTH:
+        raise ValueError(f"STRM media locator exceeds {MAX_LOCATOR_LENGTH} characters")
+    if _CONTROL.search(text):
+        raise ValueError("STRM media locator contains control characters")
+    if "\n" in text or "\r" in text:
+        raise ValueError("STRM media locator must be a single line")
+    parsed = urlsplit(text)
+    if parsed.scheme and parsed.scheme.casefold() in _BLOCKED_SCHEMES:
+        raise ValueError(f"STRM URI scheme is not allowed: {parsed.scheme}")
+
+    strm_path = Path(path)
+    strm_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = strm_path.with_suffix(strm_path.suffix + ".tmp")
+    payload = (text + "\n").encode("utf-8")
+    if len(payload) > MAX_STRM_BYTES:
+        raise ValueError(f"STRM file exceeds {MAX_STRM_BYTES} bytes")
+    temporary.write_bytes(payload)
+    temporary.replace(strm_path)
+    return strm_path
+
+
 def redact_media_locator(locator: str) -> str:
     """Remove credentials, query tokens, and fragments before persisting a URI as metadata."""
 

@@ -528,7 +528,7 @@ export function WorkDetailView(props: {
                 }}
               >打开 Emby</button>
             </div>
-            <p className="muted">一对多保存在本地，仅供复制/保存；应用不下载。可在「榜单 → 多源搜索」勾选后保存到作品。</p>
+            <p className="muted">一对多保存在本地；可复制，或「推到 115 离线」（需在设置中完成 115 登录并选择目录）。可在「榜单 → 多源搜索」勾选后保存到作品。</p>
             {(work.magnets ?? []).length === 0
               ? <p className="muted">暂无已保存磁力。可在「榜单 → 多源番号搜索」勾选后保存到作品。</p>
               : (
@@ -546,6 +546,21 @@ export function WorkDetailView(props: {
                         className="ghost"
                         onClick={() => void navigator.clipboard.writeText(magnet.uri)}
                       >复制</button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={props.busy === `offline-${magnet.id}`}
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              const task = await api.submitWorkOffline(work.id, { magnet_id: magnet.id });
+                              props.report?.(`已提交 115 离线：${task.info_hash.slice(0, 12)}… (${task.status})`);
+                            } catch (error) {
+                              props.report?.(error instanceof Error ? error.message : String(error));
+                            }
+                          })();
+                        }}
+                      >推到 115 离线</button>
                       <button
                         type="button"
                         className="ghost"

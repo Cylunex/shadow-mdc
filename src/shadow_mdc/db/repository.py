@@ -28,6 +28,7 @@ from .models import (
     Library,
     MatchCandidateRow,
     MediaAsset,
+    PanOfflineTask,
     SourceSnapshot,
     TaskRun,
     Work,
@@ -229,10 +230,7 @@ def _merge_plot_fields(
             work.original_plot = incoming
             sources["original_plot"] = provider
         # If we only have Chinese (or empty) plot, also keep Japanese as display until translated.
-        if not current:
-            work.plot = incoming
-            sources["plot"] = provider
-        elif _looks_japanese(current) and (overwrite or not current):
+        if not current or (_looks_japanese(current) and (overwrite or not current)):
             work.plot = incoming
             sources["plot"] = provider
         return
@@ -951,6 +949,96 @@ class Repository:
         self._session.delete(row)
         self._session.flush()
         return True
+
+    def create_pan_offline_task(
+        self,
+        *,
+        work_id: str,
+        info_hash: str,
+        directory_id: str,
+        url: str | None = None,
+        magnet_id: str | None = None,
+        remote_name: str | None = None,
+        status: str = "running",
+        progress: float = 0.0,
+    ) -> PanOfflineTask:
+        row = PanOfflineTask(
+            work_id=work_id,
+            magnet_id=magnet_id,
+            info_hash=info_hash.strip().upper(),
+            url=url,
+            directory_id=directory_id,
+            status=status,
+            progress=progress,
+            remote_name=remote_name,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return row
+
+    def get_pan_offline_task(self, task_id: str) -> PanOfflineTask | None:
+        return self._session.get(PanOfflineTask, task_id)
+
+    def list_pan_offline_tasks(
+        self,
+        *,
+        work_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[PanOfflineTask]:
+        stmt = select(PanOfflineTask).order_by(PanOfflineTask.created_at.desc()).limit(limit)
+        if work_id is not None:
+            stmt = stmt.where(PanOfflineTask.work_id == work_id)
+        if status is not None:
+            stmt = stmt.where(PanOfflineTask.status == status)
+        return list(self._session.scalars(stmt))
+
+    def list_running_pan_offline_tasks(self) -> list[PanOfflineTask]:
+        return list(
+            self._session.scalars(
+                select(PanOfflineTask).where(PanOfflineTask.status == "running")
+            )
+        )
+
+    def find_pan_offline_by_hash(self, work_id: str, info_hash: str) -> PanOfflineTask | None:
+        digest = info_hash.strip().upper()
+        return self._session.scalar(
+            select(PanOfflineTask).where(
+                PanOfflineTask.work_id == work_id,
+                PanOfflineTask.info_hash == digest,
+            )
+        )
+
+    def update_pan_offline_task(
+        self,
+        task: PanOfflineTask,
+        *,
+        status: str | None = None,
+        progress: float | None = None,
+        file_id: str | None = None,
+        remote_name: str | None = None,
+        remote_path: str | None = None,
+        strm_path: str | None = None,
+        error: str | None = ...,  # type: ignore[assignment]
+    ) -> PanOfflineTask:
+        if status is not None:
+            task.status = status
+        if progress is not None:
+            task.progress = progress
+        if file_id is not None:
+            task.file_id = file_id
+        if remote_name is not None:
+            task.remote_name = remote_name
+        if remote_path is not None:
+            task.remote_path = remote_path
+        if strm_path is not None:
+            task.strm_path = strm_path
+        if error is not ...:
+            task.error = error
+        task.updated_at = utc_now()
+        self._session.flush()
+        return task
+
 
     def attach_asset_to_work(self, asset: MediaAsset, work: Work) -> None:
         asset.work_id = work.id

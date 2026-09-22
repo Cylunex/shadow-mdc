@@ -48,9 +48,13 @@ class Settings(BaseSettings):
     # Local/dev fallback: redis://127.0.0.1:6379/0 when reachable.
     redis_url: str | None = "redis://127.0.0.1:6379/0"
     user_agent: str = "ShadowMDC/0.1 (+https://github.com/Cylunex/shadow-mdc)"
+    # 115 Open Platform — temporary community id; prefer your own app at open.115.com
+    pan_client_id: str = "100197303"
+    pan_client_secret: str | None = None
 
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "artwork").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "actor-images").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "category-covers").mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "pan").mkdir(parents=True, exist_ok=True)

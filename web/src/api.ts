@@ -60,6 +60,11 @@ import {
   subscriptionScanSchema,
   mediaServerSettingsSchema,
   panStatusSchema,
+  panFilesSchema,
+  panOfflineTaskSchema,
+  panSettingsSchema,
+  panLoginStatusSchema,
+  panLoginSchema,
   javRankingSectionsSchema,
   javRankingListSchema,
   javRankingSeedResultSchema
@@ -460,6 +465,46 @@ export const api = {
     method: "PUT", body: JSON.stringify(payload)
   }),
   panStatus: () => request(panStatusSchema, "/api/pan/status"),
+  panLogin: () => request(panLoginSchema, "/api/pan/login", { method: "POST" }),
+  panLoginStatus: (id: string) => request(panLoginStatusSchema, `/api/pan/login/${id}`),
+  panAccount: () => request(z.object({
+    connected: z.boolean(),
+    account: z.unknown().optional(),
+    directory: z.object({ id: z.string().nullable() }).nullable().optional(),
+    strm: z.unknown().optional(),
+    use_proxy: z.boolean().optional(),
+    client_id: z.string().optional()
+  }).passthrough(), "/api/pan/account"),
+  panDisconnect: async (): Promise<void> => {
+    const path = "/api/pan/account";
+    const response = await fetch(appUrl(path) ?? path, { method: "DELETE" });
+    if (!response.ok) throw new Error(await response.text());
+  },
+  panFiles: (directoryId = "0", page = 1) => {
+    const query = new URLSearchParams({ directory_id: directoryId, page: String(page) });
+    return request(panFilesSchema, `/api/pan/files?${query}`);
+  },
+  panSetDirectory: (id: string) =>
+    request(z.object({ id: z.string().nullable() }), "/api/pan/directory", {
+      method: "PUT", body: JSON.stringify({ id })
+    }),
+  panSettings: () => request(panSettingsSchema, "/api/pan/settings"),
+  savePanSettings: (payload: {
+    offline_directory_id: string | null;
+    strm_enabled: boolean;
+    strm_output_root: string | null;
+    strm_url_prefix: string;
+    use_proxy: boolean;
+  }) => request(panSettingsSchema, "/api/pan/settings", {
+    method: "PUT", body: JSON.stringify(payload)
+  }),
+  panOfflineTasks: () => request(z.array(panOfflineTaskSchema), "/api/pan/offline/tasks"),
+  submitWorkOffline: (workId: string, payload: { magnet_id?: string; url?: string }) =>
+    request(panOfflineTaskSchema, `/api/works/${workId}/offline`, {
+      method: "POST", body: JSON.stringify(payload)
+    }),
+  workOfflineTasks: (workId: string) =>
+    request(z.array(panOfflineTaskSchema), `/api/works/${workId}/offline`),
   workEmbyLink: async (workId: string): Promise<string | null> => {
     const path = `/api/works/${workId}/emby-link`;
     const response = await fetch(appUrl(path) ?? path);

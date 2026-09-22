@@ -64,7 +64,7 @@ def test_ensure_list_thumbnail(tmp_path: Path) -> None:
         assert image.size[0] <= 480
 
 
-def test_pan_status_stub() -> None:
+def test_pan_status_helper_without_service() -> None:
     status = pan_status()
     assert status["available"] is False
     assert status["configured"] is False
@@ -80,7 +80,9 @@ def test_work_magnet_persistence_and_api(tmp_path: Path, monkeypatch: pytest.Mon
     with TestClient(app) as client:
         pan = client.get("/api/pan/status")
         assert pan.status_code == 200
-        assert pan.json()["available"] is False
+        body = pan.json()
+        assert body["provider"] == "115"
+        assert "configured" in body and "available" in body and "reason" in body
 
         with app.state.runtime.database.session() as session:
             repo = Repository(session)

@@ -1,6 +1,7 @@
 from .models import (
     Base,
     WorkMagnet,
+    PanOfflineTask,
     ExternalIdentity,
     Library,
     MatchCandidateRow,
@@ -21,4 +22,5 @@ __all__ = [
     "SourceSnapshot",
     "Work",
     "WorkMagnet",
+    "PanOfflineTask",
 ]
