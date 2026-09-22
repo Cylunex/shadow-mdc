@@ -811,12 +811,32 @@ class PanDirectoryRequest(BaseModel):
     id: str = Field(min_length=1)
 
 
+class PanCredentialsImportRequest(BaseModel):
+    access_token: str = Field(min_length=1)
+    refresh_token: str = Field(min_length=1)
+    expires_in: int | None = Field(default=None, ge=1)
+    user_id: str | None = None
+    user_name: str | None = None
+
+
 class PanSettingsPayload(BaseModel):
     offline_directory_id: str | None = None
     strm_enabled: bool = False
     strm_output_root: str | None = None
     strm_url_prefix: str = "http://openlist:5244/d/115"
     use_proxy: bool = False
+    client_id: str
+    client_secret_set: bool
+
+
+class PanSettingsUpdatePayload(BaseModel):
+    offline_directory_id: str | None = None
+    strm_enabled: bool = False
+    strm_output_root: str | None = None
+    strm_url_prefix: str = "http://openlist:5244/d/115"
+    use_proxy: bool = False
+    client_id: str | None = None
+    client_secret: str | None = None
 
 
 class WorkOfflineRequest(BaseModel):

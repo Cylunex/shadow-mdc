@@ -465,6 +465,12 @@ export const api = {
     method: "PUT", body: JSON.stringify(payload)
   }),
   panStatus: () => request(panStatusSchema, "/api/pan/status"),
+  panImportTokens: (payload: {
+    access_token: string; refresh_token: string; expires_in?: number;
+    user_id?: string | null; user_name?: string | null;
+  }) => request(panStatusSchema, "/api/pan/credentials", {
+    method: "POST", body: JSON.stringify(payload)
+  }),
   panLogin: () => request(panLoginSchema, "/api/pan/login", { method: "POST" }),
   panLoginStatus: (id: string) => request(panLoginStatusSchema, `/api/pan/login/${id}`),
   panAccount: () => request(z.object({
@@ -495,6 +501,8 @@ export const api = {
     strm_output_root: string | null;
     strm_url_prefix: string;
     use_proxy: boolean;
+    client_id: string;
+    client_secret?: string;
   }) => request(panSettingsSchema, "/api/pan/settings", {
     method: "PUT", body: JSON.stringify(payload)
   }),

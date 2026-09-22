@@ -86,11 +86,13 @@ from .api_models import (
     NonJavActorWorkOut,
     OrganizeApplyRequest,
     OrganizeRequest,
+    PanCredentialsImportRequest,
     PanDirectoryRequest,
     PanLoginOut,
     PanLoginStatusOut,
     PanOfflineTaskOut,
     PanSettingsPayload,
+    PanSettingsUpdatePayload,
     PlanOut,
     ProviderDiagnoseOut,
     ProviderDiagnoseRequest,
@@ -740,6 +742,22 @@ def get_pan_status(request: Request) -> dict[str, object]:
         return pan_status()
 
 
+@app.post("/api/pan/credentials")
+def pan_import_credentials(
+    payload: PanCredentialsImportRequest, request: Request
+) -> dict[str, object]:
+    try:
+        return runtime(request).pan_service.import_tokens(
+            payload.access_token,
+            payload.refresh_token,
+            expires_in=payload.expires_in,
+            user_id=payload.user_id,
+            user_name=payload.user_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/pan/login", response_model=PanLoginOut)
 async def pan_login(request: Request) -> PanLoginOut:
     result = await runtime(request).pan_service.start_login()
@@ -788,13 +806,14 @@ def pan_set_directory(payload: PanDirectoryRequest, request: Request) -> dict[st
 
 @app.get("/api/pan/settings", response_model=PanSettingsPayload)
 def pan_get_settings(request: Request) -> PanSettingsPayload:
-    return PanSettingsPayload.model_validate(runtime(request).pan_service.config_store.load().model_dump())
+    return PanSettingsPayload.model_validate(runtime(request).pan_service.settings_status())
 
 
 @app.put("/api/pan/settings", response_model=PanSettingsPayload)
-def pan_put_settings(payload: PanSettingsPayload, request: Request) -> PanSettingsPayload:
-    saved = runtime(request).pan_service.save_settings(payload.model_dump())
-    return PanSettingsPayload.model_validate(saved.model_dump())
+def pan_put_settings(payload: PanSettingsUpdatePayload, request: Request) -> PanSettingsPayload:
+    service = runtime(request).pan_service
+    service.save_settings(payload.model_dump(exclude_unset=True))
+    return PanSettingsPayload.model_validate(service.settings_status())
 
 
 @app.get("/api/pan/offline/tasks", response_model=list[PanOfflineTaskOut])

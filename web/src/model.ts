@@ -781,7 +781,9 @@ export const panSettingsSchema = z.object({
   strm_enabled: z.boolean(),
   strm_output_root: z.string().nullable(),
   strm_url_prefix: z.string(),
-  use_proxy: z.boolean()
+  use_proxy: z.boolean(),
+  client_id: z.string(),
+  client_secret_set: z.boolean()
 });
 export const panOfflineTaskSchema = z.object({
   id: z.string(),

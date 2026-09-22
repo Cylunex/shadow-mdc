@@ -22,6 +22,10 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
   const [qr, setQr] = useState<{ id: string; qr_code: string } | null>(null);
   const [loginState, setLoginState] = useState<string | null>(null);
   const [dirDraft, setDirDraft] = useState("");
+  const [clientIdDraft, setClientIdDraft] = useState("");
+  const [clientSecretDraft, setClientSecretDraft] = useState("");
+  const [accessTokenDraft, setAccessTokenDraft] = useState("");
+  const [refreshTokenDraft, setRefreshTokenDraft] = useState("");
   const [browseId, setBrowseId] = useState("0");
   const [browseItems, setBrowseItems] = useState<Array<{ id: string; name: string; is_directory: boolean }>>([]);
 
@@ -35,6 +39,8 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
     if (settings) {
       setPanSettings(settings);
       setDirDraft(settings.offline_directory_id ?? "");
+      setClientIdDraft(settings.client_id);
+      setClientSecretDraft("");
     }
     setOfflineTasks(tasks);
   };
@@ -140,6 +146,48 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
             </div>
           )}
 
+          <form
+            className="settings-form"
+            style={{ marginTop: 16 }}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void run("pan-import-tokens", async () => {
+                await api.panImportTokens({
+                  access_token: accessTokenDraft,
+                  refresh_token: refreshTokenDraft,
+                });
+                setAccessTokenDraft("");
+                setRefreshTokenDraft("");
+                await reloadPan();
+                report("OpenList Token 已导入");
+              }, "none");
+            }}
+          >
+            <label>
+              <span>OpenList 115 access_token</span>
+              <input
+                type="password"
+                autoComplete="off"
+                value={accessTokenDraft}
+                onChange={(e) => setAccessTokenDraft(e.target.value)}
+              />
+            </label>
+            <label>
+              <span>OpenList 115 refresh_token</span>
+              <input
+                type="password"
+                autoComplete="off"
+                value={refreshTokenDraft}
+                onChange={(e) => setRefreshTokenDraft(e.target.value)}
+              />
+            </label>
+            <p className="muted">Token 来自 OpenList 的 115 Open 存储；使用与 OpenList/Miyabi 相同的社区 client_id 100197303。导入可能使旧 refresh slot 失效（115 约允许 2 个）。</p>
+            <button
+              type="submit"
+              disabled={!accessTokenDraft || !refreshTokenDraft || busy === "pan-import-tokens"}
+            >导入 OpenList Token</button>
+          </form>
+
           {panSettings && (
             <form
               className="settings-form"
@@ -149,15 +197,38 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                 void run("pan-settings", async () => {
                   const saved = await api.savePanSettings({
                     ...panSettings,
+                    client_id: clientIdDraft.trim(),
+                    ...(clientSecretDraft.trim() ? { client_secret: clientSecretDraft.trim() } : {}),
                     offline_directory_id: dirDraft.trim() || null,
                   });
                   setPanSettings(saved);
+                  setClientIdDraft(saved.client_id);
+                  setClientSecretDraft("");
                   await api.panSetDirectory(dirDraft.trim() || "0").catch(() => undefined);
                   await reloadPan();
                   report("115 设置已保存");
                 }, "none");
               }}
             >
+              <label>
+                <span>115 Open 应用 client_id</span>
+                <input
+                  value={clientIdDraft}
+                  onChange={(e) => setClientIdDraft(e.target.value)}
+                  placeholder="100197303（社区临时应用）"
+                />
+              </label>
+              <label>
+                <span>可选 client_secret{panSettings.client_secret_set ? "（已设置，留空保持不变）" : ""}</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={clientSecretDraft}
+                  onChange={(e) => setClientSecretDraft(e.target.value)}
+                  placeholder="不回显已保存 secret"
+                />
+              </label>
+              <p className="muted">切换 client_id 会清除当前 115 凭证，需重新登录或导入 Token。</p>
               <label>
                 <span>离线目录 ID（cid）</span>
                 <input

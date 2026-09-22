@@ -13,7 +13,6 @@ import pytest
 from shadow_mdc.media.strm import read_strm_locator, write_strm
 from shadow_mdc.services.pan import (
     Pan115Client,
-    PanCredentials,
     PanService,
     PanSettings,
     generate_pkce,
@@ -184,23 +183,33 @@ async def test_pan_client_token_and_offline_flow(tmp_path: Path) -> None:
     await client.aclose()
 
 
-@pytest.mark.asyncio
-async def test_pan_service_persists_credentials(tmp_path: Path) -> None:
+def test_pan_service_imports_credentials_without_echoing_tokens(tmp_path: Path) -> None:
     service = PanService(data_dir=tmp_path, client_id="100197303")
-    creds = PanCredentials(
-        access_token="a",
-        refresh_token="r",
-        expires_at="2099-01-01T00:00:00+00:00",
+    status = service.import_tokens(
+        "access-token-fixture",
+        "refresh-token-fixture",
+        expires_in=86400,
         user_name="u",
     )
-    service.credentials_store.save(creds)
     cred_path = tmp_path / "pan" / "credentials.json"
     assert cred_path.is_file()
     raw = json.loads(cred_path.read_text(encoding="utf-8"))
-    assert raw["access_token"] == "a"
-    status = service.status()
+    assert raw["access_token"] == "access-token-fixture"
+    assert raw["refresh_token"] == "refresh-token-fixture"
     assert status["configured"] is True
     assert status["available"] is True
     assert status["connected"] is True
+    assert "access_token" not in status
+    assert "refresh_token" not in status
+    assert service.get_client()._access_token == "access-token-fixture"
     service.disconnect()
     assert service.status()["configured"] is False
+
+
+def test_pan_service_switching_client_id_clears_credentials(tmp_path: Path) -> None:
+    service = PanService(data_dir=tmp_path, client_id="100197303")
+    service.import_tokens("a", "r")
+    saved = service.save_settings({"client_id": "own-app-id", "client_secret": "own-secret"})
+    assert saved.client_id == "own-app-id"
+    assert service.status()["configured"] is False
+    assert service.settings_status()["client_secret_set"] is True

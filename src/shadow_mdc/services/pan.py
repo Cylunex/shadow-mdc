@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import secrets
-import time
+import time as time_module
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -75,6 +75,9 @@ class PanSettings(BaseModel):
     strm_output_root: str | None = None
     strm_url_prefix: str = "http://openlist:5244/d/115"
     use_proxy: bool = False
+    # Optional per-instance app credentials; unset values fall back to environment defaults.
+    client_id: str | None = None
+    client_secret: str | None = None
 
 
 class CredentialStore:
@@ -120,6 +123,8 @@ class PanConfigStore:
         temporary = self._path.with_suffix(f"{self._path.suffix}.tmp")
         temporary.write_text(settings.model_dump_json(indent=2) + "\n", encoding="utf-8")
         temporary.replace(self._path)
+        with contextlib.suppress(OSError):
+            os.chmod(self._path, 0o600)
         return settings
 
 
@@ -196,7 +201,7 @@ class _LoginSession:
     sign: str
     verifier: str
     qr_png_b64: str
-    created_at: float = field(default_factory=time.monotonic)
+    created_at: float = field(default_factory=time_module.monotonic)
     state: str = "waiting"  # waiting|scanned|ok|expired|canceled|error
     error: str | None = None
 
@@ -263,11 +268,11 @@ class Pan115Client:
 
     async def _throttle(self) -> None:
         async with self._lock:
-            now = time.monotonic()
+            now = time_module.monotonic()
             wait = RATE_LIMIT_SECONDS - (now - self._last_call)
             if wait > 0:
                 await asyncio.sleep(wait)
-            self._last_call = time.monotonic()
+            self._last_call = time_module.monotonic()
 
     async def _request(
         self,
@@ -655,30 +660,46 @@ class PanService:
     def _config(self) -> PanSettings:
         return self.config_store.load()
 
+    def _persist_credentials(self, credentials: PanCredentials) -> None:
+        existing = self.credentials_store.load()
+        merged = credentials
+        if existing is not None:
+            merged = credentials.model_copy(
+                update={
+                    "user_id": credentials.user_id or existing.user_id,
+                    "user_name": credentials.user_name or existing.user_name,
+                }
+            )
+        self.credentials_store.save(merged)
+
+    def _effective_client_id(self, cfg: PanSettings | None = None) -> str:
+        settings = cfg or self._config()
+        return settings.client_id or self.client_id or DEFAULT_PAN_CLIENT_ID
+
+    def _effective_client_secret(self, cfg: PanSettings | None = None) -> str | None:
+        settings = cfg or self._config()
+        return settings.client_secret if settings.client_secret is not None else self.client_secret
+
+    def settings_status(self) -> dict[str, object]:
+        cfg = self._config()
+        return {
+            **cfg.model_dump(exclude={"client_id", "client_secret"}),
+            "client_id": self._effective_client_id(cfg),
+            "client_secret_set": bool(self._effective_client_secret(cfg)),
+        }
+
     def get_client(self) -> Pan115Client:
         cfg = self._config()
         if self._client is None:
             self._client = Pan115Client(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
+                client_id=self._effective_client_id(cfg),
+                client_secret=self._effective_client_secret(cfg),
                 proxy_url=self.proxy_url,
                 use_proxy=cfg.use_proxy,
                 user_agent=self.user_agent,
             )
 
-            def _persist(credentials: PanCredentials) -> None:
-                existing = self.credentials_store.load()
-                merged = credentials
-                if existing is not None:
-                    merged = credentials.model_copy(
-                        update={
-                            "user_id": credentials.user_id or existing.user_id,
-                            "user_name": credentials.user_name or existing.user_name,
-                        }
-                    )
-                self.credentials_store.save(merged)
-
-            self._client.bind_tokens(self.credentials_store.load(), on_tokens=_persist)
+            self._client.bind_tokens(self.credentials_store.load(), on_tokens=self._persist_credentials)
         else:
             # Keep use_proxy in sync if config changed.
             self._client._proxy = self.proxy_url if cfg.use_proxy and self.proxy_url else None
@@ -696,9 +717,9 @@ class PanService:
                 "available": False,
                 "reason": (
                     "Not logged in. Use Settings → 115 QR login "
-                    f"(client_id={self.client_id}; prefer your own app at open.115.com)."
+                    f"(client_id={self._effective_client_id(cfg)}; prefer your own app at open.115.com)."
                 ),
-                "client_id": self.client_id,
+                "client_id": self._effective_client_id(cfg),
                 "offline_directory_id": cfg.offline_directory_id,
                 "strm_enabled": cfg.strm_enabled,
                 "connected": False,
@@ -712,7 +733,7 @@ class PanService:
                 if directory_set
                 else "Connected; set offline directory id before submitting tasks."
             ),
-            "client_id": self.client_id,
+            "client_id": self._effective_client_id(cfg),
             "offline_directory_id": cfg.offline_directory_id,
             "strm_enabled": cfg.strm_enabled,
             "strm_output_root": cfg.strm_output_root,
@@ -724,6 +745,33 @@ class PanService:
                 "expires_at": creds.expires_at if creds else None,
             },
         }
+
+    def import_tokens(
+        self,
+        access_token: str,
+        refresh_token: str,
+        *,
+        expires_in: int | None = None,
+        user_id: str | None = None,
+        user_name: str | None = None,
+    ) -> dict[str, object]:
+        """Import OpenList-compatible tokens without exposing them in the result."""
+
+        access = access_token.strip()
+        refresh = refresh_token.strip()
+        if not access or not refresh:
+            raise ValueError("access_token and refresh_token are required")
+        seconds = 7200 if expires_in is None else max(60, int(expires_in))
+        credentials = PanCredentials(
+            access_token=access,
+            refresh_token=refresh,
+            expires_at=(datetime.now(UTC) + timedelta(seconds=seconds)).isoformat(),
+            user_id=user_id,
+            user_name=user_name,
+        )
+        self.credentials_store.save(credentials)
+        self.get_client().bind_tokens(credentials, on_tokens=self._persist_credentials)
+        return self.status()
 
     async def start_login(self) -> dict[str, str]:
         self._purge_logins()
@@ -745,7 +793,7 @@ class PanService:
         session = self._logins.get(login_id)
         if session is None:
             return {"state": "expired", "error": "unknown login id"}
-        if time.monotonic() - session.created_at > LOGIN_TTL_SECONDS:
+        if time_module.monotonic() - session.created_at > LOGIN_TTL_SECONDS:
             session.state = "expired"
             return {"state": "expired"}
         if session.state in {"ok", "expired", "canceled", "error"}:
@@ -783,10 +831,7 @@ class PanService:
                 except Exception:
                     pass
                 self.credentials_store.save(credentials)
-                client.bind_tokens(
-                    credentials,
-                    on_tokens=lambda c: self.credentials_store.save(c),
-                )
+                client.bind_tokens(credentials, on_tokens=self._persist_credentials)
             except Exception as exc:
                 session.state = "error"
                 session.error = f"{type(exc).__name__}: {exc}"
@@ -812,7 +857,8 @@ class PanService:
                 "url_prefix": cfg.strm_url_prefix,
             },
             "use_proxy": cfg.use_proxy,
-            "client_id": self.client_id,
+            "client_id": self._effective_client_id(cfg),
+            "client_secret_set": bool(self._effective_client_secret(cfg)),
         }
 
     def save_settings(self, patch: dict[str, Any]) -> PanSettings:
@@ -824,11 +870,30 @@ class PanService:
             "strm_output_root",
             "strm_url_prefix",
             "use_proxy",
+            "client_id",
+            "client_secret",
         ):
             if key in patch:
-                data[key] = patch[key]
+                value = patch[key]
+                if key == "client_id" and isinstance(value, str):
+                    value = value.strip() or None
+                if key == "client_secret" and isinstance(value, str):
+                    value = value.strip() or None
+                data[key] = value
+        old_client_id = self._effective_client_id(current)
         saved = self.config_store.save(PanSettings.model_validate(data))
-        # Recreate client if proxy flag changed.
+        new_client_id = self._effective_client_id(saved)
+        if new_client_id != old_client_id:
+            self.credentials_store.clear()
+            self._logins.clear()
+            self.client_id = new_client_id
+            if self._client is not None:
+                self._client.bind_tokens(None)
+                self._client.client_id = new_client_id
+                self._client.client_secret = self._effective_client_secret(saved)
+        elif self._client is not None:
+            self._client.client_secret = self._effective_client_secret(saved)
+        # Keep use_proxy in sync if config changed.
         if self._client is not None and "use_proxy" in patch:
             self._client._proxy = self.proxy_url if saved.use_proxy and self.proxy_url else None
         return saved
@@ -837,7 +902,7 @@ class PanService:
         return self.save_settings({"offline_directory_id": directory_id.strip() or None})
 
     def _purge_logins(self) -> None:
-        now = time.monotonic()
+        now = time_module.monotonic()
         expired = [key for key, item in self._logins.items() if now - item.created_at > LOGIN_TTL_SECONDS]
         for key in expired:
             self._logins.pop(key, None)
