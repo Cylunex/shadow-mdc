@@ -466,6 +466,13 @@ async def _run(arguments: argparse.Namespace) -> int:
                         summary["actions"]["skipped_complete"] += 1
                         print(f"[{entry.phase} #{entry.position}] {entry.code} · complete")
                         continue
+                    # Ratings are sparsely available from current providers; do not
+                    # burn the batch budget on rating-only rows unless forced.
+                    meaningful = [g for g in before_gaps if g != "rating_value"]
+                    if not arguments.force and not meaningful:
+                        summary["actions"]["skipped_complete"] += 1
+                        print(f"[{entry.phase} #{entry.position}] {entry.code} · skip rating-only")
+                        continue
 
                     if arguments.dry_run:
                         summary["actions"]["refreshed"] += 1
