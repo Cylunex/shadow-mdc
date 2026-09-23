@@ -102,6 +102,7 @@ def fill_actor_images_from_gfriends(
     limit: int | None = None,
     force_refresh_index: bool = False,
     http_client: httpx.Client | None = None,
+    commit_every: int = 25,
 ) -> GfriendsFillStats:
     """Match actors with empty ``image_url`` against GFriends and persist URLs."""
 
@@ -138,6 +139,8 @@ def fill_actor_images_from_gfriends(
                     # Still store CDN URL so UI can try remote.
             actor.image_url = image_url
             filled += 1
+            if not dry_run and commit_every > 0 and filled % commit_every == 0:
+                repo._session.commit()
         if not dry_run and filled:
             repo._session.flush()
     finally:
