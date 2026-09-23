@@ -1,6 +1,7 @@
 import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import { api, appUrl } from "./api";
+import { hideBrokenImage, mediaUrl } from "./lib/mediaUrl";
 import { XHandleLink } from "./components/XHandleLink";
 import type { NonJavActorEditPayload, OrganizePayload } from "./api";
 import { identityAliasesSchema } from "./model";
@@ -236,7 +237,7 @@ function JavActors({ actors, prefs, onActorTags, busy, onOpenWork, onOpenActor }
         <div
           className={`actor-avatar${actor.image_url ? "" : " actor-avatar--empty"}`}
           data-initial={actor.image_url ? undefined : actorInitials(actor.name)}
-          style={actor.image_url ? { backgroundImage: `url("${appUrl(actor.image_url)}")` } : undefined}
+          style={actor.image_url ? { backgroundImage: `url("${mediaUrl(actor.image_url)}")` } : undefined}
           role="img"
           aria-label={`${actor.name} 代表图片`}
         />
@@ -304,7 +305,7 @@ function JavActors({ actors, prefs, onActorTags, busy, onOpenWork, onOpenActor }
         >
           <div className="actor-work-poster">
             {work.image_url
-              ? <img src={appUrl(work.image_url) ?? undefined} alt="" loading="lazy" decoding="async" />
+              ? <img src={mediaUrl(work.image_url) ?? undefined} alt="" loading="lazy" decoding="async" onError={hideBrokenImage} />
               : null}
           </div>
           <div>
@@ -526,7 +527,7 @@ function NonJavActorsManager(props: {
               }
             }}
           >
-            <div className={`actor-avatar${actor.image_url ? "" : " actor-avatar--empty"}`} data-initial={actor.image_url ? undefined : actorInitials(actor.name)} style={actor.image_url ? { backgroundImage: `url("${appUrl(actor.image_url)}")` } : undefined} role="img" aria-label={`${actor.name} 头像`} />
+            <div className={`actor-avatar${actor.image_url ? "" : " actor-avatar--empty"}`} data-initial={actor.image_url ? undefined : actorInitials(actor.name)} style={actor.image_url ? { backgroundImage: `url("${mediaUrl(actor.image_url)}")` } : undefined} role="img" aria-label={`${actor.name} 头像`} />
             <div className="actor-card-title">
               <div>
                 <span className="pill">{actor.categories.join(" / ")}</span>
@@ -558,7 +559,7 @@ function NonJavActorsManager(props: {
               >
                 <div
                   className="actor-work-poster"
-                  style={work.image_url ? { backgroundImage: `url("${appUrl(work.image_url)}")` } : actor.image_url ? { backgroundImage: `url("${appUrl(actor.image_url)}")` } : undefined}
+                  style={work.image_url ? { backgroundImage: `url("${mediaUrl(work.image_url)}")` } : actor.image_url ? { backgroundImage: `url("${mediaUrl(actor.image_url)}")` } : undefined}
                 />
                 <div>
                   <strong

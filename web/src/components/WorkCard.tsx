@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { appUrl } from "../api";
+import { hideBrokenImage, mediaUrl } from "../lib/mediaUrl";
 import type { Work } from "../model";
 import { StatusBadges } from "./StatusBadges";
 
@@ -20,7 +20,7 @@ export const WorkCard = memo(function WorkCard({
   onRefresh,
   onToggleWant
 }: Props) {
-  const thumb = work.image_url ? appUrl(work.image_url) : null;
+  const thumb = mediaUrl(work.image_url);
   return (
     <article
       className={selected ? "work selected" : "work"}
@@ -33,7 +33,7 @@ export const WorkCard = memo(function WorkCard({
     >
       <div className="poster">
         {thumb ? (
-          <img src={thumb} alt="" loading="lazy" decoding="async" />
+          <img src={thumb} alt="" loading="lazy" decoding="async" onError={hideBrokenImage} />
         ) : (
           <div className="poster-fallback" aria-hidden />
         )}

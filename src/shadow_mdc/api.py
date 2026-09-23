@@ -153,7 +153,7 @@ from .enums import (
 )
 from .identity import IdentityAliasRules, build_identity_hints, extract_code, normalize_identity_value
 from .matching import normalize_title, rank_candidates, score_candidate
-from .media.artwork import ArtworkDownloadResult, ArtworkStore
+from .media.artwork import ArtworkDownloadResult, ArtworkStore, resolve_work_display_image
 from .media.magnets import MagnetLink
 from .media.nfo import build_nfo, parse_nfo
 from .media.organizer import Organizer, plan_move_cleanup
@@ -4232,45 +4232,10 @@ def _javranking_thumb_url(
 
 
 def _work_display_artwork(work: Work, kind: str, *, data_dir: Path | None = None) -> str | None:
-    is_fanart = kind == "fanart"
-    matching = [
-        item
-        for item in work.artwork
-        if (str(item.get("kind", "thumb")).casefold() in {"fanart", "background", "backdrop"}) is is_fanart
-    ]
-    if kind == "poster":
-        preferred = [
-            item
-            for item in work.artwork
-            if item.get("preferred") is True
-            and isinstance(item.get("local_path"), str)
-            and Path(str(item["local_path"])).is_file()
-        ]
-        root: Path | None = None
-        if data_dir is not None:
-            root = data_dir / "artwork" / work.id
-        elif preferred:
-            root = Path(str(preferred[0]["local_path"])).parent
-        else:
-            for item in matching:
-                local = item.get("local_path")
-                if isinstance(local, str) and Path(local).is_file():
-                    root = Path(local).parent
-                    break
-        if root is not None and any(root.glob("thumb.*")):
-            return f"/api/works/{work.id}/artwork/thumb"
-        if preferred:
-            return f"/api/works/{work.id}/artwork/poster"
-    if any(isinstance((path := item.get("local_path")), str) and Path(path).is_file() for item in matching):
-        return f"/api/works/{work.id}/artwork/{kind}"
-    return next(
-        (
-            url
-            for item in matching
-            if isinstance((url := item.get("url")), str) and url.startswith(("http://", "https://"))
-        ),
-        None,
-    )
+    """Cover URL for API payloads — delegates to shared artwork resolver."""
+
+    return resolve_work_display_image(work, kind, data_dir=data_dir)
+
 
 
 def _organize_entities(repo: Repository, asset_id: str) -> tuple[MediaAsset, Work, Library]:

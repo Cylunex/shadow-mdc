@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..db.models import Actor, Work
 from ..enums import ContentFamily, MediaCategory
 from ..identity import IdentityAliasRules, extract_code
+from ..media.artwork import resolve_work_display_image
 
 _DOMAIN_ACTOR = re.compile(r"(?i)^(?:www\.)?[a-z0-9-]+\.(?:com|net|org|tv|cc|me|xyz|top|vip)$")
 _INVALID_ACTOR_NAMES = frozenset({"unknown", "uncategorized", "未知", "未归类", "未歸類", "未分类", "未分類"})
@@ -313,31 +314,8 @@ def _profiles_from_accumulators(
 
 
 def _work_image_url(work: Work) -> str | None:
-    poster_items = [
-        item
-        for item in work.artwork
-        if str(item.get("kind", "thumb")).casefold() not in {"fanart", "background", "backdrop"}
-    ]
-    for item in poster_items:
-        local_path = item.get("local_path")
-        if isinstance(local_path, str) and Path(local_path).is_file():
-            return f"/api/works/{work.id}/artwork/poster"
-    for item in poster_items:
-        url = item.get("url")
-        if isinstance(url, str) and url.startswith(("http://", "https://")):
-            return url
-    for item in work.artwork:
-        local_path = item.get("local_path")
-        if isinstance(local_path, str) and Path(local_path).is_file():
-            return f"/api/works/{work.id}/artwork/fanart"
-    return next(
-        (
-            url
-            for item in work.artwork
-            if isinstance((url := item.get("url")), str) and url.startswith(("http://", "https://"))
-        ),
-        None,
-    )
+    return resolve_work_display_image(work, "poster")
+
 
 
 def _work_identity(work: ActorWorkReference) -> tuple[str, str]:

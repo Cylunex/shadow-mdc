@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api, appUrl } from "../api";
+import { hideBrokenImage, mediaUrl } from "../lib/mediaUrl";
 import { StatusBadges } from "../components/StatusBadges";
 import type { PanOfflineTask, Work, WorkDetail, WorkRelated } from "../model";
 
@@ -61,7 +62,7 @@ function RelatedStrip(props: {
       ) : (
         <div className="work-related-rail" role="list">
           {props.works.map((item) => {
-            const thumb = item.image_url ? appUrl(item.image_url) : null;
+            const thumb = mediaUrl(item.image_url);
             return (
               <button
                 key={item.id}
@@ -206,7 +207,7 @@ export function WorkDetailView(props: {
 
   const posterUrl = useMemo(() => {
     if (!work) return null;
-    return work.image_url ? appUrl(work.image_url) : null;
+    return mediaUrl(work.image_url);
   }, [work]);
 
   const fanartUrl = useMemo(() => {
@@ -329,7 +330,7 @@ export function WorkDetailView(props: {
         <header className="work-page-hero">
           <div className="work-page-poster-wrap">
             {posterUrl ? (
-              <img className="work-page-poster" src={posterUrl} alt="" />
+              <img className="work-page-poster" src={posterUrl} alt="" onError={hideBrokenImage} />
             ) : (
               <div className="work-page-poster fallback" aria-hidden />
             )}

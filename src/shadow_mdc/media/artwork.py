@@ -277,3 +277,112 @@ def ensure_list_thumbnail(work_root: Path, source: Path, *, max_width: int = LIS
             return destination
     except OSError:
         return None
+
+
+_FANART_KINDS = frozenset({"fanart", "background", "backdrop"})
+_SAMPLE_KINDS = frozenset({"sample"})
+
+
+def artwork_dir_for_work(work: Work, data_dir: Path | None = None) -> Path | None:
+    """Resolve ``data/artwork/<work_id>`` without mistaking ``samples/`` for the root."""
+
+    if data_dir is not None:
+        return data_dir / "artwork" / work.id
+    for item in work.artwork:
+        local = item.get("local_path")
+        if not isinstance(local, str) or not local:
+            continue
+        path = Path(local)
+        if not path.is_file():
+            continue
+        candidate = path.parent.parent if path.parent.name == "samples" else path.parent
+        if candidate.name == work.id:
+            return candidate
+    return None
+
+
+def _stem_exists(root: Path, stem: str) -> bool:
+    return any(path.is_file() for path in root.glob(f"{stem}.*"))
+
+
+def _remote_cover_urls(work: Work, *, fanart_only: bool) -> list[str]:
+    urls: list[str] = []
+    for item in work.artwork:
+        kind = str(item.get("kind", "thumb")).casefold()
+        if kind in _SAMPLE_KINDS:
+            continue
+        is_fanart = kind in _FANART_KINDS
+        if fanart_only and not is_fanart:
+            continue
+        if not fanart_only and is_fanart:
+            continue
+        url = item.get("url")
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            urls.append(url)
+    return urls
+
+
+def resolve_work_display_image(
+    work: Work,
+    kind: str = "poster",
+    *,
+    data_dir: Path | None = None,
+) -> str | None:
+    """Browser-usable cover URL for list/detail cards.
+
+    Prefer on-disk ``thumb`` / ``poster`` / ``fanart`` under ``data/artwork/<id>``.
+    Cached **sample** frames must not count as a poster — that caused lists to emit
+    ``/api/works/.../artwork/poster`` (404) when only samples/fanart/thumb existed.
+    """
+
+    root = artwork_dir_for_work(work, data_dir)
+    if kind == "fanart":
+        if root is not None and _stem_exists(root, "fanart"):
+            return f"/api/works/{work.id}/artwork/fanart"
+        return next(iter(_remote_cover_urls(work, fanart_only=True)), None)
+
+    if root is not None:
+        if _stem_exists(root, "thumb"):
+            return f"/api/works/{work.id}/artwork/thumb"
+        if _stem_exists(root, "poster"):
+            return f"/api/works/{work.id}/artwork/poster"
+        if _stem_exists(root, "fanart"):
+            return f"/api/works/{work.id}/artwork/fanart"
+
+    preferred = [
+        item
+        for item in work.artwork
+        if item.get("preferred") is True
+        and str(item.get("kind", "thumb")).casefold() not in _FANART_KINDS | _SAMPLE_KINDS
+        and isinstance(item.get("local_path"), str)
+        and Path(str(item["local_path"])).is_file()
+    ]
+    if preferred:
+        parent = Path(str(preferred[0]["local_path"])).parent
+        if parent.name == "samples":
+            parent = parent.parent
+        if _stem_exists(parent, "poster"):
+            return f"/api/works/{work.id}/artwork/poster"
+        if _stem_exists(parent, "thumb"):
+            return f"/api/works/{work.id}/artwork/thumb"
+
+    for item in work.artwork:
+        kind_name = str(item.get("kind", "thumb")).casefold()
+        if kind_name in _FANART_KINDS | _SAMPLE_KINDS:
+            continue
+        local = item.get("local_path")
+        if not isinstance(local, str):
+            continue
+        path = Path(local)
+        if not path.is_file():
+            continue
+        parent = path.parent.parent if path.parent.name == "samples" else path.parent
+        if _stem_exists(parent, "thumb"):
+            return f"/api/works/{work.id}/artwork/thumb"
+        if _stem_exists(parent, "poster"):
+            return f"/api/works/{work.id}/artwork/poster"
+
+    return next(
+        iter(_remote_cover_urls(work, fanart_only=False) or _remote_cover_urls(work, fanart_only=True)),
+        None,
+    )

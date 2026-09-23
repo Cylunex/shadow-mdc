@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 
 import { appUrl } from "../api";
+import { hideBrokenImage, mediaUrl } from "../lib/mediaUrl";
 import { XHandleLink } from "../components/XHandleLink";
 import type { ActorJavRankingInfo, ActorProfile, NonJavActor } from "../model";
 
@@ -144,7 +145,7 @@ export function ActorDetailView(props: {
 
   const portrait = useMemo(() => {
     if (!props.model?.image_url) return null;
-    return appUrl(props.model.image_url);
+    return mediaUrl(props.model.image_url);
   }, [props.model?.image_url]);
 
   if (props.loading && !props.model) {
@@ -191,7 +192,7 @@ export function ActorDetailView(props: {
         <header className="actor-page-hero work-page-hero">
           <div className="actor-page-portrait-wrap">
             {portrait ? (
-              <img className="actor-page-portrait" src={portrait} alt={`${actor.name} 写真`} />
+              <img className="actor-page-portrait" src={portrait} alt={`${actor.name} 写真`} onError={hideBrokenImage} />
             ) : (
               <div className="actor-page-portrait actor-page-portrait--empty" aria-label="暂无写真" />
             )}
@@ -272,7 +273,7 @@ export function ActorDetailView(props: {
           ) : (
             <div className="actor-page-work-grid" role="list">
               {actor.works.map((work) => {
-                const thumb = work.image_url ? appUrl(work.image_url) : null;
+                const thumb = mediaUrl(work.image_url);
                 const codeLabel = work.code ?? work.studio ?? work.series ?? null;
                 return (
                   <button
@@ -285,7 +286,7 @@ export function ActorDetailView(props: {
                   >
                     <div className="actor-page-work-poster">
                       {thumb ? (
-                        <img src={thumb} alt="" loading="lazy" decoding="async" />
+                        <img src={thumb} alt="" loading="lazy" decoding="async" onError={hideBrokenImage} />
                       ) : (
                         <div className="poster-fallback" aria-hidden />
                       )}
