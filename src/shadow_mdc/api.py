@@ -1742,9 +1742,11 @@ async def javranking_list(
         )
         items: list[JavRankingListItemOut] = []
         if curated.kind == "videos":
+            data_dir = app_runtime.settings.data_dir
             for entry in curated.videos:
                 state = None
                 work_id = None
+                work = None
                 if entry.code:
                     work = repo.find_work_by_code(entry.code)
                     if work is not None:
@@ -1759,7 +1761,11 @@ async def javranking_list(
                         title=entry.title,
                         video_id=entry.video_id,
                         url=entry.url,
-                        thumb_url=getattr(entry, "cover_url", None),
+                        thumb_url=_javranking_thumb_url(
+                            seed_cover=getattr(entry, "cover_url", None),
+                            work=work,
+                            data_dir=data_dir,
+                        ),
                         state=state,
                         work_id=work_id,
                     )
@@ -1823,6 +1829,7 @@ async def javranking_list(
             for entry in local.items:
                 state = None
                 work_id = None
+                work = None
                 if entry.code:
                     work = repo.find_work_by_code(entry.code)
                     if work is not None:
@@ -1837,7 +1844,11 @@ async def javranking_list(
                         title=entry.title,
                         video_id=None,
                         url=None,
-                        thumb_url=entry.icon_url,
+                        thumb_url=_javranking_thumb_url(
+                            seed_cover=entry.icon_url,
+                            work=work,
+                            data_dir=data_dir,
+                        ),
                         release_date=entry.date,
                         state=state,
                         work_id=work_id,
@@ -1869,6 +1880,7 @@ async def javranking_list(
             for entry in disk_list.videos:
                 state = None
                 work_id = None
+                work = None
                 if entry.code:
                     work = repo.find_work_by_code(entry.code)
                     if work is not None:
@@ -1883,7 +1895,11 @@ async def javranking_list(
                         title=entry.title,
                         video_id=entry.video_id,
                         url=entry.url,
-                        thumb_url=getattr(entry, "cover_url", None),
+                        thumb_url=_javranking_thumb_url(
+                            seed_cover=getattr(entry, "cover_url", None),
+                            work=work,
+                            data_dir=data_dir,
+                        ),
                         state=state,
                         work_id=work_id,
                     )
@@ -1930,6 +1946,7 @@ async def javranking_list(
         )
         state = None
         work_id = None
+        work = None
         if video.code:
             work = repo.find_work_by_code(video.code)
             if work is not None:
@@ -1945,7 +1962,11 @@ async def javranking_list(
                 video_id=video.video_id,
                 score=float(video.score) if video.score is not None else None,
                 url=f"{cache.base_url}/{cache.locale}/videos/{video.video_id}/",
-                thumb_url=video.cover_url,
+                thumb_url=_javranking_thumb_url(
+                    seed_cover=video.cover_url,
+                    work=work,
+                    data_dir=app_runtime.settings.data_dir,
+                ),
                 release_date=video.release_date,
                 state=state,
                 work_id=work_id,
@@ -4105,6 +4126,28 @@ def _display_tags(work: Work) -> list[str]:
         series=work.series,
         tags=work.tags,
     )
+
+
+
+def _javranking_thumb_url(
+    *,
+    seed_cover: str | None,
+    work: Work | None = None,
+    index_cover: str | None = None,
+    data_dir: Path | None = None,
+) -> str | None:
+    """Best available ranking cover: seed URL, then catalog artwork, then index."""
+    seed = (seed_cover or "").strip() or None
+    if seed and seed.startswith(("http://", "https://", "/")):
+        return seed
+    if work is not None:
+        catalog = _work_display_artwork(work, "poster", data_dir=data_dir)
+        if catalog:
+            return catalog
+    index = (index_cover or "").strip() or None
+    if index and index.startswith(("http://", "https://", "/")):
+        return index
+    return seed or index
 
 
 def _work_display_artwork(work: Work, kind: str, *, data_dir: Path | None = None) -> str | None:

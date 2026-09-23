@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { api } from "../api";
+import { api, appUrl } from "../api";
 import type {
   DiscoverItem,
   JavRankingList,
@@ -406,7 +406,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, wantListIds,
             </div>
           )}
 
-          <div className={`discover-grid ${showYearly ? "dense-rank-grid" : ""}`}>
+          <div className="discover-grid dense-rank-grid">
             {loading && (!jrList || jrList.items.length === 0) ? (
               <p className="empty-detail">正在拉取榜单…</p>
             ) : !jrList || jrList.items.length === 0 ? (
@@ -432,10 +432,17 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, wantListIds,
                     }
                   }}
                 >
-                  <div
-                    className="poster"
-                    style={item.thumb_url ? { backgroundImage: `url("${item.thumb_url}")` } : undefined}
-                  >
+                  <div className="poster">
+                    {item.thumb_url ? (
+                      <img
+                        src={appUrl(item.thumb_url) ?? item.thumb_url}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    ) : (
+                      <div className="poster-fallback" aria-hidden />
+                    )}
                     <span className="rank-badge overlay-rank">#{item.position}</span>
                     {cataloged && <span className="in-library-badge">已入库</span>}
                     {linked && item.work_id && wantSet.has(item.work_id) && (

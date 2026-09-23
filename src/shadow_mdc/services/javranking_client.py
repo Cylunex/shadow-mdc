@@ -323,7 +323,76 @@ def build_honors_map(
 
 
 
+
+def build_cover_lookup(
+    videos: Sequence[SearchVideo],
+) -> tuple[dict[str, str], dict[int, str]]:
+    """Map normalized code / video_id → cover URL from the search index."""
+    by_code: dict[str, str] = {}
+    by_id: dict[int, str] = {}
+    for video in videos:
+        cover = (video.cover_url or "").strip()
+        if not cover:
+            continue
+        if video.video_id is not None:
+            by_id.setdefault(int(video.video_id), cover)
+        code = (video.code or "").strip()
+        if code:
+            key = to_comparison_key(normalize_code(code) or code)
+            if key:
+                by_code.setdefault(key, cover)
+    return by_code, by_id
+
+
+def lookup_index_cover(
+    *,
+    code: str | None,
+    video_id: int | None,
+    by_code: Mapping[str, str],
+    by_id: Mapping[int, str],
+) -> str | None:
+    if video_id is not None:
+        hit = by_id.get(int(video_id))
+        if hit:
+            return hit
+    if code:
+        key = to_comparison_key(normalize_code(code) or code)
+        if key:
+            return by_code.get(key)
+    return None
+
+
+def enrich_curated_videos_with_covers(
+    videos: Sequence[CuratedVideoEntry],
+    index_videos: Sequence[SearchVideo],
+) -> tuple[CuratedVideoEntry, ...]:
+    """Fill missing curated cover_url fields from the search-index covers.
+
+    Markdown/JSON-LD curated lists often omit covers; the search index usually
+    has ``coverUrl`` for the same videoId/code.
+    """
+    by_code, by_id = build_cover_lookup(index_videos)
+    if not by_code and not by_id:
+        return tuple(videos)
+    enriched: list[CuratedVideoEntry] = []
+    changed = False
+    for entry in videos:
+        if entry.cover_url:
+            enriched.append(entry)
+            continue
+        cover = lookup_index_cover(
+            code=entry.code, video_id=entry.video_id, by_code=by_code, by_id=by_id
+        )
+        if cover:
+            enriched.append(entry.model_copy(update={"cover_url": cover}))
+            changed = True
+        else:
+            enriched.append(entry)
+    return tuple(enriched) if changed else tuple(videos)
+
+
 def normalize_actor_key(name: str) -> str:
+
     return unicodedata.normalize("NFKC", name).casefold().strip()
 
 
@@ -831,6 +900,20 @@ class JavRankingIndexCache:
                 return cached
         return await self.fetch_and_cache()
 
+    def enrich_curated_list_covers(self, curated: CuratedList) -> CuratedList:
+        """Attach search-index covers to curated videos when the list omitted them."""
+        if curated.kind != "videos" or not curated.videos:
+            return curated
+        if all(entry.cover_url for entry in curated.videos):
+            return curated
+        index = self.read_cached_index()
+        if index is None or not index.videos:
+            return curated
+        enriched = enrich_curated_videos_with_covers(curated.videos, index.videos)
+        if enriched == curated.videos:
+            return curated
+        return curated.model_copy(update={"videos": enriched})
+
     async def load_curated_list(self, slug: str, *, force_refresh: bool = False) -> CuratedList:
         if slug not in CURATED_LIST_SLUGS:
             raise ValueError(f"unsupported curated list slug: {slug}")
@@ -842,7 +925,7 @@ class JavRankingIndexCache:
             and cached.locale == self.locale
             and (now - cached.fetched_at) <= self.hard_ttl_s
         ):
-            return cached
+            return self.enrich_curated_list_covers(cached)
         return await self.fetch_curated_list(slug)
 
     async def load_curated_lists(
@@ -926,6 +1009,11 @@ class JavRankingIndexCache:
             source_format = "html-jsonld"
             if not videos and not actors:
                 raise ValueError(f"javranking curated list empty: {slug}")
+
+        if videos:
+            index = self.read_cached_index()
+            if index is not None and index.videos:
+                videos = list(enrich_curated_videos_with_covers(videos, index.videos))
 
         curated = CuratedList(
             slug=slug,

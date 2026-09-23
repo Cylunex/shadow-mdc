@@ -11,6 +11,7 @@ from shadow_mdc.services.javranking_client import (
     FALLBACK_BASE_URL,
     JavRankingIndexCache,
     build_actor_honors_map,
+    enrich_curated_videos_with_covers,
     parse_curated_actors_markdown,
     parse_curated_videos_markdown,
     parse_item_list_json_ld,
@@ -186,3 +187,16 @@ async def test_actor_honors_cache_written(tmp_path: Path) -> None:
         hit = cache.lookup_actor_honors("涼森れむ")
         assert hit is not None
         assert hit.compact_badge
+
+
+def test_enrich_curated_videos_with_covers_from_search_index() -> None:
+    index = parse_search_index((FIXTURES / "search-index.json").read_text(encoding="utf-8"))
+    text = (FIXTURES / "most-awarded-videos.md").read_text(encoding="utf-8")
+    _, entries = parse_curated_videos_markdown(text)
+    assert all(entry.cover_url is None for entry in entries)
+    enriched = enrich_curated_videos_with_covers(entries, index.videos)
+    assert enriched[0].code == "IPX-811"
+    assert enriched[0].cover_url and enriched[0].cover_url.startswith("http")
+    # Idempotent when covers already present
+    again = enrich_curated_videos_with_covers(enriched, index.videos)
+    assert again[0].cover_url == enriched[0].cover_url
