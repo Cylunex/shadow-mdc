@@ -33,8 +33,12 @@ DEFAULT_PAN_CLIENT_ID = "100197303"
 PASSPORT_URL = "https://passportapi.115.com"
 QRCODE_URL = "https://qrcodeapi.115.com"
 PROAPI_URL = "https://proapi.115.com"
-RATE_LIMIT_SECONDS = 0.5
+# ~4 req/s safe ceiling for 115 Open (Miyabi-style hygiene; reimplemented).
+RATE_LIMIT_SECONDS = 0.25
+MAX_IN_FLIGHT = 2
+REQUEST_RETRIES = 3
 LOGIN_TTL_SECONDS = 300
+OFFLINE_EXISTS_CODE = 10008
 
 
 class PanClient(Protocol):
@@ -55,6 +59,14 @@ class PanApiError(RuntimeError):
     def __init__(self, message: str, *, code: int | None = None) -> None:
         super().__init__(message)
         self.code = code
+
+
+class PanOfflineExistsError(PanApiError):
+    """115 reports the offline task already exists (typically code 10008)."""
+
+
+class PanOfflineConflictError(PanApiError):
+    """Offline task exists but cannot be safely reused (wrong dir / incomplete)."""
 
 
 class PanCredentials(BaseModel):
@@ -167,6 +179,47 @@ def _parse_progress(value: Any) -> float:
     return 0.0
 
 
+def parse_retry_after(header: str | None) -> float:
+    """Return seconds to wait from a Retry-After header (delta-seconds or HTTP-date)."""
+
+    if not header:
+        return 0.0
+    raw = header.strip()
+    if not raw:
+        return 0.0
+    try:
+        seconds = int(raw)
+    except ValueError:
+        seconds = -1
+    if seconds > 0:
+        return float(seconds)
+    try:
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(raw)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        wait = (when - datetime.now(UTC)).total_seconds()
+        return wait if wait > 0 else 0.0
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def is_offline_exists_code(code: Any) -> bool:
+    try:
+        return int(code) == OFFLINE_EXISTS_CODE
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_video_name(name: str) -> bool:
+    lowered = name.casefold()
+    return any(
+        lowered.endswith(ext)
+        for ext in (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".m2ts", ".mov", ".flv", ".webm")
+    )
+
+
 def _unwrap_data(payload: dict[str, Any]) -> Any:
     if "data" in payload:
         return payload["data"]
@@ -225,7 +278,9 @@ class Pan115Client:
         self._user_agent = user_agent
         self._timeout = timeout
         self._lock = asyncio.Lock()
+        self._inflight = asyncio.Semaphore(MAX_IN_FLIGHT)
         self._last_call = 0.0
+        self._retry_after_until = 0.0
         self._http: httpx.AsyncClient | None = None
         self._access_token: str | None = None
         self._refresh_token: str | None = None
@@ -267,12 +322,28 @@ class Pan115Client:
         return self._http
 
     async def _throttle(self) -> None:
-        async with self._lock:
-            now = time_module.monotonic()
-            wait = RATE_LIMIT_SECONDS - (now - self._last_call)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._last_call = time_module.monotonic()
+        """Enforce spacing and global Retry-After backoff before a request start."""
+
+        while True:
+            async with self._lock:
+                now = time_module.monotonic()
+                wait_ra = self._retry_after_until - now
+                wait_gap = RATE_LIMIT_SECONDS - (now - self._last_call)
+                wait = max(wait_ra, wait_gap, 0.0)
+                if wait <= 0:
+                    self._last_call = time_module.monotonic()
+                    return
+            await asyncio.sleep(wait)
+
+    def _note_retry_after(self, response: httpx.Response) -> float:
+        wait = parse_retry_after(response.headers.get("Retry-After"))
+        if wait <= 0:
+            return 0.0
+        until = time_module.monotonic() + wait
+        # Best-effort without await; races only extend backoff.
+        if until > self._retry_after_until:
+            self._retry_after_until = until
+        return wait
 
     async def _request(
         self,
@@ -284,23 +355,33 @@ class Pan115Client:
         bearer: bool = False,
         raw: bool = False,
     ) -> httpx.Response:
-        await self._throttle()
         http = self._ensure_http()
         headers: dict[str, str] = {}
         if bearer:
             if not self._access_token:
                 raise PanNotConfiguredError("115 access token missing")
             headers["Authorization"] = f"Bearer {self._access_token}"
-        response = await http.request(
-            method,
-            url,
-            data=form,
-            params=params,
-            headers=headers,
-        )
-        if raw:
-            return response
-        return response
+
+        async with self._inflight:
+            last: httpx.Response | None = None
+            for attempt in range(REQUEST_RETRIES + 1):
+                await self._throttle()
+                response = await http.request(
+                    method,
+                    url,
+                    data=form,
+                    params=params,
+                    headers=headers,
+                )
+                last = response
+                ra = self._note_retry_after(response)
+                if response.status_code in {429, 502, 503, 504} and attempt < REQUEST_RETRIES:
+                    delay = ra if ra > 0 else float(attempt + 1)
+                    await asyncio.sleep(delay)
+                    continue
+                return response
+            assert last is not None
+            return last
 
     async def begin_device_login(self) -> tuple[str, str, int, str, bytes]:
         """Start PKCE device login. Returns (verifier, uid, time, sign, qr_png)."""
@@ -477,10 +558,11 @@ class Pan115Client:
                 if not isinstance(payload, dict):
                     raise PanApiError(f"{url}: unexpected response after refresh")
             else:
-                raise PanApiError(
-                    str(payload.get("message") or payload.get("error") or f"API error code={code}"),
-                    code=int(code) if isinstance(code, int) else None,
-                )
+                message = str(payload.get("message") or payload.get("error") or f"API error code={code}")
+                code_int = int(code) if isinstance(code, int) else None
+                if is_offline_exists_code(code_int):
+                    raise PanOfflineExistsError(message, code=OFFLINE_EXISTS_CODE)
+                raise PanApiError(message, code=code_int)
         return payload
 
     async def fetch_user_info(self) -> dict[str, Any]:
@@ -581,7 +663,205 @@ class Pan115Client:
                     "code": 0,
                 }
             )
+        for item in results:
+            if item.get("state"):
+                continue
+            if is_offline_exists_code(item.get("code")):
+                raise PanOfflineExistsError(
+                    str(item.get("message") or "115 offline task already exists"),
+                    code=OFFLINE_EXISTS_CODE,
+                )
         return results
+
+    async def remove_offline_history(self, info_hash: str) -> None:
+        """Clear offline *history* only; never delete cloud source files."""
+
+        digest = (info_hash or "").strip()
+        if not digest:
+            raise ValueError("info_hash is empty")
+        await self._authed_json(
+            "POST",
+            f"{PROAPI_URL}/open/offline/del_task",
+            form={"info_hash": digest, "del_source_file": "0"},
+        )
+
+    async def find_remote_offline_task(self, info_hash: str, *, max_pages: int = 20) -> dict[str, Any] | None:
+        digest = (info_hash or "").strip().upper()
+        if not digest:
+            return None
+        for page in range(1, max(1, max_pages) + 1):
+            listing = await self.get_task_list(page=page)
+            for task in listing.get("tasks") or []:
+                if not isinstance(task, dict):
+                    continue
+                if str(task.get("info_hash") or "").upper() == digest:
+                    return task
+            page_count = int(listing.get("page_count") or 1)
+            if page >= page_count:
+                break
+        return None
+
+    async def remote_has_video(self, file_id: str) -> bool:
+        """Best-effort check whether a completed offline result still has video content."""
+
+        fid = (file_id or "").strip()
+        if not fid:
+            return False
+        try:
+            info = await self.get_folder_info(fid)
+        except PanApiError as exc:
+            if exc.code == 430004:
+                return False
+            # Unknown: treat as present so we do not wipe history blindly.
+            logger.warning("115 folder info check failed: %s", type(exc).__name__)
+            return True
+        except Exception:
+            logger.warning("115 folder info check failed", exc_info=True)
+            return True
+        name = str(info.get("file_name") or info.get("fn") or info.get("name") or "")
+        # Open API folder/get_info: directories often carry file_category / fc.
+        fc = str(info.get("file_category") or info.get("fc") or "")
+        is_dir = fc in {"0", "folder"} or bool(info.get("is_dir"))
+        if not is_dir and name:
+            return _is_video_name(name)
+        # Shallow list of the folder; do not deep-walk entire libraries.
+        try:
+            listing = await self.list_directory(fid, page=1, limit=100)
+        except Exception:
+            return True
+        for entry in listing.get("items") or []:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("is_directory"):
+                continue
+            if _is_video_name(str(entry.get("name") or "")):
+                return True
+        return False
+
+    async def submit_offline_url(
+        self,
+        url: str,
+        *,
+        directory_id: str,
+        info_hash_hint: str | None = None,
+    ) -> dict[str, Any]:
+        """Submit one offline URL with duplicate / wrong-dir / stale-history reconcile.
+
+        Reimplemented from public Open API shapes (not GPL source). Returns a result
+        dict with info_hash and optional adopted remote task fields.
+        """
+
+        try:
+            results = await self.enqueue_remote_urls([url], directory_id=directory_id)
+        except PanOfflineExistsError:
+            results = None
+        else:
+            if not results:
+                raise PanApiError("115 offline submit returned no result")
+            first = results[0]
+            if first.get("state") or first.get("info_hash"):
+                digest = str(first.get("info_hash") or info_hash_hint or "").upper()
+                if not digest:
+                    raise PanApiError("115 offline submit missing info_hash")
+                return {
+                    "info_hash": digest,
+                    "state": True,
+                    "message": str(first.get("message") or ""),
+                    "adopted": False,
+                    "remote": None,
+                }
+            code = first.get("code") if isinstance(first.get("code"), int) else None
+            raise PanApiError(
+                str(first.get("message") or "115 offline submit rejected"),
+                code=code,
+            )
+
+        hint = (info_hash_hint or "").strip().upper()
+        if not hint:
+            # Try extract from magnet URI if present.
+            from ..media.magnets import info_hash_from_uri
+
+            extracted = info_hash_from_uri(url)
+            hint = (extracted or "").upper()
+        if not hint:
+            raise PanOfflineExistsError(
+                "115 offline task already exists, but info_hash is unknown",
+                code=OFFLINE_EXISTS_CODE,
+            )
+
+        remote = await self.find_remote_offline_task(hint)
+        if remote is None:
+            raise PanOfflineConflictError(
+                "115 提示任务已存在，但任务列表中未找到它，请稍后重试",  # noqa: RUF001
+                code=OFFLINE_EXISTS_CODE,
+            )
+
+        status = remote.get("status")
+        remote_dir = str(remote.get("directory_id") or "") or None
+        file_id = str(remote.get("file_id") or "") or None
+        digest = str(remote.get("info_hash") or hint).upper()
+
+        if status in (0, 1):
+            if remote_dir and remote_dir != str(directory_id):
+                raise PanOfflineConflictError(
+                    "115 已有该磁力的下载任务，目标目录与当前离线目录不一致",  # noqa: RUF001
+                    code=OFFLINE_EXISTS_CODE,
+                )
+            return {
+                "info_hash": digest,
+                "state": True,
+                "message": "adopted running remote task",
+                "adopted": True,
+                "remote": remote,
+            }
+
+        if status not in (2, -1):
+            raise PanOfflineConflictError(
+                f"115 returned unknown offline status {status}",
+                code=OFFLINE_EXISTS_CODE,
+            )
+
+        if not file_id:
+            raise PanOfflineConflictError(
+                "115 的历史任务未提供资源位置，请先在 115 客户端清理该任务记录",  # noqa: RUF001
+                code=OFFLINE_EXISTS_CODE,
+            )
+
+        present = await self.remote_has_video(file_id)
+        if present:
+            if status == -1:
+                raise PanOfflineConflictError(
+                    "115 任务失败但目录内仍有视频，请先在 115 客户端确认完整性",  # noqa: RUF001
+                    code=OFFLINE_EXISTS_CODE,
+                )
+            return {
+                "info_hash": digest,
+                "state": True,
+                "message": "adopted completed remote task",
+                "adopted": True,
+                "remote": remote,
+            }
+
+        # Stale history without files: clear history only, then resubmit.
+        await self.remove_offline_history(digest)
+        results = await self.enqueue_remote_urls([url], directory_id=directory_id)
+        if not results:
+            raise PanApiError("115 offline resubmit returned no result")
+        first = results[0]
+        if not first.get("state") and not first.get("info_hash"):
+            code = first.get("code") if isinstance(first.get("code"), int) else None
+            raise PanApiError(
+                str(first.get("message") or "115 offline resubmit rejected"),
+                code=code,
+            )
+        new_hash = str(first.get("info_hash") or digest).upper()
+        return {
+            "info_hash": new_hash,
+            "state": True,
+            "message": "cleared stale history and resubmitted",
+            "adopted": False,
+            "remote": None,
+        }
 
     async def get_task_list(self, page: int = 1) -> dict[str, Any]:
         payload = await self._authed_json(
@@ -656,6 +936,8 @@ class PanService:
         self.user_agent = user_agent
         self._logins: dict[str, _LoginSession] = {}
         self._client: Pan115Client | None = None
+        self._submit_locks: dict[str, asyncio.Lock] = {}
+        self._submit_locks_guard = asyncio.Lock()
 
     def _config(self) -> PanSettings:
         return self.config_store.load()
@@ -906,6 +1188,34 @@ class PanService:
         expired = [key for key, item in self._logins.items() if now - item.created_at > LOGIN_TTL_SECONDS]
         for key in expired:
             self._logins.pop(key, None)
+
+    async def _hash_lock(self, info_hash: str) -> asyncio.Lock:
+        key = (info_hash or "").strip().upper() or "__empty__"
+        async with self._submit_locks_guard:
+            lock = self._submit_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._submit_locks[key] = lock
+            return lock
+
+    async def submit_offline_url(
+        self,
+        url: str,
+        *,
+        directory_id: str,
+        info_hash_hint: str | None = None,
+    ) -> dict[str, Any]:
+        """Per-hash locked offline submit with duplicate reconcile."""
+
+        from ..media.magnets import info_hash_from_uri
+
+        hint = (info_hash_hint or info_hash_from_uri(url) or "").upper()
+        lock = await self._hash_lock(hint or url)
+        async with lock:
+            client = self.get_client()
+            return await client.submit_offline_url(
+                url, directory_id=directory_id, info_hash_hint=hint or None
+            )
 
     async def aclose(self) -> None:
         if self._client is not None:

@@ -243,6 +243,8 @@ from .services.non_jav_work_seed import seed_non_jav_works
 from .services.pan import (
     PanApiError,
     PanNotConfiguredError,
+    PanOfflineConflictError,
+    PanOfflineExistsError,
     PanService,
     pan_status,
 )
@@ -860,31 +862,29 @@ async def submit_work_offline(
     if not url:
         raise HTTPException(status_code=400, detail="empty magnet url")
 
-    # Duplicate local task
+    # Duplicate local task still running
     if info_hash_hint:
         existing = repo.find_pan_offline_by_hash(work_id, info_hash_hint)
         if existing is not None and existing.status == "running":
             return PanOfflineTaskOut.model_validate(existing)
 
     try:
-        results = await pan.get_client().enqueue_remote_urls([url], directory_id=directory_id)
+        submit_result = await pan.submit_offline_url(
+            url, directory_id=directory_id, info_hash_hint=info_hash_hint
+        )
     except PanNotConfiguredError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PanOfflineConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PanOfflineExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PanApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except httpx.HTTPError as exc:
         detail = f"115 offline submit failed: {type(exc).__name__}"
         raise HTTPException(status_code=502, detail=detail) from exc
 
-    if not results:
-        raise HTTPException(status_code=502, detail="115 offline submit returned no result")
-    first = results[0]
-    if not first.get("state") and not first.get("info_hash"):
-        raise HTTPException(
-            status_code=502,
-            detail=str(first.get("message") or "115 offline submit rejected"),
-        )
-    info_hash = str(first.get("info_hash") or info_hash_hint or "").upper()
+    info_hash = str(submit_result.get("info_hash") or info_hash_hint or "").upper()
     if not info_hash:
         raise HTTPException(status_code=502, detail="115 offline submit missing info_hash")
 

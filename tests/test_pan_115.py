@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -213,3 +214,208 @@ def test_pan_service_switching_client_id_clears_credentials(tmp_path: Path) -> N
     assert saved.client_id == "own-app-id"
     assert service.status()["configured"] is False
     assert service.settings_status()["client_secret_set"] is True
+
+
+def test_parse_retry_after_seconds_and_empty() -> None:
+    from shadow_mdc.services.pan import parse_retry_after
+
+    assert parse_retry_after(None) == 0.0
+    assert parse_retry_after("") == 0.0
+    assert parse_retry_after("2") == 2.0
+    assert parse_retry_after("0") == 0.0
+
+
+def _bind_token(client: Pan115Client) -> None:
+    client._access_token = "t"
+    client._refresh_token = "r"
+    client._expires_at = datetime.now(UTC) + timedelta(hours=1)
+
+
+@pytest.mark.asyncio
+async def test_pan_client_honors_retry_after_and_caps_inflight() -> None:
+    import asyncio
+
+    from shadow_mdc.services import pan as pan_mod
+    from shadow_mdc.services.pan import MAX_IN_FLIGHT
+
+    started = 0
+    in_flight = 0
+    max_seen = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal started
+        path = request.url.path
+        if path.endswith("/open/user/info"):
+            if started == 0:
+                started = 1
+                return httpx.Response(
+                    429, headers={"Retry-After": "0"}, json={"message": "slow down"}
+                )
+            return httpx.Response(
+                200, json={"state": True, "code": 0, "data": {"user_id": "1"}}
+            )
+        return httpx.Response(404, json={"message": path})
+
+    client = Pan115Client(client_id="100197303")
+    client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    _bind_token(client)
+    original_gap = pan_mod.RATE_LIMIT_SECONDS
+    pan_mod.RATE_LIMIT_SECONDS = 0.01
+    try:
+        info = await client.fetch_user_info()
+        assert info.get("user_id") == "1"
+
+        async def one() -> None:
+            nonlocal in_flight, max_seen
+            async with client._inflight:
+                in_flight += 1
+                max_seen = max(max_seen, in_flight)
+                await asyncio.sleep(0.05)
+                in_flight -= 1
+
+        await asyncio.gather(*[one() for _ in range(6)])
+        assert max_seen <= MAX_IN_FLIGHT
+    finally:
+        pan_mod.RATE_LIMIT_SECONDS = original_gap
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_offline_exists_reconcile_wrong_dir_and_stale_clear() -> None:
+    from shadow_mdc.services.pan import PanOfflineConflictError, is_offline_exists_code
+
+    assert is_offline_exists_code(10008) is True
+    assert is_offline_exists_code("10008") is True
+    assert is_offline_exists_code(1) is False
+
+    hash_a = "AABBCCDD" + ("0" * 32)
+    phase = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/open/offline/add_task_urls"):
+            phase["n"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "state": True,
+                    "code": 0,
+                    "data": [{"state": False, "code": 10008, "message": "task exists"}],
+                },
+            )
+        if path.endswith("/open/offline/get_task_list"):
+            return httpx.Response(
+                200,
+                json={
+                    "state": True,
+                    "code": 0,
+                    "data": {
+                        "page": 1,
+                        "page_count": 1,
+                        "count": 1,
+                        "tasks": [{
+                            "info_hash": hash_a,
+                            "status": 1,
+                            "percentDone": 10,
+                            "file_id": "",
+                            "wp_path_id": "999",
+                            "name": "x",
+                        }],
+                    },
+                },
+            )
+        return httpx.Response(404, json={"message": path})
+
+    client = Pan115Client(client_id="100197303")
+    client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    _bind_token(client)
+    with pytest.raises(PanOfflineConflictError):
+        await client.submit_offline_url(
+            f"magnet:?xt=urn:btih:{hash_a}",
+            directory_id="42",
+            info_hash_hint=hash_a,
+        )
+    await client.aclose()
+
+    hash_b = "CCDDEEFF" + ("0" * 32)
+    phase["n"] = 0
+
+    def handler2(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/open/offline/add_task_urls"):
+            phase["n"] += 1
+            if phase["n"] == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "state": True,
+                        "code": 0,
+                        "data": [{"state": False, "code": 10008, "message": "exists"}],
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "state": True,
+                    "code": 0,
+                    "data": [{"state": True, "code": 0, "info_hash": hash_b}],
+                },
+            )
+        if path.endswith("/open/offline/get_task_list"):
+            return httpx.Response(
+                200,
+                json={
+                    "state": True,
+                    "code": 0,
+                    "data": {
+                        "page": 1,
+                        "page_count": 1,
+                        "count": 1,
+                        "tasks": [{
+                            "info_hash": hash_b,
+                            "status": 2,
+                            "percentDone": 100,
+                            "file_id": "gone",
+                            "wp_path_id": "42",
+                            "name": "old",
+                        }],
+                    },
+                },
+            )
+        if path.endswith("/open/folder/get_info"):
+            return httpx.Response(
+                200, json={"state": False, "code": 430004, "message": "not found"}
+            )
+        if path.endswith("/open/offline/del_task"):
+            return httpx.Response(200, json={"state": True, "code": 0})
+        return httpx.Response(404, json={"message": path})
+
+    client2 = Pan115Client(client_id="100197303")
+    client2._http = httpx.AsyncClient(transport=httpx.MockTransport(handler2))
+    _bind_token(client2)
+    result = await client2.submit_offline_url(
+        f"magnet:?xt=urn:btih:{hash_b}",
+        directory_id="42",
+        info_hash_hint=hash_b,
+    )
+    assert result["info_hash"] == hash_b
+    assert result["adopted"] is False
+    await client2.aclose()
+
+
+@pytest.mark.asyncio
+async def test_remove_offline_history_never_deletes_source() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/open/offline/del_task"):
+            seen["body"] = request.content.decode("utf-8")
+            return httpx.Response(200, json={"state": True, "code": 0})
+        return httpx.Response(404)
+
+    client = Pan115Client(client_id="100197303")
+    client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    _bind_token(client)
+    await client.remove_offline_history("ABCD" + ("0" * 36))
+    assert "del_source_file=0" in seen["body"]
+    await client.aclose()

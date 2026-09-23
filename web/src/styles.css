@@ -1301,6 +1301,19 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   letter-spacing: .08em;
   padding: 3px 8px;
 }
+
+.want-badge {
+  position: absolute;
+  left: 0.45rem;
+  bottom: 0.45rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(180, 90, 40, 0.92);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
 .discover-card.is-linked { cursor: pointer; }
 .discover-card.is-linked:focus-visible {
   outline: 2px solid var(--accent);

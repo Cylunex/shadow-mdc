@@ -480,6 +480,17 @@ export function App() {
             busy={busy}
             report={setMessage}
             onOpenWork={openWorkDetail}
+            wantListIds={prefs.want_list}
+            onToggleWant={async (workId, wanted) => {
+              await run(`want-${workId}`, async () => {
+                const next = await api.setWantList(workId, wanted);
+                setPrefs(next);
+                setWorks((items) =>
+                  items.map((item) => (item.id === workId ? { ...item, want_list: wanted } : item))
+                );
+                setMessage(wanted ? "已加入想看" : "已移出想看");
+              });
+            }}
             onSeeded={async () => {
               await refreshWorks();
             }}

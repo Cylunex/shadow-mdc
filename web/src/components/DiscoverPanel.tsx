@@ -13,6 +13,8 @@ type Props = {
   report: (message: string) => void;
   onSeeded: () => Promise<void>;
   onOpenWork?: (workId: string) => void;
+  wantListIds?: ReadonlySet<string> | readonly string[];
+  onToggleWant?: (workId: string, wanted: boolean) => void | Promise<void>;
 };
 
 type RankTab = "awards" | "yearly" | "browse";
@@ -35,7 +37,11 @@ function isCataloged(state: string | null | undefined, workId?: string | null): 
   return Boolean(workId) || state === "catalog_only" || state === "in_library";
 }
 
-export function DiscoverPanel({ busy, report, onSeeded, onOpenWork }: Props) {
+export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, wantListIds, onToggleWant }: Props) {
+  const wantSet = useMemo(() => {
+    if (!wantListIds) return new Set<string>();
+    return wantListIds instanceof Set ? wantListIds : new Set(wantListIds);
+  }, [wantListIds]);
   const [tab, setTab] = useState<RankTab>("awards");
   const [list, setList] = useState("latest");
   const [page, setPage] = useState(1);
@@ -228,7 +234,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork }: Props) {
       <div className="panel-header">
         <div>
           <h1>榜单</h1>
-          <p className="muted">神作·战力、年榜 TOP250（2008+）、发现浏览；浏览本身不写作品库。</p>
+          <p className="muted">神作 TOP100、演员战力、年榜 TOP250（2008+）、发现浏览；浏览本身不写作品库。</p>
         </div>
       </div>
       <div className="discover-banner">
@@ -242,7 +248,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork }: Props) {
       <div className="discover-toolbar rank-tabs">
         <button
           type="button"
-          className={showAwards ? "active" : "ghost"}
+          className={showAwards && (jrSlug === "most-awarded-videos" || jrList?.section.kind === "curated-videos") ? "active" : "ghost"}
           disabled={blocked}
           onClick={() => {
             setTab("awards");
@@ -257,8 +263,28 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork }: Props) {
             );
           }}
         >
-          神作·战力
+          神作 TOP100
           {jrGroups.curatedVideos[0] ? ` · ${jrGroups.curatedVideos[0].item_count}` : ""}
+        </button>
+        <button
+          type="button"
+          className={showAwards && jrList?.section.kind === "curated-actors" ? "active" : "ghost"}
+          disabled={blocked}
+          onClick={() => {
+            setTab("awards");
+            void withLoading(() =>
+              ensureJrThen(async () => {
+                const slug =
+                  jrGroups.curatedActors[0]?.slug ||
+                  jrSections.find((s) => s.slug === "most-awarded-actors")?.slug ||
+                  "most-awarded-actors";
+                await loadJavRankingList(slug);
+              })
+            );
+          }}
+        >
+          演员战力
+          {jrGroups.curatedActors[0] ? ` · ${jrGroups.curatedActors.length}榜` : ""}
         </button>
         <button
           type="button"
@@ -412,6 +438,9 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork }: Props) {
                   >
                     <span className="rank-badge overlay-rank">#{item.position}</span>
                     {cataloged && <span className="in-library-badge">已入库</span>}
+                    {linked && item.work_id && wantSet.has(item.work_id) && (
+                      <span className="want-badge">想看</span>
+                    )}
                   </div>
                   <div>
                     {item.state && (
@@ -437,6 +466,20 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork }: Props) {
                           onClick={() => onOpenWork(item.work_id!)}
                         >
                           打开作品
+                        </button>
+                      )}
+                      {linked && item.work_id && onToggleWant && (
+                        <button
+                          type="button"
+                          className={wantSet.has(item.work_id) ? "active" : "ghost"}
+                          disabled={blocked}
+                          onClick={() => {
+                            const id = item.work_id!;
+                            const next = !wantSet.has(id);
+                            void onToggleWant(id, next);
+                          }}
+                        >
+                          {wantSet.has(item.work_id) ? "取消想看" : "想看"}
                         </button>
                       )}
                       {item.code && (
