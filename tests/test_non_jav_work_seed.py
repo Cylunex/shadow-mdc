@@ -137,3 +137,4 @@ def test_non_jav_actors_api_exposes_seeded_works(
     matched = next(actor for actor in actors if actor["name"] == "Seed Star")
     assert matched["work_count"] == 1
     assert matched["works"][0]["title"] == "Creator Seed Work"
+    assert matched["works"][0]["id"] == works[0]["id"]

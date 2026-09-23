@@ -38,6 +38,7 @@ export function App() {
   const [selectedWorkId, setSelectedWorkId] = useState<string | null>(initialWorkId);
   const [worksTagFilter, setWorksTagFilter] = useState<string[] | undefined>(undefined);
   const [worksListScroll, setWorksListScroll] = useState(0);
+  const [detailReturnView, setDetailReturnView] = useState<"works" | "actors">("works");
   const [taskTab, setTaskTab] = useState<"inbox" | "runs">("runs");
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -207,6 +208,7 @@ export function App() {
 
   const openWorkDetail = useCallback((workId: string) => {
     if (view === "works") setWorksListScroll(window.scrollY);
+    if (view === "actors" || view === "works") setDetailReturnView(view);
     setSelectedWorkId(workId);
     setView("work-detail");
     writeWorkIdToUrl(workId);
@@ -214,10 +216,12 @@ export function App() {
 
   const closeWorkDetail = useCallback(() => {
     setSelectedWorkId(null);
-    setView("works");
+    setView(detailReturnView);
     writeWorkIdToUrl(null);
-    requestAnimationFrame(() => window.scrollTo(0, worksListScroll));
-  }, [worksListScroll]);
+    if (detailReturnView === "works") {
+      requestAnimationFrame(() => window.scrollTo(0, worksListScroll));
+    }
+  }, [worksListScroll, detailReturnView]);
 
   useEffect(() => {
     function onPopState() {
@@ -227,12 +231,12 @@ export function App() {
         setView("work-detail");
       } else if (view === "work-detail") {
         setSelectedWorkId(null);
-        setView("works");
+        setView(detailReturnView);
       }
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [view]);
+  }, [view, detailReturnView]);
 
   const badges = {
     tasks: inbox.length || undefined,
@@ -300,6 +304,7 @@ export function App() {
             nonJavActors={nonJavActors}
             busy={busy}
             prefs={prefs}
+            onOpenWork={openWorkDetail}
             onActorTags={(actorKey, tags) => run(`tag-${actorKey}`, async () => {
               let next = await api.setActorTags({ actor_key: actorKey, ...tags });
               const existing = next.subscriptions.find((item) => item.actor_key === actorKey);

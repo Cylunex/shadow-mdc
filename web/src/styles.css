@@ -166,6 +166,9 @@ input:focus { border-color: #56866a; box-shadow: 0 0 0 3px #1b3526; }
 .actor-card > p { color: var(--muted); font-size: 12px; margin: 8px 0 12px; }
 .actor-works { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .actor-work { background: #0c1214; border: 1px solid var(--line); border-radius: 10px; display: grid; grid-template-columns: 54px 1fr; min-height: 76px; overflow: hidden; }
+.actor-work--clickable { cursor: pointer; transition: border-color 0.15s ease, background 0.15s ease; }
+.actor-work--clickable:hover, .actor-work--clickable:focus-visible { background: #121a1d; border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); outline: none; }
+.actor-work--clickable .code-chip-copyable { cursor: copy; }
 .actor-work > div:last-child { align-content: center; display: grid; gap: 4px; min-width: 0; padding: 8px; }
 .actor-work-poster { background: linear-gradient(145deg, #1e2c31, #101719); background-position: center; background-size: cover; }
 .actor-works strong { color: var(--accent); font-size: 11px; }

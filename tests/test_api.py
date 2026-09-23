@@ -76,6 +76,7 @@ def test_work_and_actor_apis_expose_cached_images_and_relations(
         assert {actor["name"] for actor in actors} == {"演员甲", "演员乙"}
         assert all(actor["image_url"] == works[0]["image_url"] for actor in actors)
         assert all(actor["works"][0]["image_url"] == works[0]["image_url"] for actor in actors)
+        assert all(actor["works"][0]["id"] == work_id for actor in actors)
         assert image.status_code == 200
         assert image.content == b"\xff\xd8fixture"
 

@@ -113,6 +113,7 @@ export function Actors(props: {
   nonJavActors: NonJavActor[];
   busy: string | null;
   prefs?: LibraryPrefs;
+  onOpenWork: (workId: string) => void;
   onActorTags?: (actorKey: string, tags: { favorite: boolean; subscribe: boolean; blacklist: boolean }) => Promise<void>;
   saveNonJavActor: (previousName: string | null, payload: NonJavActorEditPayload) => Promise<void>;
   deleteNonJavActor: (actor: NonJavActor) => Promise<void>;
@@ -133,22 +134,24 @@ export function Actors(props: {
       <button className={source === "non-jav" ? "active" : "ghost"} onClick={() => setSource("non-jav")}>非 JAV 演员 / 作品 · {props.nonJavActors.length} · 作品 {nonJavWorkTotal}</button>
     </div>
     {source === "jav"
-      ? <JavActors actors={props.actors} prefs={props.prefs} onActorTags={props.onActorTags} busy={props.busy} />
+      ? <JavActors actors={props.actors} prefs={props.prefs} onActorTags={props.onActorTags} busy={props.busy} onOpenWork={props.onOpenWork} />
       : <NonJavActorsManager
           actors={props.nonJavActors}
           busy={props.busy}
           save={props.saveNonJavActor}
           remove={props.deleteNonJavActor}
           uploadImage={props.uploadActorImage}
+          onOpenWork={props.onOpenWork}
         />}
   </>;
 }
 
-function JavActors({ actors, prefs, onActorTags, busy }: {
+function JavActors({ actors, prefs, onActorTags, busy, onOpenWork }: {
   actors: ActorProfile[];
   prefs?: LibraryPrefs;
   onActorTags?: (actorKey: string, tags: { favorite: boolean; subscribe: boolean; blacklist: boolean }) => Promise<void>;
   busy?: string | null;
+  onOpenWork: (workId: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<DisplayCategory>("all");
@@ -269,13 +272,43 @@ function JavActors({ actors, prefs, onActorTags, busy }: {
         );
       })()}
       <div className="actor-works">{actor.works.slice(0, 8).map((work) => (
-        <div className="actor-work" key={work.id}>
+        <div
+          className="actor-work actor-work--clickable"
+          key={work.id}
+          role="button"
+          tabIndex={0}
+          title="查看作品详情"
+          onClick={() => onOpenWork(work.id)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onOpenWork(work.id);
+            }
+          }}
+        >
           <div className="actor-work-poster">
             {work.image_url
               ? <img src={appUrl(work.image_url) ?? undefined} alt="" loading="lazy" decoding="async" />
               : null}
           </div>
-          <div><strong>{work.code ?? "无番号"}</strong><span>{work.title}</span></div>
+          <div>
+            <strong
+              className={work.code ? "code-chip-copyable" : undefined}
+              title={work.code ? "点击复制番号" : undefined}
+              onClick={work.code ? (event) => {
+                event.stopPropagation();
+                void navigator.clipboard.writeText(work.code!).catch(() => undefined);
+              } : undefined}
+              onKeyDown={work.code ? (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void navigator.clipboard.writeText(work.code!).catch(() => undefined);
+                }
+              } : undefined}
+            >{work.code ?? "无番号"}</strong>
+            <span>{work.title}</span>
+          </div>
         </div>
       ))}</div>
     </article>
@@ -311,6 +344,7 @@ function NonJavActorsManager(props: {
   save: (previousName: string | null, payload: NonJavActorEditPayload) => Promise<void>;
   remove: (actor: NonJavActor) => Promise<void>;
   uploadImage: (actor: NonJavActor, file: File) => Promise<void>;
+  onOpenWork: (workId: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<DisplayCategory>("all");
@@ -479,13 +513,40 @@ function NonJavActorsManager(props: {
           {actor.notes && <p className="actor-notes">备注：{actor.notes}</p>}
           {actor.works.length > 0
             ? <div className="actor-works">{actor.works.slice(0, 6).map((work) => (
-              <div className="actor-work" key={work.id}>
+              <div
+                className="actor-work actor-work--clickable"
+                key={work.id}
+                role="button"
+                tabIndex={0}
+                title="查看作品详情"
+                onClick={() => props.onOpenWork(work.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    props.onOpenWork(work.id);
+                  }
+                }}
+              >
                 <div
                   className="actor-work-poster"
                   style={work.image_url ? { backgroundImage: `url("${appUrl(work.image_url)}")` } : actor.image_url ? { backgroundImage: `url("${appUrl(actor.image_url)}")` } : undefined}
                 />
                 <div>
-                  <strong>{work.code ?? work.studio ?? work.series ?? "无番号"}</strong>
+                  <strong
+                    className={work.code ? "code-chip-copyable" : undefined}
+                    title={work.code ? "点击复制番号" : undefined}
+                    onClick={work.code ? (event) => {
+                      event.stopPropagation();
+                      void navigator.clipboard.writeText(work.code!).catch(() => undefined);
+                    } : undefined}
+                    onKeyDown={work.code ? (event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void navigator.clipboard.writeText(work.code!).catch(() => undefined);
+                      }
+                    } : undefined}
+                  >{work.code ?? work.studio ?? work.series ?? "无番号"}</strong>
                   <span>{work.title}</span>
                 </div>
               </div>
