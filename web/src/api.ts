@@ -290,6 +290,7 @@ export const api = {
     download?: boolean;
     limit?: number | null;
     force_refresh?: boolean;
+    localize?: boolean;
   } = {}) =>
     request(gfriendsFillResultSchema, "/api/actors/fill-gfriends-images", {
       method: "POST",
@@ -297,7 +298,8 @@ export const api = {
         dry_run: payload.dry_run ?? false,
         download: payload.download ?? true,
         limit: payload.limit ?? null,
-        force_refresh: payload.force_refresh ?? false
+        force_refresh: payload.force_refresh ?? false,
+        localize: payload.localize ?? false
       })
     }),
   workDetail: (workId: string) => request(workDetailSchema, `/api/works/${workId}`),

@@ -116,3 +116,45 @@ def test_fill_downloads_and_sets_local_api_url(tmp_path: Path, monkeypatch: pyte
     finally:
         resolver.close()
         client.close()
+
+
+def test_fill_matches_romaji_via_actress_name_map(tmp_path: Path) -> None:
+    from shadow_mdc.services.actress_names import ActressNameMap
+    from shadow_mdc.services.gfriends_fill import fill_actor_images_from_gfriends
+
+    db_path = tmp_path / "test.db"
+    database = Database(f"sqlite:///{db_path}")
+    database.initialize()
+    images_dir = tmp_path / "actor-images"
+    cache = tmp_path / "cache" / "Filetree.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps(_sample_filetree()), encoding="utf-8")
+
+    name_map = ActressNameMap.from_mapping({"yua mikami": "三上悠亜", "mikami yua": "三上悠亜"})
+    resolver = GfriendsActorImageResolver(
+        filetree_url="https://example.test/Filetree.json",
+        cdn_base_url="https://cdn.example.test",
+        cache_path=cache,
+        cache_ttl_hours=24,
+    )
+    try:
+        with database.session() as session:
+            repo = Repository(session)
+            actor = Actor(name="Yua Mikami", normalized_name="yua mikami")
+            session.add(actor)
+            session.flush()
+            stats = fill_actor_images_from_gfriends(
+                repo,
+                resolver,
+                actor_images_dir=images_dir,
+                download=False,
+                dry_run=False,
+                name_map=name_map,
+            )
+            assert stats.matched == 1
+            assert stats.filled == 1
+            session.refresh(actor)
+            assert actor.image_url and "cdn.example.test" in actor.image_url
+            assert "三上悠亜" in (actor.aliases or [])
+    finally:
+        resolver.close()

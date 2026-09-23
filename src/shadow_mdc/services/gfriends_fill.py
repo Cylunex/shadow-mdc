@@ -19,6 +19,7 @@ from sqlalchemy import or_, select
 
 from ..db.models import Actor
 from ..db.repository import Repository
+from .actress_names import ActressNameMap, get_actress_name_map
 from .gfriends import GfriendsActorImageResolver
 
 logger = logging.getLogger(__name__)
@@ -61,21 +62,17 @@ def _image_filename(name: str, extension: str) -> str:
     return f"gfriends-{digest}{extension}"
 
 
-def _candidate_names(actor: Actor) -> list[str]:
+def _candidate_names(
+    actor: Actor,
+    *,
+    name_map: ActressNameMap | None = None,
+) -> list[str]:
     names: list[str] = [actor.name]
     for alias in actor.aliases or []:
         if isinstance(alias, str) and alias.strip():
             names.append(alias.strip())
-    # Deduplicate while preserving order.
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for name in names:
-        key = unicodedata.normalize("NFKC", name).casefold().strip()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        ordered.append(name)
-    return ordered
+    expander = name_map or get_actress_name_map()
+    return expander.expand_candidates(names)
 
 
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
@@ -103,6 +100,7 @@ def fill_actor_images_from_gfriends(
     force_refresh_index: bool = False,
     http_client: httpx.Client | None = None,
     commit_every: int = 25,
+    name_map: ActressNameMap | None = None,
 ) -> GfriendsFillStats:
     """Match actors with empty ``image_url`` against GFriends and persist URLs."""
 
@@ -119,11 +117,12 @@ def fill_actor_images_from_gfriends(
     try:
         actor_images_dir.mkdir(parents=True, exist_ok=True)
         for actor in actors:
-            remote_url = resolver.resolve(_candidate_names(actor))
+            remote_url = resolver.resolve(_candidate_names(actor, name_map=name_map))
             if remote_url is None:
                 skipped_no_match += 1
                 continue
             matched += 1
+            _merge_resolved_aliases(actor, name_map=name_map)
             if dry_run:
                 filled += 1
                 continue
@@ -252,3 +251,15 @@ def localize_cdn_actor_images(
         filetree_source="localize",
         filetree_entries=0,
     )
+
+
+def _merge_resolved_aliases(actor: Actor, *, name_map: ActressNameMap | None) -> None:
+    """Persist Japanese / swapped-order aliases that unlocked a GFriends hit."""
+
+    expander = name_map or get_actress_name_map()
+    existing = [alias for alias in (actor.aliases or []) if isinstance(alias, str)]
+    expanded = expander.expand_candidates([actor.name, *existing])
+    extras = [name for name in expanded if name != actor.name and name not in existing]
+    if not extras:
+        return
+    actor.aliases = [*existing, *extras]

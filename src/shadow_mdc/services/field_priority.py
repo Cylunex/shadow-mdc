@@ -7,24 +7,106 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Field source priority inspired by Javinizer aggregation order (MIT) —
+# prefer structured catalogs (r18dev/fanza) for cast/studio/date, javdb for discoverability.
 DEFAULT_FIELD_PRIORITIES: dict[str, list[str]] = {
-    "title": ["local-manual", "translation:deepl", "translation:deeplx", "translation:custom", "translation:google", "javdb", "javbus", "r18dev", "fanza", "theporndb", "local-path"],
-    "plot": ["local-manual", "translation:deepl", "translation:deeplx", "translation:custom", "translation:google", "javdb", "r18dev", "theporndb", "javbus"],
-    "actors": ["local-manual", "r18dev", "fanza", "javlibrary", "javdb", "javbus", "theporndb", "local-path"],
-    "studio": ["local-manual", "r18dev", "fanza", "javdb", "javbus", "local-path"],
-    "series": ["local-manual", "javdb", "r18dev", "javbus", "local-path"],
-    "tags": ["local-manual", "javdb", "javbus", "theporndb", "local-path"],
-    "release_date": ["local-manual", "r18dev", "fanza", "javdb", "javbus", "theporndb"],
-    "runtime_seconds": ["local-manual", "r18dev", "fanza", "javdb", "theporndb"],
+    "title": [
+        "local-manual",
+        "translation:deepl",
+        "translation:deeplx",
+        "translation:custom",
+        "translation:google",
+        "javdb",
+        "javbus",
+        "jav321",
+        "r18dev",
+        "fanza",
+        "mgstage",
+        "theporndb",
+        "local-path",
+    ],
+    "plot": [
+        "local-manual",
+        "translation:deepl",
+        "translation:deeplx",
+        "translation:custom",
+        "translation:google",
+        "javdb",
+        "r18dev",
+        "jav321",
+        "theporndb",
+        "javbus",
+    ],
+    "actors": [
+        "local-manual",
+        "r18dev",
+        "fanza",
+        "javlibrary",
+        "javdb",
+        "javbus",
+        "jav321",
+        "mgstage",
+        "theporndb",
+        "local-path",
+    ],
+    "studio": [
+        "local-manual",
+        "r18dev",
+        "fanza",
+        "mgstage",
+        "javdb",
+        "javbus",
+        "jav321",
+        "local-path",
+    ],
+    "series": [
+        "local-manual",
+        "javdb",
+        "r18dev",
+        "javbus",
+        "jav321",
+        "local-path",
+    ],
+    "tags": [
+        "local-manual",
+        "javdb",
+        "javbus",
+        "mgstage",
+        "theporndb",
+        "local-path",
+    ],
+    "release_date": [
+        "local-manual",
+        "r18dev",
+        "fanza",
+        "mgstage",
+        "javdb",
+        "javbus",
+        "jav321",
+        "theporndb",
+    ],
+    "runtime_seconds": [
+        "local-manual",
+        "r18dev",
+        "fanza",
+        "mgstage",
+        "javdb",
+        "jav321",
+        "theporndb",
+    ],
 }
 
 CONFIGURABLE_FIELDS = tuple(DEFAULT_FIELD_PRIORITIES.keys())
 
 
+def _default_priorities() -> dict[str, list[str]]:
+    return {key: list(value) for key, value in DEFAULT_FIELD_PRIORITIES.items()}
+
+
 class FieldPriorityConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    priorities: dict[str, list[str]] = Field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_FIELD_PRIORITIES.items()})
+    priorities: dict[str, list[str]] = Field(default_factory=_default_priorities)
     default_locks: list[str] = Field(default_factory=list)
 
 

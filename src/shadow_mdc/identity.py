@@ -38,7 +38,19 @@ _JAV = re.compile(
     r"(?i)(?<![A-Z0-9])((?:\d{2,5})?[A-Z]{2,10})([-_. ]?)(\d{2,6})"
     r"(?:[-_. ]?(?:CD|DISC|PART)?[A-D])?(?![A-Z0-9])"
 )
-_UNCENSORED = re.compile(r"(?i)\b(1PONDO|CARIB|CARIBPR|10MUSUME|PACOPACOMAMA)[-_ ]?(\d{6})[-_ ](\d{2,4})\b")
+# Uncensored studio codes — JAV.bundle / Emby JavIdRecognizer naming.
+_UNCENSORED_PREFIX = re.compile(
+    r"(?i)\b(1PONDO|CARIB(?:BEAN)?|CARIBPR|10MUSUME|PACOPACOMAMA|MURAMURA)"
+    r"[-_ ]?(\d{6})[-_ ](\d{2,4})\b"
+)
+_UNCENSORED_SUFFIX = re.compile(
+    r"(?i)\b(\d{6})[-_](\d{2,4})[-_](1PON|1PONDO|CARIB(?:BEAN)?|CARIBPR|10MU(?:SUME)?|PACO(?:PACOMAMA)?|MURA(?:MURA)?)\b"
+)
+_UNCENSORED_DATE_ID = re.compile(r"(?i)\b(\d{6})[-_](\d{2,4})\b")
+_UNCENSORED_HINT = re.compile(
+    r"(?i)(?:1pon(?:do)?|carib(?:bean)?|caribpr|10mu(?:sume)?|paco(?:pacomama)?|mura(?:mura)?|"
+    r"一本道|カリビ|パコ|むらむら|天然むすめ)"
+)
 
 _DISALLOWED_PREFIXES = frozenset(
     {
@@ -218,6 +230,25 @@ def clean_stem(path_or_name: str | Path) -> str:
     return " ".join(normalized.split()).strip(" -_.")
 
 
+
+def _normalize_uncensored_studio(raw: str) -> str:
+    key = raw.upper().replace(" ", "")
+    aliases = {
+        "CARIBBEAN": "CARIB",
+        "CARIB": "CARIB",
+        "CARIBPR": "CARIBPR",
+        "1PON": "1PONDO",
+        "1PONDO": "1PONDO",
+        "10MU": "10MUSUME",
+        "10MUSUME": "10MUSUME",
+        "PACO": "PACOPACOMAMA",
+        "PACOPACOMAMA": "PACOPACOMAMA",
+        "MURA": "MURAMURA",
+        "MURAMURA": "MURAMURA",
+    }
+    return aliases.get(key, key)
+
+
 def extract_code(
     text: str,
     category: MediaCategory = MediaCategory.OTHER,
@@ -238,8 +269,15 @@ def extract_code(
         return f"{match.group(1).upper()}-{match.group(2).upper()}", ContentFamily.JAV
     if match := _T28.search(normalized):
         return f"{match.group(1).upper()}-{match.group(2)}", ContentFamily.JAV
-    if match := _UNCENSORED.search(normalized):
-        return f"{match.group(1).upper()}-{match.group(2)}-{match.group(3)}", ContentFamily.JAV
+    if match := _UNCENSORED_PREFIX.search(normalized):
+        studio = _normalize_uncensored_studio(match.group(1))
+        return f"{studio}-{match.group(2)}-{match.group(3)}", ContentFamily.JAV
+    if match := _UNCENSORED_SUFFIX.search(normalized):
+        studio = _normalize_uncensored_studio(match.group(3))
+        return f"{studio}-{match.group(1)}-{match.group(2)}", ContentFamily.JAV
+    if _UNCENSORED_HINT.search(normalized) and (match := _UNCENSORED_DATE_ID.search(normalized)):
+        # Bare MMDDYY-NNN / MMDDYY_NNN when filename already hints an uncensored studio.
+        return f"{match.group(1)}-{match.group(2)}", ContentFamily.JAV
     if match := _CHINESE.search(normalized):
         value = re.sub(r"(?<=[A-Z])(?=\d)", "-", match.group(1).upper().replace("_", "-"))
         return value.replace("--", "-"), ContentFamily.CHINESE

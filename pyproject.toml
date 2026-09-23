@@ -36,6 +36,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/shadow_mdc"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/shadow_mdc/data/actress_name_map.json.gz" = "shadow_mdc/data/actress_name_map.json.gz"
+"src/shadow_mdc/data/README.md" = "shadow_mdc/data/README.md"
+
 [tool.pytest.ini_options]
 addopts = "-q --basetemp=.pytest-tmp"
 testpaths = ["tests"]

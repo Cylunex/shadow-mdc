@@ -291,7 +291,7 @@ from .services.translation import (
 )
 from .services.work_samples import enrich_work_samples, sample_urls_for_work
 from .services.gfriends import GfriendsActorImageResolver
-from .services.gfriends_fill import fill_actor_images_from_gfriends
+from .services.gfriends_fill import fill_actor_images_from_gfriends, localize_cdn_actor_images
 from .services.x_handle import (
     XHandleError,
     require_verified_x_handle,
@@ -1616,16 +1616,25 @@ def fill_gfriends_actor_images(payload: GfriendsFillRequest, request: Request, r
             follow_redirects=True,
         )
     try:
-        stats = fill_actor_images_from_gfriends(
-            repo,
-            resolver,
-            actor_images_dir=settings.data_dir / "actor-images",
-            download=payload.download,
-            dry_run=payload.dry_run,
-            limit=payload.limit,
-            force_refresh_index=payload.force_refresh,
-            http_client=http_client,
-        )
+        if payload.localize:
+            stats = localize_cdn_actor_images(
+                repo,
+                actor_images_dir=settings.data_dir / "actor-images",
+                limit=payload.limit,
+                dry_run=payload.dry_run,
+                http_client=http_client,
+            )
+        else:
+            stats = fill_actor_images_from_gfriends(
+                repo,
+                resolver,
+                actor_images_dir=settings.data_dir / "actor-images",
+                download=payload.download,
+                dry_run=payload.dry_run,
+                limit=payload.limit,
+                force_refresh_index=payload.force_refresh,
+                http_client=http_client,
+            )
     finally:
         resolver.close()
         if http_client is not None:

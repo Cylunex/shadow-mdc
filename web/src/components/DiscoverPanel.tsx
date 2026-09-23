@@ -633,7 +633,10 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, wantListIds,
                           <span>
                             {(magnet.name || magnet.info_hash.slice(0, 12)) +
                               (magnet.has_subtitle ? " · 字幕" : "") +
-                              (magnet.hd ? " · HD" : "")}
+                              (magnet.hd ? " · HD" : "") +
+                              (magnet.size_bytes
+                                ? ` · ${(magnet.size_bytes / (1024 ** 3)).toFixed(2)} GiB`
+                                : "")}
                           </span>
                           <button type="button" className="ghost" onClick={() => void copyText(magnet.uri, "磁力")}>
                             复制

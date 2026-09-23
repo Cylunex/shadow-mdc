@@ -570,6 +570,12 @@ export function WorkDetailView(props: {
               : (
                 <div className="magnet-list">
                   {(work.magnets ?? []).map((magnet) => {
+                    const magnets = work.magnets ?? [];
+                    const bestHash = [...magnets].sort((a, b) => {
+                      const score = (m: typeof a) =>
+                        (m.has_subtitle ? 4 : 0) + (m.hd ? 2 : 0) + Math.min((m.size_bytes ?? 0) / 1e12, 1);
+                      return score(b) - score(a);
+                    })[0]?.info_hash;
                     const offline = offlineTasks.find((task) =>
                       task.magnet_id === magnet.id
                       || (task.info_hash && magnet.info_hash
@@ -589,7 +595,11 @@ export function WorkDetailView(props: {
                       <span>
                         {(magnet.name || magnet.info_hash.slice(0, 12))
                           + (magnet.has_subtitle ? " · 字幕" : "")
-                          + (magnet.hd ? " · HD" : "")}
+                          + (magnet.hd ? " · HD" : "")
+                          + (magnet.size_bytes
+                            ? ` · ${(magnet.size_bytes / (1024 ** 3)).toFixed(2)} GiB`
+                            : "")
+                          + (bestHash && magnet.info_hash === bestHash ? " · 推荐" : "")}
                       </span>
                       <small className="muted">{magnet.provider}</small>
                       {offlineLabel && (

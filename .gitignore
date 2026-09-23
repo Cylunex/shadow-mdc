@@ -5,7 +5,7 @@ __pycache__/
 .pytest-tmp/
 .ruff_cache/
 .mypy_cache/
-data/
+/data/
 !tests/fixtures/catalog-import-bundle/data/
 !tests/fixtures/catalog-import-bundle/data/**
 seeds/

@@ -9,7 +9,11 @@ from shadow_mdc.db.repository import Repository
 from shadow_mdc.domain import ProviderRecord
 from shadow_mdc.enums import ContentFamily, MediaCategory
 from shadow_mdc.media.artwork import ensure_list_thumbnail
-from shadow_mdc.media.magnets import parse_magnet_links_from_html
+from shadow_mdc.media.magnets import (
+    parse_magnet_links_from_html,
+    parse_size_label_to_bytes,
+    pick_best_magnet_link,
+)
 from shadow_mdc.media.nfo_import import resolve_sidecar_nfo
 from shadow_mdc.services.discover import parse_javdb_list
 from shadow_mdc.services.pan import pan_status
@@ -149,3 +153,28 @@ def test_work_magnet_persistence_and_api(tmp_path: Path, monkeypatch: pytest.Mon
         detail = client.get(f"/api/works/{work_id}")
         assert detail.status_code == 200
         assert len(detail.json().get("magnets", [])) == 2
+
+
+def test_parse_magnet_links_pairs_nearby_sizes() -> None:
+    html = """
+    <a href="magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01&dn=SSIS-123">m1</a> 4.2GB
+    <a href="magnet:?xt=urn:btih:1234567890ABCDEF1234567890ABCDEF12345678&dn=SSIS-123-C">m2</a> 1.1GB
+    """
+    magnets = parse_magnet_links_from_html(html, provider="javdb")
+    assert len(magnets) == 2
+    assert magnets[0].size_bytes == parse_size_label_to_bytes("4.2GB")
+    assert magnets[1].size_bytes == parse_size_label_to_bytes("1.1GB")
+    assert magnets[1].has_subtitle is True
+    best = pick_best_magnet_link(magnets)
+    assert best is not None
+    assert best.info_hash == magnets[1].info_hash  # subtitle wins over larger size
+
+
+def test_parse_magnet_links_hardens_when_sizes_fewer_than_magnets() -> None:
+    html = """
+    <a href="magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01&dn=A">m1</a> 1GB
+    <a href="magnet:?xt=urn:btih:1234567890ABCDEF1234567890ABCDEF12345678&dn=B">m2</a>
+    """
+    magnets = parse_magnet_links_from_html(html, provider="javbus")
+    assert magnets[0].size_bytes == parse_size_label_to_bytes("1GB")
+    assert magnets[1].size_bytes is None  # no throw, no stolen size

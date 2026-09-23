@@ -721,6 +721,7 @@ class GfriendsFillRequest(BaseModel):
     download: bool = True
     limit: int | None = Field(default=None, ge=1, le=50000)
     force_refresh: bool = False
+    localize: bool = False  # CDN image_url → local /api/actor-images/
 
 
 class GfriendsFillOut(BaseModel):

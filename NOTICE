@@ -6,8 +6,22 @@
   - tinypinglite/sakuramediabe `src/metadata/gfriends.py` (GPL-3.0)
   - JavScraper/Emby.Plugins.JavScraper `Scrapers/Gfriends.cs`
 
-## Filename / 番号 specialty patterns
+## Actress name aliases (romaji / CJK ↔ Japanese)
+- Bundled map `shadow_mdc/data/actress_name_map.json.gz` built from:
+  - javinizer/Javinizer `jvThumbs.csv` (MIT) — romaji ↔ JapaneseName
+  - Yuukiy/JavSP `data/actress_alias.json` (GPL-3.0) — stage-name / CJK variants
+
+## Filename / 番号 specialty + uncensored naming
 - Edge-case labels (HEYDOUGA, GETCHU, GYUTTO, IBW-z, T28) adapted from
   Yuukiy/JavSP `javsp/avid.py` and Emby.Plugins.JavScraper `JavIdRecognizer.cs`.
+- Uncensored studio prefix/suffix forms (1pondo / carib / 10musume / paco / muramura)
+  adapted from JAV.bundle agents + Emby `JavIdRecognizer`.
+
+## Magnet size pairing
+- Nearby GB/MB label pairing + unequal-count hardening inspired by
+  raawaa/jav-scrapy `extractMagnetLinks` (MIT).
+
+## Field source priority
+- Aggregation order notes from javinizer/Javinizer (MIT).
 
 Shadow MDC remains MIT-licensed; see LICENSE.

@@ -413,7 +413,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
       <article className="settings-card">
         <h2>GFriends 女优头像</h2>
         <p className="muted">
-          用社区女优头像库补全空的演员写真（只写入真实匹配图，不生成占位图）。图片缓存到本机 data/actor-images。
+          用社区女优头像库补全空的演员写真（只写入真实匹配图，不生成占位图）。支持罗马音/英文名→日文名别名匹配。图片缓存到本机 data/actor-images；可将仍指向 CDN 的地址本地化。
         </p>
         <div className="command-bar-row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
           <button
@@ -452,6 +452,25 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
             }
           >
             补全缺失头像
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy === "localize-gfriends"}
+            onClick={() =>
+              void run(
+                "localize-gfriends",
+                async () => {
+                  const result = await api.fillGfriendsActorImages({ localize: true, download: true });
+                  report(
+                    `CDN→本地 ${result.filled}/${result.scanned}（下载 ${result.downloaded} · 失败 ${result.failed}）`
+                  );
+                },
+                "actors"
+              )
+            }
+          >
+            CDN 头像本地化
           </button>
         </div>
       </article>
