@@ -37,7 +37,24 @@ export const WorkCard = memo(function WorkCard({
         ) : (
           <div className="poster-fallback" aria-hidden />
         )}
-        {work.primary_code && <span className="code-chip">{work.primary_code}</span>}
+        {work.primary_code && (
+          <span
+            className="code-chip code-chip-copyable"
+            title="点击复制番号"
+            role="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              void navigator.clipboard.writeText(work.primary_code!).catch(() => undefined);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                event.stopPropagation();
+                void navigator.clipboard.writeText(work.primary_code!).catch(() => undefined);
+              }
+            }}
+          >{work.primary_code}</span>
+        )}
         {work.rating_value != null && (
           <span className="score-chip" title={work.rating_source ?? undefined}>
             ★ {work.rating_value}

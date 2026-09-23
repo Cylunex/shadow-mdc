@@ -100,6 +100,30 @@ function MetaRow(props: { label: string; children: ReactNode; empty?: boolean })
   );
 }
 
+
+function visibleIdentities(items: WorkDetail["identities"]) {
+  const covered = new Set(
+    items
+      .filter((item) => item.kind !== "source_url" && item.source_url)
+      .map((item) => `${item.provider}|${item.source_url}`)
+  );
+  return items.filter((item) => {
+    if (item.kind !== "source_url") return true;
+    const key = `${item.provider}|${item.source_url ?? item.value}`;
+    return !covered.has(key);
+  });
+}
+
+async function copyText(value: string, label: string, report?: (message: string) => void) {
+  try {
+    await navigator.clipboard.writeText(value);
+    report?.(`已复制${label}`);
+  } catch {
+    report?.(`复制${label}失败`);
+  }
+}
+
+
 export function WorkDetailView(props: {
   workId: string;
   busy: string | null;
@@ -334,9 +358,17 @@ export function WorkDetailView(props: {
 
             <dl className="work-page-meta-table work-page-meta-table--labeled">
               <MetaRow label="番号" empty={!work.primary_code}>
-                {work.primary_code
-                  ? <span className="work-page-code-inline">{work.primary_code}</span>
-                  : "—"}
+                {work.primary_code ? (
+                  <span className="work-page-code-row">
+                    <span className="work-page-code-inline">{work.primary_code}</span>
+                    <button
+                      type="button"
+                      className="ghost work-page-code-copy"
+                      title="复制番号"
+                      onClick={() => void copyText(work.primary_code!, "番号", props.report)}
+                    >复制</button>
+                  </span>
+                ) : "—"}
               </MetaRow>
 
               <div className="work-page-meta-row work-page-meta-row--title">
@@ -764,14 +796,36 @@ export function WorkDetailView(props: {
           </section>
 
           <section className="work-page-section work-page-aux">
-            <h2>身份</h2>
-            <ul className="asset-list">
-              {work.identities.map((identity) => (
-                <li key={`${identity.provider}-${identity.kind}-${identity.value}`}>
-                  <code>{identity.provider}/{identity.kind}</code><span>{identity.value}</span>
-                </li>
-              ))}
-            </ul>
+            <h2>资料站 / 身份</h2>
+            {work.identities.length === 0 ? (
+              <p className="muted">暂无外部身份</p>
+            ) : (
+              <ul className="identity-chip-list">
+                {visibleIdentities(work.identities).map((identity) => {
+                  const href = identity.source_url && /^https?:/i.test(identity.source_url)
+                    ? identity.source_url
+                    : null;
+                  return (
+                    <li key={`${identity.provider}-${identity.kind}-${identity.value}`} className="identity-chip">
+                      <span className="identity-chip-provider">{identity.provider}</span>
+                      {href ? (
+                        <a href={href} target="_blank" rel="noopener noreferrer" title={href}>
+                          {identity.value}
+                        </a>
+                      ) : (
+                        <span className="identity-chip-value">{identity.value}</span>
+                      )}
+                      <button
+                        type="button"
+                        className="ghost"
+                        title="复制"
+                        onClick={() => void copyText(identity.value, identity.provider, props.report)}
+                      >复制</button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </section>
         </div>
       </div>

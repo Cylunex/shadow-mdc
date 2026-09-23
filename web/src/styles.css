@@ -1276,6 +1276,54 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   color: var(--accent);
   letter-spacing: .05em;
 }
+
+.work-page-code-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.work-page-code-copy {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.identity-chip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.identity-chip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid #243035;
+  padding: 8px 0;
+  font-size: 12px;
+}
+.identity-chip-provider {
+  font-weight: 700;
+  letter-spacing: .04em;
+  color: #9eb4bc;
+  min-width: 4.5rem;
+  text-transform: lowercase;
+}
+.identity-chip a {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+.identity-chip-value {
+  color: #dce7ea;
+  overflow-wrap: anywhere;
+}
+.code-chip.code-chip-copyable {
+  cursor: pointer;
+}
+.code-chip.code-chip-copyable:hover {
+  background: rgba(45, 212, 191, 0.28);
+}
 .work-page-title {
   font-size: clamp(22px, 3.2vw, 32px);
   letter-spacing: -.03em;
