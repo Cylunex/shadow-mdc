@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,15 +78,18 @@ def _candidate_names(actor: Actor) -> list[str]:
     return ordered
 
 
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
+
+
 def list_actors_missing_images(repo: Repository, *, limit: int | None = None) -> list[Actor]:
-    statement = (
-        select(Actor)
-        .where(or_(Actor.image_url.is_(None), Actor.image_url == ""))
-        .order_by(Actor.name)
-    )
+    """Actors with empty image_url, CJK names first (GFriends is JP-centric)."""
+
+    statement = select(Actor).where(or_(Actor.image_url.is_(None), Actor.image_url == ""))
+    actors = list(repo._session.scalars(statement))
+    actors.sort(key=lambda actor: (0 if _CJK_RE.search(actor.name or "") else 1, actor.name or ""))
     if limit is not None:
-        statement = statement.limit(max(limit, 0))
-    return list(repo._session.scalars(statement))
+        return actors[: max(limit, 0)]
+    return actors
 
 
 def fill_actor_images_from_gfriends(
