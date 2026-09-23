@@ -10,6 +10,11 @@ import { CategoriesView } from "./views/CategoriesView";
 import { SettingsView } from "./views/SettingsView";
 import { SubscriptionsView } from "./views/SubscriptionsView";
 import { WorkDetailView } from "./views/WorkDetailView";
+import {
+  ActorDetailView,
+  findActorRefByName,
+  resolveActorDetail
+} from "./views/ActorDetailView";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -23,22 +28,51 @@ function readWorkIdFromUrl(): string | null {
   }
 }
 
-function writeWorkIdToUrl(workId: string | null): void {
+function readActorRefFromUrl(): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get("actor");
+  } catch {
+    return null;
+  }
+}
+
+function writeDetailToUrl(opts: { workId?: string | null; actorRef?: string | null }): void {
   const url = new URL(window.location.href);
-  if (workId) url.searchParams.set("work", workId);
-  else url.searchParams.delete("work");
+  const workId = opts.workId ?? null;
+  const actorRef = opts.actorRef ?? null;
+  if (workId) {
+    url.searchParams.set("work", workId);
+    url.searchParams.delete("actor");
+  } else if (actorRef) {
+    url.searchParams.set("actor", actorRef);
+    url.searchParams.delete("work");
+  } else {
+    url.searchParams.delete("work");
+    url.searchParams.delete("actor");
+  }
   const next = `${url.pathname}${url.search}${url.hash}`;
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  if (next !== current) window.history.pushState({ workId }, "", next);
+  if (next !== current) window.history.pushState({ workId, actorRef }, "", next);
+}
+
+function writeWorkIdToUrl(workId: string | null): void {
+  writeDetailToUrl({ workId });
 }
 
 export function App() {
   const initialWorkId = typeof window !== "undefined" ? readWorkIdFromUrl() : null;
-  const [view, setView] = useState<AppView>(initialWorkId ? "work-detail" : "works");
+  const initialActorRef = typeof window !== "undefined" ? readActorRefFromUrl() : null;
+  const [view, setView] = useState<AppView>(
+    initialWorkId ? "work-detail" : initialActorRef ? "actor-detail" : "works"
+  );
   const [selectedWorkId, setSelectedWorkId] = useState<string | null>(initialWorkId);
+  const [selectedActorRef, setSelectedActorRef] = useState<string | null>(initialActorRef);
   const [worksTagFilter, setWorksTagFilter] = useState<string[] | undefined>(undefined);
   const [worksListScroll, setWorksListScroll] = useState(0);
-  const [detailReturnView, setDetailReturnView] = useState<"works" | "actors">("works");
+  const [actorsListScroll, setActorsListScroll] = useState(0);
+  const [detailReturnView, setDetailReturnView] = useState<"works" | "actors" | "actor-detail">(
+    initialActorRef && !initialWorkId ? "actors" : "works"
+  );
   const [taskTab, setTaskTab] = useState<"inbox" | "runs">("runs");
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -136,7 +170,7 @@ export function App() {
         if ((view === "works" || view === "work-detail") && !loaded.works) {
           await refreshWorks();
           refreshed = true;
-        } else if (view === "actors" && !loaded.actors) {
+        } else if ((view === "actors" || view === "actor-detail") && !loaded.actors) {
           await refreshActors();
           refreshed = true;
         } else if (view === "tasks" && !loaded.tasks) {
@@ -208,30 +242,62 @@ export function App() {
 
   const openWorkDetail = useCallback((workId: string) => {
     if (view === "works") setWorksListScroll(window.scrollY);
-    if (view === "actors" || view === "works") setDetailReturnView(view);
+    if (view === "actor-detail") setDetailReturnView("actor-detail");
+    else if (view === "actors" || view === "works") setDetailReturnView(view);
     setSelectedWorkId(workId);
     setView("work-detail");
-    writeWorkIdToUrl(workId);
+    writeDetailToUrl({ workId });
+  }, [view]);
+
+  const openActorDetail = useCallback((actorRef: string) => {
+    if (view === "actors") setActorsListScroll(window.scrollY);
+    if (view === "work-detail") setDetailReturnView("works");
+    else if (view === "actors" || view === "works") setDetailReturnView(view === "actors" ? "actors" : "works");
+    setSelectedActorRef(actorRef);
+    setSelectedWorkId(null);
+    setView("actor-detail");
+    writeDetailToUrl({ actorRef });
   }, [view]);
 
   const closeWorkDetail = useCallback(() => {
     setSelectedWorkId(null);
-    setView(detailReturnView);
-    writeWorkIdToUrl(null);
-    if (detailReturnView === "works") {
-      requestAnimationFrame(() => window.scrollTo(0, worksListScroll));
+    if (detailReturnView === "actor-detail" && selectedActorRef) {
+      setView("actor-detail");
+      writeDetailToUrl({ actorRef: selectedActorRef });
+      return;
     }
-  }, [worksListScroll, detailReturnView]);
+    const next = detailReturnView === "actor-detail" ? "actors" : detailReturnView;
+    setView(next);
+    writeDetailToUrl({});
+    if (next === "works") {
+      requestAnimationFrame(() => window.scrollTo(0, worksListScroll));
+    } else if (next === "actors") {
+      requestAnimationFrame(() => window.scrollTo(0, actorsListScroll));
+    }
+  }, [worksListScroll, actorsListScroll, detailReturnView, selectedActorRef]);
+
+  const closeActorDetail = useCallback(() => {
+    setSelectedActorRef(null);
+    setView("actors");
+    writeDetailToUrl({});
+    requestAnimationFrame(() => window.scrollTo(0, actorsListScroll));
+  }, [actorsListScroll]);
 
   useEffect(() => {
     function onPopState() {
       const workId = readWorkIdFromUrl();
+      const actorRef = readActorRefFromUrl();
       if (workId) {
         setSelectedWorkId(workId);
         setView("work-detail");
-      } else if (view === "work-detail") {
+      } else if (actorRef) {
+        setSelectedActorRef(actorRef);
         setSelectedWorkId(null);
-        setView(detailReturnView);
+        setView("actor-detail");
+      } else if (view === "work-detail" || view === "actor-detail") {
+        setSelectedWorkId(null);
+        setSelectedActorRef(null);
+        setView(detailReturnView === "actor-detail" ? "actors" : detailReturnView);
       }
     }
     window.addEventListener("popstate", onPopState);
@@ -251,10 +317,16 @@ export function App() {
           if (next === "works") {
             setWorksTagFilter(undefined);
             setSelectedWorkId(null);
-            writeWorkIdToUrl(null);
-          } else if (next !== "work-detail") {
+            setSelectedActorRef(null);
+            writeDetailToUrl({});
+          } else if (next === "actors") {
             setSelectedWorkId(null);
-            writeWorkIdToUrl(null);
+            setSelectedActorRef(null);
+            writeDetailToUrl({});
+          } else if (next !== "work-detail" && next !== "actor-detail") {
+            setSelectedWorkId(null);
+            setSelectedActorRef(null);
+            writeDetailToUrl({});
           }
           setView(next);
           if (next === "tasks" && inbox.length > 0) setTaskTab("inbox");
@@ -273,7 +345,7 @@ export function App() {
                   setLoaded({});
                   await refreshCore();
                   if (view === "works" || view === "work-detail") await refreshWorks();
-                  if (view === "actors") await refreshActors();
+                  if (view === "actors" || view === "actor-detail") await refreshActors();
                   if (view === "tasks") await refreshInbox();
                   setMessage("已强制刷新");
                 } catch (error) {
@@ -305,6 +377,7 @@ export function App() {
             busy={busy}
             prefs={prefs}
             onOpenWork={openWorkDetail}
+            onOpenActor={openActorDetail}
             onActorTags={(actorKey, tags) => run(`tag-${actorKey}`, async () => {
               let next = await api.setActorTags({ actor_key: actorKey, ...tags });
               const existing = next.subscriptions.find((item) => item.actor_key === actorKey);
@@ -341,6 +414,47 @@ export function App() {
               await api.uploadNonJavActorImage(actor.name, file);
               setMessage(`${actor.name} 的头像已更新`);
             }, "actors")}
+          />
+        )}
+
+        {view === "actor-detail" && (
+          <ActorDetailView
+            model={selectedActorRef ? resolveActorDetail(selectedActorRef, actors, nonJavActors) : null}
+            loading={!loaded.actors}
+            busy={busy}
+            tags={(() => {
+              if (!selectedActorRef) return undefined;
+              const model = resolveActorDetail(selectedActorRef, actors, nonJavActors);
+              if (!model) return undefined;
+              const tags = prefs.actor_tags ?? {};
+              return tags[model.tagKey] ?? tags[model.name] ?? { favorite: false, subscribe: false, blacklist: false };
+            })()}
+            onBack={closeActorDetail}
+            onOpenWork={openWorkDetail}
+            report={setMessage}
+            onActorTags={(actorKey, tags) => run(`tag-${actorKey}`, async () => {
+              let next = await api.setActorTags({ actor_key: actorKey, ...tags });
+              const existing = next.subscriptions.find((item) => item.actor_key === actorKey);
+              if (tags.subscribe) {
+                if (!existing) {
+                  const actor = actors.find((item) => item.id === actorKey || item.name === actorKey);
+                  const name = actor?.name ?? actorKey;
+                  next = await api.upsertSubscription({
+                    actor_key: actorKey,
+                    actor_name: name,
+                    start_date: new Date().toISOString().slice(0, 10),
+                    max_cast: 3,
+                    enabled: true
+                  });
+                } else if (!existing.enabled) {
+                  next = await api.upsertSubscription({ ...existing, enabled: true });
+                }
+              } else if (existing) {
+                next = await api.removeSubscription(actorKey);
+              }
+              setPrefs(next);
+              setMessage(`已更新 ${actorKey} 标签`);
+            }, "none")}
           />
         )}
 
@@ -431,10 +545,17 @@ export function App() {
               setMessage(`已筛选标签：${tag}`);
             }}
             onOpenActor={(name) => {
-              setView("actors");
-              setSelectedWorkId(null);
-              writeWorkIdToUrl(null);
-              setMessage(`已打开演员库（可搜索：${name}）`);
+              const ref = findActorRefByName(name, actors, nonJavActors);
+              if (ref) {
+                if (!loaded.actors) void refreshActors();
+                openActorDetail(ref);
+                setMessage(`已打开演员：${name}`);
+              } else {
+                setSelectedWorkId(null);
+                writeDetailToUrl({});
+                setView("actors");
+                setMessage(`未找到演员资料：${name}`);
+              }
             }}
             onSave={(workId, payload) => run(`edit-${workId}`, async () => {
               await api.updateWork(workId, payload);

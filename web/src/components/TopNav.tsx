@@ -1,6 +1,6 @@
 import { memo } from "react";
 
-export type AppView = "actors" | "works" | "work-detail" | "categories" | "rankings" | "subscriptions" | "tasks" | "settings";
+export type AppView = "actors" | "actor-detail" | "works" | "work-detail" | "categories" | "rankings" | "subscriptions" | "tasks" | "settings";
 
 const ITEMS: ReadonlyArray<{ id: AppView; label: string; en: string; icon: string }> = [
   { id: "actors", label: "演员", en: "ACTORS", icon: "◇" },
@@ -35,7 +35,7 @@ export const TopNav = memo(function TopNav({ view, onChange, badges }: Props) {
             <button
               key={item.id}
               type="button"
-              className={(view === item.id || (view === "work-detail" && item.id === "works")) ? "top-nav-item active" : "top-nav-item"}
+              className={(view === item.id || (view === "work-detail" && item.id === "works") || (view === "actor-detail" && item.id === "actors")) ? "top-nav-item active" : "top-nav-item"}
               onClick={() => onChange(item.id)}
             >
               <span className="top-nav-icon" aria-hidden>{item.icon}</span>

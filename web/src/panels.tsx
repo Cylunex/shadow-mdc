@@ -6,6 +6,7 @@ import type { NonJavActorEditPayload, OrganizePayload } from "./api";
 import { identityAliasesSchema } from "./model";
 import type { ActorProfile, Asset, BatchPlan, Candidate, IdentityAliases, Library, LibraryPrefs, NonJavActor, TaskRun, Work } from "./model";
 import { WorkCard } from "./components/WorkCard";
+import { javActorRef, nonJavActorRef } from "./views/ActorDetailView";
 
 type DisplayCategory = "all" | "Japan" | "China" | "Korea" | "Europe" | "Other";
 
@@ -114,6 +115,7 @@ export function Actors(props: {
   busy: string | null;
   prefs?: LibraryPrefs;
   onOpenWork: (workId: string) => void;
+  onOpenActor: (actorRef: string) => void;
   onActorTags?: (actorKey: string, tags: { favorite: boolean; subscribe: boolean; blacklist: boolean }) => Promise<void>;
   saveNonJavActor: (previousName: string | null, payload: NonJavActorEditPayload) => Promise<void>;
   deleteNonJavActor: (actor: NonJavActor) => Promise<void>;
@@ -134,7 +136,7 @@ export function Actors(props: {
       <button className={source === "non-jav" ? "active" : "ghost"} onClick={() => setSource("non-jav")}>非 JAV 演员 / 作品 · {props.nonJavActors.length} · 作品 {nonJavWorkTotal}</button>
     </div>
     {source === "jav"
-      ? <JavActors actors={props.actors} prefs={props.prefs} onActorTags={props.onActorTags} busy={props.busy} onOpenWork={props.onOpenWork} />
+      ? <JavActors actors={props.actors} prefs={props.prefs} onActorTags={props.onActorTags} busy={props.busy} onOpenWork={props.onOpenWork} onOpenActor={props.onOpenActor} />
       : <NonJavActorsManager
           actors={props.nonJavActors}
           busy={props.busy}
@@ -142,16 +144,18 @@ export function Actors(props: {
           remove={props.deleteNonJavActor}
           uploadImage={props.uploadActorImage}
           onOpenWork={props.onOpenWork}
+          onOpenActor={props.onOpenActor}
         />}
   </>;
 }
 
-function JavActors({ actors, prefs, onActorTags, busy, onOpenWork }: {
+function JavActors({ actors, prefs, onActorTags, busy, onOpenWork, onOpenActor }: {
   actors: ActorProfile[];
   prefs?: LibraryPrefs;
   onActorTags?: (actorKey: string, tags: { favorite: boolean; subscribe: boolean; blacklist: boolean }) => Promise<void>;
   busy?: string | null;
   onOpenWork: (workId: string) => void;
+  onOpenActor: (actorRef: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<DisplayCategory>("all");
@@ -215,8 +219,20 @@ function JavActors({ actors, prefs, onActorTags, busy, onOpenWork }: {
     {visibleActors.length === 0
       ? <Empty title="没有匹配的演员" detail="可以清空关键词或切换展示分类。" />
       : <><div className="actor-grid">{renderedActors.map((actor) => (
-    <article className="actor-card" key={actor.name}>
-      <div className="actor-profile">
+    <article className="actor-card actor-card--openable" key={actor.name}>
+      <div
+        className="actor-profile"
+        role="link"
+        tabIndex={0}
+        title="打开演员详情"
+        onClick={() => onOpenActor(javActorRef(actor))}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onOpenActor(javActorRef(actor));
+          }
+        }}
+      >
         <div
           className={`actor-avatar${actor.image_url ? "" : " actor-avatar--empty"}`}
           data-initial={actor.image_url ? undefined : actorInitials(actor.name)}
@@ -261,7 +277,7 @@ function JavActors({ actors, prefs, onActorTags, busy, onOpenWork }: {
         const key = actor.id ?? actor.name;
         const tag = tags[key] ?? tags[actor.name] ?? { favorite: false, subscribe: false, blacklist: false };
         return (
-          <div className="actor-tag-actions">
+          <div className="actor-tag-actions" onClick={(event) => event.stopPropagation()}>
             <button type="button" className={tag.favorite ? "active" : "ghost"} disabled={busy === `tag-${key}`}
               onClick={() => void onActorTags(key, { ...tag, favorite: !tag.favorite, blacklist: false })}>收藏</button>
             <button type="button" className={tag.subscribe ? "active" : "ghost"} disabled={busy === `tag-${key}`}
@@ -345,6 +361,7 @@ function NonJavActorsManager(props: {
   remove: (actor: NonJavActor) => Promise<void>;
   uploadImage: (actor: NonJavActor, file: File) => Promise<void>;
   onOpenWork: (workId: string) => void;
+  onOpenActor: (actorRef: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<DisplayCategory>("all");
@@ -495,8 +512,20 @@ function NonJavActorsManager(props: {
     </form>}
     {visible.length === 0
       ? <Empty title="没有匹配的非 JAV 演员" detail="可以清空关键词、分类或分组筛选，或新增一位演员。" />
-      : <><div className="actor-grid non-jav-grid">{rendered.map((actor) => <article className="actor-card" key={actor.name}>
-          <div className="actor-profile">
+      : <><div className="actor-grid non-jav-grid">{rendered.map((actor) => <article className="actor-card actor-card--openable" key={actor.name}>
+          <div
+            className="actor-profile"
+            role="link"
+            tabIndex={0}
+            title="打开演员详情"
+            onClick={() => props.onOpenActor(nonJavActorRef(actor))}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                props.onOpenActor(nonJavActorRef(actor));
+              }
+            }}
+          >
             <div className={`actor-avatar${actor.image_url ? "" : " actor-avatar--empty"}`} data-initial={actor.image_url ? undefined : actorInitials(actor.name)} style={actor.image_url ? { backgroundImage: `url("${appUrl(actor.image_url)}")` } : undefined} role="img" aria-label={`${actor.name} 头像`} />
             <div className="actor-card-title">
               <div>
@@ -552,7 +581,7 @@ function NonJavActorsManager(props: {
               </div>
             ))}</div>
             : <p className="actor-works-empty">暂无作品资料 · 扫描媒体并识别后会自动关联</p>}
-          <div className="actor-actions">
+          <div className="actor-actions" onClick={(event) => event.stopPropagation()}>
             <button className="secondary" onClick={() => edit(actor)}>编辑</button>
             <label className="upload-button">上传头像<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => { const file = event.target.files?.[0]; if (file) void props.uploadImage(actor, file); event.target.value = ""; }} /></label>
             <button className="ghost danger" disabled={props.busy === `actor-delete-${actor.name}`} onClick={() => void props.remove(actor)}>删除</button>
