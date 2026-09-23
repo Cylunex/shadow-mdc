@@ -825,6 +825,7 @@ class PanSettingsPayload(BaseModel):
     strm_output_root: str | None = None
     strm_url_prefix: str = "http://openlist:5244/d/115"
     use_proxy: bool = False
+    subscription_auto_offline: bool = True
     client_id: str
     client_secret_set: bool
 
@@ -835,8 +836,19 @@ class PanSettingsUpdatePayload(BaseModel):
     strm_output_root: str | None = None
     strm_url_prefix: str = "http://openlist:5244/d/115"
     use_proxy: bool = False
+    subscription_auto_offline: bool | None = None
     client_id: str | None = None
     client_secret: str | None = None
+
+
+class SubscriptionWatchStatusOut(BaseModel):
+    enabled: bool = True
+    last_check_at: str | None = None
+    last_targets: int = 0
+    last_refreshed: int = 0
+    last_submitted: int = 0
+    last_skipped_pan: int = 0
+    last_errors: list[str] = Field(default_factory=list)
 
 
 class WorkOfflineRequest(BaseModel):

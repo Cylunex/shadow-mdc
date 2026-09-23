@@ -87,6 +87,9 @@ class PanSettings(BaseModel):
     strm_output_root: str | None = None
     strm_url_prefix: str = "http://openlist:5244/d/115"
     use_proxy: bool = False
+    # When true, background watcher refreshes magnets for subscribed/want
+    # works and submits the best magnet to 115 offline (if connected).
+    subscription_auto_offline: bool = True
     # Optional per-instance app credentials; unset values fall back to environment defaults.
     client_id: str | None = None
     client_secret: str | None = None
@@ -1152,6 +1155,7 @@ class PanService:
             "strm_output_root",
             "strm_url_prefix",
             "use_proxy",
+            "subscription_auto_offline",
             "client_id",
             "client_secret",
         ):

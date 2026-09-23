@@ -63,6 +63,8 @@ import {
   panFilesSchema,
   panOfflineTaskSchema,
   panSettingsSchema,
+  subscriptionWatchStatusSchema,
+  subscriptionWatchStatusSchema,
   panLoginStatusSchema,
   panLoginSchema,
   javRankingSectionsSchema,
@@ -501,12 +503,17 @@ export const api = {
     strm_output_root: string | null;
     strm_url_prefix: string;
     use_proxy: boolean;
+    subscription_auto_offline: boolean;
     client_id: string;
     client_secret?: string;
   }) => request(panSettingsSchema, "/api/pan/settings", {
     method: "PUT", body: JSON.stringify(payload)
   }),
   panOfflineTasks: () => request(z.array(panOfflineTaskSchema), "/api/pan/offline/tasks"),
+  subscriptionWatchStatus: () =>
+    request(subscriptionWatchStatusSchema, "/api/pan/subscription-watch/status"),
+  runSubscriptionWatch: () =>
+    request(subscriptionWatchStatusSchema, "/api/pan/subscription-watch/run", { method: "POST" }),
   submitWorkOffline: (workId: string, payload: { magnet_id?: string; url?: string }) =>
     request(panOfflineTaskSchema, `/api/works/${workId}/offline`, {
       method: "POST", body: JSON.stringify(payload)

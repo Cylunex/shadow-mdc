@@ -1,6 +1,6 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { LibraryPrefs } from "../model";
+import type { LibraryPrefs, SubscriptionWatchStatus } from "../model";
 
 type Props = {
   prefs: LibraryPrefs;
@@ -16,7 +16,12 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
   const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
   const [maxCast, setMaxCast] = useState(3);
   const [localBusy, setLocalBusy] = useState<string | null>(null);
+  const [watchStatus, setWatchStatus] = useState<SubscriptionWatchStatus | null>(null);
   const blocked = Boolean(busy || localBusy);
+
+  useEffect(() => {
+    void api.subscriptionWatchStatus().then(setWatchStatus).catch(() => setWatchStatus(null));
+  }, [prefs]);
 
   async function runLocal(key: string, action: () => Promise<void>) {
     setLocalBusy(key);
@@ -63,6 +68,11 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
           <p className="eyebrow">ACTOR TRACKING</p>
           <h1>订阅</h1>
           <p className="muted">{enabledCount} 位演员正在被追踪 · 队列待审 {pendingQueue.length}</p>
+          {watchStatus && (
+            <p className="muted">
+              自动盯磁链：{watchStatus.enabled ? "开" : "关"}              {watchStatus.last_check_at ? ` · 上次检查 ${watchStatus.last_check_at}` : ""}              {` · 提交 ${watchStatus.last_submitted} · 跳过115 ${watchStatus.last_skipped_pan}`}
+            </p>
+          )}
         </div>
         <div className="hero-actions">
           <button
@@ -78,6 +88,22 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
             }}
           >
             {localBusy === "scan-subs" ? "扫描中…" : "扫描新作"}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={blocked}
+            onClick={() => {
+              void runLocal("watch-once", async () => {
+                const status = await api.runSubscriptionWatch();
+                setWatchStatus(status);
+                report(
+                  `盯磁链检查完成：目标 ${status.last_targets}，刷新 ${status.last_refreshed}，提交 ${status.last_submitted}，跳过115 ${status.last_skipped_pan}`
+                );
+              });
+            }}
+          >
+            {localBusy === "watch-once" ? "检查中…" : "立即盯磁链"}
           </button>
         </div>
       </div>

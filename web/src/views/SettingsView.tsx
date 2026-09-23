@@ -313,6 +313,14 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                 />
                 115 请求走 SHADOW_MDC_PROXY_URL（默认关闭，降低风控）
               </label>
+              <label className="check-line">
+                <input
+                  type="checkbox"
+                  checked={panSettings.subscription_auto_offline}
+                  onChange={(e) => setPanSettings({ ...panSettings, subscription_auto_offline: e.target.checked })}
+                />
+                订阅 / 想看自动盯磁链并推 115 离线（未登录时仅保存磁链）
+              </label>
               <button type="submit" disabled={busy === "pan-settings"}>保存 115 设置</button>
             </form>
           )}

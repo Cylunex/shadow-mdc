@@ -93,6 +93,7 @@ from .api_models import (
     PanOfflineTaskOut,
     PanSettingsPayload,
     PanSettingsUpdatePayload,
+    SubscriptionWatchStatusOut,
     PlanOut,
     ProviderDiagnoseOut,
     ProviderDiagnoseRequest,
@@ -249,6 +250,12 @@ from .services.pan import (
     pan_status,
 )
 from .services.pan_poller import PanOfflinePoller
+from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
+from .services.subscription_watch import (
+    SubscriptionWatchPoller,
+    SubscriptionWatchService,
+    SubscriptionWatchStateStore,
+)
 from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
 from .services.response_cache import (
     TTL_ACTORS,
@@ -306,6 +313,7 @@ class Runtime:
     media_server_store: MediaServerStore
     pan_service: PanService
     pan_poller: PanOfflinePoller
+    subscription_watch_poller: SubscriptionWatchPoller
     library_prefs_store: LibraryPrefsStore
     task_events: TaskEventHub
     discover: DiscoverService
@@ -456,6 +464,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         http=client,
         task_events=task_events,
     )
+    subscription_watch_service = SubscriptionWatchService(
+        database=database,
+        pan=pan_service,
+        discover=discover_service,
+        library_prefs_store=library_prefs_store,
+        state_store=SubscriptionWatchStateStore(
+            settings.data_dir / "subscription-watch-state.json"
+        ),
+        task_events=task_events,
+    )
+    subscription_watch_poller = SubscriptionWatchPoller(subscription_watch_service)
     response_cache = ResponseCache(settings.redis_url)
     app.state.runtime = Runtime(
         settings=settings,
@@ -472,15 +491,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         media_server_store=media_server_store,
         pan_service=pan_service,
         pan_poller=pan_poller,
+        subscription_watch_poller=subscription_watch_poller,
         library_prefs_store=library_prefs_store,
         task_events=task_events,
         discover=discover_service,
         response_cache=response_cache,
     )
     pan_poller.start()
+    subscription_watch_poller.start()
     try:
         yield
     finally:
+        await subscription_watch_poller.stop()
         await pan_poller.stop()
         await pan_service.aclose()
         await asyncio.gather(client.aclose(), *(source.aclose() for source in provider_clients))
@@ -822,6 +844,20 @@ def pan_put_settings(payload: PanSettingsUpdatePayload, request: Request) -> Pan
     return PanSettingsPayload.model_validate(service.settings_status())
 
 
+@app.get("/api/pan/subscription-watch/status", response_model=SubscriptionWatchStatusOut)
+def pan_subscription_watch_status(request: Request) -> SubscriptionWatchStatusOut:
+    status = runtime(request).subscription_watch_poller.service.status()
+    return SubscriptionWatchStatusOut.model_validate(status.model_dump())
+
+
+@app.post("/api/pan/subscription-watch/run", response_model=SubscriptionWatchStatusOut)
+async def pan_subscription_watch_run(request: Request) -> SubscriptionWatchStatusOut:
+    """Manual tick for smoke tests / Settings run-once."""
+
+    status = await runtime(request).subscription_watch_poller.service.run_once()
+    return SubscriptionWatchStatusOut.model_validate(status.model_dump())
+
+
 @app.get("/api/pan/offline/tasks", response_model=list[PanOfflineTaskOut])
 def pan_offline_tasks(repo: Repo, limit: int = Query(50, ge=1, le=200)) -> list[PanOfflineTaskOut]:
     return [PanOfflineTaskOut.model_validate(item) for item in repo.list_pan_offline_tasks(limit=limit)]
@@ -834,82 +870,19 @@ async def submit_work_offline(
     request: Request,
     repo: Repo,
 ) -> PanOfflineTaskOut:
-    work = repo.get_work(work_id)
-    if work is None:
-        raise HTTPException(status_code=404, detail="work not found")
-    pan = runtime(request).pan_service
-    status = pan.status()
-    if not status.get("connected"):
-        raise HTTPException(status_code=400, detail="115 not connected — complete QR login in Settings")
-    directory_id = pan.config_store.load().offline_directory_id
-    if not directory_id:
-        raise HTTPException(status_code=400, detail="set offline directory id first")
-
-    url: str | None = None
-    magnet_id: str | None = payload.magnet_id
-    info_hash_hint: str | None = None
-    if payload.magnet_id:
-        magnets = {item.id: item for item in repo.list_work_magnets(work_id)}
-        magnet = magnets.get(payload.magnet_id)
-        if magnet is None:
-            raise HTTPException(status_code=404, detail="magnet not found")
-        url = magnet.uri
-        info_hash_hint = magnet.info_hash
-    elif payload.url:
-        url = payload.url.strip()
-    else:
-        raise HTTPException(status_code=400, detail="magnet_id or url required")
-    if not url:
-        raise HTTPException(status_code=400, detail="empty magnet url")
-
-    # Duplicate local task still running
-    if info_hash_hint:
-        existing = repo.find_pan_offline_by_hash(work_id, info_hash_hint)
-        if existing is not None and existing.status == "running":
-            return PanOfflineTaskOut.model_validate(existing)
-
+    app_runtime = runtime(request)
     try:
-        submit_result = await pan.submit_offline_url(
-            url, directory_id=directory_id, info_hash_hint=info_hash_hint
+        result = await enqueue_work_offline(
+            repo,
+            app_runtime.pan_service,
+            work_id,
+            magnet_id=payload.magnet_id,
+            url=payload.url,
         )
-    except PanNotConfiguredError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except PanOfflineConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except PanOfflineExistsError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except PanApiError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except httpx.HTTPError as exc:
-        detail = f"115 offline submit failed: {type(exc).__name__}"
-        raise HTTPException(status_code=502, detail=detail) from exc
-
-    info_hash = str(submit_result.get("info_hash") or info_hash_hint or "").upper()
-    if not info_hash:
-        raise HTTPException(status_code=502, detail="115 offline submit missing info_hash")
-
-    existing = repo.find_pan_offline_by_hash(work_id, info_hash)
-    if existing is not None:
-        existing.status = "running"
-        existing.progress = 0.0
-        existing.error = None
-        existing.directory_id = directory_id
-        existing.url = url
-        existing.magnet_id = magnet_id
-        existing.updated_at = utc_now()
-        repo._session.flush()
-        task_row = existing
-    else:
-        task_row = repo.create_pan_offline_task(
-            work_id=work_id,
-            info_hash=info_hash,
-            directory_id=directory_id,
-            url=url,
-            magnet_id=magnet_id,
-        )
-    # Nudge poller via task events
-    runtime(request).task_events.notify()
-    return PanOfflineTaskOut.model_validate(task_row)
+    except OfflineEnqueueError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    app_runtime.task_events.notify()
+    return PanOfflineTaskOut.model_validate(result.task)
 
 
 @app.get("/api/works/{work_id}/offline", response_model=list[PanOfflineTaskOut])

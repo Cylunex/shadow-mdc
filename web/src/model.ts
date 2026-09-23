@@ -782,6 +782,7 @@ export const panSettingsSchema = z.object({
   strm_output_root: z.string().nullable(),
   strm_url_prefix: z.string(),
   use_proxy: z.boolean(),
+  subscription_auto_offline: z.boolean().default(true),
   client_id: z.string(),
   client_secret_set: z.boolean()
 });
@@ -822,5 +823,15 @@ export type ActorSubscription = z.infer<typeof actorSubscriptionSchema>;
 export type SubscriptionQueueItem = z.infer<typeof subscriptionQueueItemSchema>;
 export type MediaServerSettings = z.infer<typeof mediaServerSettingsSchema>;
 export type PanStatus = z.infer<typeof panStatusSchema>;
+export const subscriptionWatchStatusSchema = z.object({
+  enabled: z.boolean(),
+  last_check_at: z.string().nullable(),
+  last_targets: z.number(),
+  last_refreshed: z.number(),
+  last_submitted: z.number(),
+  last_skipped_pan: z.number(),
+  last_errors: z.array(z.string())
+});
+export type SubscriptionWatchStatus = z.infer<typeof subscriptionWatchStatusSchema>;
 export type PanSettings = z.infer<typeof panSettingsSchema>;
 export type PanOfflineTask = z.infer<typeof panOfflineTaskSchema>;
