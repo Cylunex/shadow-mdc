@@ -26,6 +26,12 @@ _GENERIC_STEM = re.compile(
 
 _FC2 = re.compile(r"(?i)\bFC2(?:[-_. ]?PPV)?[-_. ]?(\d{5,9})\b")
 _HEYZO = re.compile(r"(?i)\bHEYZO[-_. ]?(\d{3,5})\b")
+# Patterns adapted from Yuukiy/JavSP avid.py / Emby JavIdRecognizer (specialty labels).
+_HEYDOUGA = re.compile(r"(?i)\bHEYDOUGA[-_. ]?(\d{4})[-_. ]0?(\d{3,5})\b")
+_GETCHU = re.compile(r"(?i)\bGETCHU[-_. ]?(\d{4,8})\b")
+_GYUTTO = re.compile(r"(?i)\bGYUTTO[-_. ]?(\d{4,8})\b")
+_IBW_Z = re.compile(r"(?i)\b(IBW)[-_. ]?(\d{2,5}Z)\b")
+_T28 = re.compile(r"(?i)\b(T[23]8)[-_. ]?(\d{3,4})\b")
 _CHINESE = re.compile(r"(?i)\b((?:MD|MDSR|MDWP|MDCM|MKY-[A-Z]+)[-_]?[A-Z]*\d{3,6})\b")
 _WESTERN_DATE = re.compile(r"(?i)\b([a-z][a-z0-9-]{1,30})[._ -](?:20)?(\d{2})[._ -](\d{2})[._ -](\d{2})\b")
 _JAV = re.compile(
@@ -222,6 +228,16 @@ def extract_code(
         return f"FC2-{match.group(1)}", ContentFamily.JAV
     if match := _HEYZO.search(normalized):
         return f"HEYZO-{match.group(1)}", ContentFamily.JAV
+    if match := _HEYDOUGA.search(normalized):
+        return f"heydouga-{match.group(1)}-{match.group(2)}", ContentFamily.JAV
+    if match := _GETCHU.search(normalized):
+        return f"GETCHU-{match.group(1)}", ContentFamily.JAV
+    if match := _GYUTTO.search(normalized):
+        return f"GYUTTO-{match.group(1)}", ContentFamily.JAV
+    if match := _IBW_Z.search(normalized):
+        return f"{match.group(1).upper()}-{match.group(2).upper()}", ContentFamily.JAV
+    if match := _T28.search(normalized):
+        return f"{match.group(1).upper()}-{match.group(2)}", ContentFamily.JAV
     if match := _UNCENSORED.search(normalized):
         return f"{match.group(1).upper()}-{match.group(2)}-{match.group(3)}", ContentFamily.JAV
     if match := _CHINESE.search(normalized):

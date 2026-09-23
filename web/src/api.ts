@@ -48,6 +48,7 @@ import {
   collectionsSchema,
   collectionSchema,
   collectionSeedResultSchema,
+  gfriendsFillResultSchema,
   fieldPrioritySchema,
   lexiconExportSchema,
   taskRunSchema,
@@ -284,6 +285,21 @@ export const api = {
   collection: (collectionId: string) => request(collectionSchema, `/api/collections/${collectionId}`),
   seedCollections: () =>
     request(collectionSeedResultSchema, "/api/collections/seed", { method: "POST" }),
+  fillGfriendsActorImages: (payload: {
+    dry_run?: boolean;
+    download?: boolean;
+    limit?: number | null;
+    force_refresh?: boolean;
+  } = {}) =>
+    request(gfriendsFillResultSchema, "/api/actors/fill-gfriends-images", {
+      method: "POST",
+      body: JSON.stringify({
+        dry_run: payload.dry_run ?? false,
+        download: payload.download ?? true,
+        limit: payload.limit ?? null,
+        force_refresh: payload.force_refresh ?? false
+      })
+    }),
   workDetail: (workId: string) => request(workDetailSchema, `/api/works/${workId}`),
   workRelated: (workId: string, limit = 18) =>
     request(workRelatedSchema, `/api/works/${workId}/related?limit=${limit}`),

@@ -410,6 +410,51 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
       <ProviderDiagnostics />
       <FilterWordsEditor />
       <AliasEditor />
+      <article className="settings-card">
+        <h2>GFriends 女优头像</h2>
+        <p className="muted">
+          用社区女优头像库补全空的演员写真（只写入真实匹配图，不生成占位图）。图片缓存到本机 data/actor-images。
+        </p>
+        <div className="command-bar-row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy === "fill-gfriends-dry"}
+            onClick={() =>
+              void run(
+                "fill-gfriends-dry",
+                async () => {
+                  const result = await api.fillGfriendsActorImages({ dry_run: true, download: false, limit: 500 });
+                  report(
+                    `预览：扫描 ${result.scanned} · 可匹配 ${result.matched} · 无匹配 ${result.skipped_no_match}（Filetree ${result.filetree_entries}）`
+                  );
+                },
+                "none"
+              )
+            }
+          >
+            预览可补全
+          </button>
+          <button
+            type="button"
+            disabled={busy === "fill-gfriends"}
+            onClick={() =>
+              void run(
+                "fill-gfriends",
+                async () => {
+                  const result = await api.fillGfriendsActorImages({ download: true, force_refresh: false });
+                  report(
+                    `已补全 ${result.filled}/${result.scanned}（下载 ${result.downloaded} · 失败 ${result.failed} · 无匹配 ${result.skipped_no_match}）`
+                  );
+                },
+                "actors"
+              )
+            }
+          >
+            补全缺失头像
+          </button>
+        </div>
+      </article>
       <CatalogImportEditor busy={busy} run={run} report={report} />
     </section>
   );

@@ -716,6 +716,25 @@ class MediaServerSettingsPayload(BaseModel):
     deep_link_template: str | None = None
 
 
+class GfriendsFillRequest(BaseModel):
+    dry_run: bool = False
+    download: bool = True
+    limit: int | None = Field(default=None, ge=1, le=50000)
+    force_refresh: bool = False
+
+
+class GfriendsFillOut(BaseModel):
+    scanned: int = 0
+    matched: int = 0
+    filled: int = 0
+    skipped_no_match: int = 0
+    downloaded: int = 0
+    failed: int = 0
+    dry_run: bool = False
+    filetree_source: str = ""
+    filetree_entries: int = 0
+
+
 class ActorXHandleEdit(BaseModel):
     x_handle: str | None = Field(default=None, max_length=100)
 

@@ -1,0 +1,13 @@
+# Third-party acknowledgements
+
+## GFriends actress portraits
+- Data: https://github.com/gfriends/gfriends (community actress image repository)
+- Lookup/cache patterns adapted from:
+  - tinypinglite/sakuramediabe `src/metadata/gfriends.py` (GPL-3.0)
+  - JavScraper/Emby.Plugins.JavScraper `Scrapers/Gfriends.cs`
+
+## Filename / 番号 specialty patterns
+- Edge-case labels (HEYDOUGA, GETCHU, GYUTTO, IBW-z, T28) adapted from
+  Yuukiy/JavSP `javsp/avid.py` and Emby.Plugins.JavScraper `JavIdRecognizer.cs`.
+
+Shadow MDC remains MIT-licensed; see LICENSE.

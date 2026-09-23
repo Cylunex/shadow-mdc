@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     # 115 Open Platform — temporary community id; prefer your own app at open.115.com
     pan_client_id: str = "100197303"
     pan_client_secret: str | None = None
+    # GFriends actress portraits (https://github.com/gfriends/gfriends)
+    gfriends_filetree_url: str = "https://cdn.jsdelivr.net/gh/gfriends/gfriends@master/Filetree.json"
+    gfriends_cdn_base_url: str = "https://cdn.jsdelivr.net/gh/gfriends/gfriends@master"
+    gfriends_cache_ttl_hours: int = Field(default=24 * 7, ge=1, le=24 * 30)
+
 
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -58,3 +63,4 @@ class Settings(BaseSettings):
         (self.data_dir / "actor-images").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "category-covers").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "pan").mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "cache" / "gfriends").mkdir(parents=True, exist_ok=True)

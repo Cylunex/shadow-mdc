@@ -198,6 +198,21 @@ export const collectionSeedResultSchema = z.object({
   kind_label: z.number().default(0)
 });
 
+
+export const gfriendsFillResultSchema = z.object({
+  scanned: z.number(),
+  matched: z.number(),
+  filled: z.number(),
+  skipped_no_match: z.number(),
+  downloaded: z.number(),
+  failed: z.number(),
+  dry_run: z.boolean(),
+  filetree_source: z.string(),
+  filetree_entries: z.number()
+});
+export type GfriendsFillResult = z.infer<typeof gfriendsFillResultSchema>;
+
+
 export const workSchema = z.object({
   id: z.string(),
   title: z.string(),

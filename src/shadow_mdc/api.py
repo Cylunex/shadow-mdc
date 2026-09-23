@@ -53,6 +53,8 @@ from .api_models import (
     DiscoverSeedRequest,
     FieldPriorityPayload,
     FilterWordsPayload,
+    GfriendsFillOut,
+    GfriendsFillRequest,
     HealthOut,
     IdentifyOut,
     IdentifyRequest,
@@ -288,6 +290,8 @@ from .services.translation import (
     build_translation_backends,
 )
 from .services.work_samples import enrich_work_samples, sample_urls_for_work
+from .services.gfriends import GfriendsActorImageResolver
+from .services.gfriends_fill import fill_actor_images_from_gfriends
 from .services.x_handle import (
     XHandleError,
     require_verified_x_handle,
@@ -1585,6 +1589,63 @@ def list_actor_catalog(request: Request, repo: Repo) -> tuple[ActorProfile, ...]
     )
     return enriched
 
+
+@app.post("/api/actors/fill-gfriends-images", response_model=GfriendsFillOut)
+def fill_gfriends_actor_images(payload: GfriendsFillRequest, request: Request, repo: Repo) -> GfriendsFillOut:
+    """Fill empty actor ``image_url`` values from the GFriends portrait index.
+
+    Downloads portraits into ``data/actor-images/`` by default and stores a local
+    ``/api/actor-images/...`` URL. Never writes placeholder/identicon images.
+    """
+
+    app_runtime = runtime(request)
+    settings = app_runtime.settings
+    cache_path = settings.data_dir / "cache" / "gfriends" / "Filetree.json"
+    resolver = GfriendsActorImageResolver(
+        filetree_url=settings.gfriends_filetree_url,
+        cdn_base_url=settings.gfriends_cdn_base_url,
+        cache_path=cache_path,
+        cache_ttl_hours=settings.gfriends_cache_ttl_hours,
+    )
+    try:
+        stats = fill_actor_images_from_gfriends(
+            repo,
+            resolver,
+            actor_images_dir=settings.data_dir / "actor-images",
+            download=payload.download,
+            dry_run=payload.dry_run,
+            limit=payload.limit,
+            force_refresh_index=payload.force_refresh,
+        )
+    finally:
+        resolver.close()
+    if not payload.dry_run and stats.filled:
+        _invalidate_library_caches(app_runtime.response_cache)
+    return GfriendsFillOut(
+        scanned=stats.scanned,
+        matched=stats.matched,
+        filled=stats.filled,
+        skipped_no_match=stats.skipped_no_match,
+        downloaded=stats.downloaded,
+        failed=stats.failed,
+        dry_run=stats.dry_run,
+        filetree_source=stats.filetree_source,
+        filetree_entries=stats.filetree_entries,
+    )
+
+
+@app.get("/api/actor-images/{filename}")
+def jav_actor_image(filename: str, request: Request) -> Response:
+    """Serve a locally cached actor portrait (GFriends or uploads)."""
+
+    safe = Path(filename).name
+    if safe != filename or ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="invalid filename")
+    image_path = runtime(request).settings.data_dir / "actor-images" / safe
+    if not image_path.is_file():
+        raise HTTPException(status_code=404, detail="image not found")
+    media_type, _ = mimetypes.guess_type(str(image_path))
+    return FileResponse(image_path, media_type=media_type or "application/octet-stream")
 
 
 @app.get("/api/javranking/sections", response_model=JavRankingSectionsOut)
