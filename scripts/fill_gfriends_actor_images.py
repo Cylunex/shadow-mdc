@@ -21,7 +21,10 @@ if str(ROOT / "src") not in sys.path:
 from shadow_mdc.config import Settings  # noqa: E402
 from shadow_mdc.db.repository import Database  # noqa: E402
 from shadow_mdc.services.gfriends import GfriendsActorImageResolver  # noqa: E402
-from shadow_mdc.services.gfriends_fill import fill_actor_images_from_gfriends  # noqa: E402
+from shadow_mdc.services.gfriends_fill import (  # noqa: E402
+    fill_actor_images_from_gfriends,
+    localize_cdn_actor_images,
+)
 
 
 def main() -> int:
@@ -30,6 +33,11 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--cdn-only", action="store_true", help="Store CDN URL only; do not download")
     parser.add_argument("--force-refresh", action="store_true", help="Force re-download Filetree.json")
+    parser.add_argument(
+        "--localize",
+        action="store_true",
+        help="Download existing CDN image_url values into local actor-images",
+    )
     args = parser.parse_args()
 
     settings = Settings()
@@ -43,22 +51,42 @@ def main() -> int:
     )
     database = Database(settings.database_url)
     database.initialize()
+    http_client = None
+    if settings.proxy_url:
+        http_client = __import__("httpx").Client(
+            timeout=45.0,
+            proxy=settings.proxy_url,
+            headers={"User-Agent": settings.user_agent},
+            follow_redirects=True,
+        )
     try:
         with database.session() as session:
             from shadow_mdc.db.repository import Repository
 
             repo = Repository(session)
-            stats = fill_actor_images_from_gfriends(
-                repo,
-                resolver,
-                actor_images_dir=settings.data_dir / "actor-images",
-                download=not args.cdn_only,
-                dry_run=args.dry_run,
-                limit=args.limit,
-                force_refresh_index=args.force_refresh,
-            )
+            if args.localize:
+                stats = localize_cdn_actor_images(
+                    repo,
+                    actor_images_dir=settings.data_dir / "actor-images",
+                    limit=args.limit,
+                    dry_run=args.dry_run,
+                    http_client=http_client,
+                )
+            else:
+                stats = fill_actor_images_from_gfriends(
+                    repo,
+                    resolver,
+                    actor_images_dir=settings.data_dir / "actor-images",
+                    download=not args.cdn_only,
+                    dry_run=args.dry_run,
+                    limit=args.limit,
+                    force_refresh_index=args.force_refresh,
+                    http_client=http_client,
+                )
     finally:
         resolver.close()
+        if http_client is not None:
+            http_client.close()
 
     print(
         f"scanned={stats.scanned} matched={stats.matched} filled={stats.filled} "

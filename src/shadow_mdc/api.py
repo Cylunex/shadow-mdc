@@ -1607,6 +1607,14 @@ def fill_gfriends_actor_images(payload: GfriendsFillRequest, request: Request, r
         cache_path=cache_path,
         cache_ttl_hours=settings.gfriends_cache_ttl_hours,
     )
+    http_client = None
+    if settings.proxy_url:
+        http_client = httpx.Client(
+            timeout=45.0,
+            proxy=settings.proxy_url,
+            headers={"User-Agent": settings.user_agent},
+            follow_redirects=True,
+        )
     try:
         stats = fill_actor_images_from_gfriends(
             repo,
@@ -1616,9 +1624,12 @@ def fill_gfriends_actor_images(payload: GfriendsFillRequest, request: Request, r
             dry_run=payload.dry_run,
             limit=payload.limit,
             force_refresh_index=payload.force_refresh,
+            http_client=http_client,
         )
     finally:
         resolver.close()
+        if http_client is not None:
+            http_client.close()
     if not payload.dry_run and stats.filled:
         _invalidate_library_caches(app_runtime.response_cache)
     return GfriendsFillOut(

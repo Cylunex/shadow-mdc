@@ -182,3 +182,73 @@ def _download_portrait(
         tmp.write_bytes(content)
         tmp.replace(path)
     return filename
+
+
+def localize_cdn_actor_images(
+    repo: Repository,
+    *,
+    actor_images_dir: Path,
+    cdn_prefix: str = "https://cdn.jsdelivr.net/gh/gfriends/",
+    limit: int | None = None,
+    dry_run: bool = False,
+    commit_every: int = 25,
+    http_client: httpx.Client | None = None,
+) -> GfriendsFillStats:
+    """Download remote GFriends CDN ``image_url`` values into local actor-images."""
+
+    _ = cdn_prefix  # reserved for future CDN allowlists
+    statement = (
+        select(Actor)
+        .where(Actor.image_url.is_not(None))
+        .where(Actor.image_url.like("https://%gfriends%"))
+        .order_by(Actor.name)
+    )
+    actors = list(repo._session.scalars(statement))
+    actors.sort(key=lambda actor: (0 if _CJK_RE.search(actor.name or "") else 1, actor.name or ""))
+    if limit is not None:
+        actors = actors[: max(limit, 0)]
+
+    owns_client = http_client is None
+    client = http_client or httpx.Client(
+        timeout=30.0,
+        headers={"User-Agent": "ShadowMDC/0.1 (+https://github.com/Cylunex/shadow-mdc; gfriends-localize)"},
+        follow_redirects=True,
+    )
+    filled = downloaded = failed = 0
+    try:
+        actor_images_dir.mkdir(parents=True, exist_ok=True)
+        for actor in actors:
+            remote = actor.image_url or ""
+            if not remote.startswith("https://"):
+                continue
+            if dry_run:
+                filled += 1
+                continue
+            try:
+                local_name = _download_portrait(client, remote, actor.name, actor_images_dir)
+                actor.image_url = f"/api/actor-images/{local_name}"
+                downloaded += 1
+                filled += 1
+                if commit_every > 0 and filled % commit_every == 0:
+                    repo._session.commit()
+            except Exception as exc:
+                logger.warning("gfriends localize failed for %s: %s", actor.name, exc)
+                failed += 1
+        if not dry_run and filled:
+            repo._session.flush()
+    finally:
+        if owns_client:
+            client.close()
+
+    return GfriendsFillStats(
+        scanned=len(actors),
+        matched=len(actors),
+        filled=filled,
+        skipped_has_image=0,
+        skipped_no_match=0,
+        downloaded=downloaded,
+        failed=failed,
+        dry_run=dry_run,
+        filetree_source="localize",
+        filetree_entries=0,
+    )
