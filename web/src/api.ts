@@ -64,7 +64,6 @@ import {
   panOfflineTaskSchema,
   panSettingsSchema,
   subscriptionWatchStatusSchema,
-  subscriptionWatchStatusSchema,
   panLoginStatusSchema,
   panLoginSchema,
   javRankingSectionsSchema,
