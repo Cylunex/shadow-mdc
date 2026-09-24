@@ -25,3 +25,12 @@
 - Aggregation order notes from javinizer/Javinizer (MIT).
 
 Shadow MDC remains MIT-licensed; see LICENSE.
+
+## R18.dev database dumps
+- Structured catalog dumps from https://r18.dev/dumps (Creative Commons CC0).
+- Offline SQLite import + fill provider (`r18dump`) lives under NAS `data/r18-dumps/` only.
+
+## MDCz specialty 番号 patterns
+- Additional specialty labels (H0930 / H4610 / TH101 / KIN8 / XXX-AV / S2M / MCB3D / CW3D / MMR)
+  adapted from ShotHeadman/mdcz `packages/runtime/src/scrape/utils/number.ts` (GPL-3.0; ideas only).
+- DMM content_id candidate expansion ideas from mdcz `contentId.ts`.

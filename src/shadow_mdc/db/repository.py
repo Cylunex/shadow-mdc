@@ -59,6 +59,7 @@ _JAV_ACTOR_PROVIDER_PRIORITY = {
     "jav321": 1,
     "mgstage": 2,
     "javlibrary": 3,
+    "r18dump": 4,
     "r18dev": 4,
     "javdb": 5,
     "javbus": 6,

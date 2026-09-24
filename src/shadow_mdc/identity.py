@@ -32,6 +32,17 @@ _GETCHU = re.compile(r"(?i)\bGETCHU[-_. ]?(\d{4,8})\b")
 _GYUTTO = re.compile(r"(?i)\bGYUTTO[-_. ]?(\d{4,8})\b")
 _IBW_Z = re.compile(r"(?i)\b(IBW)[-_. ]?(\d{2,5}Z)\b")
 _T28 = re.compile(r"(?i)\b(T[23]8)[-_. ]?(\d{3,4})\b")
+# Specialty / uncensored labels adapted from ShotHeadman/mdcz number.ts (GPL-3.0; ideas only).
+_H0930 = re.compile(r"(?i)\bH0930[-_]?([A-Z]{2,}\d{2,}[A-Z]?)\b")
+_H4610 = re.compile(r"(?i)\bH4610[-_]?([A-Z]{2,}\d{2,}[A-Z]?)\b")
+_TH101 = re.compile(r"(?i)\b(TH101-\d{3,}-\d{5,})\b")
+_KIN8 = re.compile(r"(?i)\bKIN8(?:TENGOKU)?[-_]?(\d{3,})\b")
+_XXX_AV = re.compile(r"(?i)\b(XXX-AV-\d{4,})\b")
+_S2M = re.compile(r"(?i)\b(S2M[BD]*)[-_]?(\d{3,})\b")
+_MCB3D = re.compile(r"(?i)\b(MCB3D[BD]*)[-_]?(\d{2,})\b")
+_CW3D = re.compile(r"(?i)\b(CW3D2D?BD)[-_]?(\d{2,})\b")
+_MMR = re.compile(r"(?i)\b(MMR-?[A-Z]{2,}-?\d+[A-Z]*)\b")
+_TOKYO_HOT_N = re.compile(r"(?i)(?<![A-Z0-9])(N\d{4})(?![A-Z0-9])")
 _CHINESE = re.compile(r"(?i)\b((?:MD|MDSR|MDWP|MDCM|MKY-[A-Z]+)[-_]?[A-Z]*\d{3,6})\b")
 _WESTERN_DATE = re.compile(r"(?i)\b([a-z][a-z0-9-]{1,30})[._ -](?:20)?(\d{2})[._ -](\d{2})[._ -](\d{2})\b")
 _JAV = re.compile(
@@ -269,6 +280,31 @@ def extract_code(
         return f"{match.group(1).upper()}-{match.group(2).upper()}", ContentFamily.JAV
     if match := _T28.search(normalized):
         return f"{match.group(1).upper()}-{match.group(2)}", ContentFamily.JAV
+    if match := _H0930.search(normalized):
+        return f"H0930-{match.group(1).upper()}", ContentFamily.JAV
+    if match := _H4610.search(normalized):
+        return f"H4610-{match.group(1).upper()}", ContentFamily.JAV
+    if match := _TH101.search(normalized):
+        return match.group(1).upper(), ContentFamily.JAV
+    if match := _KIN8.search(normalized):
+        return f"KIN8-{match.group(1)}", ContentFamily.JAV
+    if match := _XXX_AV.search(normalized):
+        return match.group(1).upper(), ContentFamily.JAV
+    if match := _S2M.search(normalized):
+        return f"{match.group(1).upper()}-{match.group(2)}", ContentFamily.JAV
+    if match := _MCB3D.search(normalized):
+        return f"{match.group(1).upper()}-{match.group(2)}", ContentFamily.JAV
+    if match := _CW3D.search(normalized):
+        return f"{match.group(1).upper()}-{match.group(2)}", ContentFamily.JAV
+    if match := _MMR.search(normalized):
+        value = match.group(1).upper().replace("_", "-")
+        value = value.replace("--", "-")
+        if value.count("-") == 0:
+            # MMRAD123 -> MMR-AD123-ish already captured; normalize MMRXX-NN
+            pass
+        return value, ContentFamily.JAV
+    if match := _TOKYO_HOT_N.search(normalized):
+        return match.group(1).upper(), ContentFamily.JAV
     if match := _UNCENSORED_PREFIX.search(normalized):
         studio = _normalize_uncensored_studio(match.group(1))
         return f"{studio}-{match.group(2)}-{match.group(3)}", ContentFamily.JAV

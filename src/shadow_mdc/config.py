@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     javbus_base_url: str = "https://www.javbus.com"
     jav321_base_url: str = "https://www.jav321.com"
     r18dev_base_url: str = "https://r18.dev"
+    r18_dump_db: Path | None = None  # offline dump SQLite; default data_dir/r18-dumps/r18_dump.db
     fanza_base_url: str = "https://www.dmm.co.jp"
     javlibrary_base_url: str = "https://www.javlibrary.com"
     mgstage_base_url: str = "https://www.mgstage.com"
@@ -64,3 +65,9 @@ class Settings(BaseSettings):
         (self.data_dir / "category-covers").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "pan").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "cache" / "gfriends").mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "r18-dumps").mkdir(parents=True, exist_ok=True)
+
+    def resolved_r18_dump_db(self) -> Path:
+        if self.r18_dump_db is not None:
+            return Path(self.r18_dump_db)
+        return self.data_dir / "r18-dumps" / "r18_dump.db"

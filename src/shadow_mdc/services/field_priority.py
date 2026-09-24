@@ -19,6 +19,7 @@ DEFAULT_FIELD_PRIORITIES: dict[str, list[str]] = {
         "javdb",
         "javbus",
         "jav321",
+        "r18dump",
         "r18dev",
         "fanza",
         "mgstage",
@@ -32,6 +33,7 @@ DEFAULT_FIELD_PRIORITIES: dict[str, list[str]] = {
         "translation:custom",
         "translation:google",
         "javdb",
+        "r18dump",
         "r18dev",
         "jav321",
         "theporndb",
@@ -39,6 +41,7 @@ DEFAULT_FIELD_PRIORITIES: dict[str, list[str]] = {
     ],
     "actors": [
         "local-manual",
+        "r18dump",
         "r18dev",
         "fanza",
         "javlibrary",
@@ -51,6 +54,7 @@ DEFAULT_FIELD_PRIORITIES: dict[str, list[str]] = {
     ],
     "studio": [
         "local-manual",
+        "r18dump",
         "r18dev",
         "fanza",
         "mgstage",
@@ -62,6 +66,7 @@ DEFAULT_FIELD_PRIORITIES: dict[str, list[str]] = {
     "series": [
         "local-manual",
         "javdb",
+        "r18dump",
         "r18dev",
         "javbus",
         "jav321",
@@ -77,6 +82,7 @@ DEFAULT_FIELD_PRIORITIES: dict[str, list[str]] = {
     ],
     "release_date": [
         "local-manual",
+        "r18dump",
         "r18dev",
         "fanza",
         "mgstage",
@@ -87,6 +93,7 @@ DEFAULT_FIELD_PRIORITIES: dict[str, list[str]] = {
     ],
     "runtime_seconds": [
         "local-manual",
+        "r18dump",
         "r18dev",
         "fanza",
         "mgstage",

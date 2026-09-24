@@ -176,6 +176,7 @@ from .providers import (
     PaipanconProvider,
     ProviderRegistry,
     R18DevProvider,
+    R18DumpProvider,
     ThePornDBProvider,
 )
 from .services.actor_catalog import (
@@ -392,6 +393,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     providers = ProviderRegistry(
         [
             R18DevProvider(next(source_clients), settings.r18dev_base_url, settings.request_retries),
+            *(
+                [
+                    R18DumpProvider(settings.resolved_r18_dump_db())
+                ]
+                if settings.resolved_r18_dump_db().is_file()
+                else []
+            ),
             FanzaProvider(next(source_clients), settings.fanza_base_url, settings.request_retries),
             JavLibraryProvider(next(source_clients), settings.javlibrary_base_url, settings.request_retries),
             MgstageProvider(next(source_clients), settings.mgstage_base_url, settings.request_retries),

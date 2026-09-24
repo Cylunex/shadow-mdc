@@ -17,3 +17,5 @@ web/dist/
 .env
 web/package-lock.json
 web/bun.lock
+# Offline r18.dev dumps (NAS only)
+data/r18-dumps/

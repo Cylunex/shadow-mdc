@@ -14,6 +14,7 @@ from .jsonld import JsonLdProvider
 from .mgstage import MgstageProvider
 from .paipancon import PaipanconProvider
 from .r18dev import R18DevProvider
+from .r18_dump import R18DumpProvider
 from .theporndb import ThePornDBProvider
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "ProviderFailure",
     "ProviderRegistry",
     "R18DevProvider",
+    "R18DumpProvider",
     "SearchBatch",
     "ThePornDBProvider",
 ]
