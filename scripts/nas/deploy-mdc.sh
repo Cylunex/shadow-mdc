@@ -261,7 +261,8 @@ activated=true
 
 supervisorctl start "$service_name"
 healthy=false
-for _ in $(seq 1 30); do
+# Cold start runs DB repair/sync; allow up to 90s after supervisor start.
+for _ in $(seq 1 90); do
   if curl --fail --silent --show-error "$health_url" >/dev/null 2>&1; then
     healthy=true
     break
@@ -269,7 +270,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 if [[ "$healthy" != true ]]; then
-  echo "health check did not pass within 30 seconds" >&2
+  echo "health check did not pass within 90 seconds" >&2
   false
 fi
 curl --fail --silent --show-error "$proxy_url" >/dev/null
