@@ -642,6 +642,32 @@ class Repository:
         self._session.flush()
         return work
 
+    def merge_provider_into_work(
+        self,
+        work: Work,
+        record: ProviderRecord,
+        *,
+        overwrite: bool = False,
+    ) -> Work:
+        """Fill/merge provider fields into an existing work — never creates rows."""
+
+        self._merge_provider_record(work, record, overwrite=overwrite)
+        self._add_record_identities(work, record)
+        self._upsert_snapshot(work, record)
+        self.sync_work_collections(work)
+        self._session.flush()
+        return work
+
+    def delete_work(self, work_id: str) -> bool:
+        """Delete a work and rely on FK CASCADE for dependent rows."""
+
+        work = self.get_work(work_id)
+        if work is None:
+            return False
+        self._session.delete(work)
+        self._session.flush()
+        return True
+
     def list_works(
         self,
         *,

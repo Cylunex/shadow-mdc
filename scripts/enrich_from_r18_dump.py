@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Fill JAV catalog gaps from the offline r18.dev SQLite dump (fill-only merges).
+"""Fill JAV catalog gaps from the offline r18.dev SQLite dump.
+
+Strictly update-only — never creates works. Uses ``Repository.merge_provider_into_work``
+on existing catalog candidates only.
 
 Example::
 
@@ -168,7 +171,7 @@ def main() -> int:
             if arguments.dry_run:
                 print(f"[dry-run] {code} gaps={sorted(before)}")
                 continue
-            repo.upsert_provider_record(record, overwrite=False)
+            repo.merge_provider_into_work(work, record, overwrite=False)
             # Prefer Japanese plot as original_plot when empty.
             if not (work.original_plot or "").strip() and record.plot and record.language == "ja":
                 work.original_plot = record.plot
