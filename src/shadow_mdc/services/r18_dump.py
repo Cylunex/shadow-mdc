@@ -139,6 +139,8 @@ CREATE INDEX IF NOT EXISTS ix_actresses_kanji ON actresses(name_kanji);
 _COPY_RE = re.compile(
     r"^COPY public\.(?P<table>\w+) \((?P<cols>[^)]+)\) FROM stdin;\s*$"
 )
+_SERIES_CODE_RE = re.compile(r"^([A-Z]+)(\d+)$")
+_CONTENT_ID_RE = re.compile(r"^(\d*)([a-z]+)(\d+)$")
 _GALLERY_INDEX_RE = re.compile(r"^(?P<prefix>.*?)(?P<num>\d+)$")
 
 
@@ -494,7 +496,55 @@ class R18DumpStore:
             ).fetchone()
             if row is not None:
                 return row
+        for candidate in self._sibling_content_id_candidates(code):
+            row = self._connection.execute(
+                "SELECT * FROM videos WHERE content_id = ? LIMIT 1",
+                (candidate,),
+            ).fetchone()
+            if row is not None:
+                return row
         return None
+
+    def _sibling_content_id_candidates(self, code: str, *, sample: int = 200) -> list[str]:
+        """Infer maker-prefixed content_ids (e.g. ``118abf387``) from sibling rows.
+
+        Fresh releases in the dump often have ``dvd_id`` NULL, so neither the
+        dvd key nor the naive ``1abf00387`` candidates hit. Older titles in the
+        same series usually carry ``dvd_id`` plus a content_id such as
+        ``118abf304``; reuse that numeric maker prefix and digit padding.
+        """
+
+        matched = _SERIES_CODE_RE.match(to_comparison_key(code))
+        if matched is None:
+            return []
+        series, digits = matched.group(1), matched.group(2)
+        low = series
+        high = series[:-1] + chr(ord(series[-1]) + 1)
+        rows = self._connection.execute(
+            "SELECT content_id, dvd_id_key FROM videos "
+            "WHERE dvd_id_key >= ? AND dvd_id_key < ? LIMIT ?",
+            (low, high, sample),
+        ).fetchall()
+        counts: dict[tuple[str, int], int] = {}
+        lowered = series.lower()
+        for row in rows:
+            key = str(row["dvd_id_key"] or "")
+            sibling = _SERIES_CODE_RE.match(key)
+            if sibling is None or sibling.group(1) != series:
+                continue
+            content = _CONTENT_ID_RE.match(str(row["content_id"] or ""))
+            if content is None or content.group(2) != lowered:
+                continue
+            width = len(content.group(3)) if content.group(3).startswith("0") else 0
+            marker = (content.group(1), width)
+            counts[marker] = counts.get(marker, 0) + 1
+        candidates: list[str] = []
+        for (prefix, width), _count in sorted(counts.items(), key=lambda item: -item[1]):
+            number = digits.zfill(width) if width else digits
+            candidates.append(f"{prefix}{lowered}{number}")
+            candidates.append(f"{prefix}{lowered}{digits.zfill(5)}")
+            candidates.append(f"{prefix}{lowered}{digits}")
+        return list(dict.fromkeys(candidates))[:12]
 
     def actresses_for(self, content_id: str) -> list[ActressRow]:
         rows = self._connection.execute(

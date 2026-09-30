@@ -131,7 +131,15 @@ async def _run(arguments: argparse.Namespace) -> int:
         [javdb, fanza],
         max_concurrent_calls=settings.provider_concurrency,
     )
-    discover = DiscoverService(providers, javdb, fanza)
+    if not settings.resolved_r18_dump_db().is_file():
+        print(
+            f"note: r18 dump not found at {settings.resolved_r18_dump_db()}; "
+            "offline intake fallback disabled",
+            file=sys.stderr,
+        )
+    discover = DiscoverService(
+        providers, javdb, fanza, r18_dump_path=settings.resolved_r18_dump_db()
+    )
     browse_providers = _parse_providers(arguments.providers)
 
     try:
@@ -150,6 +158,7 @@ async def _run(arguments: argparse.Namespace) -> int:
                 persist_log=not arguments.no_log,
             )
     finally:
+        discover.close()
         await client.aclose()
 
     summary = {
@@ -166,6 +175,7 @@ async def _run(arguments: argparse.Namespace) -> int:
                 "score": item.score,
                 "created": item.created,
                 "tags": list(item.tags),
+                "source_fallback": item.source_fallback,
             }
             for item in result.seeded
         ],

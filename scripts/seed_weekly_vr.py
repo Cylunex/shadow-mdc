@@ -95,7 +95,9 @@ async def _run(arguments: argparse.Namespace) -> int:
         [javdb, fanza],
         max_concurrent_calls=settings.provider_concurrency,
     )
-    discover = DiscoverService(providers, javdb, fanza)
+    discover = DiscoverService(
+        providers, javdb, fanza, r18_dump_path=settings.resolved_r18_dump_db()
+    )
 
     try:
         with database.session() as session:

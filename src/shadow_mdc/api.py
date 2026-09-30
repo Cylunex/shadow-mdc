@@ -467,6 +467,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         providers,
         javdb_provider if isinstance(javdb_provider, JavDBProvider) else None,
         fanza_provider if isinstance(fanza_provider, FanzaProvider) else None,
+        r18_dump_path=settings.resolved_r18_dump_db(),
     )
     task_events = TaskEventHub()
     pan_poller = PanOfflinePoller(

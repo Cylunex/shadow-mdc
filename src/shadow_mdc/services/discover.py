@@ -6,7 +6,9 @@ local Work/asset state, and only create Work when the user explicitly seeds.
 
 from __future__ import annotations
 
+import logging
 from datetime import date
+from pathlib import Path
 from typing import Literal
 from urllib.parse import quote, urlparse
 
@@ -23,6 +25,9 @@ from ..providers.html import absolute, parse_date
 from ..media.magnets import MagnetLink
 from ..providers.fanza import FanzaProvider
 from ..providers.javdb import JavDBProvider
+from .r18_dump import R18DumpStore
+
+logger = logging.getLogger(__name__)
 
 DiscoverState = Literal["not_in_library", "catalog_only", "in_library"]
 DiscoverList = Literal["latest", "rankings_daily", "rankings_weekly", "rankings_monthly"]
@@ -90,17 +95,33 @@ class DiscoverSeedResult(BaseModel):
     created: bool
     title: str
     primary_code: str | None
+    # Set when online providers failed and the offline r18 dump built the entry.
+    fallback: str | None = None
     note: str = (
         "Seeded from discover metadata only; not library media until files are scanned."
     )
 
 
+# JavDB moved rankings from ``/rankings?period=…`` (now 404) to
+# ``/rankings/movies?p=<daily|weekly|monthly>&t=<censored|uncensored|western|fc2>``.
+# Ranking pages are a single fixed list (``page`` is ignored by the site).
 _LIST_PATHS: dict[DiscoverList, str] = {
     "latest": "/",
-    "rankings_daily": "/rankings?period=daily",
-    "rankings_weekly": "/rankings?period=weekly",
-    "rankings_monthly": "/rankings?period=monthly",
+    "rankings_daily": "/rankings/movies?p=daily&t=censored",
+    "rankings_weekly": "/rankings/movies?p=weekly&t=censored",
+    "rankings_monthly": "/rankings/movies?p=monthly&t=censored",
 }
+_SINGLE_PAGE_LISTS: frozenset[str] = frozenset(
+    {"rankings_daily", "rankings_weekly", "rankings_monthly"}
+)
+
+
+def javdb_list_url(base_url: str, list_name: DiscoverList, page: int = 1) -> str:
+    path = _LIST_PATHS[list_name]
+    if list_name in _SINGLE_PAGE_LISTS:
+        return f"{base_url.rstrip('/')}{path}"
+    separator = "&" if "?" in path else "?"
+    return f"{base_url.rstrip('/')}{path}{separator}page={max(1, page)}"
 
 
 class DiscoverService:
@@ -109,10 +130,44 @@ class DiscoverService:
         providers: ProviderRegistry,
         javdb: JavDBProvider | None,
         fanza: FanzaProvider | None = None,
+        *,
+        r18_dump_path: Path | None = None,
     ):
         self._providers = providers
         self._javdb = javdb
         self._fanza = fanza
+        self._r18_dump_path = Path(r18_dump_path) if r18_dump_path is not None else None
+        self._r18_store: R18DumpStore | None = None
+
+    @property
+    def r18_fallback_available(self) -> bool:
+        return self._r18_dump_path is not None and self._r18_dump_path.is_file()
+
+    def _r18_fallback_record(self, code: str | None) -> ProviderRecord | None:
+        """Build a record from the offline r18 dump (intake create path only)."""
+
+        if not code or not self.r18_fallback_available:
+            return None
+        parsed, family = extract_code(code)
+        if parsed is None or family is not ContentFamily.JAV or parsed.startswith("FC2-"):
+            return None
+        if self._r18_store is None:
+            assert self._r18_dump_path is not None
+            try:
+                self._r18_store = R18DumpStore(self._r18_dump_path)
+            except Exception as exc:  # noqa: BLE001 - degrade to "no fallback"
+                logger.warning("r18 dump unavailable: %s", type(exc).__name__)
+                return None
+        try:
+            return self._r18_store.build_record(parsed)
+        except Exception as exc:  # noqa: BLE001 - corrupt/locked dump must not break intake
+            logger.warning("r18 dump lookup failed for %s: %s", parsed, type(exc).__name__)
+            return None
+
+    def close(self) -> None:
+        if self._r18_store is not None:
+            self._r18_store.close()
+            self._r18_store = None
 
     async def browse(
         self,
@@ -141,9 +196,9 @@ class DiscoverService:
             return DiscoverPage(provider=provider, list=list_name, page=page, items=tuple(items))
         if provider != "javdb" or self._javdb is None:
             raise ValueError(f"browse list is not available for provider: {provider}")
-        path = _LIST_PATHS[list_name]
-        separator = "&" if "?" in path else "?"
-        url = f"{self._javdb.base_url}{path}{separator}page={max(1, page)}"
+        if list_name in _SINGLE_PAGE_LISTS and page > 1:
+            return DiscoverPage(provider=provider, list=list_name, page=page, items=())
+        url = javdb_list_url(self._javdb.base_url, list_name, page)
         html = await self._javdb.fetch_html(url)
         items = self._project(repo, parse_javdb_list(html, self._javdb.base_url))
         return DiscoverPage(provider=provider, list=list_name, page=page, items=tuple(items))
@@ -211,13 +266,22 @@ class DiscoverService:
         external_id: str | None = None,
         source_url: str | None = None,
         code: str | None = None,
+        allow_r18_fallback: bool = True,
     ) -> DiscoverSeedResult:
-        record = await self._fetch_record(
-            provider=provider,
-            external_id=external_id,
-            source_url=source_url,
-            code=code,
-        )
+        fallback: str | None = None
+        try:
+            record = await self._fetch_record(
+                provider=provider,
+                external_id=external_id,
+                source_url=source_url,
+                code=code,
+            )
+        except LookupError:
+            dump_record = self._r18_fallback_record(code) if allow_r18_fallback else None
+            if dump_record is None:
+                raise
+            record = dump_record
+            fallback = "r18dump"
         existing = repo.find_work_by_code(record.code) if record.code else None
         created = existing is None
         work = repo.upsert_provider_record(record, overwrite=False)
@@ -226,8 +290,8 @@ class DiscoverService:
             created=created,
             title=work.title,
             primary_code=work.primary_code,
+            fallback=fallback,
         )
-
 
     async def multi_site_search(
         self,

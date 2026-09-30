@@ -90,6 +90,8 @@ class SeededWorkSummary(BaseModel):
     tags: tuple[str, ...] = ()
     artwork_downloaded: int = 0
     artwork_failed: int = 0
+    # "r18dump" when online lookups failed and the offline dump built the entry.
+    source_fallback: str | None = None
 
 
 class SkippedCandidate(BaseModel):
@@ -476,6 +478,7 @@ async def seed_daily_chart(
                     tags=tuple(updated_tags),
                     artwork_downloaded=artwork_downloaded,
                     artwork_failed=artwork_failed,
+                    source_fallback=seed_result.fallback,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - continue remaining candidates

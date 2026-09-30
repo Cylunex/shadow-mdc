@@ -348,7 +348,9 @@ async def _run(arguments: argparse.Namespace) -> int:
         (p for p in providers._providers.values() if isinstance(p, FanzaProvider)),
         None,
     )
-    discover = DiscoverService(providers, javdb, fanza)
+    discover = DiscoverService(
+        providers, javdb, fanza, r18_dump_path=settings.resolved_r18_dump_db()
+    )
 
     backends = build_translation_backends(
         client,
