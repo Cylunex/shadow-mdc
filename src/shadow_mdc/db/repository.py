@@ -3,9 +3,10 @@ import shutil
 import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, exists, func, select
+from sqlalchemy import Engine, create_engine, exists, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..collection_names import detect_collection_kind, normalize_collection_name
@@ -741,6 +742,18 @@ class Repository:
             .order_by(Actor.name, WorkActor.position, Work.release_date, Work.title)
         )
         return [(actor, work) for actor, work in self._session.execute(statement)]
+
+    def release_dates_for_actor(self, *, name: str, actor_id: str | None = None) -> list[date | None]:
+        condition = Actor.name == name
+        if actor_id:
+            condition = or_(condition, Actor.id == actor_id)
+        statement = (
+            select(Work.release_date)
+            .join(WorkActor, WorkActor.work_id == Work.id)
+            .join(Actor, Actor.id == WorkActor.actor_id)
+            .where(condition)
+        )
+        return list(self._session.scalars(statement))
 
     def actors_for_work(self, work_id: str) -> list[Actor]:
         statement = (

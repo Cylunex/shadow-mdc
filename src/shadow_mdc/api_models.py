@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -714,6 +715,7 @@ class MediaServerSettingsPayload(BaseModel):
     api_key: str | None = None
     verify_nfo_fields: bool = False
     deep_link_template: str | None = None
+    notify_debounce_seconds: float = Field(default=5.0, ge=0.0, le=600.0)
 
 
 class GfriendsFillRequest(BaseModel):
@@ -844,6 +846,12 @@ class PanSettingsPayload(BaseModel):
     strm_enabled: bool = False
     strm_output_root: str | None = None
     strm_url_prefix: str = "http://openlist:5244/d/115"
+    strm_mode: str = "openlist"
+    strm_public_base_url: str | None = None
+    strm_token_set: bool = False
+    strm_user_agent: str | None = None
+    strm_emby_root: str | None = None
+    strm_reconcile_interval_hours: int = 24
     use_proxy: bool = False
     subscription_auto_offline: bool = True
     client_id: str
@@ -855,6 +863,13 @@ class PanSettingsUpdatePayload(BaseModel):
     strm_enabled: bool = False
     strm_output_root: str | None = None
     strm_url_prefix: str = "http://openlist:5244/d/115"
+    strm_mode: Literal["openlist", "relay"] | None = None
+    strm_public_base_url: str | None = None
+    # Empty string clears the token; omit to keep the current one.
+    strm_token: str | None = None
+    strm_user_agent: str | None = None
+    strm_emby_root: str | None = None
+    strm_reconcile_interval_hours: int | None = Field(default=None, ge=0, le=24 * 30)
     use_proxy: bool = False
     subscription_auto_offline: bool | None = None
     client_id: str | None = None
@@ -869,6 +884,9 @@ class SubscriptionWatchStatusOut(BaseModel):
     last_submitted: int = 0
     last_skipped_pan: int = 0
     last_errors: list[str] = Field(default_factory=list)
+    batch_cursor: int = 0
+    batch_total: int = 0
+    last_pass_completed_at: str | None = None
 
 
 class WorkOfflineRequest(BaseModel):
@@ -912,6 +930,8 @@ class ActorSubscriptionOut(BaseModel):
     notes: str | None = None
     created_at: str
     updated_at: str
+    cursor_date: date | None = None
+    cursor_initialized: bool = False
 
 
 class ActorSubscriptionEdit(BaseModel):

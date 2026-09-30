@@ -25,8 +25,26 @@ _VIDEO_COLS = (
 def _video(content_id: str, dvd_id: str, title: str, date: str) -> str:
     cover = f"digital/video/{content_id}/{content_id}"
     values = [
-        content_id, dvd_id, "\\N", title, "\\N", "\\N", "120", date, "\\N", "1", "\\N", "\\N",
-        f"{cover}pl", f"{cover}ps", "\\N", "\\N", "\\N", "\\N", "1", "digital",
+        content_id,
+        dvd_id,
+        "\\N",
+        title,
+        "\\N",
+        "\\N",
+        "120",
+        date,
+        "\\N",
+        "1",
+        "\\N",
+        "\\N",
+        f"{cover}pl",
+        f"{cover}ps",
+        "\\N",
+        "\\N",
+        "\\N",
+        "\\N",
+        "1",
+        "digital",
     ]
     return "\t".join(values)
 
@@ -97,9 +115,7 @@ def test_seed_falls_back_to_r18_dump_when_online_empty(tmp_path: Path) -> None:
 
 
 def test_seed_without_dump_degrades_to_lookup_error(tmp_path: Path) -> None:
-    discover = DiscoverService(
-        ProviderRegistry([]), None, None, r18_dump_path=tmp_path / "missing.db"
-    )
+    discover = DiscoverService(ProviderRegistry([]), None, None, r18_dump_path=tmp_path / "missing.db")
     assert discover.r18_fallback_available is False
     database = _database(tmp_path)
     with database.session() as session, pytest.raises(LookupError):
@@ -112,9 +128,7 @@ def test_seed_fallback_can_be_disabled(tmp_path: Path) -> None:
     database = _database(tmp_path)
     with database.session() as session, pytest.raises(LookupError):
         asyncio.run(
-            discover.seed(
-                Repository(session), provider="fanza", code="START-634", allow_r18_fallback=False
-            )
+            discover.seed(Repository(session), provider="fanza", code="START-634", allow_r18_fallback=False)
         )
     discover.close()
 

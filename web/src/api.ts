@@ -480,6 +480,7 @@ export const api = {
   saveMediaServer: (payload: {
     enabled: boolean; kind: string; base_url: string | null; api_key: string | null;
     verify_nfo_fields: boolean; deep_link_template?: string | null;
+    notify_debounce_seconds?: number;
   }) => request(mediaServerSettingsSchema, "/api/settings/media-server", {
     method: "PUT", body: JSON.stringify(payload)
   }),
@@ -519,6 +520,12 @@ export const api = {
     strm_enabled: boolean;
     strm_output_root: string | null;
     strm_url_prefix: string;
+    strm_mode?: "openlist" | "relay";
+    strm_public_base_url?: string | null;
+    strm_token?: string;
+    strm_user_agent?: string | null;
+    strm_emby_root?: string | null;
+    strm_reconcile_interval_hours?: number;
     use_proxy: boolean;
     subscription_auto_offline: boolean;
     client_id: string;
@@ -526,6 +533,11 @@ export const api = {
   }) => request(panSettingsSchema, "/api/pan/settings", {
     method: "PUT", body: JSON.stringify(payload)
   }),
+  strmRewrite: () =>
+    request(z.object({ scanned: z.number(), rewritten: z.number(), skipped: z.number() }),
+      "/api/pan/strm/rewrite", { method: "POST" }),
+  strmReconcile: () =>
+    request(z.object({ started: z.boolean() }).passthrough(), "/api/pan/strm/reconcile", { method: "POST" }),
   panOfflineTasks: () => request(z.array(panOfflineTaskSchema), "/api/pan/offline/tasks"),
   subscriptionWatchStatus: () =>
     request(subscriptionWatchStatusSchema, "/api/pan/subscription-watch/status"),

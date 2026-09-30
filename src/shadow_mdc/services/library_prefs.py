@@ -68,9 +68,20 @@ class LibraryPrefsStore:
 
     def upsert_subscription(self, subscription: ActorSubscription) -> LibraryPrefs:
         prefs = self.load()
+        previous = next(
+            (item for item in prefs.subscriptions if item.actor_key == subscription.actor_key), None
+        )
         items = [item for item in prefs.subscriptions if item.actor_key != subscription.actor_key]
         now = datetime.now(timezone.utc).isoformat()
-        subscription = subscription.model_copy(update={"updated_at": now})
+        update: dict[str, object] = {"updated_at": now}
+        if previous is not None and previous.cursor_initialized and not subscription.cursor_initialized:
+            # Edits (enable/max_cast/notes) keep the cursor chosen at creation.
+            update.update(
+                cursor_date=previous.cursor_date,
+                cursor_initialized=True,
+                created_at=previous.created_at,
+            )
+        subscription = subscription.model_copy(update=update)
         items.append(subscription)
         # Keep actor tag subscribe in sync
         tags = dict(prefs.actor_tags)
@@ -79,6 +90,10 @@ class LibraryPrefsStore:
             update={"subscribe": subscription.enabled, "blacklist": False if subscription.enabled else current.blacklist}
         )
         return self.save(prefs.model_copy(update={"subscriptions": items, "actor_tags": tags}))
+
+    def replace_subscriptions(self, subscriptions: list[ActorSubscription]) -> LibraryPrefs:
+        prefs = self.load()
+        return self.save(prefs.model_copy(update={"subscriptions": subscriptions}))
 
     def remove_subscription(self, actor_key: str) -> LibraryPrefs:
         prefs = self.load()

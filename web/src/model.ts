@@ -764,7 +764,8 @@ export const mediaServerSettingsSchema = z.object({
   base_url: z.string().nullable(),
   api_key: z.string().nullable(),
   verify_nfo_fields: z.boolean(),
-  deep_link_template: z.string().nullable().optional()
+  deep_link_template: z.string().nullable().optional(),
+  notify_debounce_seconds: z.number().optional().default(5)
 });
 export const panStatusSchema = z.object({
   provider: z.string(),
@@ -796,6 +797,12 @@ export const panSettingsSchema = z.object({
   strm_enabled: z.boolean(),
   strm_output_root: z.string().nullable(),
   strm_url_prefix: z.string(),
+  strm_mode: z.enum(["openlist", "relay"]).catch("openlist").default("openlist"),
+  strm_public_base_url: z.string().nullable().optional().default(null),
+  strm_token_set: z.boolean().optional().default(false),
+  strm_user_agent: z.string().nullable().optional().default(null),
+  strm_emby_root: z.string().nullable().optional().default(null),
+  strm_reconcile_interval_hours: z.number().optional().default(24),
   use_proxy: z.boolean(),
   subscription_auto_offline: z.boolean().default(true),
   client_id: z.string(),

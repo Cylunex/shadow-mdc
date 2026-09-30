@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import mimetypes
+import re
 import tempfile
 import unicodedata
 from collections.abc import AsyncIterator, Iterator
@@ -253,6 +254,7 @@ from .services.pan import (
     pan_status,
 )
 from .services.pan_poller import PanOfflinePoller
+from .services.strm_relay import RelayError, StrmRelay, token_ok
 from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
 from .services.subscription_watch import (
     SubscriptionWatchPoller,
@@ -283,6 +285,7 @@ from .services.subscriptions import (
     ActorSubscription,
     SubscriptionQueueItem,
     filter_works_for_subscription,
+    initialize_subscription_cursor,
 )
 from .services.task_events import TaskEventHub
 from .services.translation import (
@@ -323,6 +326,7 @@ class Runtime:
     task_events: TaskEventHub
     discover: DiscoverService
     response_cache: ResponseCache
+    strm_relay: StrmRelay
 
 
 @dataclass
@@ -476,6 +480,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         media_server_store=media_server_store,
         http=client,
         task_events=task_events,
+        data_dir=settings.data_dir,
+        artwork_max_bytes=settings.artwork_max_bytes,
     )
     subscription_watch_service = SubscriptionWatchService(
         database=database,
@@ -509,6 +515,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task_events=task_events,
         discover=discover_service,
         response_cache=response_cache,
+        strm_relay=StrmRelay(pan_service),
     )
     pan_poller.start()
     subscription_watch_poller.start()
@@ -850,11 +857,91 @@ def pan_get_settings(request: Request) -> PanSettingsPayload:
     return PanSettingsPayload.model_validate(runtime(request).pan_service.settings_status())
 
 
+_STRM_LOCATOR_KEYS = ("strm_mode", "strm_public_base_url", "strm_token", "strm_url_prefix")
+_BACKGROUND_TASKS: set[asyncio.Task[object]] = set()
+
+
+def _spawn(coro: object, name: str) -> None:
+    task = asyncio.create_task(coro, name=name)  # type: ignore[arg-type]
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
 @app.put("/api/pan/settings", response_model=PanSettingsPayload)
-def pan_put_settings(payload: PanSettingsUpdatePayload, request: Request) -> PanSettingsPayload:
-    service = runtime(request).pan_service
-    service.save_settings(payload.model_dump(exclude_unset=True))
+async def pan_put_settings(payload: PanSettingsUpdatePayload, request: Request) -> PanSettingsPayload:
+    app_runtime = runtime(request)
+    service = app_runtime.pan_service
+    before = service.config_store.load()
+    try:
+        saved = service.save_settings(payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    changed = any(getattr(before, key) != getattr(saved, key) for key in _STRM_LOCATOR_KEYS)
+    if changed and saved.strm_output_root:
+        # Token / public URL / mode rotation: rewrite existing .strm in place (no re-export).
+        _spawn(app_runtime.pan_poller.rewrite(), "shadow-mdc-strm-rewrite")
     return PanSettingsPayload.model_validate(service.settings_status())
+
+
+@app.get("/api/pan/strm/status")
+def pan_strm_status(request: Request) -> dict[str, object]:
+    poller = runtime(request).pan_poller
+    notifier = poller.notifier
+    last = notifier.last_result
+    return {
+        "running": poller.maintenance.running,
+        "last_rewrite_at": poller.maintenance.last_rewrite_at,
+        "last_rewrite": poller.maintenance.last_rewrite,
+        "last_reconcile_at": poller.maintenance.last_reconcile_at,
+        "last_reconcile": poller.maintenance.last_reconcile,
+        "emby_pending": len(notifier.pending),
+        "emby_last": None
+        if last is None
+        else {"attempted": last.attempted, "ok": last.ok, "sent": last.sent, "detail": last.detail},
+    }
+
+
+@app.post("/api/pan/strm/rewrite")
+async def pan_strm_rewrite(request: Request) -> dict[str, object]:
+    result = await runtime(request).pan_poller.rewrite()
+    return {"scanned": result.scanned, "rewritten": len(result.rewritten), "skipped": result.skipped}
+
+
+@app.post("/api/pan/strm/reconcile", status_code=202)
+async def pan_strm_reconcile(request: Request) -> dict[str, object]:
+    poller = runtime(request).pan_poller
+    if poller.maintenance.running:
+        return {"started": False, "running": poller.maintenance.running}
+    _spawn(poller.reconcile(), "shadow-mdc-strm-reconcile")
+    return {"started": True}
+
+
+@app.api_route("/api/strm/play/{file_id}", methods=["GET", "HEAD"])
+async def strm_play(
+    file_id: str,
+    request: Request,
+    token: str | None = Query(None, max_length=256),
+) -> Response:
+    """302 relay for exported .strm files → 115 direct link (play URL fallback)."""
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", file_id):
+        raise HTTPException(status_code=400, detail="invalid file id")
+    app_runtime = runtime(request)
+    cfg = app_runtime.pan_service.config_store.load()
+    if not token_ok(cfg.strm_token, token):
+        raise HTTPException(status_code=403, detail="invalid strm token")
+    try:
+        target = await app_runtime.strm_relay.resolve(file_id, request.headers.get("user-agent"))
+    except RelayError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return Response(
+        status_code=302,
+        headers={
+            "Location": target.url,
+            "Cache-Control": "no-store",
+            "X-Shadow-Strm-Source": target.source,
+        },
+    )
 
 
 @app.get("/api/pan/subscription-watch/status", response_model=SubscriptionWatchStatusOut)
@@ -934,10 +1021,23 @@ def put_actor_tags(payload: ActorTagsEdit, request: Request) -> LibraryPrefsOut:
 
 
 @app.put("/api/library-prefs/subscriptions", response_model=LibraryPrefsOut)
-def put_actor_subscription(payload: ActorSubscriptionEdit, request: Request) -> LibraryPrefsOut:
-    prefs = runtime(request).library_prefs_store.upsert_subscription(
-        ActorSubscription.model_validate(payload.model_dump())
+def put_actor_subscription(
+    payload: ActorSubscriptionEdit, request: Request, repo: Repo
+) -> LibraryPrefsOut:
+    store = runtime(request).library_prefs_store
+    subscription = ActorSubscription.model_validate(payload.model_dump())
+    existing = next(
+        (item for item in store.load().subscriptions if item.actor_key == subscription.actor_key),
+        None,
     )
+    if existing is None or not existing.cursor_initialized:
+        # New subscription: initialise the cursor now so a debut work (or one
+        # released just before subscribing) is not skipped by start_date.
+        release_dates = repo.release_dates_for_actor(
+            name=subscription.actor_name, actor_id=subscription.actor_key
+        )
+        subscription = initialize_subscription_cursor(subscription, release_dates)
+    prefs = store.upsert_subscription(subscription)
     return LibraryPrefsOut.model_validate(prefs.model_dump())
 
 
@@ -989,7 +1089,7 @@ def scan_actor_subscriptions(request: Request, repo: Repo) -> SubscriptionScanOu
                 }
             )
         matched = filter_works_for_subscription(
-            payloads, start_date=sub.start_date, max_cast=sub.max_cast
+            payloads, start_date=sub.effective_start_date(), max_cast=sub.max_cast
         )
         for item in matched:
             release = item.get("release_date")

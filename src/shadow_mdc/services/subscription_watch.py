@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,7 +24,7 @@ from .pan_offline_enqueue import (
     enqueue_work_offline,
     pick_best_magnet,
 )
-from .subscriptions import filter_works_for_subscription
+from .subscriptions import filter_works_for_subscription, initialize_subscription_cursor
 from .task_events import TaskEventHub
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,15 @@ class SubscriptionWatchStatus(BaseModel):
     last_submitted: int = 0
     last_skipped_pan: int = 0
     last_errors: list[str] = Field(default_factory=list)
+    # Resume checkpoint: index into the sorted target list processed so far.
+    batch_cursor: int = 0
+    batch_total: int = 0
+    batch_signature: str | None = None
+    last_pass_completed_at: str | None = None
+
+
+def targets_signature(work_ids: list[str]) -> str:
+    return hashlib.sha1("\n".join(work_ids).encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass
@@ -62,9 +72,7 @@ class SubscriptionWatchStateStore:
         if not self._path.is_file():
             return SubscriptionWatchStatus()
         try:
-            return SubscriptionWatchStatus.model_validate_json(
-                self._path.read_text(encoding="utf-8")
-            )
+            return SubscriptionWatchStatus.model_validate_json(self._path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError):
             return SubscriptionWatchStatus()
 
@@ -113,7 +121,7 @@ def collect_watch_work_ids(prefs: LibraryPrefs, repo: Repository) -> list[str]:
                 }
             )
         matched = filter_works_for_subscription(
-            payloads, start_date=sub.start_date, max_cast=sub.max_cast
+            payloads, start_date=sub.effective_start_date(), max_cast=sub.max_cast
         )
         for item in matched:
             work_id = item.get("work_id")
@@ -121,6 +129,26 @@ def collect_watch_work_ids(prefs: LibraryPrefs, repo: Repository) -> list[str]:
                 targets.add(work_id)
 
     return sorted(work_id for work_id in targets if work_id not in dismissed)
+
+
+def ensure_subscription_cursors(prefs: LibraryPrefs, repo: Repository) -> tuple[LibraryPrefs, bool]:
+    """Initialise cursors for subscriptions that predate cursor support."""
+
+    pending = [sub for sub in prefs.subscriptions if not sub.cursor_initialized]
+    if not pending:
+        return prefs, False
+    by_actor: dict[str, list[Work]] = defaultdict(list)
+    for actor, work in repo.list_actor_work_relations():
+        by_actor[actor.name].append(work)
+        by_actor[actor.id].append(work)
+    updated = []
+    for sub in prefs.subscriptions:
+        if sub.cursor_initialized:
+            updated.append(sub)
+            continue
+        works = by_actor.get(sub.actor_name) or by_actor.get(sub.actor_key) or []
+        updated.append(initialize_subscription_cursor(sub, [work.release_date for work in works]))
+    return prefs.model_copy(update={"subscriptions": updated}), True
 
 
 def _javdb_lookup(repo: Repository, work_id: str) -> tuple[str, str | None] | None:
@@ -178,9 +206,7 @@ class SubscriptionWatchService:
     def status(self) -> SubscriptionWatchStatus:
         cfg = self._pan.config_store.load()
         stored = self._state.load()
-        return stored.model_copy(
-            update={"enabled": bool(cfg.subscription_auto_offline)}
-        )
+        return stored.model_copy(update={"enabled": bool(cfg.subscription_auto_offline)})
 
     async def run_once(self, *, limit: int = WATCH_BATCH_SIZE) -> SubscriptionWatchStatus:
         async with self._lock:
@@ -189,33 +215,60 @@ class SubscriptionWatchService:
     async def _run_once_unlocked(self, *, limit: int) -> SubscriptionWatchStatus:
         cfg = self._pan.config_store.load()
         stats = _TickStats()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         if not cfg.subscription_auto_offline:
-            status = SubscriptionWatchStatus(enabled=False, last_check_at=now)
+            status = self._state.load().model_copy(update={"enabled": False, "last_check_at": now})
             return self._state.save(status)
 
         prefs = self._prefs.load()
         with self._database.session() as session:
             repo = Repository(session)
-            work_ids = collect_watch_work_ids(prefs, repo)[: max(limit, 0)]
+            prefs, changed = ensure_subscription_cursors(prefs, repo)
+            all_ids = collect_watch_work_ids(prefs, repo)
+        if changed:
+            self._prefs.replace_subscriptions(list(prefs.subscriptions))
+
+        # Resume from the persisted processed-count checkpoint instead of always
+        # restarting at the head of the list (which starved later targets and
+        # re-did work after a restart). Wrap to 0 after a full pass.
+        previous = self._state.load()
+        signature = targets_signature(all_ids)
+        start = previous.batch_cursor if 0 <= previous.batch_cursor < len(all_ids) else 0
+        work_ids = all_ids[start : start + max(limit, 0)]
         stats.targets = len(work_ids)
 
         pan_status = self._pan.status()
         pan_ready = bool(pan_status.get("connected") and cfg.offline_directory_id)
 
+        checkpoint = previous.model_copy(
+            update={
+                "enabled": True,
+                "batch_cursor": start,
+                "batch_total": len(all_ids),
+                "batch_signature": signature,
+            }
+        )
         for index, work_id in enumerate(work_ids):
             if index > 0:
                 await asyncio.sleep(WATCH_PACE_SECONDS)
             try:
                 await self._process_work(work_id, stats=stats, pan_ready=pan_ready)
-            except Exception as exc:  # noqa: BLE001 — keep ticking
+            except Exception as exc:
                 message = f"{work_id}: {type(exc).__name__}"
                 logger.warning("subscription watch work failed: %s", message)
                 stats.errors.append(message)
+            # Persist after every work so a restart resumes mid-batch.
+            checkpoint = checkpoint.model_copy(update={"batch_cursor": start + index + 1})
+            self._state.save(checkpoint)
 
         if self._task_events is not None and stats.submitted:
             self._task_events.notify()
 
+        next_cursor = start + len(work_ids)
+        completed_at = previous.last_pass_completed_at
+        if next_cursor >= len(all_ids):
+            next_cursor = 0
+            completed_at = now
         status = SubscriptionWatchStatus(
             enabled=True,
             last_check_at=now,
@@ -224,6 +277,10 @@ class SubscriptionWatchService:
             last_submitted=stats.submitted,
             last_skipped_pan=stats.skipped_pan,
             last_errors=stats.errors[-10:],
+            batch_cursor=next_cursor,
+            batch_total=len(all_ids),
+            batch_signature=signature,
+            last_pass_completed_at=completed_at,
         )
         return self._state.save(status)
 
@@ -250,7 +307,7 @@ class SubscriptionWatchService:
                     external_id=external_id,
                     source_url=source_url,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 stats.errors.append(f"{work_id}: magnet refresh {type(exc).__name__}")
                 logger.info(
                     "subscription watch magnet refresh failed work=%s err=%s",
@@ -265,9 +322,7 @@ class SubscriptionWatchService:
                     if work is None:
                         return
                     payload = [item.model_dump(mode="json") for item in fetched]
-                    created, _skipped = repo.save_work_magnets(
-                        work, payload, provider="javdb"
-                    )
+                    created, _skipped = repo.save_work_magnets(work, payload, provider="javdb")
                     magnets = list(repo.list_work_magnets(work_id))
                 if created:
                     stats.refreshed += 1
@@ -296,9 +351,7 @@ class SubscriptionWatchService:
         with self._database.session() as session:
             repo = Repository(session)
             try:
-                result = await enqueue_work_offline(
-                    repo, self._pan, work_id, magnet_id=best.id
-                )
+                result = await enqueue_work_offline(repo, self._pan, work_id, magnet_id=best.id)
             except OfflineEnqueueError as exc:
                 stats.errors.append(f"{work_id}: {exc.message}")
                 logger.info(
@@ -335,9 +388,7 @@ class SubscriptionWatchPoller:
         if self._task is not None:
             return
         self._stop.clear()
-        self._task = asyncio.create_task(
-            self._loop(), name="shadow-mdc-subscription-watch"
-        )
+        self._task = asyncio.create_task(self._loop(), name="shadow-mdc-subscription-watch")
 
     async def stop(self) -> None:
         self._stop.set()

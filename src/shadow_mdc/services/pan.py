@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import secrets
 import time as time_module
 import uuid
@@ -39,6 +40,19 @@ MAX_IN_FLIGHT = 2
 REQUEST_RETRIES = 3
 LOGIN_TTL_SECONDS = 300
 OFFLINE_EXISTS_CODE = 10008
+# Cold directory walks are paced softer than the generic limiter (~2-3 req/s).
+SCAN_PACE_SECONDS = 0.35
+SCAN_JITTER_SECONDS = 0.15
+# 115 reports these codes when a file/folder id no longer exists.
+FILE_GONE_CODES = frozenset({430004, 20018, 70004, 50015})
+# One UA for every 115 media call (downurl / play / probe). 115 binds download
+# URLs to the UA that requested them, so the relay passes the player UA through
+# and only falls back to this when the player sends none.
+DEFAULT_MEDIA_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
+_VIDEO_EXTENSIONS = (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".m2ts", ".mov", ".flv", ".webm", ".iso", ".rmvb")
 
 
 class PanClient(Protocol):
@@ -86,6 +100,20 @@ class PanSettings(BaseModel):
     strm_enabled: bool = False
     strm_output_root: str | None = None
     strm_url_prefix: str = "http://openlist:5244/d/115"
+    # "openlist": .strm = {strm_url_prefix}/{remote path} (legacy, unsigned OpenList /d).
+    # "relay": .strm = {strm_public_base_url}/api/strm/play/{file_id}[?token=…] → 302 to 115.
+    strm_mode: str = "openlist"
+    # Base URL players/Emby use to reach this API, e.g. http://192.168.0.21:8700
+    strm_public_base_url: str | None = None
+    # Optional shared secret appended as ?token= and required by the relay.
+    strm_token: str | None = None
+    # UA used for 115 downurl/play when the player sends none.
+    strm_user_agent: str | None = None
+    # Path of strm_output_root as seen by Emby (container mount); used for notify paths.
+    strm_emby_root: str | None = None
+    # Periodic delete reconciliation (hours, 0 = off). Removes local export dirs
+    # whose 115 source files are all gone and notifies Emby.
+    strm_reconcile_interval_hours: int = 24
     use_proxy: bool = False
     # When true, background watcher refreshes magnets for subscribed/want
     # works and submits the best magnet to 115 offline (if connected).
@@ -217,10 +245,51 @@ def is_offline_exists_code(code: Any) -> bool:
 
 def _is_video_name(name: str) -> bool:
     lowered = name.casefold()
-    return any(
-        lowered.endswith(ext)
-        for ext in (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".m2ts", ".mov", ".flv", ".webm")
-    )
+    return any(lowered.endswith(ext) for ext in _VIDEO_EXTENSIONS)
+
+
+def is_video_name(name: str) -> bool:
+    return _is_video_name(name)
+
+
+class ScanPacer:
+    """Per-request pacing for 115 directory walks: base delay + random jitter."""
+
+    def __init__(
+        self,
+        base_seconds: float = SCAN_PACE_SECONDS,
+        jitter_seconds: float = SCAN_JITTER_SECONDS,
+        *,
+        sleep: Any = None,
+        rng: random.Random | None = None,
+    ) -> None:
+        self.base_seconds = base_seconds
+        self.jitter_seconds = jitter_seconds
+        self._sleep = sleep or asyncio.sleep
+        self._rng = rng or random.Random()
+        self._calls = 0
+
+    def next_delay(self) -> float:
+        return self.base_seconds + self._rng.uniform(0.0, self.jitter_seconds)
+
+    async def wait(self) -> None:
+        # No delay before the very first request of a walk.
+        if self._calls:
+            await self._sleep(self.next_delay())
+        self._calls += 1
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteVideo:
+    file_id: str
+    name: str
+    pick_code: str | None = None
+    relative_path: str = ""
+    size: int | None = None
+
+
+def is_file_gone_error(exc: BaseException) -> bool:
+    return isinstance(exc, PanApiError) and exc.code in FILE_GONE_CODES
 
 
 def _unwrap_data(payload: dict[str, Any]) -> Any:
@@ -357,6 +426,8 @@ class Pan115Client:
         params: dict[str, str] | None = None,
         bearer: bool = False,
         raw: bool = False,
+        idempotent: bool | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         http = self._ensure_http()
         headers: dict[str, str] = {}
@@ -365,6 +436,13 @@ class Pan115Client:
                 raise PanNotConfiguredError("115 access token missing")
             headers["Authorization"] = f"Bearer {self._access_token}"
 
+        if extra_headers:
+            headers.update(extra_headers)
+        # Only idempotent calls are retried on gateway errors. A POST that hit a
+        # 502/503/504 may already have been applied by 115 (offline submit,
+        # history delete, token refresh rotation), so it is surfaced instead.
+        # 429 is the exception: the server explicitly rejected it unprocessed.
+        safe_to_retry = idempotent if idempotent is not None else method.upper() in {"GET", "HEAD"}
         async with self._inflight:
             last: httpx.Response | None = None
             for attempt in range(REQUEST_RETRIES + 1):
@@ -378,7 +456,10 @@ class Pan115Client:
                 )
                 last = response
                 ra = self._note_retry_after(response)
-                if response.status_code in {429, 502, 503, 504} and attempt < REQUEST_RETRIES:
+                retryable = response.status_code == 429 or (
+                    safe_to_retry and response.status_code in {502, 503, 504}
+                )
+                if retryable and attempt < REQUEST_RETRIES:
                     delay = ra if ra > 0 else float(attempt + 1)
                     await asyncio.sleep(delay)
                     continue
@@ -534,12 +615,21 @@ class Pan115Client:
         *,
         form: dict[str, str] | None = None,
         params: dict[str, str] | None = None,
+        idempotent: bool | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         await self.ensure_access_token()
-        response = await self._request(method, url, form=form, params=params, bearer=True)
+        options: dict[str, Any] = {
+            "form": form,
+            "params": params,
+            "bearer": True,
+            "idempotent": idempotent,
+            "extra_headers": extra_headers,
+        }
+        response = await self._request(method, url, **options)
         if response.status_code == 401:
             await self.refresh_access_token()
-            response = await self._request(method, url, form=form, params=params, bearer=True)
+            response = await self._request(method, url, **options)
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
@@ -555,7 +645,7 @@ class Pan115Client:
                 isinstance(code, int) and 40100000 <= code < 40200000
             ):
                 await self.refresh_access_token()
-                response = await self._request(method, url, form=form, params=params, bearer=True)
+                response = await self._request(method, url, **options)
                 response.raise_for_status()
                 payload = response.json()
                 if not isinstance(payload, dict):
@@ -916,6 +1006,131 @@ class Pan115Client:
         data = _unwrap_data(payload)
         return data if isinstance(data, dict) else {}
 
+    async def download_url(self, pick_code: str, *, user_agent: str) -> str | None:
+        """Direct CDN download URL for a file (bound by 115 to ``user_agent``)."""
+
+        # Read-only lookup even though 115 exposes it as POST: safe to retry.
+        payload = await self._authed_json(
+            "POST",
+            f"{PROAPI_URL}/open/ufile/downurl",
+            form={"pick_code": pick_code},
+            idempotent=True,
+            extra_headers={"User-Agent": user_agent},
+        )
+        data = _unwrap_data(payload)
+        if not isinstance(data, dict):
+            return None
+        for item in data.values():
+            if not isinstance(item, dict):
+                continue
+            url_field = item.get("url")
+            if isinstance(url_field, dict):
+                url_field = url_field.get("url")
+            if isinstance(url_field, str) and url_field.startswith("http"):
+                return url_field
+        return None
+
+    async def video_play_url(self, pick_code: str, *, user_agent: str) -> str | None:
+        """Best play/transcode URL (fallback when the direct link is unavailable)."""
+
+        payload = await self._authed_json(
+            "GET",
+            f"{PROAPI_URL}/open/video/play",
+            params={"pick_code": pick_code},
+            extra_headers={"User-Agent": user_agent},
+        )
+        data = _unwrap_data(payload)
+        if not isinstance(data, dict):
+            return None
+        options = data.get("video_url")
+        if not isinstance(options, list):
+            return None
+        best: tuple[int, str] | None = None
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            url = option.get("url")
+            if not isinstance(url, str) or not url.startswith("http"):
+                continue
+            rank = 0
+            for key in ("definition_n", "definition", "height"):
+                value = option.get(key)
+                if isinstance(value, (int, float)) or (isinstance(value, str) and value.isdigit()):
+                    rank = max(rank, int(value))
+            if best is None or rank > best[0]:
+                best = (rank, url)
+        return best[1] if best else None
+
+    async def walk_videos(
+        self,
+        root_id: str,
+        *,
+        pacer: ScanPacer | None = None,
+        max_depth: int = 3,
+        max_entries: int = 2000,
+    ) -> list[RemoteVideo]:
+        """List video files under a file or folder id with paced directory calls.
+
+        A single file id resolves via ``get_folder_info``; folders are walked
+        breadth-first with ~350 ms + jitter between list calls.
+        """
+
+        pace = pacer or ScanPacer()
+        await pace.wait()
+        info = await self.get_folder_info(root_id)
+        name = str(info.get("file_name") or info.get("fn") or info.get("name") or "")
+        category = str(info.get("file_category") or info.get("fc") or "")
+        is_dir = category in {"0", "folder"} or bool(info.get("is_dir"))
+        if not is_dir:
+            if not name or not _is_video_name(name):
+                return []
+            pick = info.get("pick_code") or info.get("pc")
+            size = info.get("size") or info.get("file_size")
+            return [
+                RemoteVideo(
+                    file_id=str(root_id),
+                    name=name,
+                    pick_code=str(pick) if pick else None,
+                    relative_path=name,
+                    size=int(size) if isinstance(size, int) else None,
+                )
+            ]
+        found: list[RemoteVideo] = []
+        queue: list[tuple[str, str, int]] = [(str(root_id), name, 0)]
+        seen = 0
+        while queue:
+            folder_id, prefix, depth = queue.pop(0)
+            page = 1
+            while True:
+                await pace.wait()
+                listing = await self.list_directory(folder_id, page=page, limit=200)
+                items = listing.get("items") or []
+                for entry in items:
+                    seen += 1
+                    if seen > max_entries:
+                        return found
+                    entry_name = str(entry.get("name") or "")
+                    relative = f"{prefix}/{entry_name}" if prefix else entry_name
+                    if entry.get("is_directory"):
+                        if depth + 1 <= max_depth:
+                            queue.append((str(entry.get("id")), relative, depth + 1))
+                        continue
+                    if _is_video_name(entry_name):
+                        found.append(
+                            RemoteVideo(
+                                file_id=str(entry.get("id")),
+                                name=entry_name,
+                                pick_code=str(entry["pick_code"]) if entry.get("pick_code") else None,
+                                relative_path=relative,
+                                size=entry.get("size") if isinstance(entry.get("size"), int) else None,
+                            )
+                        )
+                total = int(listing.get("total") or 0)
+                if not items or page * 200 >= total:
+                    break
+                page += 1
+        return found
+
 
 class PanService:
     """Orchestrates login sessions, credentials, config, and 115 client."""
@@ -968,7 +1183,8 @@ class PanService:
     def settings_status(self) -> dict[str, object]:
         cfg = self._config()
         return {
-            **cfg.model_dump(exclude={"client_id", "client_secret"}),
+            **cfg.model_dump(exclude={"client_id", "client_secret", "strm_token"}),
+            "strm_token_set": bool(cfg.strm_token),
             "client_id": self._effective_client_id(cfg),
             "client_secret_set": bool(self._effective_client_secret(cfg)),
         }
@@ -1140,6 +1356,9 @@ class PanService:
                 "enabled": cfg.strm_enabled,
                 "output_root": cfg.strm_output_root,
                 "url_prefix": cfg.strm_url_prefix,
+                "mode": cfg.strm_mode,
+                "public_base_url": cfg.strm_public_base_url,
+                "token_set": bool(cfg.strm_token),
             },
             "use_proxy": cfg.use_proxy,
             "client_id": self._effective_client_id(cfg),
@@ -1154,6 +1373,12 @@ class PanService:
             "strm_enabled",
             "strm_output_root",
             "strm_url_prefix",
+            "strm_mode",
+            "strm_public_base_url",
+            "strm_token",
+            "strm_user_agent",
+            "strm_emby_root",
+            "strm_reconcile_interval_hours",
             "use_proxy",
             "subscription_auto_offline",
             "client_id",
@@ -1165,6 +1390,15 @@ class PanService:
                     value = value.strip() or None
                 if key == "client_secret" and isinstance(value, str):
                     value = value.strip() or None
+                if key in {
+                    "strm_public_base_url",
+                    "strm_token",
+                    "strm_user_agent",
+                    "strm_emby_root",
+                } and isinstance(value, str):
+                    value = value.strip() or None
+                if key == "strm_mode" and value not in {"openlist", "relay"}:
+                    raise ValueError("strm_mode must be 'openlist' or 'relay'")
                 data[key] = value
         old_client_id = self._effective_client_id(current)
         saved = self.config_store.save(PanSettings.model_validate(data))

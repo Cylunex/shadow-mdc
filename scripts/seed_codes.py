@@ -109,7 +109,7 @@ async def _run(arguments: argparse.Namespace) -> int:
                         runtime_seconds=work.runtime_seconds,
                         artwork_downloaded=art,
                     )
-            except Exception as exc:  # noqa: BLE001 - report per code
+            except Exception as exc:
                 entry.update(ok=False, error=f"{type(exc).__name__}: {exc}")
             results.append(entry)
     finally:
@@ -121,7 +121,9 @@ async def _run(arguments: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("codes", nargs="+", help="番号 such as START-634")
     parser.add_argument("--tag", action="append", default=[], help="extra tag(s) to merge onto the work")
     parser.add_argument("--no-posters", action="store_true", help="skip artwork download")

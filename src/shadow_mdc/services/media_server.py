@@ -20,6 +20,8 @@ class MediaServerSettings(BaseModel):
     verify_nfo_fields: bool = False
     # Optional Emby/Jellyfin deep link; {query} replaced with code/title
     deep_link_template: str | None = None
+    # STRM export notify: quiet period before one batched Library/Media/Updated call.
+    notify_debounce_seconds: float = Field(default=5.0, ge=0.0, le=600.0)
 
 
 class RefreshResult(BaseModel):

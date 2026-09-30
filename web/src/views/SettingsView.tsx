@@ -24,6 +24,8 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
   const [dirDraft, setDirDraft] = useState("");
   const [clientIdDraft, setClientIdDraft] = useState("");
   const [clientSecretDraft, setClientSecretDraft] = useState("");
+  // null = keep the stored STRM token; "" = clear; other = new token.
+  const [strmTokenDraft, setStrmTokenDraft] = useState<string | null>(null);
   const [accessTokenDraft, setAccessTokenDraft] = useState("");
   const [refreshTokenDraft, setRefreshTokenDraft] = useState("");
   const [browseId, setBrowseId] = useState("0");
@@ -199,9 +201,11 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                     ...panSettings,
                     client_id: clientIdDraft.trim(),
                     ...(clientSecretDraft.trim() ? { client_secret: clientSecretDraft.trim() } : {}),
+                    ...(strmTokenDraft !== null ? { strm_token: strmTokenDraft.trim() } : {}),
                     offline_directory_id: dirDraft.trim() || null,
                   });
                   setPanSettings(saved);
+                  setStrmTokenDraft(null);
                   setClientIdDraft(saved.client_id);
                   setClientSecretDraft("");
                   await api.panSetDirectory(dirDraft.trim() || "0").catch(() => undefined);
@@ -298,13 +302,106 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                 />
               </label>
               <label>
-                <span>STRM URL 前缀（OpenList /d/…）</span>
+                <span>STRM 模式</span>
+                <select
+                  value={panSettings.strm_mode}
+                  onChange={(e) => setPanSettings({ ...panSettings, strm_mode: e.target.value as "openlist" | "relay" })}
+                >
+                  <option value="openlist">OpenList /d 前缀（原有方式）</option>
+                  <option value="relay">本服务 302 中转 /api/strm/play/&#123;file_id&#125;</option>
+                </select>
+              </label>
+              {panSettings.strm_mode === "openlist" ? (
+                <label>
+                  <span>STRM URL 前缀（OpenList /d/…）</span>
+                  <input
+                    value={panSettings.strm_url_prefix}
+                    onChange={(e) => setPanSettings({ ...panSettings, strm_url_prefix: e.target.value })}
+                    placeholder="http://openlist:5244/d/115"
+                  />
+                </label>
+              ) : (
+                <>
+                  <label>
+                    <span>对外地址（Emby/播放器访问本服务的 URL）</span>
+                    <input
+                      value={panSettings.strm_public_base_url ?? ""}
+                      onChange={(e) => setPanSettings({ ...panSettings, strm_public_base_url: e.target.value || null })}
+                      placeholder="http://192.168.0.21:8700"
+                    />
+                  </label>
+                  <label>
+                    <span>STRM 令牌（可选，附加 ?token=）{panSettings.strm_token_set ? " · 已设置" : ""}</span>
+                    <div className="magnet-row" style={{ gridTemplateColumns: "1fr auto auto" }}>
+                      <input
+                        value={strmTokenDraft ?? ""}
+                        onChange={(e) => setStrmTokenDraft(e.target.value)}
+                        placeholder={panSettings.strm_token_set ? "留空保持现有令牌" : "未设置（仅建议局域网使用）"}
+                      />
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => {
+                          const bytes = new Uint8Array(18);
+                          window.crypto.getRandomValues(bytes);
+                          setStrmTokenDraft(Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(""));
+                        }}
+                      >随机生成</button>
+                      <button type="button" className="ghost" onClick={() => setStrmTokenDraft("")}>清除</button>
+                    </div>
+                  </label>
+                  <label>
+                    <span>115 请求 User-Agent（播放器未带 UA 时使用）</span>
+                    <input
+                      value={panSettings.strm_user_agent ?? ""}
+                      onChange={(e) => setPanSettings({ ...panSettings, strm_user_agent: e.target.value || null })}
+                      placeholder="默认 Chrome UA"
+                    />
+                  </label>
+                </>
+              )}
+              <label>
+                <span>Emby 看到的 STRM 根目录（容器路径，用于通知）</span>
                 <input
-                  value={panSettings.strm_url_prefix}
-                  onChange={(e) => setPanSettings({ ...panSettings, strm_url_prefix: e.target.value })}
-                  placeholder="http://openlist:5244/d/115"
+                  value={panSettings.strm_emby_root ?? ""}
+                  onChange={(e) => setPanSettings({ ...panSettings, strm_emby_root: e.target.value || null })}
+                  placeholder="与输出根目录相同则留空"
                 />
               </label>
+              <label>
+                <span>删除对账间隔（小时，0 关闭）</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={720}
+                  value={panSettings.strm_reconcile_interval_hours}
+                  onChange={(e) => setPanSettings({ ...panSettings, strm_reconcile_interval_hours: Number(e.target.value) || 0 })}
+                />
+              </label>
+              <div className="command-bar-row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy === "strm-rewrite"}
+                  onClick={() => {
+                    void run("strm-rewrite", async () => {
+                      const result = await api.strmRewrite();
+                      report(`STRM 重写：扫描 ${result.scanned}，改写 ${result.rewritten}，跳过 ${result.skipped}`);
+                    }, "none");
+                  }}
+                >按当前设置重写 STRM</button>
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={!pan?.connected || busy === "strm-reconcile"}
+                  onClick={() => {
+                    void run("strm-reconcile", async () => {
+                      const result = await api.strmReconcile();
+                      report(result.started ? "已开始删除对账（后台运行）" : "对账/重写正在进行中");
+                    }, "none");
+                  }}
+                >立即删除对账</button>
+              </div>
               <label className="check-line">
                 <input
                   type="checkbox"
@@ -388,6 +485,16 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                   value={media.api_key ?? ""}
                   onChange={(e) => setMedia({ ...media, api_key: e.target.value || null })}
                   placeholder="可选"
+                />
+              </label>
+              <label>
+                <span>STRM 变更通知防抖（秒，批量调用 Library/Media/Updated）</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={600}
+                  value={media.notify_debounce_seconds ?? 5}
+                  onChange={(e) => setMedia({ ...media, notify_debounce_seconds: Number(e.target.value) || 0 })}
                 />
               </label>
               <label>
