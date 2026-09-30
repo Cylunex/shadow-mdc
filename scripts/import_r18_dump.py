@@ -6,7 +6,8 @@ Keeps dump + SQLite under the data directory (NAS-only). Never commit these file
 Examples::
 
     PYTHONPATH=src .venv/bin/python scripts/import_r18_dump.py --dump /path/to.sql.gz
-    PYTHONPATH=src .venv/bin/python scripts/import_r18_dump.py --refresh --proxy http://192.168.0.110:7893
+    SHADOW_MDC_DATA_DIR=/data/project/shadow-mdc/shared/data \
+      .venv/bin/python scripts/import_r18_dump.py --refresh --proxy http://192.168.0.110:7893
 """
 
 from __future__ import annotations
@@ -42,8 +43,13 @@ def _download_latest(target_dir: Path, *, proxy: str | None) -> Path:
     if proxy:
         handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
     opener = urllib.request.build_opener(*handlers)
+    # Cloudflare edge rejects urllib's default UA with HTTP 403.
+    request = urllib.request.Request(
+        LATEST_URL,
+        headers={"User-Agent": "shadow-mdc/1.0 (+https://github.com/Cylunex/shadow-mdc)"},
+    )
     print(f"Downloading {LATEST_URL} …", flush=True)
-    with opener.open(LATEST_URL, timeout=600) as response:
+    with opener.open(request, timeout=600) as response:
         final_url = response.geturl()
         name = Path(final_url).name or "r18dev_dump_latest.sql.gz"
         if not name.endswith(".gz"):
