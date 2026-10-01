@@ -72,6 +72,18 @@ class RewriteResult:
 
 
 @dataclass(slots=True)
+class MigrateResult:
+    """Export-root change: folders moved old → new root, then bodies rewritten."""
+
+    old_root: Path | None = None
+    new_root: Path | None = None
+    moved: list[tuple[Path, Path]] = field(default_factory=list)
+    conflicts: list[Path] = field(default_factory=list)
+    failed: list[Path] = field(default_factory=list)
+    rewrite: RewriteResult = field(default_factory=RewriteResult)
+
+
+@dataclass(slots=True)
 class ReconcileResult:
     checked: int = 0
     removed: list[Path] = field(default_factory=list)
@@ -376,6 +388,94 @@ def rewrite_strm_tree(root: Path, settings: PanSettings) -> RewriteResult:
             continue
         write_strm(strm, locator)
         result.rewritten.append(strm)
+    return result
+
+
+def _same_device(source: Path, target_parent: Path) -> bool:
+    try:
+        return source.stat().st_dev == target_parent.stat().st_dev
+    except OSError:
+        return False
+
+
+def _move_export_dir(source: Path, target: Path) -> None:
+    """Move one export folder so the target only ever appears complete.
+
+    Same filesystem → a single ``rename``. Across filesystems → copy into a
+    hidden sibling of the target, rename it into place, then delete the source
+    (a crash mid-copy leaves the source intact and only a hidden temp dir).
+    """
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if _same_device(source, target.parent):
+        os.rename(source, target)
+        return
+    staging = target.parent / f".{target.name}.migrating"
+    if staging.exists():
+        shutil.rmtree(staging)
+    try:
+        shutil.copytree(source, staging, copy_function=shutil.copy2)
+        os.rename(staging, target)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    shutil.rmtree(source)
+
+
+def _prune_empty_parents(start: Path, root: Path) -> None:
+    current = start
+    while current != root and _is_within(current, root):
+        try:
+            current.rmdir()
+        except OSError:
+            return
+        current = current.parent
+
+
+def migrate_strm_tree(old_root: Path, new_root: Path, settings: PanSettings) -> MigrateResult:
+    """Move every managed export folder (has a sidecar) from ``old_root`` to ``new_root``.
+
+    Relative layout is kept. A folder whose target already holds an export is
+    left in place and reported as a conflict (never overwritten). Afterwards
+    every ``.strm`` under ``new_root`` is rewritten for the current settings, so
+    the result equals a clean re-export without any 115 / OpenList calls.
+    Unmanaged files in the old root are never touched.
+    """
+
+    result = MigrateResult(old_root=old_root, new_root=new_root)
+    new_root.mkdir(parents=True, exist_ok=True)
+    same_root = old_root.resolve() == new_root.resolve() if old_root.exists() else False
+    if old_root.is_dir() and not same_root:
+        new_resolved = new_root.resolve()
+        sources = [
+            directory
+            for directory in iter_export_dirs(old_root)
+            # New root nested inside the old one: never re-move what is already there.
+            if not (directory.resolve() == new_resolved or _is_within(directory, new_root))
+        ]
+        for source in sources:
+            try:
+                relative = source.resolve().relative_to(old_root.resolve())
+            except ValueError:
+                result.failed.append(source)
+                continue
+            if not relative.parts:
+                # Sidecar directly in the root: the root itself is an export; skip.
+                result.failed.append(source)
+                continue
+            target = new_root / relative
+            if target.exists():
+                result.conflicts.append(source)
+                continue
+            try:
+                _move_export_dir(source, target)
+            except OSError:
+                result.failed.append(source)
+                continue
+            result.moved.append((source, target))
+            with contextlib.suppress(OSError):
+                _prune_empty_parents(source.parent, old_root)
+    result.rewrite = rewrite_strm_tree(new_root, settings)
     return result
 
 

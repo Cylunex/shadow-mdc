@@ -43,6 +43,10 @@ from .pan_common import (
     SCAN_PACE_SECONDS as SCAN_PACE_SECONDS,
 )
 from .pan_common import (
+    BackoffGate,
+    shared_gate,
+)
+from .pan_common import (
     PanApiError as PanApiError,
 )
 from .pan_common import (
@@ -306,6 +310,7 @@ class Pan115Client:
         use_proxy: bool = False,
         user_agent: str = "ShadowMDC/0.1",
         timeout: float = 30.0,
+        gate: BackoffGate | None = None,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
@@ -315,7 +320,9 @@ class Pan115Client:
         self._lock = asyncio.Lock()
         self._inflight = asyncio.Semaphore(MAX_IN_FLIGHT)
         self._last_call = 0.0
-        self._retry_after_until = 0.0
+        # Process-wide: survives client re-creation and is shared with every
+        # other 115 caller (poller, relay, subscription watcher, API).
+        self.gate = gate or shared_gate("115")
         self._http: httpx.AsyncClient | None = None
         self._access_token: str | None = None
         self._refresh_token: str | None = None
@@ -357,28 +364,23 @@ class Pan115Client:
         return self._http
 
     async def _throttle(self) -> None:
-        """Enforce spacing and global Retry-After backoff before a request start."""
+        """Wait out the shared Retry-After gate, then enforce request spacing."""
 
         while True:
+            honoured = await self.gate.wait()
             async with self._lock:
+                if self.gate.deadline > honoured:
+                    # A concurrent 429 extended the window while we queued: re-wait.
+                    continue
                 now = time_module.monotonic()
-                wait_ra = self._retry_after_until - now
                 wait_gap = RATE_LIMIT_SECONDS - (now - self._last_call)
-                wait = max(wait_ra, wait_gap, 0.0)
-                if wait <= 0:
+                if wait_gap <= 0:
                     self._last_call = time_module.monotonic()
                     return
-            await asyncio.sleep(wait)
+            await asyncio.sleep(wait_gap)
 
     def _note_retry_after(self, response: httpx.Response) -> float:
-        wait = parse_retry_after(response.headers.get("Retry-After"))
-        if wait <= 0:
-            return 0.0
-        until = time_module.monotonic() + wait
-        # Best-effort without await; races only extend backoff.
-        if until > self._retry_after_until:
-            self._retry_after_until = until
-        return wait
+        return self.gate.note(response.status_code, response.headers.get("Retry-After"))
 
     async def _request(
         self,
@@ -423,8 +425,11 @@ class Pan115Client:
                     safe_to_retry and response.status_code in {502, 503, 504}
                 )
                 if retryable and attempt < REQUEST_RETRIES:
-                    delay = ra if ra > 0 else float(attempt + 1)
-                    await asyncio.sleep(delay)
+                    if ra <= 0:
+                        # Gateway hiccup without Retry-After: local linear backoff only.
+                        await asyncio.sleep(float(attempt + 1))
+                    # With Retry-After / 429 the shared gate (awaited in _throttle)
+                    # holds this and every other 115 request until the deadline.
                     continue
                 return response
             assert last is not None

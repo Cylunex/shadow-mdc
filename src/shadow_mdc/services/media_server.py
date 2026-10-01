@@ -45,7 +45,6 @@ class MediaServerConnector:
             return RefreshResult(attempted=False, ok=False, detail="missing base_url or api_key")
         base = self.settings.base_url.rstrip("/")
         headers = {"X-Emby-Token": self.settings.api_key}
-        # Jellyfin/Emby share Items/Refresh semantics for path-based refresh via library scan endpoint.
         try:
             response = await self.client.post(
                 f"{base}/Library/Media/Updated",
@@ -54,16 +53,12 @@ class MediaServerConnector:
                 timeout=20.0,
             )
             if response.status_code >= 400:
-                # Fallback: trigger a full library refresh stub.
-                fallback = await self.client.post(
-                    f"{base}/Library/Refresh",
-                    headers=headers,
-                    timeout=20.0,
+                # Incremental path update failed: report it. Never escalate to a
+                # full Library/Refresh (that rescans every library on the server).
+                return RefreshResult(
+                    attempted=True, ok=False, detail=f"path refresh HTTP {response.status_code}"
                 )
-                fallback.raise_for_status()
-                detail = f"path refresh HTTP {response.status_code}; triggered Library/Refresh"
-            else:
-                detail = "path refresh accepted"
+            detail = "path refresh accepted"
             nfo_check: dict[str, object] = {}
             if self.settings.verify_nfo_fields:
                 nfo_check = await self._stub_nfo_field_check(path, headers, base)

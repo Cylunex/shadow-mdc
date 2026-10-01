@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import random
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -57,6 +59,109 @@ def parse_retry_after(header: str | None) -> float:
         return wait if wait > 0 else 0.0
     except (TypeError, ValueError, OverflowError):
         return 0.0
+
+
+# 429 without a usable Retry-After: exponential default backoff (1, 2, 4 … s).
+DEFAULT_BACKOFF_SECONDS = 1.0
+MAX_BACKOFF_SECONDS = 300.0
+
+
+class BackoffGate:
+    """Process-wide rate-limit deadline shared by every request to one upstream.
+
+    Any response carrying ``Retry-After`` (or a bare 429) pushes one shared
+    deadline forward; every caller awaits :meth:`wait` before *each* attempt, so
+    a single throttled request pauses all others instead of only retrying
+    itself. After sleeping, the deadline is re-read: if a concurrent 429
+    extended it meanwhile, the caller keeps waiting.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        default_seconds: float = DEFAULT_BACKOFF_SECONDS,
+        max_seconds: float = MAX_BACKOFF_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+    ) -> None:
+        self.name = name
+        self.default_seconds = default_seconds
+        self.max_seconds = max_seconds
+        self._clock = clock
+        self._sleep = sleep
+        self._until = 0.0
+        self._strikes = 0
+        self.hits = 0
+
+    def remaining(self) -> float:
+        return max(0.0, self._until - self._clock())
+
+    def note(self, status_code: int, retry_after: str | None) -> float:
+        """Record a response; returns the backoff (seconds) it imposed, 0 if none."""
+
+        wait = parse_retry_after(retry_after)
+        if wait <= 0 and status_code == 429:
+            self._strikes += 1
+            wait = self.default_seconds * (2 ** min(self._strikes - 1, 16))
+        elif status_code < 400 and wait <= 0:
+            self._strikes = 0
+            return 0.0
+        if wait <= 0:
+            return 0.0
+        wait = min(wait, self.max_seconds)
+        self.hits += 1
+        until = self._clock() + wait
+        if until > self._until:
+            self._until = until
+        return wait
+
+    def reset(self) -> None:
+        self._until = 0.0
+        self._strikes = 0
+        self.hits = 0
+
+    @property
+    def deadline(self) -> float:
+        return self._until
+
+    async def wait(self) -> float:
+        """Block until the shared deadline passes; returns the deadline honoured.
+
+        Callers that queue on another lock afterwards can compare the result with
+        :attr:`deadline` to notice an extension that happened meanwhile.
+        """
+
+        while True:
+            deadline = self._until
+            remaining = deadline - self._clock()
+            if remaining <= 0:
+                return deadline
+            sleep = self._sleep or asyncio.sleep
+            await sleep(remaining)
+            if self._until <= deadline:
+                # Not extended while we slept → done (also stops a mocked sleep spinning).
+                return deadline
+
+    def snapshot(self) -> dict[str, object]:
+        return {"name": self.name, "backoff_remaining": round(self.remaining(), 3), "hits": self.hits}
+
+
+_SHARED_GATES: dict[str, BackoffGate] = {}
+
+
+def shared_gate(name: str) -> BackoffGate:
+    """The single process-wide gate for an upstream (``"115"`` / ``"openlist"``)."""
+
+    gate = _SHARED_GATES.get(name)
+    if gate is None:
+        gate = _SHARED_GATES[name] = BackoffGate(name)
+    return gate
+
+
+def reset_shared_gates() -> None:
+    for gate in _SHARED_GATES.values():
+        gate.reset()
 
 
 def _is_video_name(name: str) -> bool:

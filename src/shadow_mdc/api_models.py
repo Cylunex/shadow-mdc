@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .domain import (
     IdentityHints,
@@ -866,6 +866,18 @@ class PanSettingsPayload(BaseModel):
     openlist_username: str | None = None
     openlist_token_set: bool = False
     openlist_password_set: bool = False
+
+
+class StrmMigrateRequest(BaseModel):
+    old_root: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("old_root")
+    @classmethod
+    def _absolute(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not (cleaned.startswith("/") or (len(cleaned) > 2 and cleaned[1] == ":")):
+            raise ValueError("old_root must be an absolute path")
+        return cleaned
 
 
 class PanSettingsUpdatePayload(BaseModel):

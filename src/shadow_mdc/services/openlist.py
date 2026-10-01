@@ -40,13 +40,14 @@ from pydantic import BaseModel, ConfigDict
 
 from ..media.magnets import info_hash_from_uri
 from .pan_common import (
+    BackoffGate,
     PanApiError,
     PanNotConfiguredError,
     PanOfflineConflictError,
     RemoteVideo,
     ScanPacer,
     is_video_name,
-    parse_retry_after,
+    shared_gate,
 )
 
 logger = logging.getLogger(__name__)
@@ -389,6 +390,7 @@ class OpenListClient:
         transport: httpx.AsyncBaseTransport | None = None,
         min_interval: float = OPENLIST_MIN_INTERVAL,
         user_agent: str = "ShadowMDC/0.1",
+        gate: BackoffGate | None = None,
     ) -> None:
         normalized = normalize_base_url(base_url)
         if not normalized:
@@ -404,7 +406,9 @@ class OpenListClient:
         self._login_lock = asyncio.Lock()
         self._inflight = asyncio.Semaphore(OPENLIST_MAX_IN_FLIGHT)
         self._last_call = 0.0
-        self._retry_after_until = 0.0
+        # Process-wide Retry-After gate shared by every OpenList caller (and kept
+        # across client re-creation when the base URL changes).
+        self.gate = gate or shared_gate("openlist")
 
     async def aclose(self) -> None:
         if self._http is not None:
@@ -425,9 +429,12 @@ class OpenListClient:
 
     async def _throttle(self) -> None:
         while True:
+            honoured = await self.gate.wait()
             async with self._lock:
+                if self.gate.deadline > honoured:
+                    continue
                 now = time_module.monotonic()
-                wait = max(self._retry_after_until - now, self._min_interval - (now - self._last_call), 0.0)
+                wait = self._min_interval - (now - self._last_call)
                 if wait <= 0:
                     self._last_call = time_module.monotonic()
                     return
@@ -515,14 +522,14 @@ class OpenListClient:
                         await asyncio.sleep(float(attempt + 1))
                         continue
                     raise OpenListApiError(f"OpenList unreachable: {type(exc).__name__}") from exc
-                wait = parse_retry_after(response.headers.get("Retry-After"))
-                if wait > 0:
-                    self._retry_after_until = max(self._retry_after_until, time_module.monotonic() + wait)
+                wait = self.gate.note(response.status_code, response.headers.get("Retry-After"))
                 retryable = response.status_code == 429 or (
                     idempotent and response.status_code in {502, 503, 504}
                 )
                 if retryable and attempt < OPENLIST_RETRIES:
-                    await asyncio.sleep(wait if wait > 0 else float(attempt + 1))
+                    if wait <= 0:
+                        await asyncio.sleep(float(attempt + 1))
+                    # Otherwise the shared gate (awaited in _throttle) holds every caller.
                     continue
                 break
         assert response is not None

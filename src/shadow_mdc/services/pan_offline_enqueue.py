@@ -90,6 +90,10 @@ async def enqueue_work_offline(
         if existing is not None and existing.status == "running":
             return OfflineEnqueueResult(task=existing, created=False, reused_running=True)
 
+    # End the read transaction before the slow network submit so no SQLite
+    # snapshot is pinned across it (the row write below opens a fresh one);
+    # the subscription watcher and scrape/enrich writers never wait on 115.
+    repo._session.commit()
     try:
         if backend == "openlist":
             submit_result = await pan.submit_offline_url(

@@ -36,10 +36,12 @@ from .pan import (
     write_offline_strm,
 )
 from .strm_export import (
+    MigrateResult,
     ReconcileResult,
     RewriteResult,
     export_work,
     map_to_emby_path,
+    migrate_strm_tree,
     reconcile_deleted,
     rewrite_strm_tree,
 )
@@ -56,6 +58,7 @@ POLL_ACTIVE_SECONDS = 3.0
 # (~3 s per active poll → about 15 min).
 OPENLIST_MISSING_LIMIT = 300
 OPENLIST_RESULT_LIMIT = 300
+MAINTENANCE_CHECK_SECONDS = 60.0
 _ROOT_NAMES = frozenset({"根目录", "根目錄", "/"})
 
 
@@ -74,6 +77,8 @@ class StrmMaintenanceStatus:
     last_reconcile: dict[str, object] = field(default_factory=dict)
     last_rewrite_at: str | None = None
     last_rewrite: dict[str, object] = field(default_factory=dict)
+    last_migrate_at: str | None = None
+    last_migrate: dict[str, object] = field(default_factory=dict)
     running: str | None = None
 
 
@@ -95,11 +100,18 @@ class PanOfflinePoller:
         self._media_server_store = media_server_store
         self._http = http
         self._task_events = task_events
-        self._notifier = notifier or EmbyNotifier(load_settings=media_server_store.load, client=http)
+        self._notifier = notifier or EmbyNotifier(
+            load_settings=media_server_store.load,
+            client=http,
+            state_path=(data_dir / "pan" / "emby-notify-queue.json") if data_dir else None,
+        )
         self._owns_notifier = notifier is None
         self._data_dir = data_dir
         self._artwork_max_bytes = artwork_max_bytes
         self._task: asyncio.Task[None] | None = None
+        # Delete reconcile walks every export folder; it runs on its own task so a
+        # long walk never stalls offline polling / export (and vice versa).
+        self._maintenance_task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._maintenance_lock = asyncio.Lock()
         self.maintenance = StrmMaintenanceStatus()
@@ -123,6 +135,8 @@ class PanOfflinePoller:
             self.maintenance.last_reconcile = payload.get("last_reconcile") or {}
             self.maintenance.last_rewrite_at = payload.get("last_rewrite_at")
             self.maintenance.last_rewrite = payload.get("last_rewrite") or {}
+            self.maintenance.last_migrate_at = payload.get("last_migrate_at")
+            self.maintenance.last_migrate = payload.get("last_migrate") or {}
 
     def _save_state(self) -> None:
         if self._state_path is None:
@@ -132,6 +146,8 @@ class PanOfflinePoller:
             "last_reconcile": self.maintenance.last_reconcile,
             "last_rewrite_at": self.maintenance.last_rewrite_at,
             "last_rewrite": self.maintenance.last_rewrite,
+            "last_migrate_at": self.maintenance.last_migrate_at,
+            "last_migrate": self.maintenance.last_migrate,
         }
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._state_path.with_suffix(".tmp")
@@ -145,14 +161,20 @@ class PanOfflinePoller:
         if self._owns_notifier:
             self._notifier.start()
         self._task = asyncio.create_task(self._loop(), name="shadow-mdc-pan-offline-poller")
+        self._maintenance_task = asyncio.create_task(
+            self._maintenance_loop(), name="shadow-mdc-strm-maintenance"
+        )
 
     async def stop(self) -> None:
         self._stop.set()
-        if self._task is not None:
-            self._task.cancel()
+        for task in (self._task, self._maintenance_task):
+            if task is None:
+                continue
+            task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
+                await task
+        self._task = None
+        self._maintenance_task = None
         if self._owns_notifier:
             await self._notifier.stop()
 
@@ -166,16 +188,24 @@ class PanOfflinePoller:
                 logger.exception("115 offline poller iteration failed")
                 had_running = False
             try:
+                await asyncio.wait_for(
+                    self._stop.wait(),
+                    timeout=POLL_ACTIVE_SECONDS if had_running else POLL_IDLE_SECONDS,
+                )
+                break
+            except TimeoutError:
+                continue
+
+    async def _maintenance_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
                 await self.maybe_reconcile()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("STRM delete reconcile failed")
             try:
-                await asyncio.wait_for(
-                    self._stop.wait(),
-                    timeout=POLL_ACTIVE_SECONDS if had_running else POLL_IDLE_SECONDS,
-                )
+                await asyncio.wait_for(self._stop.wait(), timeout=MAINTENANCE_CHECK_SECONDS)
                 break
             except TimeoutError:
                 continue
@@ -558,16 +588,21 @@ class PanOfflinePoller:
     async def _acquire_artwork(self, work_id: str) -> None:
         assert self._data_dir is not None
         try:
+            # Download outside any DB session: a slow image fetch must not pin a
+            # SQLite snapshot that later has to upgrade to a write (single writer).
             with self._database.session() as session:
-                repo = Repository(session)
-                work = repo.get_work(work_id)
-                if work is None:
-                    return
-                _result, local_paths = await ArtworkStore(
-                    self._data_dir / "artwork", self._http, max_bytes=self._artwork_max_bytes
-                ).acquire(work)
-                if local_paths:
-                    repo.update_artwork_local_paths(work, local_paths)
+                work = Repository(session).get_work(work_id)
+            if work is None:
+                return
+            _result, local_paths = await ArtworkStore(
+                self._data_dir / "artwork", self._http, max_bytes=self._artwork_max_bytes
+            ).acquire(work)
+            if local_paths:
+                with self._database.session() as session:
+                    repo = Repository(session)
+                    fresh = repo.get_work(work_id)
+                    if fresh is not None:
+                        repo.update_artwork_local_paths(fresh, local_paths)
         except Exception:
             logger.warning("artwork acquire before STRM export failed", exc_info=True)
 
@@ -593,6 +628,61 @@ class PanOfflinePoller:
             "scanned": result.scanned,
             "rewritten": len(result.rewritten),
             "skipped": result.skipped,
+        }
+        self._save_state()
+        return result
+
+    async def migrate_root(
+        self, old_root: str | None, old_settings: PanSettings | None = None
+    ) -> MigrateResult:
+        """Export directory changed: move managed folders to the new root, then rewrite.
+
+        Emby gets ``Deleted`` for the old paths (mapped with the *old* settings) and
+        ``Created`` for the new ones, as path updates only (no library refresh).
+        """
+
+        cfg = self._pan.config_store.load()
+        if not cfg.strm_output_root:
+            return MigrateResult()
+        new_root = Path(cfg.strm_output_root)
+        async with self._maintenance_lock:
+            self.maintenance.running = "migrate"
+            try:
+                if old_root:
+                    result = await asyncio.to_thread(migrate_strm_tree, Path(old_root), new_root, cfg)
+                else:
+                    rewrite = await asyncio.to_thread(rewrite_strm_tree, new_root, cfg)
+                    result = MigrateResult(new_root=new_root, rewrite=rewrite)
+            finally:
+                self.maintenance.running = None
+        if result.moved:
+            moves = {str(source): str(target) for source, target in result.moved}
+            with self._database.session() as session:
+                Repository(session).rebase_pan_offline_strm_paths(moves)
+            old_cfg = old_settings or cfg.model_copy(update={"strm_output_root": old_root})
+            self._notifier.enqueue(
+                [map_to_emby_path(source, old_cfg) for source, _ in result.moved], "Deleted"
+            )
+            self._notifier.enqueue([map_to_emby_path(target, cfg) for _, target in result.moved], "Created")
+        moved_targets = {target for _, target in result.moved}
+        rewritten_dirs = sorted({path.parent for path in result.rewrite.rewritten} - moved_targets)
+        if rewritten_dirs:
+            self._notifier.enqueue([map_to_emby_path(item, cfg) for item in rewritten_dirs], "Modified")
+        now = datetime.now(UTC).isoformat()
+        self.maintenance.last_migrate_at = now
+        self.maintenance.last_migrate = {
+            "old_root": old_root,
+            "new_root": str(new_root),
+            "moved": len(result.moved),
+            "conflicts": [str(path) for path in result.conflicts][:50],
+            "failed": [str(path) for path in result.failed][:50],
+            "rewritten": len(result.rewrite.rewritten),
+        }
+        self.maintenance.last_rewrite_at = now
+        self.maintenance.last_rewrite = {
+            "scanned": result.rewrite.scanned,
+            "rewritten": len(result.rewrite.rewritten),
+            "skipped": result.rewrite.skipped,
         }
         self._save_state()
         return result

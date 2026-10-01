@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Respo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
 from . import __version__
@@ -99,6 +100,7 @@ from .api_models import (
     PanOfflineTaskOut,
     PanSettingsPayload,
     PanSettingsUpdatePayload,
+    StrmMigrateRequest,
     SubscriptionWatchStatusOut,
     PlanOut,
     ProviderDiagnoseOut,
@@ -134,7 +136,7 @@ from .api_models import (
     WorkUpdateRequest,
 )
 from .config import Settings
-from .db.models import Collection, Library, MatchCandidateRow, MediaAsset, Work, utc_now
+from .db.models import Actor, Collection, Library, MatchCandidateRow, MediaAsset, Work, utc_now
 from .db.repository import LOCKABLE_WORK_FIELDS, Database, Repository
 from .domain import (
     FileOperation,
@@ -235,7 +237,6 @@ from .services.local_catalog import (
     local_context_names,
 )
 from .services.media_server import (
-    MediaServerConnector,
     MediaServerSettings,
     MediaServerStore,
     build_media_server_deep_link,
@@ -259,6 +260,14 @@ from .services.pan import (
 from .services.pan_poller import PanOfflinePoller
 from .services.strm_relay import RelayError, StrmRelay, token_ok
 from .services.openlist import OpenListApiError, build_openlist_d_url, path_within
+from .services.actor_images import (
+    ActorImageCache,
+    actor_image_display_url,
+    actor_images,
+    configure_actor_images,
+    valid_key,
+)
+from .services.pan_common import shared_gate
 from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
 from .services.subscription_watch import (
     SubscriptionWatchPoller,
@@ -499,6 +508,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     subscription_watch_poller = SubscriptionWatchPoller(subscription_watch_service)
     response_cache = ResponseCache(settings.redis_url)
+
+    def _remote_actor_image_urls() -> list[str]:
+        with database.session() as session:
+            return list(
+                session.scalars(
+                    select(Actor.image_url).where(
+                        or_(Actor.image_url.like("http://%"), Actor.image_url.like("https://%"))
+                    )
+                )
+            )
+
+    configure_actor_images(
+        ActorImageCache(
+            settings.data_dir / "actor-images",
+            http=client,
+            url_source=_remote_actor_image_urls,
+        )
+    )
     app.state.runtime = Runtime(
         settings=settings,
         database=database,
@@ -891,10 +918,24 @@ async def pan_put_settings(payload: PanSettingsUpdatePayload, request: Request) 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     changed = any(getattr(before, key) != getattr(saved, key) for key in _STRM_LOCATOR_KEYS)
-    if changed and saved.strm_output_root:
+    root_changed = _strm_root_key(before.strm_output_root) != _strm_root_key(saved.strm_output_root)
+    if root_changed and saved.strm_output_root:
+        # Export directory moved: relocate managed folders, then rewrite bodies
+        # (covers a simultaneous token / URL change too).
+        _spawn(
+            app_runtime.pan_poller.migrate_root(before.strm_output_root, before),
+            "shadow-mdc-strm-migrate",
+        )
+    elif changed and saved.strm_output_root:
         # Token / public URL / mode rotation: rewrite existing .strm in place (no re-export).
         _spawn(app_runtime.pan_poller.rewrite(), "shadow-mdc-strm-rewrite")
     return PanSettingsPayload.model_validate(service.settings_status())
+
+
+def _strm_root_key(value: str | None) -> str | None:
+    if not value or not value.strip():
+        return None
+    return value.strip().rstrip("/\\") or value.strip()
 
 
 @app.get("/api/pan/strm/status")
@@ -908,7 +949,10 @@ def pan_strm_status(request: Request) -> dict[str, object]:
         "last_rewrite": poller.maintenance.last_rewrite,
         "last_reconcile_at": poller.maintenance.last_reconcile_at,
         "last_reconcile": poller.maintenance.last_reconcile,
+        "last_migrate_at": poller.maintenance.last_migrate_at,
+        "last_migrate": poller.maintenance.last_migrate,
         "emby_pending": len(notifier.pending),
+        "rate_limit": {name: shared_gate(name).snapshot() for name in ("115", "openlist")},
         "emby_last": None
         if last is None
         else {"attempted": last.attempted, "ok": last.ok, "sent": last.sent, "detail": last.detail},
@@ -919,6 +963,24 @@ def pan_strm_status(request: Request) -> dict[str, object]:
 async def pan_strm_rewrite(request: Request) -> dict[str, object]:
     result = await runtime(request).pan_poller.rewrite()
     return {"scanned": result.scanned, "rewritten": len(result.rewritten), "skipped": result.skipped}
+
+
+@app.post("/api/pan/strm/migrate", status_code=202)
+async def pan_strm_migrate(payload: StrmMigrateRequest, request: Request) -> dict[str, object]:
+    """Move managed exports from ``old_root`` into the configured export root, then rewrite."""
+
+    poller = runtime(request).pan_poller
+    if poller.maintenance.running:
+        return {"started": False, "running": poller.maintenance.running}
+    _spawn(poller.migrate_root(payload.old_root), "shadow-mdc-strm-migrate")
+    return {"started": True}
+
+
+@app.post("/api/pan/strm/notify/retry")
+async def pan_strm_notify_retry(request: Request) -> dict[str, object]:
+    """Retry pending Emby path notifications now (clears their backoff)."""
+
+    return {"pending": runtime(request).pan_poller.notifier.retry_now()}
 
 
 @app.post("/api/pan/strm/reconcile", status_code=202)
@@ -1564,7 +1626,7 @@ def patch_actor(actor_id: str, payload: ActorXHandleEdit, repo: Repo) -> ActorSu
     return ActorSummaryOut(
         id=actor.id,
         name=actor.name,
-        image_url=actor.image_url,
+        image_url=actor_image_display_url(actor.image_url),
         x_handle=handle,
         x_url=x_profile_url(handle),
     )
@@ -1585,7 +1647,7 @@ def merge_actors_endpoint(payload: ActorMergeRequest, repo: Repo) -> ActorSummar
     return ActorSummaryOut(
         id=actor.id,
         name=actor.name,
-        image_url=actor.image_url,
+        image_url=actor_image_display_url(actor.image_url),
         x_handle=handle,
         x_url=x_profile_url(handle),
     )
@@ -1669,12 +1731,15 @@ def get_media_server(request: Request) -> MediaServerSettingsPayload:
 
 
 @app.put("/api/settings/media-server", response_model=MediaServerSettingsPayload)
-def put_media_server(
+async def put_media_server(
     payload: MediaServerSettingsPayload, request: Request
 ) -> MediaServerSettingsPayload:
-    saved = runtime(request).media_server_store.save(
+    app_runtime = runtime(request)
+    saved = app_runtime.media_server_store.save(
         MediaServerSettings.model_validate(payload.model_dump())
     )
+    # New URL / key: retry queued path notifications right away.
+    app_runtime.pan_poller.notifier.retry_now()
     return MediaServerSettingsPayload.model_validate(saved.model_dump())
 
 
@@ -1792,7 +1857,7 @@ def list_actor_catalog(request: Request, repo: Repo) -> tuple[ActorProfile, ...]
     cache_key = actors_list_key()
     cached = cache.get_json(cache_key)
     if cached is not None:
-        return tuple(ActorProfile.model_validate(item) for item in cached)
+        return _local_actor_images(tuple(ActorProfile.model_validate(item) for item in cached))
     profiles = sync_actor_catalog_from_relations(
         app_runtime.actor_store,
         repo.list_actor_work_relations(),
@@ -1804,7 +1869,19 @@ def list_actor_catalog(request: Request, repo: Repo) -> tuple[ActorProfile, ...]
         [item.model_dump(mode="json") for item in enriched],
         ttl_seconds=TTL_ACTORS,
     )
-    return enriched
+    return _local_actor_images(enriched)
+
+
+def _local_actor_images(profiles: tuple[ActorProfile, ...]) -> tuple[ActorProfile, ...]:
+    """Swap remote portrait URLs for local / lazy-localize routes (no CDN hotlinks)."""
+
+    output: list[ActorProfile] = []
+    for profile in profiles:
+        mapped = actor_image_display_url(profile.image_url)
+        if mapped != profile.image_url:
+            profile = profile.model_copy(update={"image_url": mapped})
+        output.append(profile)
+    return tuple(output)
 
 
 @app.post("/api/actors/fill-gfriends-images", response_model=GfriendsFillOut)
@@ -1868,6 +1945,23 @@ def fill_gfriends_actor_images(payload: GfriendsFillRequest, request: Request, r
         dry_run=stats.dry_run,
         filetree_source=stats.filetree_source,
         filetree_entries=stats.filetree_entries,
+    )
+
+
+@app.get("/api/actor-images/remote/{key}")
+async def lazy_actor_image(key: str) -> Response:
+    """Serve a remote actor portrait from the local cache, downloading it on first view."""
+
+    if not valid_key(key):
+        raise HTTPException(status_code=400, detail="invalid image key")
+    path = await actor_images().localize(key)
+    if path is None:
+        raise HTTPException(status_code=404, detail="image not available")
+    media_type, _ = mimetypes.guess_type(str(path))
+    return FileResponse(
+        path,
+        media_type=media_type or "application/octet-stream",
+        headers={"Cache-Control": "public, max-age=86400"},
     )
 
 
@@ -4043,20 +4137,16 @@ async def organize_library_apply(
     app_runtime = runtime(request)
     media_settings = app_runtime.media_server_store.load()
     if media_settings.enabled and succeeded:
-        connector = MediaServerConnector(settings=media_settings, client=app_runtime.http)
-        refreshed_paths: set[str] = set()
+        # Path-only incremental notify through the durable, batched queue — never
+        # a full Library/Refresh after an incremental change.
+        refreshed_paths: list[str] = []
         for item in plan_items[:succeeded]:
-            dest = Path(item.asset.path).parent
             # After move, asset.path may already be updated.
-            key = str(dest)
-            if key in refreshed_paths:
-                continue
-            refreshed_paths.add(key)
-            result = await connector.refresh_path(key)
-            if result.ok:
-                refresh_ok += 1
-            elif result.attempted:
-                refresh_fail += 1
+            key = str(Path(item.asset.path).parent)
+            if key not in refreshed_paths:
+                refreshed_paths.append(key)
+        app_runtime.pan_poller.notifier.enqueue(refreshed_paths, "Modified")
+        refresh_ok = len(refreshed_paths)
     repo.finish_task_run(
         task,
         status="partial" if attempted != succeeded else "succeeded",
@@ -4306,7 +4396,7 @@ def _work_out(
         ActorSummaryOut(
             id=actor.id,
             name=actor.name,
-            image_url=actor.image_url,
+            image_url=actor_image_display_url(actor.image_url),
             x_handle=sanitize_stored_x_handle(getattr(actor, "x_handle", None)),
             x_url=x_profile_url(sanitize_stored_x_handle(getattr(actor, "x_handle", None))),
         )

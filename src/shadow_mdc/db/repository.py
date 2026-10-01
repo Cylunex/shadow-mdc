@@ -1101,6 +1101,27 @@ class Repository:
         self._session.flush()
         return task
 
+    def rebase_pan_offline_strm_paths(self, moves: dict[str, str]) -> int:
+        """Point ``strm_path`` of finished offline rows at migrated export folders.
+
+        ``moves`` maps an old export directory to its new location.
+        """
+
+        if not moves:
+            return 0
+        changed = 0
+        rows = self._session.scalars(select(PanOfflineTask).where(PanOfflineTask.strm_path.is_not(None)))
+        for row in rows:
+            current = row.strm_path or ""
+            parent = str(Path(current).parent)
+            target = moves.get(parent)
+            if target is None:
+                continue
+            row.strm_path = str(Path(target) / Path(current).name)
+            changed += 1
+        if changed:
+            self._session.flush()
+        return changed
 
     def attach_asset_to_work(self, asset: MediaAsset, work: Work) -> None:
         asset.work_id = work.id
