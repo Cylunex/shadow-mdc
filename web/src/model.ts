@@ -769,6 +769,9 @@ export const mediaServerSettingsSchema = z.object({
 });
 export const panStatusSchema = z.object({
   provider: z.string(),
+  backend: z.string().optional(),
+  offline_target: z.string().nullable().optional(),
+  offline_ready: z.boolean().optional(),
   configured: z.boolean(),
   available: z.boolean(),
   reason: z.string(),
@@ -806,7 +809,44 @@ export const panSettingsSchema = z.object({
   use_proxy: z.boolean(),
   subscription_auto_offline: z.boolean().default(true),
   client_id: z.string(),
-  client_secret_set: z.boolean()
+  client_secret_set: z.boolean(),
+  pan_backend: z.enum(["115_open", "openlist"]).catch("115_open").default("115_open"),
+  openlist_base_url: z.string().nullable().optional().default(null),
+  openlist_strm_base_url: z.string().nullable().optional().default(null),
+  openlist_offline_path: z.string().nullable().optional().default(null),
+  openlist_offline_tool: z.string().optional().default("115 Cloud"),
+  openlist_delete_policy: z.string().optional().default("delete_on_upload_succeed"),
+  openlist_strm_sign: z.boolean().optional().default(false),
+  openlist_username: z.string().nullable().optional().default(null),
+  openlist_token_set: z.boolean().optional().default(false),
+  openlist_password_set: z.boolean().optional().default(false)
+});
+export const openListTestSchema = z.object({
+  ok: z.boolean(),
+  base_url: z.string().nullable().optional(),
+  user: z.string().nullable().optional(),
+  base_path: z.string().nullable().optional(),
+  permission: z.number().nullable().optional(),
+  target_path: z.string().nullable().optional(),
+  target_ok: z.boolean().nullable().optional(),
+  target_entries: z.number().nullable().optional(),
+  target_writable: z.boolean().nullable().optional(),
+  tool: z.string().nullable().optional(),
+  tools: z.array(z.string()).nullable().optional(),
+  tool_available: z.boolean().nullable().optional(),
+  detail: z.string().nullable().optional()
+});
+export type OpenListTest = z.infer<typeof openListTestSchema>;
+export const openListFilesSchema = z.object({
+  path: z.string(),
+  page: z.number(),
+  total: z.number(),
+  items: z.array(z.object({
+    name: z.string(),
+    path: z.string(),
+    is_directory: z.boolean(),
+    size: z.number().nullable().optional()
+  }))
 });
 export const panOfflineTaskSchema = z.object({
   id: z.string(),
@@ -822,6 +862,8 @@ export const panOfflineTaskSchema = z.object({
   remote_path: z.string().nullable().optional(),
   strm_path: z.string().nullable().optional(),
   error: z.string().nullable().optional(),
+  backend: z.string().nullable().optional(),
+  remote_task_id: z.string().nullable().optional(),
   created_at: z.string(),
   updated_at: z.string()
 });

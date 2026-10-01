@@ -10,6 +10,9 @@ no code; openStrm MIT patterns for the 302 gateway):
 * A small sidecar (``.shadow-strm.json``) records file ids so token / public URL
   rotation can rewrite ``.strm`` bodies in place and delete reconciliation knows
   which 115 files back each folder.
+* OpenList backend: entries are keyed by the absolute OpenList path (``file_id``
+  starts with ``/``) and the body is ``{openlist}/d{path}[?sign=…]``, or the relay
+  ``{public}/api/strm/openlist{path}[?token=]`` which 302s to that ``/d`` link.
 """
 
 from __future__ import annotations
@@ -23,15 +26,17 @@ import tempfile
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 from ..db.models import ExternalIdentity, Work
 from ..media.nfo import build_nfo, write_nfo
 from ..media.strm import write_strm
+from .openlist import build_openlist_d_url
 from .pan import PanSettings, RemoteVideo
 
 SIDECAR_NAME = ".shadow-strm.json"
 RELAY_PATH = "/api/strm/play/"
+OPENLIST_RELAY_PATH = "/api/strm/openlist"
 _RELAY_RE = re.compile(r"/api/strm/play/(?P<fid>[A-Za-z0-9_-]{1,64})(?:[?#]|$)")
 _PART_RE = re.compile(r"(?i)(?:^|[-_ .\[(])(?:cd|part|pt|disc|disk)[-_ .]?(\d{1,2})(?=\D|$)")
 _UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -43,6 +48,12 @@ class StrmEntry:
     file_id: str
     pick_code: str | None = None
     remote_path: str | None = None
+    # OpenList backend: /d sign captured at export time (used when signing is on).
+    sign: str | None = None
+
+    @property
+    def is_openlist(self) -> bool:
+        return self.file_id.startswith("/")
 
 
 @dataclass(slots=True)
@@ -95,12 +106,41 @@ def build_openlist_locator(prefix: str, remote_path: str) -> str:
     return f"{base}/{rel}" if rel else base
 
 
+def build_openlist_relay_locator(public_base_url: str, path: str, token: str | None = None) -> str:
+    base = public_base_url.strip().rstrip("/")
+    if not base:
+        raise ValueError("strm_public_base_url is required for relay mode")
+    parsed = urlsplit(base)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("strm_public_base_url must be an absolute http(s) URL")
+    if not path.startswith("/"):
+        raise ValueError("OpenList path must be absolute")
+    url = f"{base}{OPENLIST_RELAY_PATH}{quote(path, safe='/')}"
+    if token:
+        url = f"{url}?{urlencode({'token': token})}"
+    return url
+
+
+def openlist_locator(settings: PanSettings, entry: StrmEntry) -> str:
+    path = entry.file_id
+    if settings.strm_mode == "relay":
+        return build_openlist_relay_locator(settings.strm_public_base_url or "", path, settings.strm_token)
+    base = settings.openlist_strm_base_url or settings.openlist_base_url
+    if not base:
+        raise ValueError("openlist_base_url is required for OpenList STRM")
+    if settings.openlist_strm_sign and not entry.sign:
+        raise ValueError("OpenList signing is on but no sign is known for this entry")
+    return build_openlist_d_url(base, path, entry.sign if settings.openlist_strm_sign else None)
+
+
 def parse_relay_file_id(locator: str) -> str | None:
     match = _RELAY_RE.search(locator.strip())
     return match.group("fid") if match else None
 
 
 def locator_for(settings: PanSettings, entry: StrmEntry) -> str:
+    if entry.is_openlist:
+        return openlist_locator(settings, entry)
     if settings.strm_mode == "relay":
         return build_relay_locator(settings.strm_public_base_url or "", entry.file_id, settings.strm_token)
     remote = entry.remote_path or entry.name.removesuffix(".strm")
@@ -128,7 +168,11 @@ def plan_strm_entries(code: str, videos: Sequence[RemoteVideo]) -> list[StrmEntr
         return []
     if len(items) == 1:
         only = items[0]
-        return [StrmEntry(f"{stem}.strm", only.file_id, only.pick_code, only.relative_path or only.name)]
+        return [
+            StrmEntry(
+                f"{stem}.strm", only.file_id, only.pick_code, only.relative_path or only.name, only.sign
+            )
+        ]
 
     def sort_key(item: RemoteVideo) -> tuple[int, str]:
         part = detect_part_number(item.name)
@@ -141,6 +185,7 @@ def plan_strm_entries(code: str, videos: Sequence[RemoteVideo]) -> list[StrmEntr
             item.file_id,
             item.pick_code,
             item.relative_path or item.name,
+            item.sign,
         )
         for index, item in enumerate(ordered, start=1)
     ]
@@ -213,6 +258,7 @@ def read_sidecar(directory: Path) -> list[StrmEntry]:
                 file_id=str(item["file_id"]),
                 pick_code=str(item["pick_code"]) if item.get("pick_code") else None,
                 remote_path=str(item["remote_path"]) if item.get("remote_path") else None,
+                sign=str(item["sign"]) if item.get("sign") else None,
             )
         )
     return entries
@@ -229,6 +275,7 @@ def write_sidecar(directory: Path, code: str, entries: Sequence[StrmEntry], *, w
                 "file_id": entry.file_id,
                 "pick_code": entry.pick_code,
                 "remote_path": entry.remote_path,
+                **({"backend": "openlist", "sign": entry.sign} if entry.is_openlist else {}),
             }
             for entry in entries
         ],
@@ -344,9 +391,10 @@ async def reconcile_deleted(
     root: Path,
     exists: Callable[[str], Awaitable[bool | None]],
 ) -> ReconcileResult:
-    """Remove export folders whose 115 source files are all gone.
+    """Remove export folders whose 115 / OpenList source files are all gone.
 
-    ``exists(file_id)`` returns True/False, or None when unknown (network error,
+    ``exists(file_id)`` (115 id, or OpenList path for ``/``-prefixed ids) returns
+    True/False, or None when unknown (network error,
     rate limit). Folders are only removed when *every* entry is definitively gone.
     """
 

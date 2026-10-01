@@ -89,6 +89,9 @@ from .api_models import (
     NonJavActorWorkOut,
     OrganizeApplyRequest,
     OrganizeRequest,
+    OpenListCredentialsOut,
+    OpenListCredentialsRequest,
+    OpenListTestOut,
     PanCredentialsImportRequest,
     PanDirectoryRequest,
     PanLoginOut,
@@ -255,6 +258,7 @@ from .services.pan import (
 )
 from .services.pan_poller import PanOfflinePoller
 from .services.strm_relay import RelayError, StrmRelay, token_ok
+from .services.openlist import OpenListApiError, build_openlist_d_url, path_within
 from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
 from .services.subscription_watch import (
     SubscriptionWatchPoller,
@@ -836,6 +840,8 @@ async def pan_files(
     page: int = Query(1, ge=1),
 ) -> dict[str, object]:
     pan = runtime(request).pan_service
+    if not pan.open115_connected() and pan.backend() == "openlist":
+        raise HTTPException(status_code=400, detail="OpenList mode: use /api/pan/openlist/files?path=")
     if not pan.status().get("connected"):
         raise HTTPException(status_code=400, detail="115 not connected")
     try:
@@ -857,7 +863,15 @@ def pan_get_settings(request: Request) -> PanSettingsPayload:
     return PanSettingsPayload.model_validate(runtime(request).pan_service.settings_status())
 
 
-_STRM_LOCATOR_KEYS = ("strm_mode", "strm_public_base_url", "strm_token", "strm_url_prefix")
+_STRM_LOCATOR_KEYS = (
+    "strm_mode",
+    "strm_public_base_url",
+    "strm_token",
+    "strm_url_prefix",
+    "openlist_base_url",
+    "openlist_strm_base_url",
+    "openlist_strm_sign",
+)
 _BACKGROUND_TASKS: set[asyncio.Task[object]] = set()
 
 
@@ -940,6 +954,100 @@ async def strm_play(
             "Location": target.url,
             "Cache-Control": "no-store",
             "X-Shadow-Strm-Source": target.source,
+        },
+    )
+
+
+@app.post("/api/pan/openlist/credentials", response_model=OpenListCredentialsOut)
+def pan_openlist_set_credentials(
+    payload: OpenListCredentialsRequest, request: Request
+) -> OpenListCredentialsOut:
+    """Write-only OpenList secrets (API token, or username/password for /api/auth/login)."""
+
+    status = runtime(request).pan_service.set_openlist_credentials(
+        token=payload.token, username=payload.username, password=payload.password
+    )
+    return OpenListCredentialsOut.model_validate(status)
+
+
+@app.delete("/api/pan/openlist/credentials", status_code=204)
+def pan_openlist_clear_credentials(request: Request) -> Response:
+    runtime(request).pan_service.clear_openlist_credentials()
+    return Response(status_code=204)
+
+
+@app.post("/api/pan/openlist/test", response_model=OpenListTestOut)
+async def pan_openlist_test(request: Request) -> OpenListTestOut:
+    """Test connection: GET /api/me, offline tools, and list the configured target path."""
+
+    result = await runtime(request).pan_service.openlist.test_connection()
+    return OpenListTestOut.model_validate(result)
+
+
+@app.get("/api/pan/openlist/files")
+async def pan_openlist_files(
+    request: Request,
+    path: str = Query("/", max_length=2048),
+    page: int = Query(1, ge=1),
+) -> dict[str, object]:
+    """Browse OpenList directories (to pick the offline target path)."""
+
+    pan = runtime(request).pan_service
+    if not pan.openlist_configured():
+        raise HTTPException(status_code=400, detail="OpenList not configured")
+    try:
+        entries, total = await pan.openlist.client().list_dir(path or "/", page=page, per_page=100)
+    except PanNotConfiguredError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OpenListApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "path": path or "/",
+        "page": page,
+        "total": total,
+        "items": [
+            {"name": entry.name, "path": entry.path, "is_directory": entry.is_dir, "size": entry.size}
+            for entry in entries
+        ],
+    }
+
+
+@app.api_route("/api/strm/openlist/{remote_path:path}", methods=["GET", "HEAD"])
+async def strm_openlist_play(
+    remote_path: str,
+    request: Request,
+    token: str | None = Query(None, max_length=256),
+) -> Response:
+    """Relay for OpenList-backed .strm files → 302 to the OpenList /d link (sign when enabled)."""
+
+    app_runtime = runtime(request)
+    pan = app_runtime.pan_service
+    cfg = pan.config_store.load()
+    if not token_ok(cfg.strm_token, token):
+        raise HTTPException(status_code=403, detail="invalid strm token")
+    path = "/" + remote_path.lstrip("/")
+    if ".." in path.split("/"):
+        raise HTTPException(status_code=400, detail="invalid path")
+    root = cfg.openlist_offline_path
+    if not root or not path_within(path, root):
+        raise HTTPException(status_code=404, detail="path outside the OpenList offline target")
+    base = cfg.openlist_strm_base_url or cfg.openlist_base_url
+    if not base:
+        raise HTTPException(status_code=503, detail="OpenList not configured")
+    sign: str | None = None
+    if cfg.openlist_strm_sign:
+        try:
+            sign = await pan.openlist.sign_for(path)
+        except (OpenListApiError, PanNotConfiguredError) as exc:
+            raise HTTPException(
+                status_code=502, detail=f"OpenList lookup failed: {type(exc).__name__}"
+            ) from exc
+    return Response(
+        status_code=302,
+        headers={
+            "Location": build_openlist_d_url(base, path, sign),
+            "Cache-Control": "no-store",
+            "X-Shadow-Strm-Source": "openlist",
         },
     )
 

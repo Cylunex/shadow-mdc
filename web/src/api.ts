@@ -64,6 +64,8 @@ import {
   panFilesSchema,
   panOfflineTaskSchema,
   panSettingsSchema,
+  openListTestSchema,
+  openListFilesSchema,
   subscriptionWatchStatusSchema,
   panLoginStatusSchema,
   panLoginSchema,
@@ -528,11 +530,45 @@ export const api = {
     strm_reconcile_interval_hours?: number;
     use_proxy: boolean;
     subscription_auto_offline: boolean;
-    client_id: string;
+    client_id?: string;
     client_secret?: string;
+    pan_backend?: "115_open" | "openlist";
+    openlist_base_url?: string | null;
+    openlist_strm_base_url?: string | null;
+    openlist_offline_path?: string | null;
+    openlist_offline_tool?: string;
+    openlist_delete_policy?: string;
+    openlist_strm_sign?: boolean;
   }) => request(panSettingsSchema, "/api/pan/settings", {
     method: "PUT", body: JSON.stringify(payload)
   }),
+  savePanBackend: (payload: {
+    pan_backend?: "115_open" | "openlist";
+    openlist_base_url?: string | null;
+    openlist_strm_base_url?: string | null;
+    openlist_offline_path?: string | null;
+    openlist_offline_tool?: string;
+    openlist_delete_policy?: string;
+    openlist_strm_sign?: boolean;
+  }) => request(panSettingsSchema, "/api/pan/settings", {
+    method: "PUT", body: JSON.stringify(payload)
+  }),
+  saveOpenListCredentials: (payload: { token?: string; username?: string; password?: string }) =>
+    request(z.object({
+      openlist_username: z.string().nullable(),
+      openlist_token_set: z.boolean(),
+      openlist_password_set: z.boolean()
+    }), "/api/pan/openlist/credentials", { method: "POST", body: JSON.stringify(payload) }),
+  clearOpenListCredentials: async (): Promise<void> => {
+    const path = "/api/pan/openlist/credentials";
+    const response = await fetch(appUrl(path) ?? path, { method: "DELETE" });
+    if (!response.ok) throw new Error(await response.text());
+  },
+  testOpenList: () => request(openListTestSchema, "/api/pan/openlist/test", { method: "POST" }),
+  openListFiles: (path = "/", page = 1) => {
+    const query = new URLSearchParams({ path, page: String(page) });
+    return request(openListFilesSchema, `/api/pan/openlist/files?${query}`);
+  },
   strmRewrite: () =>
     request(z.object({ scanned: z.number(), rewritten: z.number(), skipped: z.number() }),
       "/api/pan/strm/rewrite", { method: "POST" }),

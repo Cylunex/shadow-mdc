@@ -1,4 +1,4 @@
-"""Shared 115 offline enqueue used by the HTTP API and subscription watcher."""
+"""Shared offline enqueue (115 Open or OpenList backend) for the API and subscription watcher."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import httpx
 
 from ..db.models import PanOfflineTask, WorkMagnet, utc_now
 from ..db.repository import Repository
+from .openlist import offline_info_hash
 from .pan import (
     PanApiError,
     PanNotConfiguredError,
@@ -47,15 +48,23 @@ async def enqueue_work_offline(
     if work is None:
         raise OfflineEnqueueError("work not found", status_code=404)
 
+    backend = pan.backend()
     status = pan.status()
     if not status.get("connected"):
         raise OfflineEnqueueError(
-            "115 not connected — complete QR login in Settings",
+            "OpenList not configured — set base URL and token in Settings"
+            if backend == "openlist"
+            else "115 not connected — complete QR login in Settings",
             status_code=400,
         )
-    directory_id = pan.config_store.load().offline_directory_id
+    directory_id = pan.offline_target()
     if not directory_id:
-        raise OfflineEnqueueError("set offline directory id first", status_code=400)
+        raise OfflineEnqueueError(
+            "set OpenList offline target path first"
+            if backend == "openlist"
+            else "set offline directory id first",
+            status_code=400,
+        )
 
     resolved_url: str | None = None
     resolved_magnet_id: str | None = magnet_id
@@ -74,17 +83,27 @@ async def enqueue_work_offline(
     if not resolved_url:
         raise OfflineEnqueueError("empty magnet url", status_code=400)
 
+    if backend == "openlist" and not info_hash_hint:
+        info_hash_hint = offline_info_hash(resolved_url)
     if info_hash_hint:
         existing = repo.find_pan_offline_by_hash(work_id, info_hash_hint)
         if existing is not None and existing.status == "running":
             return OfflineEnqueueResult(task=existing, created=False, reused_running=True)
 
     try:
-        submit_result = await pan.submit_offline_url(
-            resolved_url,
-            directory_id=directory_id,
-            info_hash_hint=info_hash_hint,
-        )
+        if backend == "openlist":
+            submit_result = await pan.submit_offline_url(
+                resolved_url,
+                directory_id=directory_id,
+                info_hash_hint=info_hash_hint,
+                work_code=work.primary_code,
+            )
+        else:
+            submit_result = await pan.submit_offline_url(
+                resolved_url,
+                directory_id=directory_id,
+                info_hash_hint=info_hash_hint,
+            )
     except PanNotConfiguredError as exc:
         raise OfflineEnqueueError(str(exc), status_code=400) from exc
     except PanOfflineConflictError as exc:
@@ -95,13 +114,16 @@ async def enqueue_work_offline(
         raise OfflineEnqueueError(str(exc), status_code=502) from exc
     except httpx.HTTPError as exc:
         raise OfflineEnqueueError(
-            f"115 offline submit failed: {type(exc).__name__}",
+            f"{'OpenList' if backend == 'openlist' else '115'} offline submit failed: {type(exc).__name__}",
             status_code=502,
         ) from exc
 
     info_hash = str(submit_result.get("info_hash") or info_hash_hint or "").upper()
     if not info_hash:
         raise OfflineEnqueueError("115 offline submit missing info_hash", status_code=502)
+    row_backend = "openlist" if backend == "openlist" else None
+    raw_task_id = submit_result.get("remote_task_id") if backend == "openlist" else None
+    remote_task_id = str(raw_task_id) if raw_task_id else None
 
     existing = repo.find_pan_offline_by_hash(work_id, info_hash)
     if existing is not None:
@@ -111,6 +133,8 @@ async def enqueue_work_offline(
         existing.directory_id = directory_id
         existing.url = resolved_url
         existing.magnet_id = resolved_magnet_id
+        existing.backend = row_backend
+        existing.remote_task_id = remote_task_id
         existing.updated_at = utc_now()
         repo._session.flush()
         return OfflineEnqueueResult(task=existing, created=False)
@@ -121,6 +145,8 @@ async def enqueue_work_offline(
         directory_id=directory_id,
         url=resolved_url,
         magnet_id=resolved_magnet_id,
+        backend=row_backend,
+        remote_task_id=remote_task_id,
     )
     return OfflineEnqueueResult(task=task, created=True)
 

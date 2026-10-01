@@ -153,6 +153,16 @@ class Database:
                 connection.exec_driver_sql(
                     "ALTER TABLE actors ADD COLUMN x_handle VARCHAR(100)"
                 )
+            offline_columns = {
+                str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(pan_offline_tasks)")
+            }
+            # Nullable ADD COLUMN is a metadata-only change in SQLite (no table rewrite).
+            if offline_columns and "backend" not in offline_columns:
+                connection.exec_driver_sql("ALTER TABLE pan_offline_tasks ADD COLUMN backend VARCHAR(20)")
+            if offline_columns and "remote_task_id" not in offline_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE pan_offline_tasks ADD COLUMN remote_task_id VARCHAR(64)"
+                )
             connection.exec_driver_sql(
                 """
                 UPDATE libraries
@@ -1001,6 +1011,8 @@ class Repository:
         remote_name: str | None = None,
         status: str = "running",
         progress: float = 0.0,
+        backend: str | None = None,
+        remote_task_id: str | None = None,
     ) -> PanOfflineTask:
         row = PanOfflineTask(
             work_id=work_id,
@@ -1011,6 +1023,8 @@ class Repository:
             status=status,
             progress=progress,
             remote_name=remote_name,
+            backend=backend,
+            remote_task_id=remote_task_id,
         )
         self._session.add(row)
         self._session.flush()
@@ -1033,12 +1047,17 @@ class Repository:
             stmt = stmt.where(PanOfflineTask.status == status)
         return list(self._session.scalars(stmt))
 
-    def list_running_pan_offline_tasks(self) -> list[PanOfflineTask]:
-        return list(
-            self._session.scalars(
-                select(PanOfflineTask).where(PanOfflineTask.status == "running")
+    def list_running_pan_offline_tasks(self, *, backend: str | None = None) -> list[PanOfflineTask]:
+        """Running rows; ``backend="openlist"`` / ``"115_open"`` filters (NULL counts as 115_open)."""
+
+        stmt = select(PanOfflineTask).where(PanOfflineTask.status == "running")
+        if backend == "openlist":
+            stmt = stmt.where(PanOfflineTask.backend == "openlist")
+        elif backend is not None:
+            stmt = stmt.where(
+                or_(PanOfflineTask.backend.is_(None), PanOfflineTask.backend != "openlist")
             )
-        )
+        return list(self._session.scalars(stmt))
 
     def find_pan_offline_by_hash(self, work_id: str, info_hash: str) -> PanOfflineTask | None:
         digest = info_hash.strip().upper()
@@ -1060,6 +1079,7 @@ class Repository:
         remote_path: str | None = None,
         strm_path: str | None = None,
         error: str | None = ...,  # type: ignore[assignment]
+        remote_task_id: str | None = None,
     ) -> PanOfflineTask:
         if status is not None:
             task.status = status
@@ -1075,6 +1095,8 @@ class Repository:
             task.strm_path = strm_path
         if error is not ...:
             task.error = error
+        if remote_task_id is not None:
+            task.remote_task_id = remote_task_id
         task.updated_at = utc_now()
         self._session.flush()
         return task

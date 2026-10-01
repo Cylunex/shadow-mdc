@@ -13,7 +13,6 @@ import hashlib
 import json
 import logging
 import os
-import random
 import secrets
 import time as time_module
 import uuid
@@ -26,6 +25,50 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from ..media.strm import write_strm
+from .openlist import (
+    DEFAULT_DELETE_POLICY,
+    DEFAULT_OPENLIST_TOOL,
+    DELETE_POLICIES,
+    OpenListConfig,
+    OpenListCredentials,
+    OpenListCredentialStore,
+    OpenListService,
+    normalize_base_url,
+    normalize_openlist_path,
+)
+from .pan_common import (
+    SCAN_JITTER_SECONDS as SCAN_JITTER_SECONDS,
+)
+from .pan_common import (
+    SCAN_PACE_SECONDS as SCAN_PACE_SECONDS,
+)
+from .pan_common import (
+    PanApiError as PanApiError,
+)
+from .pan_common import (
+    PanNotConfiguredError as PanNotConfiguredError,
+)
+from .pan_common import (
+    PanOfflineConflictError as PanOfflineConflictError,
+)
+from .pan_common import (
+    PanOfflineExistsError as PanOfflineExistsError,
+)
+from .pan_common import (
+    RemoteVideo as RemoteVideo,
+)
+from .pan_common import (
+    ScanPacer as ScanPacer,
+)
+from .pan_common import (
+    _is_video_name as _is_video_name,
+)
+from .pan_common import (
+    is_video_name as is_video_name,
+)
+from .pan_common import (
+    parse_retry_after as parse_retry_after,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +83,6 @@ MAX_IN_FLIGHT = 2
 REQUEST_RETRIES = 3
 LOGIN_TTL_SECONDS = 300
 OFFLINE_EXISTS_CODE = 10008
-# Cold directory walks are paced softer than the generic limiter (~2-3 req/s).
-SCAN_PACE_SECONDS = 0.35
-SCAN_JITTER_SECONDS = 0.15
 # 115 reports these codes when a file/folder id no longer exists.
 FILE_GONE_CODES = frozenset({430004, 20018, 70004, 50015})
 # One UA for every 115 media call (downurl / play / probe). 115 binds download
@@ -52,7 +92,6 @@ DEFAULT_MEDIA_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
-_VIDEO_EXTENSIONS = (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".m2ts", ".mov", ".flv", ".webm", ".iso", ".rmvb")
 
 
 class PanClient(Protocol):
@@ -61,26 +100,6 @@ class PanClient(Protocol):
     async def list_directory(self, directory_id: str) -> object: ...
 
     async def enqueue_remote_urls(self, urls: list[str], *, directory_id: str) -> object: ...
-
-
-class PanNotConfiguredError(RuntimeError):
-    """Raised when pan features are invoked before credentials/config."""
-
-
-class PanApiError(RuntimeError):
-    """115 Open API returned an error."""
-
-    def __init__(self, message: str, *, code: int | None = None) -> None:
-        super().__init__(message)
-        self.code = code
-
-
-class PanOfflineExistsError(PanApiError):
-    """115 reports the offline task already exists (typically code 10008)."""
-
-
-class PanOfflineConflictError(PanApiError):
-    """Offline task exists but cannot be safely reused (wrong dir / incomplete)."""
 
 
 class PanCredentials(BaseModel):
@@ -121,6 +140,21 @@ class PanSettings(BaseModel):
     # Optional per-instance app credentials; unset values fall back to environment defaults.
     client_id: str | None = None
     client_secret: str | None = None
+    # Which backend drives offline download / listing / STRM:
+    # "115_open" = built-in 115 Open Platform client (QR login / token import);
+    # "openlist" = the user's OpenList instance that already mounts 115.
+    pan_backend: str = "115_open"
+    # OpenList backend (secrets live in openlist-credentials.json, not here).
+    openlist_base_url: str | None = None
+    # Base URL written into .strm files (/d links) when Emby reaches OpenList
+    # via a different address than this service does; defaults to openlist_base_url.
+    openlist_strm_base_url: str | None = None
+    # Offline target directory inside the mounted 115 storage, e.g. /115/云下载.
+    openlist_offline_path: str | None = None
+    openlist_offline_tool: str = DEFAULT_OPENLIST_TOOL
+    openlist_delete_policy: str = DEFAULT_DELETE_POLICY
+    # Append ?sign= to /d links (needed when OpenList signing is enabled).
+    openlist_strm_sign: bool = False
 
 
 class CredentialStore:
@@ -210,82 +244,11 @@ def _parse_progress(value: Any) -> float:
     return 0.0
 
 
-def parse_retry_after(header: str | None) -> float:
-    """Return seconds to wait from a Retry-After header (delta-seconds or HTTP-date)."""
-
-    if not header:
-        return 0.0
-    raw = header.strip()
-    if not raw:
-        return 0.0
-    try:
-        seconds = int(raw)
-    except ValueError:
-        seconds = -1
-    if seconds > 0:
-        return float(seconds)
-    try:
-        from email.utils import parsedate_to_datetime
-
-        when = parsedate_to_datetime(raw)
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=UTC)
-        wait = (when - datetime.now(UTC)).total_seconds()
-        return wait if wait > 0 else 0.0
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-
-
 def is_offline_exists_code(code: Any) -> bool:
     try:
         return int(code) == OFFLINE_EXISTS_CODE
     except (TypeError, ValueError):
         return False
-
-
-def _is_video_name(name: str) -> bool:
-    lowered = name.casefold()
-    return any(lowered.endswith(ext) for ext in _VIDEO_EXTENSIONS)
-
-
-def is_video_name(name: str) -> bool:
-    return _is_video_name(name)
-
-
-class ScanPacer:
-    """Per-request pacing for 115 directory walks: base delay + random jitter."""
-
-    def __init__(
-        self,
-        base_seconds: float = SCAN_PACE_SECONDS,
-        jitter_seconds: float = SCAN_JITTER_SECONDS,
-        *,
-        sleep: Any = None,
-        rng: random.Random | None = None,
-    ) -> None:
-        self.base_seconds = base_seconds
-        self.jitter_seconds = jitter_seconds
-        self._sleep = sleep or asyncio.sleep
-        self._rng = rng or random.Random()
-        self._calls = 0
-
-    def next_delay(self) -> float:
-        return self.base_seconds + self._rng.uniform(0.0, self.jitter_seconds)
-
-    async def wait(self) -> None:
-        # No delay before the very first request of a walk.
-        if self._calls:
-            await self._sleep(self.next_delay())
-        self._calls += 1
-
-
-@dataclass(frozen=True, slots=True)
-class RemoteVideo:
-    file_id: str
-    name: str
-    pick_code: str | None = None
-    relative_path: str = ""
-    size: int | None = None
 
 
 def is_file_gone_error(exc: BaseException) -> bool:
@@ -1143,11 +1106,19 @@ class PanService:
         client_secret: str | None = None,
         proxy_url: str | None = None,
         user_agent: str = "ShadowMDC/0.1",
+        openlist_transport: httpx.AsyncBaseTransport | None = None,
     ):
         pan_dir = data_dir / "pan"
         pan_dir.mkdir(parents=True, exist_ok=True)
         self.credentials_store = CredentialStore(pan_dir / "credentials.json")
         self.config_store = PanConfigStore(pan_dir / "config.json")
+        self.openlist_credentials = OpenListCredentialStore(pan_dir / "openlist-credentials.json")
+        self.openlist = OpenListService(
+            credentials=self.openlist_credentials,
+            config_loader=self._openlist_config,
+            transport=openlist_transport,
+            user_agent=user_agent,
+        )
         self.client_id = client_id or DEFAULT_PAN_CLIENT_ID
         self.client_secret = client_secret
         self.proxy_url = proxy_url
@@ -1159,6 +1130,73 @@ class PanService:
 
     def _config(self) -> PanSettings:
         return self.config_store.load()
+
+    def _openlist_config(self) -> OpenListConfig:
+        cfg = self._config()
+        return OpenListConfig(
+            base_url=cfg.openlist_base_url,
+            offline_path=cfg.openlist_offline_path,
+            tool=cfg.openlist_offline_tool or DEFAULT_OPENLIST_TOOL,
+            delete_policy=cfg.openlist_delete_policy or DEFAULT_DELETE_POLICY,
+            strm_base_url=cfg.openlist_strm_base_url or cfg.openlist_base_url,
+            strm_sign=cfg.openlist_strm_sign,
+        )
+
+    def backend(self) -> str:
+        return self._config().pan_backend
+
+    def offline_target(self, cfg: PanSettings | None = None) -> str | None:
+        """115 cid (115_open) or OpenList directory path (openlist) for new offline tasks."""
+
+        settings = cfg or self._config()
+        if settings.pan_backend == "openlist":
+            return settings.openlist_offline_path
+        return settings.offline_directory_id
+
+    def open115_connected(self) -> bool:
+        creds = self.credentials_store.load()
+        return creds is not None and bool(creds.access_token and creds.refresh_token)
+
+    def openlist_configured(self) -> bool:
+        return self.openlist.configured()
+
+    def openlist_credentials_status(self) -> dict[str, object]:
+        creds = self.openlist_credentials.load()
+        return {
+            "openlist_username": creds.username,
+            "openlist_token_set": bool(creds.token),
+            "openlist_password_set": bool(creds.password),
+        }
+
+    def set_openlist_credentials(
+        self,
+        *,
+        token: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+    ) -> dict[str, object]:
+        """Write-only secret update. ``None`` keeps a value, ``""`` clears it.
+
+        A token takes precedence over username/password; changing anything drops
+        the cached login session.
+        """
+
+        current = self.openlist_credentials.load()
+        data = current.model_dump()
+        for key, value in (("token", token), ("username", username), ("password", password)):
+            if value is None:
+                continue
+            cleaned = value.strip() if key != "password" else value
+            data[key] = cleaned or None
+        data["session_token"] = None
+        data["session_expires_at"] = None
+        self.openlist_credentials.save(OpenListCredentials.model_validate(data))
+        self.openlist.reset_session()
+        return self.openlist_credentials_status()
+
+    def clear_openlist_credentials(self) -> None:
+        self.openlist_credentials.clear()
+        self.openlist.reset_session()
 
     def _persist_credentials(self, credentials: PanCredentials) -> None:
         existing = self.credentials_store.load()
@@ -1187,6 +1225,7 @@ class PanService:
             "strm_token_set": bool(cfg.strm_token),
             "client_id": self._effective_client_id(cfg),
             "client_secret_set": bool(self._effective_client_secret(cfg)),
+            **self.openlist_credentials_status(),
         }
 
     def get_client(self) -> Pan115Client:
@@ -1207,8 +1246,44 @@ class PanService:
         return self._client
 
     def status(self) -> dict[str, object]:
-        creds = self.credentials_store.load()
         cfg = self._config()
+        if cfg.pan_backend == "openlist":
+            return self._openlist_status(cfg)
+        return {**self._open115_status(cfg), "backend": "115_open"}
+
+    def _openlist_status(self, cfg: PanSettings) -> dict[str, object]:
+        has_url = bool(cfg.openlist_base_url)
+        has_auth = self.openlist_credentials.load().has_auth()
+        configured = has_url and has_auth
+        if not has_url:
+            reason = "OpenList mode: set the OpenList base URL in Settings."
+        elif not has_auth:
+            reason = "OpenList mode: set an API token or username/password."
+        elif not cfg.openlist_offline_path:
+            reason = "OpenList configured; set the offline target path before submitting tasks."
+        else:
+            reason = "OpenList configured (use Test connection to verify)."
+        return {
+            "provider": "openlist",
+            "backend": "openlist",
+            "configured": configured,
+            "available": configured,
+            "connected": configured,
+            "reason": reason,
+            "offline_target": cfg.openlist_offline_path,
+            "offline_ready": bool(configured and cfg.openlist_offline_path),
+            "offline_directory_id": cfg.offline_directory_id,
+            "openlist_base_url": cfg.openlist_base_url,
+            "openlist_offline_path": cfg.openlist_offline_path,
+            "openlist_offline_tool": cfg.openlist_offline_tool,
+            "strm_enabled": cfg.strm_enabled,
+            "strm_output_root": cfg.strm_output_root,
+            "client_id": self._effective_client_id(cfg),
+            "account": None,
+        }
+
+    def _open115_status(self, cfg: PanSettings) -> dict[str, object]:
+        creds = self.credentials_store.load()
         configured = creds is not None and bool(creds.access_token and creds.refresh_token)
         directory_set = bool(cfg.offline_directory_id)
         if not configured:
@@ -1222,6 +1297,8 @@ class PanService:
                 ),
                 "client_id": self._effective_client_id(cfg),
                 "offline_directory_id": cfg.offline_directory_id,
+                "offline_target": cfg.offline_directory_id,
+                "offline_ready": False,
                 "strm_enabled": cfg.strm_enabled,
                 "connected": False,
             }
@@ -1236,6 +1313,8 @@ class PanService:
             ),
             "client_id": self._effective_client_id(cfg),
             "offline_directory_id": cfg.offline_directory_id,
+            "offline_target": cfg.offline_directory_id,
+            "offline_ready": directory_set,
             "strm_enabled": cfg.strm_enabled,
             "strm_output_root": cfg.strm_output_root,
             "strm_url_prefix": cfg.strm_url_prefix,
@@ -1363,6 +1442,13 @@ class PanService:
             "use_proxy": cfg.use_proxy,
             "client_id": self._effective_client_id(cfg),
             "client_secret_set": bool(self._effective_client_secret(cfg)),
+            "backend": cfg.pan_backend,
+            "openlist": {
+                "base_url": cfg.openlist_base_url,
+                "offline_path": cfg.openlist_offline_path,
+                "tool": cfg.openlist_offline_tool,
+                **self.openlist_credentials_status(),
+            },
         }
 
     def save_settings(self, patch: dict[str, Any]) -> PanSettings:
@@ -1383,9 +1469,36 @@ class PanService:
             "subscription_auto_offline",
             "client_id",
             "client_secret",
+            "pan_backend",
+            "openlist_base_url",
+            "openlist_strm_base_url",
+            "openlist_offline_path",
+            "openlist_offline_tool",
+            "openlist_delete_policy",
+            "openlist_strm_sign",
         ):
             if key in patch:
                 value = patch[key]
+                if key == "pan_backend":
+                    if value is None:
+                        continue
+                    if value not in {"115_open", "openlist"}:
+                        raise ValueError("pan_backend must be '115_open' or 'openlist'")
+                if key in {"openlist_base_url", "openlist_strm_base_url"}:
+                    value = normalize_base_url(value) if isinstance(value, str) else None
+                if key == "openlist_offline_path":
+                    value = normalize_openlist_path(value) if isinstance(value, str) else None
+                if key == "openlist_offline_tool":
+                    value = (value or "").strip() if isinstance(value, str) else ""
+                    if not value:
+                        value = DEFAULT_OPENLIST_TOOL
+                if key == "openlist_delete_policy":
+                    value = (value or "").strip() if isinstance(value, str) else ""
+                    value = value or DEFAULT_DELETE_POLICY
+                    if value not in DELETE_POLICIES:
+                        raise ValueError(f"openlist_delete_policy must be one of {sorted(DELETE_POLICIES)}")
+                if key == "openlist_strm_sign" and value is None:
+                    continue
                 if key == "client_id" and isinstance(value, str):
                     value = value.strip() or None
                 if key == "client_secret" and isinstance(value, str):
@@ -1442,20 +1555,29 @@ class PanService:
         *,
         directory_id: str,
         info_hash_hint: str | None = None,
+        work_code: str | None = None,
     ) -> dict[str, Any]:
-        """Per-hash locked offline submit with duplicate reconcile."""
+        """Per-hash locked offline submit with duplicate reconcile (either backend)."""
 
         from ..media.magnets import info_hash_from_uri
 
         hint = (info_hash_hint or info_hash_from_uri(url) or "").upper()
         lock = await self._hash_lock(hint or url)
         async with lock:
+            if self.backend() == "openlist":
+                return await self.openlist.submit_offline(
+                    url,
+                    target_path=directory_id,
+                    info_hash_hint=hint or None,
+                    work_code=work_code,
+                )
             client = self.get_client()
             return await client.submit_offline_url(
                 url, directory_id=directory_id, info_hash_hint=hint or None
             )
 
     async def aclose(self) -> None:
+        await self.openlist.aclose()
         if self._client is not None:
             await self._client.aclose()
             self._client = None

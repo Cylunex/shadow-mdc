@@ -402,6 +402,37 @@ Shadow MDC 只管理用户已有本地媒体的元数据与公开图片，不提
 
 相关 API：`GET /api/pan/status`、`POST /api/pan/credentials`、`POST /api/pan/login`、`GET /api/pan/login/{id}`、`GET|DELETE /api/pan/account`、`GET /api/pan/files`、`PUT /api/pan/directory`、`GET|PUT /api/pan/settings`、`POST|GET /api/works/{id}/offline`、`GET /api/pan/offline/tasks`。
 
+### OpenList 后端（`pan_backend = openlist`）
+
+已经在 OpenList（原 AList）里挂载了 115 时，可以不在本服务里做 115 二维码登录，改由 OpenList 完成离线下载、目录遍历和直链：
+设置 →「115 网盘」→「网盘后端」选 **OpenList**。115 凭证只保存在 OpenList 中。
+
+需要填写：
+
+| 字段 | 说明 | 例 |
+|------|------|----|
+| OpenList 地址 | 本服务访问 OpenList 的 base URL | `http://192.168.0.2:5244` |
+| API Token **或** 用户名/密码 | Token：OpenList 管理 → 设置 → 其他 → 令牌（请求头 `Authorization: <token>`）；或填用户名/密码，由本服务调用 `/api/auth/login` 换取 JWT（过期或 401 时自动重新登录） | — |
+| 离线目标路径 | OpenList 中 115 挂载下的目录，必须在 115 存储内 | `/115/云下载` |
+| 离线工具（tool） | 与挂载驱动对应：`115 Cloud`（Cookie 驱动，默认）或 `115 Open`（Open 平台驱动） | `115 Cloud` |
+| 删除策略 | `add_offline_download` 的 `delete_policy`，默认 `delete_on_upload_succeed` | — |
+| STRM 中的 OpenList 地址（可选） | Emby/播放器访问 OpenList 的地址，不同于上面时填写；留空则同上 | `http://192.168.0.2:5244` |
+| /d 附带 sign | OpenList 开启了签名（全局“签名所有”或存储“启用签名”）时勾选 | 关 |
+
+点「测试连接」会调用 `/api/me`、`/api/public/offline_download_tools`，并对目标路径做一次 `/api/fs/list`，返回用户名、目标目录是否可访问/可写以及工具是否可用（不回显任何密钥）。
+Token、用户名和密码只通过 `POST /api/pan/openlist/credentials` 写入 `data/pan/openlist-credentials.json`（chmod 600），读取接口只返回 `openlist_token_set` / `openlist_password_set`，日志中也不会出现。
+
+工作方式：
+
+- **离线**：「推到离线」与订阅自动离线都调用 `POST /api/fs/add_offline_download`（`urls`、目标 `path`、`tool`、`delete_policy`），本地任务行记录 `backend=openlist` 和 OpenList 任务 id。仍按 info_hash 加锁去重：OpenList 上已有同一磁力的未完成任务时直接接管；115 报“任务已存在”时，若目标目录下已能按番号 / 磁力 `dn` 找到结果则直接接管，否则返回 409。
+- **状态**：后台轮询 `GET /api/task/offline_download/{undone,done}`（任务状态 2=完成，4/7=取消/失败，其余视为进行中），并参考 `offline_download_transfer/undone`，转存未结束时保持 99%。OpenList 重启导致任务丢失时，按番号在目标目录里找结果；长时间找不到才标记失败。
+- **STRM**：完成后在目标目录中按磁力 `dn` 名称 → 番号匹配结果文件夹，用 `/api/fs/list`（与 115 冷遍历相同的 ~350 ms + 抖动节奏）遍历视频文件，仍按 poster/fanart → NFO → `.strm` 最后的顺序导出，多分段命名 `{番号}-cdN.strm`，并通知 Emby。`.strm` 内容为 `{OpenList 地址}/d{路径}`（路径按 URL 编码，开启签名时附 `?sign=`）。
+- **302 中转**：STRM 模式选“本服务 302 中转”时写 `{对外地址}/api/strm/openlist{路径}[?token=]`，请求时 302 到 OpenList `/d` 链接（开启签名时实时取 sign）；只允许离线目标路径以内的文件。
+- **重写 / 删除对账**：`.shadow-strm.json` 以 OpenList 路径为键；修改 OpenList 地址、签名、模式、对外地址或令牌后原地重写。对账用 `/api/fs/get` 判断文件是否存在，只有 OpenList 明确返回“object not found”才删除导出目录；存储未挂载、鉴权失败或网络错误一律保留。
+- 切回 `115_open` 不影响已有 115 任务和 STRM；两种后端的任务行互不干扰，只轮询当前后端的任务。
+
+OpenList API：`POST /api/pan/openlist/credentials`、`DELETE /api/pan/openlist/credentials`、`POST /api/pan/openlist/test`、`GET /api/pan/openlist/files?path=`、`GET|HEAD /api/strm/openlist/{path}`；`GET|PUT /api/pan/settings` 新增 `pan_backend`、`openlist_base_url`、`openlist_strm_base_url`、`openlist_offline_path`、`openlist_offline_tool`、`openlist_delete_policy`、`openlist_strm_sign`。
+
 作品库网格优先使用 `data/artwork/<work_id>/thumb.*` 列表缩略图；扫描时若旁路已有 `.nfo` 与 poster/fanart，会优先用于重建元数据与图片缓存。运行记录可通过 SSE（`/api/tasks/events`）实时刷新。
 
 ## 入库字段完整性（lookup / identify / seed）

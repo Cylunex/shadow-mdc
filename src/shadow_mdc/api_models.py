@@ -856,6 +856,16 @@ class PanSettingsPayload(BaseModel):
     subscription_auto_offline: bool = True
     client_id: str
     client_secret_set: bool
+    pan_backend: Literal["115_open", "openlist"] = "115_open"
+    openlist_base_url: str | None = None
+    openlist_strm_base_url: str | None = None
+    openlist_offline_path: str | None = None
+    openlist_offline_tool: str = "115 Cloud"
+    openlist_delete_policy: str = "delete_on_upload_succeed"
+    openlist_strm_sign: bool = False
+    openlist_username: str | None = None
+    openlist_token_set: bool = False
+    openlist_password_set: bool = False
 
 
 class PanSettingsUpdatePayload(BaseModel):
@@ -874,6 +884,43 @@ class PanSettingsUpdatePayload(BaseModel):
     subscription_auto_offline: bool | None = None
     client_id: str | None = None
     client_secret: str | None = None
+    pan_backend: Literal["115_open", "openlist"] | None = None
+    openlist_base_url: str | None = None
+    openlist_strm_base_url: str | None = None
+    openlist_offline_path: str | None = None
+    openlist_offline_tool: str | None = None
+    openlist_delete_policy: str | None = None
+    openlist_strm_sign: bool | None = None
+
+
+class OpenListCredentialsRequest(BaseModel):
+    """Write-only OpenList secrets. Omit a field to keep it; "" clears it."""
+
+    token: str | None = Field(default=None, max_length=4096)
+    username: str | None = Field(default=None, max_length=256)
+    password: str | None = Field(default=None, max_length=1024)
+
+
+class OpenListCredentialsOut(BaseModel):
+    openlist_username: str | None = None
+    openlist_token_set: bool = False
+    openlist_password_set: bool = False
+
+
+class OpenListTestOut(BaseModel):
+    ok: bool
+    base_url: str | None = None
+    user: str | None = None
+    base_path: str | None = None
+    permission: int | None = None
+    target_path: str | None = None
+    target_ok: bool | None = None
+    target_entries: int | None = None
+    target_writable: bool | None = None
+    tool: str | None = None
+    tools: list[str] | None = None
+    tool_available: bool | None = None
+    detail: str | None = None
 
 
 class SubscriptionWatchStatusOut(BaseModel):
@@ -910,6 +957,8 @@ class PanOfflineTaskOut(BaseModel):
     remote_path: str | None = None
     strm_path: str | None = None
     error: str | None = None
+    backend: str | None = None
+    remote_task_id: str | None = None
     created_at: datetime
     updated_at: datetime
 

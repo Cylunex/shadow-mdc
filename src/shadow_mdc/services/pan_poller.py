@@ -1,4 +1,4 @@
-"""Background poller for 115 offline tasks → STRM export + Emby notify.
+"""Background poller for offline tasks (115 Open or OpenList) → STRM export + Emby notify.
 
 Completed offline tasks are exported as ``{root}/{CODE}/`` with poster/fanart →
 NFO → ``.strm`` last. Network calls happen outside DB sessions so the SQLite
@@ -21,6 +21,12 @@ from ..db.repository import Database, Repository
 from ..media.artwork import ArtworkStore
 from .emby_notify import EmbyNotifier
 from .media_server import MediaServerStore
+from .openlist import (
+    OpenListEntry,
+    OpenListTask,
+    magnet_display_name,
+    path_within,
+)
 from .pan import (
     PanService,
     PanSettings,
@@ -46,6 +52,10 @@ logger = logging.getLogger(__name__)
 
 POLL_IDLE_SECONDS = 8.0
 POLL_ACTIVE_SECONDS = 3.0
+# OpenList: polls a row may go without seeing its task / result before giving up
+# (~3 s per active poll → about 15 min).
+OPENLIST_MISSING_LIMIT = 300
+OPENLIST_RESULT_LIMIT = 300
 _ROOT_NAMES = frozenset({"根目录", "根目錄", "/"})
 
 
@@ -94,6 +104,7 @@ class PanOfflinePoller:
         self._maintenance_lock = asyncio.Lock()
         self.maintenance = StrmMaintenanceStatus()
         self._state_path = (data_dir / "pan" / "strm-maintenance.json") if data_dir else None
+        self._openlist_misses: dict[str, int] = {}
         self._load_state()
 
     @property
@@ -172,9 +183,11 @@ class PanOfflinePoller:
     # ------------------------------------------------------------------ polling
 
     async def poll_once(self) -> bool:
+        if self._pan.config_store.load().pan_backend == "openlist":
+            return await self.poll_openlist_once()
         with self._database.session() as session:
             repo = Repository(session)
-            if not repo.list_running_pan_offline_tasks():
+            if not repo.list_running_pan_offline_tasks(backend="115_open"):
                 return False
 
         status = self._pan.status()
@@ -199,7 +212,7 @@ class PanOfflinePoller:
         completions: list[_Completion] = []
         with self._database.session() as session:
             repo = Repository(session)
-            for row in repo.list_running_pan_offline_tasks():
+            for row in repo.list_running_pan_offline_tasks(backend="115_open"):
                 remote = by_hash.get(row.info_hash.upper())
                 if remote is None:
                     continue
@@ -350,6 +363,198 @@ class PanOfflinePoller:
         if export_dir is not None:
             self._notifier.enqueue([map_to_emby_path(export_dir, cfg)], "Created")
 
+    # --------------------------------------------------------- OpenList backend
+
+    def _miss(self, key: str) -> int:
+        count = self._openlist_misses.get(key, 0) + 1
+        self._openlist_misses[key] = count
+        return count
+
+    async def poll_openlist_once(self) -> bool:
+        """Map OpenList offline tasks onto local rows; export finished ones.
+
+        Rows carry the OpenList task id (``remote_task_id``); rows without one
+        (adopted "already exists" results) or whose task vanished (OpenList
+        restart / cleared list) complete by matching the result under the target.
+        """
+
+        with self._database.session() as session:
+            repo = Repository(session)
+            rows = [
+                (
+                    row.id,
+                    row.work_id,
+                    row.info_hash,
+                    row.remote_task_id,
+                    row.directory_id,
+                    row.url,
+                    row.created_at,
+                )
+                for row in repo.list_running_pan_offline_tasks(backend="openlist")
+            ]
+        if not rows:
+            return False
+        service = self._pan.openlist
+        if not service.configured():
+            return True
+        try:
+            snapshot = await service.task_snapshot()
+        except Exception as exc:
+            logger.warning("OpenList task listing failed: %s", type(exc).__name__)
+            return True
+
+        finished: list[tuple[str, str, str, str | None, datetime | None]] = []
+        with self._database.session() as session:
+            repo = Repository(session)
+            for task_id, _work_id, info_hash, remote_id, target, url, created_at in rows:
+                row = repo.get_pan_offline_task(task_id)
+                if row is None:
+                    continue
+                task: OpenListTask | None = snapshot.by_id.get(remote_id) if remote_id else None
+                if task is None:
+                    task = snapshot.by_hash.get(info_hash.upper())
+                if task is None:
+                    # Unknown to OpenList right now: try the result folder below.
+                    finished.append((task_id, target, info_hash, url, created_at))
+                    continue
+                self._openlist_misses.pop(task_id, None)
+                status = task.local_status
+                if status == "running":
+                    repo.update_pan_offline_task(
+                        row, progress=task.progress, remote_task_id=task.id or None, error=None
+                    )
+                    continue
+                if status == "failed":
+                    repo.update_pan_offline_task(
+                        row,
+                        status="failed",
+                        progress=task.progress,
+                        remote_task_id=task.id or None,
+                        error=f"OpenList offline task failed: {task.error or task.status or 'unknown'}"[:500],
+                    )
+                    continue
+                if any(path_within(dst, target) for dst in snapshot.pending_transfer_dsts):
+                    repo.update_pan_offline_task(
+                        row, progress=99.0, remote_task_id=task.id or None, error="transferring"
+                    )
+                    continue
+                repo.update_pan_offline_task(row, progress=100.0, remote_task_id=task.id or None)
+                finished.append((task_id, target, info_hash, url, created_at))
+
+        cfg = self._pan.config_store.load()
+        for done_id, done_target, _done_hash, done_url, started_at in finished:
+            try:
+                await self._complete_openlist(done_id, done_target, done_url, started_at, cfg)
+            except Exception as exc:
+                logger.warning("OpenList completion failed: %s", type(exc).__name__)
+        if self._task_events is not None:
+            self._task_events.notify()
+        return True
+
+    async def _complete_openlist(
+        self,
+        task_id: str,
+        target: str,
+        url: str | None,
+        created_at: datetime | None,
+        cfg: PanSettings,
+    ) -> None:
+        with self._database.session() as session:
+            repo = Repository(session)
+            row = repo.get_pan_offline_task(task_id)
+            if row is None:
+                return
+            work = repo.get_work(row.work_id)
+            work_id = row.work_id
+            work_code = work.primary_code if work is not None else None
+            had_task = bool(row.remote_task_id)
+            needs_art = work is not None and any(
+                isinstance(item, dict) and item.get("url") and not item.get("local_path")
+                for item in (work.artwork or [])
+            )
+        service = self._pan.openlist
+        since: datetime | None = created_at
+        if since is not None and since.tzinfo is None:
+            since = since.replace(tzinfo=UTC)
+        entry: OpenListEntry | None = await service.find_result(
+            target,
+            work_code=work_code,
+            display_name=magnet_display_name(url),
+            since=since,
+            pacer=ScanPacer(),
+        )
+        if entry is None:
+            misses = self._miss(task_id)
+            limit = OPENLIST_RESULT_LIMIT if had_task else OPENLIST_MISSING_LIMIT
+            if misses >= limit:
+                self._openlist_misses.pop(task_id, None)
+                with self._database.session() as session:
+                    repo = Repository(session)
+                    row = repo.get_pan_offline_task(task_id)
+                    if row is not None:
+                        repo.update_pan_offline_task(
+                            row,
+                            status="failed",
+                            error=(
+                                "OpenList task finished but no matching result was found under "
+                                f"{target}"
+                                if had_task
+                                else f"OpenList task not found and no matching result under {target}"
+                            ),
+                        )
+            return
+        self._openlist_misses.pop(task_id, None)
+
+        strm_path: str | None = None
+        export_dir: Path | None = None
+        error: str | None = None
+        if cfg.strm_enabled and cfg.strm_output_root:
+            videos: list[RemoteVideo] = []
+            try:
+                videos = await service.walk_videos(entry, pacer=ScanPacer())
+            except Exception as exc:
+                logger.warning("OpenList walk failed: %s", type(exc).__name__)
+                error = f"OpenList walk failed: {type(exc).__name__}"
+            if videos:
+                if needs_art and self._data_dir is not None:
+                    await self._acquire_artwork(work_id)
+                try:
+                    with self._database.session() as session:
+                        repo = Repository(session)
+                        work = repo.get_work(work_id)
+                        identities = repo.identities_for_work(work.id) if work is not None else []
+                        code = work_code or Path(entry.name).stem
+                        result = export_work(
+                            settings=cfg,
+                            code=code,
+                            videos=videos,
+                            work=work,
+                            identities=identities,
+                        )
+                    export_dir = result.directory
+                    strm_path = str(result.strm_paths[0]) if result.strm_paths else None
+                except Exception as exc:
+                    logger.warning("STRM export failed: %s: %s", type(exc).__name__, exc)
+                    error = f"STRM export failed: {exc}"[:500]
+            elif error is None:
+                error = f"no video files found under {entry.path}"
+
+        with self._database.session() as session:
+            repo = Repository(session)
+            row = repo.get_pan_offline_task(task_id)
+            if row is not None:
+                repo.update_pan_offline_task(
+                    row,
+                    status="done",
+                    progress=100.0,
+                    remote_name=entry.name,
+                    remote_path=entry.path,
+                    strm_path=strm_path,
+                    error=error,
+                )
+        if export_dir is not None:
+            self._notifier.enqueue([map_to_emby_path(export_dir, cfg)], "Created")
+
     async def _acquire_artwork(self, work_id: str) -> None:
         assert self._data_dir is not None
         try:
@@ -393,18 +598,31 @@ class PanOfflinePoller:
         return result
 
     async def reconcile(self) -> ReconcileResult:
-        """Remove export folders whose 115 sources are gone; notify Emby."""
+        """Remove export folders whose 115 / OpenList sources are gone; notify Emby."""
 
         cfg = self._pan.config_store.load()
-        if not cfg.strm_output_root or not self._pan.status().get("connected"):
+        if cfg.pan_backend == "openlist":
+            open115_ready = self._pan.open115_connected()
+            openlist_ready = self._pan.openlist_configured()
+        else:
+            open115_ready = bool(self._pan.status().get("connected"))
+            openlist_ready = bool(cfg.openlist_base_url) and self._pan.openlist_configured()
+        if not cfg.strm_output_root or not (open115_ready or openlist_ready):
             return ReconcileResult()
-        client = self._pan.get_client()
         pacer = ScanPacer()
 
         async def exists(file_id: str) -> bool | None:
+            # Sidecar ids: 115 file id, or an absolute OpenList path (keyed by path).
+            if file_id.startswith("/"):
+                if not openlist_ready:
+                    return None
+                await pacer.wait()
+                return await self._pan.openlist.exists(file_id)
+            if not open115_ready:
+                return None
             await pacer.wait()
             try:
-                info = await client.get_folder_info(file_id)
+                info = await self._pan.get_client().get_folder_info(file_id)
             except Exception as exc:
                 if is_file_gone_error(exc):
                     return False

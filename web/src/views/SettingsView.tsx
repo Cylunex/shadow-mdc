@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { FieldPrioritySettings } from "../components/FieldPrioritySettings";
 import { IdentifyByUrlPanel } from "../components/IdentifyByUrlPanel";
-import type { Library, MediaServerSettings, PanOfflineTask, PanSettings, PanStatus } from "../model";
+import type { Library, MediaServerSettings, OpenListTest, PanOfflineTask, PanSettings, PanStatus } from "../model";
 import { AliasEditor, CatalogImportEditor, FilterWordsEditor, Libraries, ProviderDiagnostics } from "../panels";
 
 type RefreshMode = "none" | "works" | "actors" | "inbox" | "tasks" | "core" | "all";
@@ -29,6 +29,13 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
   const [accessTokenDraft, setAccessTokenDraft] = useState("");
   const [refreshTokenDraft, setRefreshTokenDraft] = useState("");
   const [browseId, setBrowseId] = useState("0");
+  // OpenList backend drafts. Secrets are write-only: "" in a draft means "keep".
+  const [olTokenDraft, setOlTokenDraft] = useState("");
+  const [olUserDraft, setOlUserDraft] = useState("");
+  const [olPasswordDraft, setOlPasswordDraft] = useState("");
+  const [olTest, setOlTest] = useState<OpenListTest | null>(null);
+  const [olBrowsePath, setOlBrowsePath] = useState("/");
+  const [olBrowseItems, setOlBrowseItems] = useState<Array<{ name: string; path: string }>>([]);
   const [browseItems, setBrowseItems] = useState<Array<{ id: string; name: string; is_directory: boolean }>>([]);
 
   const reloadPan = async () => {
@@ -43,6 +50,8 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
       setDirDraft(settings.offline_directory_id ?? "");
       setClientIdDraft(settings.client_id);
       setClientSecretDraft("");
+      setOlUserDraft(settings.openlist_username ?? "");
+      if (settings.openlist_offline_path) setOlBrowsePath(settings.openlist_offline_path);
     }
     setOfflineTasks(tasks);
   };
@@ -94,6 +103,28 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
       <div className="settings-grid">
         <article className="settings-card">
           <h2>115 网盘</h2>
+          {panSettings && (
+            <label>
+              <span>网盘后端</span>
+              <select
+                value={panSettings.pan_backend}
+                onChange={(e) => {
+                  const pan_backend = e.target.value as "115_open" | "openlist";
+                  void run("pan-backend", async () => {
+                    const saved = await api.savePanBackend({ pan_backend });
+                    setPanSettings(saved);
+                    setOlTest(null);
+                    await reloadPan();
+                    report(pan_backend === "openlist" ? "已切换到 OpenList 后端" : "已切换到 115 Open 后端");
+                  }, "none");
+                }}
+                disabled={busy === "pan-backend"}
+              >
+                <option value="115_open">115 Open 平台（二维码登录 / Token 导入）</option>
+                <option value="openlist">OpenList（使用已挂载 115 的 OpenList）</option>
+              </select>
+            </label>
+          )}
           <p className="muted">
             {pan
               ? `${pan.provider} · ${pan.available ? "可用" : "不可用"} — ${pan.reason}`
@@ -105,6 +136,194 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
               {pan.account.expires_at ? ` · token 至 ${pan.account.expires_at}` : ""}
             </p>
           )}
+          {panSettings?.pan_backend === "openlist" && (
+            <form
+              className="settings-form"
+              style={{ marginTop: 12 }}
+              onSubmit={(event) => {
+                event.preventDefault();
+                void run("openlist-save", async () => {
+                  const saved = await api.savePanBackend({
+                    openlist_base_url: panSettings.openlist_base_url?.trim() || null,
+                    openlist_strm_base_url: panSettings.openlist_strm_base_url?.trim() || null,
+                    openlist_offline_path: panSettings.openlist_offline_path?.trim() || null,
+                    openlist_offline_tool: panSettings.openlist_offline_tool.trim() || "115 Cloud",
+                    openlist_delete_policy: panSettings.openlist_delete_policy,
+                    openlist_strm_sign: panSettings.openlist_strm_sign,
+                  });
+                  const secrets: { token?: string; username?: string; password?: string } = {};
+                  if (olTokenDraft.trim()) secrets.token = olTokenDraft.trim();
+                  if (olUserDraft.trim() !== (saved.openlist_username ?? "")) secrets.username = olUserDraft.trim();
+                  if (olPasswordDraft) secrets.password = olPasswordDraft;
+                  if (Object.keys(secrets).length > 0) await api.saveOpenListCredentials(secrets);
+                  setOlTokenDraft("");
+                  setOlPasswordDraft("");
+                  await reloadPan();
+                  report("OpenList 设置已保存");
+                }, "none");
+              }}
+            >
+              <p className="roadmap-note">
+                离线下载、目录遍历和 STRM 全部通过 OpenList API 完成，115 凭证只保存在 OpenList 里。
+                OpenList 需已挂载 115 存储（115 Cloud 或 115 Open 驱动），离线工具名需与挂载驱动对应。
+              </p>
+              <label>
+                <span>OpenList 地址（本服务访问用）</span>
+                <input
+                  value={panSettings.openlist_base_url ?? ""}
+                  onChange={(e) => setPanSettings({ ...panSettings, openlist_base_url: e.target.value || null })}
+                  placeholder="http://192.168.0.2:5244"
+                />
+              </label>
+              <label>
+                <span>API Token{panSettings.openlist_token_set ? "（已设置，留空保持不变）" : ""}</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={olTokenDraft}
+                  onChange={(e) => setOlTokenDraft(e.target.value)}
+                  placeholder="OpenList 管理 → 设置 → 其他 → 令牌；或下方填用户名/密码"
+                />
+              </label>
+              <div className="magnet-row" style={{ gridTemplateColumns: "1fr 1fr" }}>
+                <input
+                  value={olUserDraft}
+                  autoComplete="off"
+                  onChange={(e) => setOlUserDraft(e.target.value)}
+                  placeholder="用户名（可选）"
+                />
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={olPasswordDraft}
+                  onChange={(e) => setOlPasswordDraft(e.target.value)}
+                  placeholder={panSettings.openlist_password_set ? "密码已设置，留空保持" : "密码（可选）"}
+                />
+              </div>
+              <label>
+                <span>离线目标路径（OpenList 内 115 挂载下的目录）</span>
+                <input
+                  value={panSettings.openlist_offline_path ?? ""}
+                  onChange={(e) => setPanSettings({ ...panSettings, openlist_offline_path: e.target.value || null })}
+                  placeholder="/115/云下载"
+                />
+              </label>
+              <div className="magnet-row" style={{ gridTemplateColumns: "1fr auto auto" }}>
+                <input value={olBrowsePath} onChange={(e) => setOlBrowsePath(e.target.value)} placeholder="浏览路径" />
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!pan?.connected || busy === "openlist-browse"}
+                  onClick={() => {
+                    void run("openlist-browse", async () => {
+                      const page = await api.openListFiles(olBrowsePath || "/", 1);
+                      setOlBrowseItems(page.items.filter((item) => item.is_directory));
+                      report(`已加载 ${page.items.length} 项`);
+                    }, "none");
+                  }}
+                >浏览</button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => setPanSettings({ ...panSettings, openlist_offline_path: olBrowsePath })}
+                >选用当前</button>
+              </div>
+              {olBrowseItems.length > 0 && (
+                <ul className="muted" style={{ maxHeight: 160, overflow: "auto", paddingLeft: 18 }}>
+                  {olBrowseItems.map((item) => (
+                    <li key={item.path}>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => {
+                          setOlBrowsePath(item.path);
+                          setPanSettings({ ...panSettings, openlist_offline_path: item.path });
+                        }}
+                      >{item.name}</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <label>
+                <span>离线工具（tool）</span>
+                <input
+                  list="openlist-tools"
+                  value={panSettings.openlist_offline_tool}
+                  onChange={(e) => setPanSettings({ ...panSettings, openlist_offline_tool: e.target.value })}
+                  placeholder="115 Cloud"
+                />
+                <datalist id="openlist-tools">
+                  <option value="115 Cloud" />
+                  <option value="115 Open" />
+                </datalist>
+              </label>
+              <label>
+                <span>删除策略（delete_policy）</span>
+                <select
+                  value={panSettings.openlist_delete_policy}
+                  onChange={(e) => setPanSettings({ ...panSettings, openlist_delete_policy: e.target.value })}
+                >
+                  <option value="delete_on_upload_succeed">delete_on_upload_succeed（默认）</option>
+                  <option value="delete_on_upload_failed">delete_on_upload_failed</option>
+                  <option value="delete_never">delete_never</option>
+                  <option value="delete_always">delete_always</option>
+                </select>
+              </label>
+              <label>
+                <span>STRM 中的 OpenList 地址（Emby 访问用，可选）</span>
+                <input
+                  value={panSettings.openlist_strm_base_url ?? ""}
+                  onChange={(e) => setPanSettings({ ...panSettings, openlist_strm_base_url: e.target.value || null })}
+                  placeholder="留空 = 与上面的 OpenList 地址相同"
+                />
+              </label>
+              <label className="check-line">
+                <input
+                  type="checkbox"
+                  checked={panSettings.openlist_strm_sign}
+                  onChange={(e) => setPanSettings({ ...panSettings, openlist_strm_sign: e.target.checked })}
+                />
+                /d 链接附带 ?sign=（OpenList 开启签名时勾选）
+              </label>
+              <div className="command-bar-row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+                <button type="submit" disabled={busy === "openlist-save"}>保存 OpenList 设置</button>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy === "openlist-test"}
+                  onClick={() => {
+                    void run("openlist-test", async () => {
+                      const result = await api.testOpenList();
+                      setOlTest(result);
+                      report(result.ok ? `OpenList 连接正常：${result.detail ?? ""}` : `OpenList 连接失败：${result.detail ?? ""}`);
+                    }, "none");
+                  }}
+                >测试连接</button>
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={busy === "openlist-clear"}
+                  onClick={() => {
+                    void run("openlist-clear", async () => {
+                      await api.clearOpenListCredentials();
+                      setOlUserDraft("");
+                      await reloadPan();
+                      report("已清除 OpenList 凭证");
+                    }, "none");
+                  }}
+                >清除凭证</button>
+              </div>
+              {olTest && (
+                <p className="muted">
+                  {olTest.ok ? "✓" : "✗"} 用户 {olTest.user ?? "—"}
+                  {olTest.target_path ? ` · 目标 ${olTest.target_path}：${olTest.target_ok ? `可访问（${olTest.target_entries ?? 0} 项${olTest.target_writable === false ? "，无写权限" : ""}）` : "不可访问"}` : ""}
+                  {olTest.tools ? ` · 可用工具 ${olTest.tools.join(" / ")}` : ""}
+                  {olTest.detail ? ` — ${olTest.detail}` : ""}
+                </p>
+              )}
+            </form>
+          )}
+          {panSettings?.pan_backend !== "openlist" && (<>
           <p className="roadmap-note">
             使用 Open Platform 设备码 + PKCE 登录。默认 client_id={pan?.client_id || "100197303"}（社区临时应用，建议在 open.115.com 申请自有应用并通过 SHADOW_MDC_PAN_CLIENT_ID 配置）。
             磁力仍保存在本地；「推到 115 离线」是单独动作。建议 115 请求直连（勿经代理），以免触发风控。
@@ -189,6 +408,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
               disabled={!accessTokenDraft || !refreshTokenDraft || busy === "pan-import-tokens"}
             >导入 OpenList Token</button>
           </form>
+          </>)}
 
           {panSettings && (
             <form
@@ -197,23 +417,25 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
               onSubmit={(event) => {
                 event.preventDefault();
                 void run("pan-settings", async () => {
+                  const openlistMode = panSettings.pan_backend === "openlist";
                   const saved = await api.savePanSettings({
                     ...panSettings,
-                    client_id: clientIdDraft.trim(),
-                    ...(clientSecretDraft.trim() ? { client_secret: clientSecretDraft.trim() } : {}),
+                    ...(openlistMode ? {} : { client_id: clientIdDraft.trim() }),
+                    ...(!openlistMode && clientSecretDraft.trim() ? { client_secret: clientSecretDraft.trim() } : {}),
                     ...(strmTokenDraft !== null ? { strm_token: strmTokenDraft.trim() } : {}),
-                    offline_directory_id: dirDraft.trim() || null,
+                    offline_directory_id: openlistMode ? panSettings.offline_directory_id : dirDraft.trim() || null,
                   });
                   setPanSettings(saved);
                   setStrmTokenDraft(null);
                   setClientIdDraft(saved.client_id);
                   setClientSecretDraft("");
-                  await api.panSetDirectory(dirDraft.trim() || "0").catch(() => undefined);
+                  if (!openlistMode) await api.panSetDirectory(dirDraft.trim() || "0").catch(() => undefined);
                   await reloadPan();
-                  report("115 设置已保存");
+                  report(openlistMode ? "STRM / 订阅设置已保存" : "115 设置已保存");
                 }, "none");
               }}
             >
+              {panSettings.pan_backend !== "openlist" && (<>
               <label>
                 <span>115 Open 应用 client_id</span>
                 <input
@@ -285,6 +507,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                   ))}
                 </ul>
               )}
+              </>)}
               <label className="check-line">
                 <input
                   type="checkbox"
@@ -307,11 +530,15 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                   value={panSettings.strm_mode}
                   onChange={(e) => setPanSettings({ ...panSettings, strm_mode: e.target.value as "openlist" | "relay" })}
                 >
-                  <option value="openlist">OpenList /d 前缀（原有方式）</option>
-                  <option value="relay">本服务 302 中转 /api/strm/play/&#123;file_id&#125;</option>
+                  <option value="openlist">
+                    {panSettings.pan_backend === "openlist" ? "OpenList /d 直链（{OpenList 地址}/d{路径}）" : "OpenList /d 前缀（原有方式）"}
+                  </option>
+                  <option value="relay">
+                    {panSettings.pan_backend === "openlist" ? "本服务 302 中转 → OpenList /d 链接" : "本服务 302 中转 /api/strm/play/{file_id}"}
+                  </option>
                 </select>
               </label>
-              {panSettings.strm_mode === "openlist" ? (
+              {panSettings.strm_mode === "openlist" && panSettings.pan_backend === "openlist" ? null : panSettings.strm_mode === "openlist" ? (
                 <label>
                   <span>STRM URL 前缀（OpenList /d/…）</span>
                   <input
@@ -408,7 +635,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                   checked={panSettings.use_proxy}
                   onChange={(e) => setPanSettings({ ...panSettings, use_proxy: e.target.checked })}
                 />
-                115 请求走 SHADOW_MDC_PROXY_URL（默认关闭，降低风控）
+                115 请求走 SHADOW_MDC_PROXY_URL（默认关闭，降低风控；OpenList 后端始终直连）
               </label>
               <label className="check-line">
                 <input
@@ -416,9 +643,11 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                   checked={panSettings.subscription_auto_offline}
                   onChange={(e) => setPanSettings({ ...panSettings, subscription_auto_offline: e.target.checked })}
                 />
-                订阅 / 想看自动盯磁链并推 115 离线（未登录时仅保存磁链）
+                订阅 / 想看自动盯磁链并推离线（115 Open 或 OpenList，未配置时仅保存磁链）
               </label>
-              <button type="submit" disabled={busy === "pan-settings"}>保存 115 设置</button>
+              <button type="submit" disabled={busy === "pan-settings"}>
+                {panSettings.pan_backend === "openlist" ? "保存 STRM / 订阅设置" : "保存 115 设置"}
+              </button>
             </form>
           )}
 
@@ -430,6 +659,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                 {offlineTasks.slice(0, 12).map((task) => (
                   <div className="magnet-row" key={task.id}>
                     <span>
+                      {task.backend === "openlist" ? "[OpenList] " : ""}
                       {task.remote_name || task.info_hash.slice(0, 12)}
                       {" · "}
                       {task.status}

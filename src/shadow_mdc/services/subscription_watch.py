@@ -1,4 +1,4 @@
-"""Background watcher: subscribed/want works → refresh magnets → optional 115 offline."""
+"""Background watcher: subscribed/want works → refresh magnets → optional offline (115 or OpenList)."""
 
 from __future__ import annotations
 
@@ -238,7 +238,11 @@ class SubscriptionWatchService:
         stats.targets = len(work_ids)
 
         pan_status = self._pan.status()
-        pan_ready = bool(pan_status.get("connected") and cfg.offline_directory_id)
+        # "offline_ready" covers both backends (115 cid / OpenList target path).
+        if "offline_ready" in pan_status:
+            pan_ready = bool(pan_status.get("connected") and pan_status.get("offline_ready"))
+        else:
+            pan_ready = bool(pan_status.get("connected") and cfg.offline_directory_id)
 
         checkpoint = previous.model_copy(
             update={

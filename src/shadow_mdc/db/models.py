@@ -283,5 +283,10 @@ class PanOfflineTask(Base):
     remote_path: Mapped[str | None] = mapped_column(Text)
     strm_path: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
+    # NULL / "115_open" = 115 Open Platform task; "openlist" = OpenList-managed task
+    # (directory_id then holds the OpenList target path).
+    backend: Mapped[str | None] = mapped_column(String(20))
+    # OpenList task id (tid) for /api/task/offline_download polling.
+    remote_task_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
