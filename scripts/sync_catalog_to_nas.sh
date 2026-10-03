@@ -31,6 +31,12 @@ TARGET_DATA_DIR="${TARGET_DATA_DIR:-$NAS_DATA_DIR}"
 PYTHON_BIN="${PYTHON_BIN:-$ROOT/.venv/bin/python}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 BUNDLE_DIR="$EXPORTS_ROOT/shadow-mdc-daily-chart-incr-$STAMP"
+# Export fingerprint baseline. It only advances after the NAS import succeeded: the export
+# writes the new fingerprints to PENDING_STATE and we promote it at the very end. (Before,
+# a failed rsync/ssh still advanced the baseline, so works seeded while the NAS was down were
+# silently dropped from every later incremental bundle.)
+STATE_FILE="${EXPORT_STATE_FILE:-$SOURCE_DATA_DIR/export-manifest.json}"
+PENDING_STATE="$EXPORTS_ROOT/$(basename "$BUNDLE_DIR").state.json"
 DRY_RUN=0
 
 for arg in "$@"; do
@@ -57,6 +63,11 @@ fi
 
 mkdir -p "$EXPORTS_ROOT"
 # export_catalog_bundle creates BUNDLE_DIR and errors if it already exists
+if [[ -f "$STATE_FILE" ]]; then
+  cp -p "$STATE_FILE" "$PENDING_STATE"
+else
+  rm -f "$PENDING_STATE"
+fi
 
 echo "==> incremental export → $BUNDLE_DIR"
 (
@@ -66,11 +77,13 @@ echo "==> incremental export → $BUNDLE_DIR"
     --source-database "$SOURCE_DB" \
     --output "$BUNDLE_DIR" \
     --target-data-dir "$TARGET_DATA_DIR" \
+    --state-file "$PENDING_STATE" \
     --incremental
 )
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "dry-run: skipping rsync / NAS import / service restart"
+  rm -f "$PENDING_STATE"
+  echo "dry-run: skipping rsync / NAS import / service restart (export baseline unchanged)"
   echo "bundle ready at $BUNDLE_DIR"
   exit 0
 fi
@@ -102,6 +115,9 @@ ssh "$NAS_HOST" "supervisorctl start '$NAS_SERVICE'"
 
 echo "==> health check"
 ssh "$NAS_HOST" "curl -fsS 'http://127.0.0.1:8700/api/health' || true"
+
+echo "==> advance export baseline"
+mv -f "$PENDING_STATE" "$STATE_FILE"
 
 echo "done: synced $BUNDLE_DIR → NAS"
 echo
