@@ -203,6 +203,7 @@ from .services.directory_actor_rules import (
     DirectoryActorRule,
     DirectoryActorRuleStore,
 )
+from .providers.javdb_api import build_javdb_app_api
 from .services.discover import DiscoverService
 from .services.field_priority import FieldPriorityConfig, FieldPriorityStore
 from .services.identify import IdentifyService
@@ -486,6 +487,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         javdb_provider if isinstance(javdb_provider, JavDBProvider) else None,
         fanza_provider if isinstance(fanza_provider, FanzaProvider) else None,
         r18_dump_path=settings.resolved_r18_dump_db(),
+        javdb_api=build_javdb_app_api(settings, client),
     )
     task_events = TaskEventHub()
     pan_poller = PanOfflinePoller(

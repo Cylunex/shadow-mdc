@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,14 +22,18 @@ if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
 from shadow_mdc.config import Settings  # noqa: E402
+import httpx  # noqa: E402
+
+from shadow_mdc.services.r18_dump_download import (  # noqa: E402
+    LATEST_DUMP_URL,
+    R18DumpDownloadError,
+    download_latest_dump,
+)
 from shadow_mdc.services.r18_dump import (  # noqa: E402
     PROVIDER_ID,
     R18DumpStore,
     import_dump_to_sqlite,
 )
-
-LATEST_URL = "https://r18.dev/dumps/latest"
-
 
 def _dump_dir(settings: Settings) -> Path:
     path = settings.data_dir / "r18-dumps"
@@ -39,36 +42,32 @@ def _dump_dir(settings: Settings) -> Path:
 
 
 def _download_latest(target_dir: Path, *, proxy: str | None) -> Path:
-    handlers: list[urllib.request.BaseHandler] = []
-    if proxy:
-        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    opener = urllib.request.build_opener(*handlers)
-    # Cloudflare edge rejects urllib's default UA with HTTP 403.
-    request = urllib.request.Request(
-        LATEST_URL,
-        headers={"User-Agent": "shadow-mdc/1.0 (+https://github.com/Cylunex/shadow-mdc)"},
-    )
-    print(f"Downloading {LATEST_URL} …", flush=True)
-    with opener.open(request, timeout=600) as response:
-        final_url = response.geturl()
-        name = Path(final_url).name or "r18dev_dump_latest.sql.gz"
-        if not name.endswith(".gz"):
-            name = f"{name}.sql.gz"
-        destination = target_dir / name
-        temporary = destination.with_suffix(destination.suffix + ".part")
-        total = 0
-        with temporary.open("wb") as handle:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                handle.write(chunk)
-                total += len(chunk)
-                if total % (20 * 1024 * 1024) < 1024 * 1024:
-                    print(f"  … {total / (1024 * 1024):.1f} MiB", flush=True)
-        temporary.replace(destination)
-    print(f"Saved {destination} ({destination.stat().st_size} bytes) from {final_url}")
-    return destination
+    """Resumable download (Range + If-Range); a killed run continues from ``.part``."""
+
+    last_report = [0]
+
+    def report(done: int, total: int | None) -> None:
+        if done - last_report[0] >= 20 * 1024 * 1024 or (total is not None and done >= total):
+            last_report[0] = done
+            suffix = f" / {total / (1024 * 1024):.1f}" if total else ""
+            print(f"  … {done / (1024 * 1024):.1f}{suffix} MiB", flush=True)
+
+    print(f"Downloading {LATEST_DUMP_URL} …", flush=True)
+    timeout = httpx.Timeout(60.0, read=600.0)
+    with httpx.Client(proxy=proxy, timeout=timeout) as client:
+        try:
+            result = download_latest_dump(target_dir, client=client, progress=report)
+        except R18DumpDownloadError as exc:
+            raise SystemExit(f"r18 dump download failed: {exc}") from exc
+    if result.unchanged:
+        print(f"Already have {result.path} ({result.source_date or 'unknown date'}); not re-downloaded")
+    else:
+        mode = "resumed" if result.resumed else "downloaded"
+        print(
+            f"Saved {result.path} ({result.path.stat().st_size} bytes, {mode} "
+            f"{result.bytes_downloaded} bytes) from {result.final_url}"
+        )
+    return result.path
 
 
 def main() -> int:

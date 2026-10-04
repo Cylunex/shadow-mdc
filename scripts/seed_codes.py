@@ -35,6 +35,7 @@ from shadow_mdc.media.artwork import ArtworkStore
 from shadow_mdc.providers.base import ProviderRegistry
 from shadow_mdc.providers.fanza import FanzaProvider
 from shadow_mdc.providers.javdb import JavDBProvider
+from shadow_mdc.providers.javdb_api import build_javdb_app_api  # noqa: E402
 from shadow_mdc.services.daily_hot_seed import merge_tags
 from shadow_mdc.services.discover import DiscoverService
 
@@ -68,7 +69,9 @@ async def _run(arguments: argparse.Namespace) -> int:
     fanza = FanzaProvider(client, settings.fanza_base_url, settings.request_retries)
     providers = ProviderRegistry([fanza, javdb], max_concurrent_calls=4)
     dump_path = settings.resolved_r18_dump_db()
-    discover = DiscoverService(providers, javdb, fanza, r18_dump_path=dump_path)
+    discover = DiscoverService(
+        providers, javdb, fanza, r18_dump_path=dump_path, javdb_api=build_javdb_app_api(settings, client)
+    )
     if not discover.r18_fallback_available:
         print(f"note: r18 dump not found at {dump_path}; offline fallback disabled", file=sys.stderr)
 

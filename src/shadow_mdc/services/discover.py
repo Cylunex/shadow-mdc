@@ -7,6 +7,7 @@ local Work/asset state, and only create Work when the user explicitly seeds.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -25,12 +26,53 @@ from ..providers.html import absolute, parse_date
 from ..media.magnets import MagnetLink
 from ..providers.fanza import FanzaProvider
 from ..providers.javdb import JavDBProvider
+from ..providers.javdb_api import JavDBApiMovie, JavDBAppApi
 from .r18_dump import R18DumpStore
 
 logger = logging.getLogger(__name__)
 
 DiscoverState = Literal["not_in_library", "catalog_only", "in_library"]
-DiscoverList = Literal["latest", "rankings_daily", "rankings_weekly", "rankings_monthly"]
+DiscoverList = Literal[
+    "latest",
+    "rankings_daily",
+    "rankings_weekly",
+    "rankings_monthly",
+    "rankings_daily_uncensored",
+    "rankings_weekly_uncensored",
+    "rankings_monthly_uncensored",
+    "rankings_daily_western",
+    "rankings_weekly_western",
+    "rankings_monthly_western",
+    "rankings_daily_fc2",
+    "rankings_weekly_fc2",
+    "rankings_monthly_fc2",
+    "top250",
+]
+
+# JavDB ranking zones; ``rankings_<period>`` (no suffix) stays the censored list.
+JAVDB_RANKING_ZONES: tuple[str, ...] = ("censored", "uncensored", "western", "fc2")
+# Lists only JavDB can serve (FANZA has no zone split / TOP250).
+JAVDB_ONLY_LISTS: frozenset[str] = frozenset(
+    {
+        f"rankings_{period}_{zone}"
+        for period in ("daily", "weekly", "monthly")
+        for zone in ("uncensored", "western", "fc2")
+    }
+    | {"top250"}
+)
+
+
+def javdb_ranking_spec(list_name: str) -> tuple[str, str] | None:
+    """``rankings_weekly_fc2`` → ``("fc2", "weekly")``; non-ranking lists → ``None``."""
+
+    if not list_name.startswith("rankings_"):
+        return None
+    parts = list_name.split("_")
+    if len(parts) == 2 and parts[1] in {"daily", "weekly", "monthly"}:
+        return "censored", parts[1]
+    if len(parts) == 3 and parts[1] in {"daily", "weekly", "monthly"} and parts[2] in JAVDB_RANKING_ZONES:
+        return parts[2], parts[1]
+    return None
 
 
 class DiscoverItem(BaseModel):
@@ -67,6 +109,10 @@ class DiscoverPage(BaseModel):
     query: str | None = None
     page: int
     items: tuple[DiscoverItem, ...]
+    # Which transport answered (``javdb_app_api`` / ``javdb_html`` / ``fanza_graphql``…).
+    source: str | None = None
+    # Why a fallback was used (e.g. the app API error before HTML scraping).
+    note: str | None = None
 
 
 
@@ -104,24 +150,41 @@ class DiscoverSeedResult(BaseModel):
 
 # JavDB moved rankings from ``/rankings?period=…`` (now 404) to
 # ``/rankings/movies?p=<daily|weekly|monthly>&t=<censored|uncensored|western|fc2>``.
-# Ranking pages are a single fixed list (``page`` is ignored by the site).
-_LIST_PATHS: dict[DiscoverList, str] = {
-    "latest": "/",
-    "rankings_daily": "/rankings/movies?p=daily&t=censored",
-    "rankings_weekly": "/rankings/movies?p=weekly&t=censored",
-    "rankings_monthly": "/rankings/movies?p=monthly&t=censored",
-}
-_SINGLE_PAGE_LISTS: frozenset[str] = frozenset(
-    {"rankings_daily", "rankings_weekly", "rankings_monthly"}
-)
+# Ranking pages are a single fixed list (``page`` is ignored by the site). The HTML
+# scrape is the *fallback*; the signed app API (``JavDBAppApi.rankings``) is primary.
+_LIST_PATHS: dict[str, str] = {"latest": "/"}
+for _period in ("daily", "weekly", "monthly"):
+    _LIST_PATHS[f"rankings_{_period}"] = f"/rankings/movies?p={_period}&t=censored"
+    for _zone in ("uncensored", "western", "fc2"):
+        _LIST_PATHS[f"rankings_{_period}_{_zone}"] = f"/rankings/movies?p={_period}&t={_zone}"
+_SINGLE_PAGE_LISTS: frozenset[str] = frozenset(name for name in _LIST_PATHS if name.startswith("rankings_"))
 
 
 def javdb_list_url(base_url: str, list_name: DiscoverList, page: int = 1) -> str:
-    path = _LIST_PATHS[list_name]
+    path = _LIST_PATHS.get(list_name)
+    if path is None:
+        raise ValueError(f"no JavDB web page for list: {list_name}")
     if list_name in _SINGLE_PAGE_LISTS:
         return f"{base_url.rstrip('/')}{path}"
     separator = "&" if "?" in path else "?"
     return f"{base_url.rstrip('/')}{path}{separator}page={max(1, page)}"
+
+
+def item_from_api_movie(movie: JavDBApiMovie, site_base_url: str) -> DiscoverItem:
+    code, _family = extract_code(movie.number) if movie.number else (None, None)
+    title = movie.title or movie.number or movie.id
+    if code and title.upper().startswith(code.upper()):
+        title = title[len(code):].strip(" -") or title
+    return DiscoverItem(
+        provider="javdb",
+        external_id=movie.id,
+        source_url=f"{site_base_url.rstrip('/')}/v/{movie.id}",
+        code=code,
+        title=title,
+        # ``cover_url`` is the landscape cover (cards render it with ``contain``).
+        thumb_url=movie.cover_url or movie.thumb_url,
+        release_date=movie.release_date,
+    )
 
 
 class DiscoverService:
@@ -132,10 +195,12 @@ class DiscoverService:
         fanza: FanzaProvider | None = None,
         *,
         r18_dump_path: Path | None = None,
+        javdb_api: JavDBAppApi | None = None,
     ):
         self._providers = providers
         self._javdb = javdb
         self._fanza = fanza
+        self._javdb_api = javdb_api
         self._r18_dump_path = Path(r18_dump_path) if r18_dump_path is not None else None
         self._r18_store: R18DumpStore | None = None
 
@@ -193,15 +258,56 @@ class DiscoverService:
                 for item in ranking
             ]
             items = self._project(repo, raw)
-            return DiscoverPage(provider=provider, list=list_name, page=page, items=tuple(items))
-        if provider != "javdb" or self._javdb is None:
+            return DiscoverPage(
+                provider=provider, list=list_name, page=page, items=tuple(items), source="fanza_graphql"
+            )
+        if provider != "javdb" or (self._javdb is None and self._javdb_api is None):
             raise ValueError(f"browse list is not available for provider: {provider}")
-        if list_name in _SINGLE_PAGE_LISTS and page > 1:
+        spec = javdb_ranking_spec(list_name)
+        is_ranking = spec is not None or list_name == "top250"
+        if is_ranking and page > 1 and list_name != "top250":
             return DiscoverPage(provider=provider, list=list_name, page=page, items=())
+        api_note: str | None = None
+        if is_ranking and self._javdb_api is not None:
+            try:
+                if list_name == "top250":
+                    movies = await self._javdb_api.top250(page=page)
+                else:
+                    assert spec is not None
+                    movies = await self._javdb_api.rankings(spec[0], spec[1])
+            except Exception as exc:  # noqa: BLE001 - fall back to the HTML scrape
+                api_note = f"app API failed: {type(exc).__name__}: {exc}"
+                logger.warning("javdb app API %s failed, falling back to HTML: %s", list_name, api_note)
+            else:
+                if movies:
+                    raw = [item_from_api_movie(movie, self._javdb_api.site_base_url) for movie in movies]
+                    items = self._project(repo, raw)
+                    return DiscoverPage(
+                        provider=provider,
+                        list=list_name,
+                        page=page,
+                        items=tuple(items),
+                        source="javdb_app_api",
+                    )
+                api_note = "app API returned an empty list"
+        if list_name == "top250":
+            raise ValueError(
+                "JavDB TOP250 needs the app API with SHADOW_MDC_JAVDB_API_TOKEN"
+                + (f" ({api_note})" if api_note else "")
+            )
+        if self._javdb is None:
+            raise LookupError(api_note or f"javdb HTML provider unavailable for {list_name}")
         url = javdb_list_url(self._javdb.base_url, list_name, page)
         html = await self._javdb.fetch_html(url)
         items = self._project(repo, parse_javdb_list(html, self._javdb.base_url))
-        return DiscoverPage(provider=provider, list=list_name, page=page, items=tuple(items))
+        return DiscoverPage(
+            provider=provider,
+            list=list_name,
+            page=page,
+            items=tuple(items),
+            source="javdb_html",
+            note=api_note,
+        )
 
     async def search(
         self,
@@ -345,9 +451,35 @@ class DiscoverService:
         return MultiSiteSearchResult(query=query, code=code, hits=tuple(hits), failures=tuple(failures))
 
     async def list_magnets(self, *, provider: str, external_id: str, source_url: str | None = None) -> tuple[MagnetLink, ...]:
-        if provider == "javdb" and self._javdb is not None:
-            return await self._javdb.magnets(source_url or external_id)
-        raise ValueError(f"magnets are not available for provider: {provider}")
+        if provider != "javdb" or (self._javdb is None and self._javdb_api is None):
+            raise ValueError(f"magnets are not available for provider: {provider}")
+        html_error: Exception | None = None
+        html_magnets: tuple[MagnetLink, ...] = ()
+        if self._javdb is not None:
+            try:
+                html_magnets = await self._javdb.magnets(source_url or external_id)
+            except Exception as exc:  # noqa: BLE001 - app API fallback below
+                html_error = exc
+        if html_magnets or self._javdb_api is None:
+            if html_error is not None:
+                raise html_error
+            return html_magnets
+        movie_id = external_id
+        if movie_id.startswith(("http://", "https://")):
+            movie_id = javdb_movie_id_from_url(movie_id) or ""
+        if not movie_id and source_url:
+            movie_id = javdb_movie_id_from_url(source_url) or ""
+        if not movie_id:
+            if html_error is not None:
+                raise html_error
+            return ()
+        try:
+            # App API carries explicit cnsub/hd flags and file counts.
+            return await self._javdb_api.magnets(movie_id)
+        except Exception:
+            if html_error is not None:
+                raise html_error from None
+            raise
 
     async def _fetch_record(
         self,
@@ -400,12 +532,34 @@ class DiscoverService:
         else:
             raise ValueError("external_id, source_url, or code is required")
         batch = await self._providers.search(hints, provider_ids=(provider,))
+        if not batch.records and provider == "javdb":
+            api_record = await self._javdb_api_record(external_id=external_id, source_url=source_url)
+            if api_record is not None:
+                return api_record
         if not batch.records:
             batch = await self._providers.search(hints)
         if not batch.records:
             raise LookupError("no provider records for discover seed/detail")
         preferred = next((item for item in batch.records if item.provider == provider), batch.records[0])
         return preferred
+
+    async def _javdb_api_record(
+        self, *, external_id: str | None, source_url: str | None
+    ) -> ProviderRecord | None:
+        """JavDB detail via the app API when the HTML page fails (blocked / layout drift)."""
+
+        if self._javdb_api is None:
+            return None
+        movie_id = external_id
+        if not movie_id and source_url:
+            movie_id = javdb_movie_id_from_url(source_url)
+        if not movie_id:
+            return None
+        try:
+            return await self._javdb_api.movie_detail(movie_id)
+        except Exception as exc:  # noqa: BLE001 - caller falls back further
+            logger.warning("javdb app API detail %s failed: %s: %s", movie_id, type(exc).__name__, exc)
+            return None
 
     def _project(self, repo: Repository, items: list[DiscoverItem]) -> list[DiscoverItem]:
         projected: list[DiscoverItem] = []
@@ -437,6 +591,20 @@ class DiscoverService:
         return parse_javdb_list(html, base_url)
 
 
+_JAVDB_MOVIE_PATH = re.compile(r"^/v/([A-Za-z0-9]+)/?$")
+
+
+def javdb_movie_id_from_url(value: str) -> str | None:
+    """Movie id only from an explicit ``/v/<id>`` detail path (JHS ``extractJavDbMovieId``)."""
+
+    try:
+        path = urlparse(value).path
+    except ValueError:
+        return None
+    matched = _JAVDB_MOVIE_PATH.match(path)
+    return matched.group(1) if matched else None
+
+
 def parse_javdb_list(html: str, base_url: str) -> list[DiscoverItem]:
     root = HTMLParser(html)
     items: list[DiscoverItem] = []
@@ -451,11 +619,20 @@ def parse_javdb_list(html: str, base_url: str) -> list[DiscoverItem]:
         source_url = absolute(base_url, href)
         if source_url is None or source_url in seen:
             continue
+        external_id = javdb_movie_id_from_url(source_url)
+        if external_id is None:
+            # Review / list sub-pages (``/v/<id>/reviews``) are not movie cards.
+            continue
         seen.add(source_url)
-        external_id = urlparse(source_url).path.rstrip("/").split("/")[-1]
         title_node = node.css_first(".video-title") or node.css_first(".title") or link
         raw_title = title_node.text(separator=" ", strip=True) if title_node is not None else external_id
-        code_node = node.css_first("strong") or node.css_first(".uid")
+        # Card layout (JHS list-item-reader): the code is ``.video-title strong``;
+        # a bare first ``strong`` can be a score/badge on newer cards.
+        code_node = (
+            node.css_first(".video-title strong")
+            or node.css_first(".uid")
+            or node.css_first("strong")
+        )
         code_text = code_node.text(strip=True) if code_node is not None else None
         parsed_code, _family = extract_code(code_text or raw_title)
         img = node.css_first("img")

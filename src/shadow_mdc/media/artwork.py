@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import ipaddress
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Awaitable, Callable
@@ -10,9 +11,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict
-
 from PIL import Image
+from pydantic import BaseModel, ConfigDict
 
 from ..db.models import Work
 
@@ -205,9 +205,20 @@ class ArtworkStore:
 
         if self._client is None:
             raise RuntimeError("artwork download client is unavailable")
+        upgraded = dmm_awsimgsrc_url(url)
+        if upgraded is not None:
+            try:
+                return await self._download_image(work_root, kind, upgraded), False
+            except (httpx.HTTPError, ValueError):
+                pass  # not mirrored (404), unreachable, or a placeholder: keep the original CDN url
+        return await self._download_image(work_root, kind, url), False
+
+    async def _download_image(self, work_root: Path, kind: str, url: str) -> Path:
         async with self._stream(url) as response:
             response.raise_for_status()
             _validate_remote_url(str(response.url))
+            if _is_dmm_placeholder(str(response.url)):
+                raise ValueError("artwork is a DMM now_printing placeholder")
             content_type = response.headers.get("content-type", "").split(";", 1)[0].casefold()
             downloaded_extension = _CONTENT_EXTENSIONS.get(content_type)
             if downloaded_extension is None:
@@ -236,7 +247,7 @@ class ArtworkStore:
             except Exception:
                 Path(temporary).unlink(missing_ok=True)
                 raise
-        return destination, False
+        return destination
 
     async def _acquire_sample(
         self,
@@ -291,6 +302,34 @@ class ArtworkStore:
                 Path(temporary).unlink(missing_ok=True)
                 raise
         return destination, False
+
+
+_DMM_PICS_PATH = re.compile(r"^/(digital/video|digital/amateur|mono/movie/adult)/([^/]+)/([^/]+\.jpg)$")
+
+
+def dmm_awsimgsrc_url(url: str) -> str | None:
+    """Map a ``pics.dmm.co.jp`` cover to its full-size ``awsimgsrc.dmm.com`` mirror.
+
+    The awsimgsrc origin serves the uncompressed jacket (often 4-5x the bytes of the
+    pics CDN copy). Port of javinizer-go ``scraper/dmm`` awsimgsrc upgrade (MIT).
+    Returns ``None`` for anything that is not a DMM jacket/sample path.
+    """
+
+    parts = urlsplit(url)
+    if parts.hostname != "pics.dmm.co.jp":
+        return None
+    matched = _DMM_PICS_PATH.match(parts.path)
+    if matched is None:
+        return None
+    section, content_id, filename = matched.groups()
+    mirror = {"digital/video": "digital/video", "digital/amateur": "digital/amateur", "mono/movie/adult": "mono/movie"}[
+        section
+    ]
+    return f"https://awsimgsrc.dmm.com/dig/{mirror}/{content_id}/{filename}"
+
+
+def _is_dmm_placeholder(url: str) -> bool:
+    return "now_printing" in url.casefold()
 
 
 def _artwork_kind(value: str) -> str:

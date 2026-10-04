@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..db.repository import Repository
 from ..media.artwork import ArtworkStore
-from .discover import DiscoverItem, DiscoverList, DiscoverService
+from .discover import JAVDB_ONLY_LISTS, DiscoverItem, DiscoverList, DiscoverService
 
 # Higher weight = fresher / more authoritative list signal.
 LIST_WEIGHTS: dict[str, int] = {
@@ -37,6 +37,18 @@ LIST_WEIGHTS: dict[str, int] = {
     "fanza_rankings_weekly": 3,
     "fanza_rankings_monthly": 2,
     "fanza_latest": 1,
+    # JavDB zone rankings (app API primary): opt-in via ``--lists``; lower weight so
+    # they add candidates without outranking the censored consensus lists.
+    "rankings_daily_uncensored": 2,
+    "rankings_weekly_uncensored": 2,
+    "rankings_monthly_uncensored": 1,
+    "rankings_daily_western": 1,
+    "rankings_weekly_western": 1,
+    "rankings_monthly_western": 1,
+    "rankings_daily_fc2": 1,
+    "rankings_weekly_fc2": 1,
+    "rankings_monthly_fc2": 1,
+    "top250": 1,
 }
 
 DEFAULT_LISTS: tuple[DiscoverList, ...] = (
@@ -121,6 +133,9 @@ class DailyChartSeedResult(BaseModel):
     dry_run: bool
     limit: int
     lists_scanned: tuple[str, ...]
+    # ``provider/list: source`` per scanned list (e.g. ``javdb/rankings_daily: javdb_app_api``)
+    # plus fallback notes when the app API failed and HTML scraping answered.
+    browse_sources: tuple[str, ...] = ()
     considered: tuple[ChartCandidate, ...]
     seeded: tuple[SeededWorkSummary, ...]
     skipped: tuple[SkippedCandidate, ...]
@@ -359,11 +374,14 @@ async def collect_browse_pages(
     provider: str | Sequence[str] = DEFAULT_BROWSE_PROVIDERS,
     lists: Sequence[DiscoverList] = DEFAULT_LISTS,
     page: int = 1,
+    sources: list[str] | None = None,
 ) -> tuple[dict[str, tuple[DiscoverItem, ...]], tuple[str, ...]]:
     """Browse configured lists across providers; one failure must not abort others.
 
-    Tries JavDB and FANZA by default. FANZA rankings use the public DMM GraphQL API
-    (works when JavDB is Cloudflare-blocked). Empty pages are skipped.
+    Tries JavDB and FANZA by default. JavDB rankings come from the signed app API
+    first and fall back to the ``/rankings/movies`` HTML scrape. FANZA rankings use
+    the public DMM GraphQL API (works when JavDB is Cloudflare-blocked). Empty pages
+    are skipped. JavDB-only lists (zones / TOP250) are not requested from FANZA.
     """
 
     providers = (provider,) if isinstance(provider, str) else tuple(provider)
@@ -371,11 +389,18 @@ async def collect_browse_pages(
     failures: list[str] = []
     for provider_id in providers:
         for list_name in lists:
+            if provider_id != "javdb" and list_name in JAVDB_ONLY_LISTS:
+                continue
             key = browse_page_key(provider_id, list_name)
             try:
                 result = await discover.browse(
                     repo, provider=provider_id, list_name=list_name, page=page
                 )
+                if sources is not None and result.source:
+                    detail = f"{provider_id}/{list_name}: {result.source}"
+                    if result.note:
+                        detail += f" ({result.note})"
+                    sources.append(detail)
                 if result.items:
                     pages[key] = result.items
                 else:
@@ -405,8 +430,9 @@ async def seed_daily_chart(
     """Browse lists, score consensus ranking, seed top works + artwork + tags."""
 
     day = run_day or date.today()
+    browse_sources: list[str] = []
     pages, browse_failures = await collect_browse_pages(
-        discover, repo, provider=provider, lists=lists
+        discover, repo, provider=provider, lists=lists, sources=browse_sources
     )
     considered = score_browse_pages(pages)
 
@@ -496,6 +522,7 @@ async def seed_daily_chart(
         dry_run=dry_run,
         limit=limit,
         lists_scanned=tuple(str(name) for name in pages.keys()),
+        browse_sources=tuple(browse_sources),
         considered=tuple(considered),
         seeded=tuple(seeded),
         skipped=tuple(skipped),

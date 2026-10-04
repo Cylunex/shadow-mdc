@@ -32,6 +32,7 @@ from shadow_mdc.db.repository import Database, Repository  # noqa: E402
 from shadow_mdc.providers.base import ProviderRegistry  # noqa: E402
 from shadow_mdc.providers.fanza import FanzaProvider  # noqa: E402
 from shadow_mdc.providers.javdb import JavDBProvider  # noqa: E402
+from shadow_mdc.providers.javdb_api import build_javdb_app_api  # noqa: E402
 from shadow_mdc.services.discover import DiscoverService  # noqa: E402
 from shadow_mdc.services.javranking_client import BROWSER_UA  # noqa: E402
 from shadow_mdc.services.javranking_seed import seed_javranking  # noqa: E402
@@ -90,7 +91,11 @@ async def _run(arguments: argparse.Namespace) -> int:
         max_concurrent_calls=settings.provider_concurrency,
     )
     discover = DiscoverService(
-        providers, javdb, fanza, r18_dump_path=settings.resolved_r18_dump_db()
+        providers,
+        javdb,
+        fanza,
+        r18_dump_path=settings.resolved_r18_dump_db(),
+        javdb_api=build_javdb_app_api(settings, client),
     )
 
     try:

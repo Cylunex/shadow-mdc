@@ -9,6 +9,7 @@ from pathlib import Path
 from sqlalchemy import Engine, create_engine, exists, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..actress_aliases import merge_actor_names
 from ..collection_names import detect_collection_kind, normalize_collection_name
 from ..domain import IdentityHints, MatchEvidence, MediaTechnicalInfo, ProviderRecord, ScoredCandidate
 from ..enums import (
@@ -1491,14 +1492,16 @@ class Repository:
             incoming_priority = _JAV_ACTOR_PROVIDER_PRIORITY.get(record.provider)
             current_priority = _JAV_ACTOR_PROVIDER_PRIORITY.get(actor_source)
             if incoming_priority is None:
-                work.actors = _merge_unique(work.actors, record.actors, replace=overwrite)
+                # Alias-aware (javinizer-go actress_merger): "Mio Ishikawa" and
+                # "石川澪" from different sources are one performer.
+                work.actors = merge_actor_names(work.actors, record.actors, replace=overwrite)
                 if overwrite or sources.get("actors") in {None, "", "local-path", "local-manual"}:
                     sources["actors"] = record.provider
             elif current_priority is None or incoming_priority < current_priority:
-                work.actors = list(record.actors)
+                work.actors = merge_actor_names([], record.actors, replace=True)
                 sources["actors"] = record.provider
             elif incoming_priority == current_priority:
-                work.actors = list(record.actors)
+                work.actors = merge_actor_names([], record.actors, replace=True)
         if record.directors:
             work.directors = _merge_unique(work.directors, record.directors, replace=overwrite)
         if record.tags and not _field_locked(work, "tags"):

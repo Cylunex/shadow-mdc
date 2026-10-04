@@ -93,11 +93,17 @@ MAX_IN_FLIGHT = 2
 REQUEST_RETRIES = 3
 LOGIN_TTL_SECONDS = 300
 OFFLINE_EXISTS_CODE = 10008
-# 115 reports these codes when a file/folder id no longer exists.
-FILE_GONE_CODES = frozenset({430004, 20018, 70004, 50015})
+# 115 reports these codes when a file/folder id no longer exists. Table checked
+# against p115client ``check_response`` (MIT): 70004 is "upload incomplete", not
+# gone, and must not trigger export cleanup.
+FILE_GONE_CODES = frozenset({20013, 20018, 31003, 50015, 70005, 70008, 90008, 430004})
+# The access token itself is dead/garbled: refresh once, then retry the call.
+ACCESS_TOKEN_CODES = frozenset({99, 990001, 40101032, 40140116, 40140119, 40140123, 40140124, 40140125, 40140126})
+# "Too frequent" answers (590075 web, 40140117 refresh throttled): back off, don't refresh.
+THROTTLE_CODES = frozenset({590075, 40140117})
 # refreshToken answers with these when the refresh token itself is dead
 # (revoked, expired, superseded by a newer login): permanent, never retried.
-REFRESH_REJECT_CODES = frozenset({99, 40140114, 40140115, 40140116, 40140119, 40140120})
+REFRESH_REJECT_CODES = frozenset({99, 40140114, 40140115, 40140116, 40140118, 40140119, 40140120})
 # One UA for every 115 media call (downurl / play / probe). 115 binds download
 # URLs to the UA that requested them, so the relay passes the player UA through
 # and only falls back to this when the player sends none.
@@ -274,11 +280,31 @@ def _unwrap_data(payload: dict[str, Any]) -> Any:
     return payload
 
 
+def api_error_code(payload: dict[str, Any]) -> int | None:
+    """115 spreads the error code over ``errno``/``errNo``/``errcode``/``code``."""
+
+    for key in ("errno", "errNo", "errcode", "code"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int) and value not in (0, 200):
+            return value
+        if isinstance(value, str) and value.strip().isdigit() and int(value) not in (0, 200):
+            return int(value)
+    return None
+
+
+def _state_failed(payload: dict[str, Any]) -> bool:
+    # Web endpoints answer ``state: false``, open endpoints ``state: 0``.
+    state = payload.get("state")
+    return state is False or (type(state) is int and state == 0)
+
+
 def _check_api_ok(payload: dict[str, Any], *, context: str) -> None:
-    if "state" in payload and payload.get("state") is False:
+    if _state_failed(payload):
         raise PanApiError(
             f"{context}: {payload.get('message') or payload.get('error') or 'request failed'}",
-            code=int(payload["code"]) if isinstance(payload.get("code"), int) else None,
+            code=api_error_code(payload),
         )
     code = payload.get("code")
     # Some endpoints use code!=0 with state true; only fail when clearly errored.
@@ -665,16 +691,18 @@ class Pan115Client:
         payload = response.json()
         if not isinstance(payload, dict):
             raise PanApiError(f"{url}: unexpected response")
-        if payload.get("state") is False or (
+        if _state_failed(payload) or (
             isinstance(payload.get("code"), int)
             and payload["code"] not in (0, 200)
             and payload.get("state") is not True
         ):
+            code = api_error_code(payload)
+            if code in THROTTLE_CODES:
+                self.gate.note(429, None)
+                message = str(payload.get("message") or payload.get("error") or "115 rate limited")
+                raise PanApiError(message, code=code)
             # Token expired codes — try refresh once.
-            code = payload.get("code")
-            if code in (99, 40140116, 40140117, 40140119) or (
-                isinstance(code, int) and 40100000 <= code < 40200000
-            ):
+            if code in ACCESS_TOKEN_CODES:
                 await self.refresh_access_token(stale_access=used_access)
                 response = await self._request(method, url, **options)
                 response.raise_for_status()
@@ -683,7 +711,7 @@ class Pan115Client:
                     raise PanApiError(f"{url}: unexpected response after refresh")
             else:
                 message = str(payload.get("message") or payload.get("error") or f"API error code={code}")
-                code_int = int(code) if isinstance(code, int) else None
+                code_int = code
                 if is_offline_exists_code(code_int):
                     raise PanOfflineExistsError(message, code=OFFLINE_EXISTS_CODE)
                 raise PanApiError(message, code=code_int)

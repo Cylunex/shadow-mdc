@@ -6,6 +6,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 from selectolax.parser import HTMLParser
 
+from ..dmm_ids import content_id_candidates
 from ..domain import Artwork, IdentityHints, ProviderDescriptor, ProviderRecord
 from ..enums import ContentFamily, QueryMode
 from ..identity import extract_code
@@ -598,17 +599,23 @@ def _ranking_from_content(
     )
 
 
+# One GraphQL request per candidate: keep the list short. Known maker prefixes
+# (ABF-387 → 118abf00387, NPS-472 → h_021nps00472) come first via dmm_ids.
+_MAX_CONTENT_ID_CANDIDATES = 5
+
+
 def _content_id_candidates(code: str) -> tuple[str, ...]:
     match = re.fullmatch(r"(?i)([A-Z0-9]+)-(\d+)", code.strip())
     if match is None:
         return (code.replace("-", "").casefold(),)
     prefix, digits = match.groups()
-    values = (
+    values = [
+        *content_id_candidates(code, limit=_MAX_CONTENT_ID_CANDIDATES),
         f"{prefix.casefold()}{digits.zfill(5)}",
         f"{prefix.casefold()}{digits}",
         code.replace("-", "").casefold(),
-    )
-    return tuple(dict.fromkeys(values))
+    ]
+    return tuple(dict.fromkeys(values))[: _MAX_CONTENT_ID_CANDIDATES + 1]
 
 
 def _texts(root: HTMLParser, selector: str) -> list[str]:

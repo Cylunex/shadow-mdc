@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import get_args
 
 import httpx
 
@@ -34,6 +35,7 @@ from shadow_mdc.db.repository import Database, Repository
 from shadow_mdc.providers.base import ProviderRegistry
 from shadow_mdc.providers.fanza import FanzaProvider
 from shadow_mdc.providers.javdb import JavDBProvider
+from shadow_mdc.providers.javdb_api import build_javdb_app_api  # noqa: E402
 from shadow_mdc.services.daily_chart_seed import DEFAULT_BROWSE_PROVIDERS, DEFAULT_LISTS, seed_daily_chart
 from shadow_mdc.services.discover import DiscoverList, DiscoverService
 
@@ -63,7 +65,7 @@ def _http_client(settings: Settings, *, max_connections: int) -> httpx.AsyncClie
 def _parse_lists(raw: str | None) -> tuple[DiscoverList, ...]:
     if not raw:
         return DEFAULT_LISTS
-    allowed = set(DEFAULT_LISTS)
+    allowed = set(get_args(DiscoverList))
     lists: list[DiscoverList] = []
     for part in raw.split(","):
         name = part.strip()
@@ -138,7 +140,11 @@ async def _run(arguments: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     discover = DiscoverService(
-        providers, javdb, fanza, r18_dump_path=settings.resolved_r18_dump_db()
+        providers,
+        javdb,
+        fanza,
+        r18_dump_path=settings.resolved_r18_dump_db(),
+        javdb_api=build_javdb_app_api(settings, client),
     )
     browse_providers = _parse_providers(arguments.providers)
 
@@ -165,6 +171,7 @@ async def _run(arguments: argparse.Namespace) -> int:
         "run_date": result.run_date,
         "dry_run": result.dry_run,
         "lists_scanned": list(result.lists_scanned),
+        "browse_sources": list(result.browse_sources),
         "considered": len(result.considered),
         "seeded": [
             {
@@ -231,7 +238,11 @@ def main() -> None:
     parser.add_argument(
         "--lists",
         default=None,
-        help="comma-separated discover lists (default: rankings_daily,weekly,monthly,latest)",
+        help=(
+            "comma-separated discover lists (default: rankings_daily,weekly,monthly,latest). "
+            "JavDB-only extras: rankings_<daily|weekly|monthly>_<uncensored|western|fc2>, "
+            "top250 (needs SHADOW_MDC_JAVDB_API_TOKEN)"
+        ),
     )
     parser.add_argument(
         "--providers",

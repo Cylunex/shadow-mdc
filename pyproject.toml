@@ -38,6 +38,7 @@ packages = ["src/shadow_mdc"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/shadow_mdc/data/actress_name_map.json.gz" = "shadow_mdc/data/actress_name_map.json.gz"
+"src/shadow_mdc/data/dmm_content_id_prefixes.json.gz" = "shadow_mdc/data/dmm_content_id_prefixes.json.gz"
 "src/shadow_mdc/data/README.md" = "shadow_mdc/data/README.md"
 
 [tool.pytest.ini_options]

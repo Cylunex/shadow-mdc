@@ -29,7 +29,7 @@ def absolute(base_url: str, value: str | None) -> str | None:
     return urljoin(base_url.rstrip("/") + "/", value) if value else None
 
 
-def link_texts(root: HTMLParser, selectors: tuple[str, ...]) -> tuple[str, ...]:
+def link_texts(root: HTMLParser | Node, selectors: tuple[str, ...]) -> tuple[str, ...]:
     values: list[str] = []
     seen: set[str] = set()
     for selector in selectors:

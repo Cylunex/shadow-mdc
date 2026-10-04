@@ -8,6 +8,7 @@ import httpx
 
 from ..db.models import PanOfflineTask, WorkMagnet, utc_now
 from ..db.repository import Repository
+from ..media.magnets import magnet_sort_key
 from .openlist import offline_info_hash
 from .pan import (
     PanApiError,
@@ -156,16 +157,16 @@ async def enqueue_work_offline(
 
 
 def pick_best_magnet(magnets: list[WorkMagnet]) -> WorkMagnet | None:
-    """Prefer subtitle, then HD, then larger size."""
+    """Best quality first (shared JHS-style score: subtitle, resolution, no samples), then size."""
 
     if not magnets:
         return None
-    return sorted(
+    return max(
         magnets,
-        key=lambda item: (
-            1 if item.has_subtitle else 0,
-            1 if item.hd else 0,
-            item.size_bytes or 0,
+        key=lambda item: magnet_sort_key(
+            name=item.name,
+            size_bytes=item.size_bytes,
+            has_subtitle=bool(item.has_subtitle),
+            hd=bool(item.hd),
         ),
-        reverse=True,
-    )[0]
+    )

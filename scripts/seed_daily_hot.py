@@ -31,6 +31,7 @@ from shadow_mdc.db.repository import Database, Repository
 from shadow_mdc.providers.base import ProviderRegistry
 from shadow_mdc.providers.fanza import FanzaProvider
 from shadow_mdc.providers.javdb import JavDBProvider
+from shadow_mdc.providers.javdb_api import build_javdb_app_api  # noqa: E402
 from shadow_mdc.services.daily_hot_seed import seed_daily_hot
 from shadow_mdc.services.discover import DiscoverService
 
@@ -100,7 +101,11 @@ async def _run(arguments: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     discover = DiscoverService(
-        providers, javdb, fanza, r18_dump_path=settings.resolved_r18_dump_db()
+        providers,
+        javdb,
+        fanza,
+        r18_dump_path=settings.resolved_r18_dump_db(),
+        javdb_api=build_javdb_app_api(settings, client),
     )
 
     try:

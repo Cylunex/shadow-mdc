@@ -8,6 +8,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from ..domain import IdentityHints, ProviderDescriptor, ProviderRecord
+from .challenge import challenge_kind
 
 
 class ProviderError(RuntimeError):
@@ -104,6 +105,12 @@ class HttpProvider:
                 raise ProviderError(provider, reason, _http_error_detail(exc, attempt + 1)) from exc
             except httpx.HTTPStatusError as exc:
                 code = exc.response.status_code
+                if code in {403, 429, 503}:
+                    # Challenge walls are often 403/503: report them as such and
+                    # do not burn retries on a page that will not change.
+                    kind = challenge_kind(_safe_text(exc.response), str(exc.response.url))
+                    if kind is not None:
+                        raise ProviderError(provider, "blocked", f"{kind} (HTTP {code})") from exc
                 if attempt < self._retries and (code == 429 or code >= 500):
                     await asyncio.sleep(0.25 * (attempt + 1))
                     continue
@@ -120,10 +127,17 @@ class HttpProvider:
         if response is None:
             raise ProviderError(provider, "network", "request did not produce a response")
         text = response.text
-        lowered = text.casefold()
-        if "cf-chl-" in lowered or "just a moment" in lowered:
-            raise ProviderError(provider, "blocked", "Cloudflare challenge")
+        kind = challenge_kind(text, str(response.url))
+        if kind is not None:
+            raise ProviderError(provider, "blocked", kind)
         return text
+
+
+def _safe_text(response: httpx.Response) -> str:
+    try:
+        return response.text
+    except (httpx.ResponseNotRead, UnicodeDecodeError):
+        return ""
 
 
 def _http_error_detail(exc: httpx.HTTPError, attempts: int) -> str:

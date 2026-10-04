@@ -34,3 +34,22 @@ Shadow MDC remains MIT-licensed; see LICENSE.
 - Additional specialty labels (H0930 / H4610 / TH101 / KIN8 / XXX-AV / S2M / MCB3D / CW3D / MMR)
   adapted from ShotHeadman/mdcz `packages/runtime/src/scrape/utils/number.ts` (GPL-3.0; ideas only).
 - DMM content_id candidate expansion ideas from mdcz `contentId.ts`.
+
+## 2026-10-04 reference sync (all MIT)
+- javdb-cli (`jdsignature` signing, app API endpoints `/api/v1/rankings`, `/api/v1/movies/top`,
+  `/api/v4/movies/{id}`, `/api/v1/movies/{id}/magnets`, public device params) →
+  `providers/javdb_api.py`. Reimplemented in Python; read-only, no login flow.
+- javinizer-go (Go):
+  - `challengedetect` Cloudflare / JavBus driver-verify markers → `providers/challenge.py`
+  - r18.dev dump download with Range/If-Range resume and `.part` sidecar →
+    `services/r18_dump_download.py`
+  - `content_id_prefixes.go` series → DMM content-id prefix table →
+    `data/dmm_content_id_prefixes.json.gz` (+ ranking in `dmm_ids.py`)
+  - actress merger (alias-set identity, CJK display preference) → `actress_aliases.merge_actor_names`
+  - MGStage numeric label prefix expansion, JavBus info-panel scoping + uncensored search
+    fallback, DMM `awsimgsrc.dmm.com` full-size jacket upgrade (ideas, reimplemented)
+- JHS (userscript): magnet quality scoring (subtitle / resolution / sample penalty) →
+  `media/magnets.magnet_quality_score`; strict `/v/<id>` JavDB movie links and
+  `.video-title strong` list codes → `services/discover.py`
+- p115client: 115 `errno` field handling, `state: 0` failures, file-gone / access-token /
+  throttle error-code tables → `services/pan.py`

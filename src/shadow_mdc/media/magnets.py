@@ -136,7 +136,7 @@ def parse_magnet_links_from_html(html: str, *, provider: str) -> tuple[MagnetLin
                 size_bytes = None
         if size_bytes is None:
             size_bytes = _size_near_uri(html, raw)
-        lower_name = (name or "").casefold()
+        subtitle, hd = magnet_quality_flags(name)
         found.append(
             MagnetLink(
                 provider=provider,
@@ -144,8 +144,8 @@ def parse_magnet_links_from_html(html: str, *, provider: str) -> tuple[MagnetLin
                 uri=uri,
                 name=name,
                 size_bytes=size_bytes,
-                has_subtitle="字幕" in (name or "") or "subtitle" in lower_name or "-c" in lower_name,
-                hd="1080" in lower_name or "2160" in lower_name or "4k" in lower_name or "hd" in lower_name,
+                has_subtitle=subtitle,
+                hd=hd,
             )
         )
     return tuple(_apply_positional_size_pairing(html, found))
@@ -178,15 +178,87 @@ def _apply_positional_size_pairing(html: str, magnets: list[MagnetLink]) -> list
     return filled
 
 
+# Magnet quality scoring adapted from Teamper/JHS ``src/core/magnet-quality.js`` (MIT):
+# subtitle and resolution signals from the release name, with a penalty for
+# trailers/samples. Seeders/freshness are not available to us and are omitted.
+_SUBTITLE_NAME = re.compile(
+    r"(?i)(?:[-_.](?:u?c|ch)(?=$|[\s._\-\[\](){}])|chinese|中字|中文字幕|字幕|subtitle|\bsub\b)"
+)
+_RES_4K = re.compile(r"(?i)(?:\b4k\b|2160p|\buhd\b)")
+_RES_1080 = re.compile(r"(?i)(?:1080[pi]|\bfhd\b|fullhd)")
+_RES_720 = re.compile(r"(?i)720p")
+_HD_NAME = re.compile(r"(?i)(?:\bhd\b|-hd(?=$|[\s._\-]))")
+_SAMPLE_NAME = re.compile(r"(?i)(?:sample|trailer|preview|预告|預告)")
+# Below this a "full" release is almost certainly a sample/trailer clip.
+_TINY_RELEASE_BYTES = 300 * 1024 * 1024
+
+
+def magnet_quality_flags(name: str | None) -> tuple[bool, bool]:
+    """``(has_subtitle, hd)`` inferred from a release name.
+
+    ``-C`` / ``-UC`` / ``-CH`` suffixes mean Chinese subtitles; ``-CD1`` does not.
+    """
+
+    text = (name or "").strip()
+    if not text:
+        return False, False
+    subtitle = _SUBTITLE_NAME.search(text) is not None
+    hd = bool(_RES_4K.search(text) or _RES_1080.search(text) or _HD_NAME.search(text))
+    return subtitle, hd
+
+
+def magnet_quality_score(
+    *,
+    name: str | None,
+    size_bytes: int | None,
+    has_subtitle: bool,
+    hd: bool,
+) -> int:
+    """0–100 quality score: subtitle 20, 4K 25 / 1080p 20 / 720p 15 / unknown 5, sample −40."""
+
+    text = name or ""
+    name_subtitle, name_hd = magnet_quality_flags(text)
+    score = 20 if (has_subtitle or name_subtitle) else 0
+    if _RES_4K.search(text):
+        score += 25
+    elif _RES_1080.search(text) or hd or name_hd:
+        score += 20
+    elif _RES_720.search(text):
+        score += 15
+    else:
+        score += 5
+    if _SAMPLE_NAME.search(text):
+        score -= 40
+    if size_bytes is not None and 0 < size_bytes < _TINY_RELEASE_BYTES:
+        score -= 15
+    return max(0, min(100, score))
+
+
+def magnet_sort_key(
+    *,
+    name: str | None,
+    size_bytes: int | None,
+    has_subtitle: bool,
+    hd: bool,
+) -> tuple[int, int]:
+    """Sort key (descending): quality score, then larger size."""
+
+    return (
+        magnet_quality_score(name=name, size_bytes=size_bytes, has_subtitle=has_subtitle, hd=hd),
+        size_bytes or 0,
+    )
+
+
 def rank_magnets(magnets: list[MagnetLink] | tuple[MagnetLink, ...]) -> list[MagnetLink]:
-    """Prefer subtitle, then HD, then larger size_bytes."""
+    """Best first: subtitle/resolution quality score (samples penalised), then size."""
 
     return sorted(
         magnets,
-        key=lambda item: (
-            1 if item.has_subtitle else 0,
-            1 if item.hd else 0,
-            item.size_bytes or 0,
+        key=lambda item: magnet_sort_key(
+            name=item.name,
+            size_bytes=item.size_bytes,
+            has_subtitle=item.has_subtitle,
+            hd=item.hd,
         ),
         reverse=True,
     )

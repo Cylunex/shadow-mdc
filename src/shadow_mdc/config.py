@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     database_url: str = "sqlite:///data/shadow-mdc.db"
     javdb_base_url: str = "https://javdb.com"
+    # JavDB app JSON API (signed; primary for rankings, fallback for detail/magnets).
+    javdb_api_enabled: bool = True
+    javdb_api_hosts: str = "https://jdforrepam.com,https://javdb.com"
+    javdb_api_token: str | None = None  # bearer token; only needed for TOP250
     javbus_base_url: str = "https://www.javbus.com"
     jav321_base_url: str = "https://www.jav321.com"
     r18dev_base_url: str = "https://r18.dev"
