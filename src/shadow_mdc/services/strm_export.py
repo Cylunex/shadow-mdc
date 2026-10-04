@@ -10,6 +10,12 @@ no code; openStrm MIT patterns for the 302 gateway):
 * A small sidecar (``.shadow-strm.json``) records file ids so token / public URL
   rotation can rewrite ``.strm`` bodies in place and delete reconciliation knows
   which 115 files back each folder.
+* Content-equal incremental writes: a file whose bytes would not change is left
+  untouched (no rename, no mtime bump), so a no-op re-export never wakes Emby's
+  realtime monitor and the poller skips the Library/Media/Updated notify.
+* Hard config gate: relay mode refuses to export / rewrite / migrate while a
+  required setting (export root, public base URL, Emby path mapping when Emby
+  notify is on) is missing, instead of inventing defaults.
 * OpenList backend: entries are keyed by the absolute OpenList path (``file_id``
   starts with ``/``) and the body is ``{openlist}/d{path}[?sign=…]``, or the relay
   ``{public}/api/strm/openlist{path}[?token=]`` which 302s to that ``/d`` link.
@@ -56,12 +62,65 @@ class StrmEntry:
         return self.file_id.startswith("/")
 
 
+class StrmConfigError(ValueError):
+    """Export / rewrite refused because required STRM settings are missing."""
+
+    def __init__(self, problems: Sequence[str]) -> None:
+        self.problems = list(problems)
+        super().__init__("STRM settings incomplete: " + "; ".join(self.problems))
+
+
+def strm_config_problems(settings: PanSettings, *, emby_notify: bool = False) -> list[str]:
+    """Human-readable list of missing / invalid settings needed to write a library.
+
+    Relay mode needs an export root and an absolute http(s) public base URL that
+    Emby can reach; when Emby notify is on, the Emby-side path of the export root
+    is required too (otherwise notifies would name paths Emby cannot see).
+    """
+
+    problems: list[str] = []
+    if not (settings.strm_output_root or "").strip():
+        problems.append("STRM output directory (strm_output_root) is not set")
+    if settings.strm_mode == "relay":
+        base = (settings.strm_public_base_url or "").strip()
+        if not base:
+            problems.append("public base URL (strm_public_base_url) is required in relay mode")
+        else:
+            parsed = urlsplit(base)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                problems.append("public base URL (strm_public_base_url) must be an absolute http(s) URL")
+    elif settings.pan_backend == "openlist":
+        if not (settings.openlist_strm_base_url or settings.openlist_base_url):
+            problems.append("OpenList base URL is required for OpenList /d STRM links")
+    elif not (settings.strm_url_prefix or "").strip():
+        problems.append("STRM URL prefix (strm_url_prefix) is required in OpenList-prefix mode")
+    if emby_notify and not (settings.strm_emby_root or "").strip():
+        problems.append(
+            "Emby path mapping (strm_emby_root) is required while Emby notify is enabled "
+            "(set it to the export directory as Emby sees it)"
+        )
+    return problems
+
+
+def require_strm_config(settings: PanSettings, *, emby_notify: bool = False) -> None:
+    problems = strm_config_problems(settings, emby_notify=emby_notify)
+    if problems:
+        raise StrmConfigError(problems)
+
+
 @dataclass(slots=True)
 class ExportResult:
     directory: Path
     strm_paths: list[Path] = field(default_factory=list)
     nfo_path: Path | None = None
     artwork_paths: list[Path] = field(default_factory=list)
+    # Files actually (re)written or removed; empty → the export was a no-op.
+    changed_paths: list[Path] = field(default_factory=list)
+    created: bool = False
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.changed_paths)
 
 
 @dataclass(slots=True)
@@ -217,6 +276,37 @@ def _atomic_copy(source: Path, destination: Path) -> None:
         raise
 
 
+def _same_bytes(path: Path, payload: bytes) -> bool:
+    try:
+        if not path.is_file() or path.stat().st_size != len(payload):
+            return False
+        return path.read_bytes() == payload
+    except OSError:
+        return False
+
+
+def _same_file(source: Path, destination: Path) -> bool:
+    try:
+        if not destination.is_file() or source.stat().st_size != destination.stat().st_size:
+            return False
+        with source.open("rb") as left, destination.open("rb") as right:
+            while True:
+                a = left.read(1 << 16)
+                b = right.read(1 << 16)
+                if a != b:
+                    return False
+                if not a:
+                    return True
+    except OSError:
+        return False
+
+
+def strm_payload(locator: str) -> bytes:
+    """Exact bytes :func:`write_strm` produces for ``locator``."""
+
+    return (locator.strip() + "\n").encode("utf-8")
+
+
 def _atomic_write_text(destination: Path, text: str) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(
@@ -276,7 +366,11 @@ def read_sidecar(directory: Path) -> list[StrmEntry]:
     return entries
 
 
-def write_sidecar(directory: Path, code: str, entries: Sequence[StrmEntry], *, work_id: str | None) -> None:
+def write_sidecar(
+    directory: Path, code: str, entries: Sequence[StrmEntry], *, work_id: str | None
+) -> bool:
+    """Write the sidecar; returns False (and leaves the file alone) when unchanged."""
+
     payload = {
         "version": 1,
         "code": code,
@@ -292,7 +386,12 @@ def write_sidecar(directory: Path, code: str, entries: Sequence[StrmEntry], *, w
             for entry in entries
         ],
     }
-    _atomic_write_text(directory / SIDECAR_NAME, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    target = directory / SIDECAR_NAME
+    if _same_bytes(target, text.encode("utf-8")):
+        return False
+    _atomic_write_text(target, text)
+    return True
 
 
 def export_work(
@@ -303,11 +402,16 @@ def export_work(
     work: Work | None = None,
     identities: list[ExternalIdentity] | None = None,
 ) -> ExportResult:
-    """Write ``{root}/{code}/``: artwork → NFO → sidecar → ``.strm`` last (all atomic)."""
+    """Write ``{root}/{code}/``: artwork → NFO → sidecar → ``.strm`` last (all atomic).
 
+    Files whose bytes are already identical are skipped (order of the remaining
+    writes is unchanged); ``result.changed`` tells the caller whether anything
+    on disk moved, so a no-op re-export can skip the Emby notify.
+    """
+
+    require_strm_config(settings)
     root = settings.strm_output_root
-    if not root:
-        raise ValueError("strm_output_root is not configured")
+    assert root  # guaranteed by require_strm_config
     entries = plan_strm_entries(code, videos)
     if not entries:
         raise ValueError("no video files to export")
@@ -315,7 +419,7 @@ def export_work(
     locators = [(entry, locator_for(settings, entry)) for entry in entries]
     stem = safe_stem(code)
     directory = Path(root) / stem
-    result = ExportResult(directory=directory)
+    result = ExportResult(directory=directory, created=not directory.exists())
     directory.mkdir(parents=True, exist_ok=True)
 
     # 1) poster / fanart
@@ -323,23 +427,33 @@ def export_work(
         for kind, source in _artwork_sources(work).items():
             extension = ".jpg" if source.suffix.casefold() in {".jpg", ".jpeg"} else source.suffix.casefold()
             target = directory / f"{kind}{extension}"
-            _atomic_copy(source, target)
+            if not _same_file(source, target):
+                _atomic_copy(source, target)
+                result.changed_paths.append(target)
             result.artwork_paths.append(target)
     # 2) NFO
     if work is not None:
         nfo_path = directory / f"{stem}.nfo"
-        write_nfo(nfo_path, build_nfo(work, identities or []))
+        content = build_nfo(work, identities or [])
+        if not _same_bytes(nfo_path, content.encode("utf-8")):
+            write_nfo(nfo_path, content)
+            result.changed_paths.append(nfo_path)
         result.nfo_path = nfo_path
-    # 3) sidecar (needed for later rewrite / reconcile)
+    # 3) sidecar (needed for later rewrite / reconcile; invisible to Emby)
     write_sidecar(directory, code, entries, work_id=work.id if work is not None else None)
     # 4) .strm last
     keep = {entry.name for entry in entries}
     for entry, locator in locators:
-        result.strm_paths.append(write_strm(directory / entry.name, locator))
+        target = directory / entry.name
+        if not _same_bytes(target, strm_payload(locator)):
+            write_strm(target, locator)
+            result.changed_paths.append(target)
+        result.strm_paths.append(target)
     # Drop stale .strm from a previous layout (e.g. single → multi-part).
     for stale in directory.glob("*.strm"):
         if stale.name not in keep:
             stale.unlink(missing_ok=True)
+            result.changed_paths.append(stale)
     return result
 
 
@@ -357,6 +471,7 @@ def rewrite_strm_tree(root: Path, settings: PanSettings) -> RewriteResult:
     so no 115 calls and no re-export are needed.
     """
 
+    require_strm_config(settings.model_copy(update={"strm_output_root": str(root)}))
     result = RewriteResult()
     if not root.is_dir():
         return result
@@ -442,6 +557,8 @@ def migrate_strm_tree(old_root: Path, new_root: Path, settings: PanSettings) -> 
     Unmanaged files in the old root are never touched.
     """
 
+    # Refuse before moving anything: a half-configured target must not be built.
+    require_strm_config(settings.model_copy(update={"strm_output_root": str(new_root)}))
     result = MigrateResult(old_root=old_root, new_root=new_root)
     new_root.mkdir(parents=True, exist_ok=True)
     same_root = old_root.resolve() == new_root.resolve() if old_root.exists() else False

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
+import os
 import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any
 
 # Cold directory walks are paced softer than the generic limiter (~2-3 req/s).
@@ -19,6 +23,106 @@ _VIDEO_EXTENSIONS = (".mp4", ".mkv", ".avi", ".wmv", ".ts", ".m2ts", ".mov", ".f
 
 class PanNotConfiguredError(RuntimeError):
     """Raised when pan features are invoked before credentials/config."""
+
+
+class PanAuthRejectedError(PanNotConfiguredError):
+    """The pan permanently rejected the stored credentials: the user must log in again.
+
+    Raised instead of retrying, after the rejected token has been cleared, so
+    background loops stop hammering the login / refresh endpoint.
+    """
+
+
+class SingleFlight[T]:
+    """Coalesce concurrent calls per key into one in-flight task.
+
+    Waiters share the task's result or exception. A cancelled waiter does not
+    cancel the shared call (it is shielded); failures are not cached.
+    """
+
+    def __init__(self) -> None:
+        self._tasks: dict[str, asyncio.Task[T]] = {}
+
+    def in_flight(self, key: str) -> bool:
+        task = self._tasks.get(key)
+        return task is not None and not task.done()
+
+    async def run(self, key: str, factory: Callable[[], Awaitable[T]]) -> T:
+        task = self._tasks.get(key)
+        if task is None or task.done():
+
+            async def runner() -> T:
+                return await factory()
+
+            task = asyncio.ensure_future(runner())
+            self._tasks[key] = task
+
+            def _forget(done: asyncio.Task[T], key: str = key) -> None:
+                if self._tasks.get(key) is done:
+                    self._tasks.pop(key, None)
+                if not done.cancelled():
+                    done.exception()  # mark retrieved; waiters re-raise it
+
+            task.add_done_callback(_forget)
+        return await asyncio.shield(task)
+
+
+@dataclass(frozen=True, slots=True)
+class AuthRejection:
+    at: str
+    detail: str
+
+
+class AuthRejectionStore:
+    """Persisted "needs re-login" markers per backend (survive restarts)."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def _load_all(self) -> dict[str, dict[str, str]]:
+        if not self._path.is_file():
+            return {}
+        try:
+            payload = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            str(key): value
+            for key, value in payload.items()
+            if isinstance(value, dict) and isinstance(value.get("detail"), str)
+        }
+
+    def get(self, backend: str) -> AuthRejection | None:
+        item = self._load_all().get(backend)
+        if item is None:
+            return None
+        return AuthRejection(at=str(item.get("at") or ""), detail=str(item.get("detail") or ""))
+
+    def _save_all(self, data: dict[str, dict[str, str]]) -> None:
+        if not data:
+            with contextlib.suppress(OSError):
+                self._path.unlink(missing_ok=True)
+            return
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._path.with_suffix(f"{self._path.suffix}.tmp")
+        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(self._path)
+        with contextlib.suppress(OSError):
+            os.chmod(self._path, 0o600)
+
+    def mark(self, backend: str, detail: str) -> AuthRejection:
+        data = self._load_all()
+        rejection = AuthRejection(at=datetime.now(UTC).isoformat(), detail=detail[:300])
+        data[backend] = {"at": rejection.at, "detail": rejection.detail}
+        self._save_all(data)
+        return rejection
+
+    def clear(self, backend: str) -> None:
+        data = self._load_all()
+        if data.pop(backend, None) is not None:
+            self._save_all(data)
 
 
 class PanApiError(RuntimeError):

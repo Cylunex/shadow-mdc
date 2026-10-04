@@ -40,12 +40,15 @@ from pydantic import BaseModel, ConfigDict
 
 from ..media.magnets import info_hash_from_uri
 from .pan_common import (
+    AuthRejectionStore,
     BackoffGate,
     PanApiError,
+    PanAuthRejectedError,
     PanNotConfiguredError,
     PanOfflineConflictError,
     RemoteVideo,
     ScanPacer,
+    SingleFlight,
     is_video_name,
     shared_gate,
 )
@@ -73,6 +76,10 @@ OPENLIST_RETRIES = 2
 # OpenList JWTs default to 48h; re-login a bit earlier.
 SESSION_TTL = timedelta(hours=24)
 LIST_PAGE_SIZE = 200
+# /api/auth/login answers that need the user to fix credentials (wrong user /
+# password, OTP required, account disabled). 429 / 5xx stay transient.
+LOGIN_REJECT_CODES = frozenset({400, 401, 402, 403})
+REJECTION_KEY = "openlist"
 
 # tache task states (OpenList task manager).
 STATE_PENDING = 0
@@ -391,6 +398,7 @@ class OpenListClient:
         min_interval: float = OPENLIST_MIN_INTERVAL,
         user_agent: str = "ShadowMDC/0.1",
         gate: BackoffGate | None = None,
+        rejections: AuthRejectionStore | None = None,
     ) -> None:
         normalized = normalize_base_url(base_url)
         if not normalized:
@@ -403,12 +411,20 @@ class OpenListClient:
         self._user_agent = user_agent
         self._http: httpx.AsyncClient | None = None
         self._lock = asyncio.Lock()
-        self._login_lock = asyncio.Lock()
         self._inflight = asyncio.Semaphore(OPENLIST_MAX_IN_FLIGHT)
         self._last_call = 0.0
         # Process-wide Retry-After gate shared by every OpenList caller (and kept
         # across client re-creation when the base URL changes).
         self.gate = gate or shared_gate("openlist")
+        self._rejections = rejections
+        # Concurrent logins (several callers seeing an expired session) share one.
+        self._login_flight: SingleFlight[str] = SingleFlight()
+
+    def _reject(self, detail: str) -> PanAuthRejectedError:
+        if self._rejections is not None:
+            self._rejections.mark(REJECTION_KEY, detail)
+        logger.warning("OpenList rejected the stored credentials: %s", detail)
+        return PanAuthRejectedError(f"OpenList needs re-login: {detail}")
 
     async def aclose(self) -> None:
         if self._http is not None:
@@ -443,6 +459,11 @@ class OpenListClient:
     # ---------------------------------------------------------------- auth
 
     async def _auth_header(self, *, force_login: bool = False) -> str:
+        if self._rejections is not None:
+            rejection = self._rejections.get(REJECTION_KEY)
+            if rejection is not None:
+                # Do not retry rejected credentials until the user replaces them.
+                raise PanAuthRejectedError(f"OpenList needs re-login: {rejection.detail}")
         creds = self._credentials.load()
         if creds.token and not force_login:
             return creds.token
@@ -460,12 +481,20 @@ class OpenListClient:
         return await self.login()
 
     async def login(self) -> str:
-        """Username/password → JWT via ``/api/auth/login``; cached in the credential store."""
+        """Username/password → JWT via ``/api/auth/login``; cached in the credential store.
 
-        async with self._login_lock:
-            creds = self._credentials.load()
-            if not (creds.username and creds.password):
-                raise PanNotConfiguredError("OpenList username/password is not configured")
+        Single-flight: concurrent callers share one login request. A permanent
+        refusal (wrong password, OTP required …) clears the cached session,
+        records "needs re-login" and raises :class:`PanAuthRejectedError`.
+        """
+
+        return await self._login_flight.run("login", self._login_once)
+
+    async def _login_once(self) -> str:
+        creds = self._credentials.load()
+        if not (creds.username and creds.password):
+            raise PanNotConfiguredError("OpenList username/password is not configured")
+        try:
             data = await self._call(
                 "POST",
                 "/api/auth/login",
@@ -473,18 +502,27 @@ class OpenListClient:
                 auth=False,
                 idempotent=False,
             )
-            token = data.get("token") if isinstance(data, dict) else None
-            if not isinstance(token, str) or not token:
-                raise OpenListAuthError("OpenList login returned no token")
-            self._credentials.save(
-                creds.model_copy(
-                    update={
-                        "session_token": token,
-                        "session_expires_at": (datetime.now(UTC) + SESSION_TTL).isoformat(),
-                    }
-                )
-            )
+        except OpenListAuthError as exc:
+            if exc.code in LOGIN_REJECT_CODES:
+                self._drop_session()
+                raise self._reject(str(exc)) from exc
+            raise
+        token = data.get("token") if isinstance(data, dict) else None
+        if not isinstance(token, str) or not token:
+            raise OpenListAuthError("OpenList login returned no token")
+        latest = self._credentials.load()
+        if (latest.username, latest.password) != (creds.username, creds.password):
+            # Credentials changed mid-login: do not cache a token for the old ones.
             return token
+        self._credentials.save(
+            latest.model_copy(
+                update={
+                    "session_token": token,
+                    "session_expires_at": (datetime.now(UTC) + SESSION_TTL).isoformat(),
+                }
+            )
+        )
+        return token
 
     def _drop_session(self) -> None:
         creds = self._credentials.load()
@@ -556,6 +594,18 @@ class OpenListClient:
                 return payload.get("data")
         if code in (401, 403) and auth:
             creds = self._credentials.load()
+            used = headers.get("Authorization")
+            if code == 401 and creds.token and creds.token == used:
+                # Static API token rejected: clear it right away so it is never
+                # retried. Fall back to username/password once when present.
+                self._credentials.save(creds.model_copy(update={"token": None}))
+                creds = self._credentials.load()
+                if not (creds.username and creds.password) or _relogged:
+                    raise self._reject(f"OpenList rejected the API token: {message or code}")
+            elif code == 401 and _relogged:
+                # A freshly issued session was refused too: stop instead of looping.
+                self._drop_session()
+                raise self._reject(f"OpenList rejected a fresh login session: {message or code}")
             if not _relogged and not creds.token and creds.username and creds.password:
                 self._drop_session()
                 await self.login()
@@ -660,8 +710,10 @@ class OpenListService:
         config_loader: Callable[[], OpenListConfig],
         transport: httpx.AsyncBaseTransport | None = None,
         user_agent: str = "ShadowMDC/0.1",
+        rejections: AuthRejectionStore | None = None,
     ) -> None:
         self.credentials = credentials
+        self.rejections = rejections
         self._config_loader = config_loader
         self._transport = transport
         self._user_agent = user_agent
@@ -673,7 +725,10 @@ class OpenListService:
 
     def configured(self) -> bool:
         cfg = self.config()
-        return bool(cfg.base_url) and self.credentials.load().has_auth()
+        return bool(cfg.base_url) and self.credentials.load().has_auth() and not self.needs_relogin()
+
+    def needs_relogin(self) -> bool:
+        return self.rejections is not None and self.rejections.get(REJECTION_KEY) is not None
 
     def client(self) -> OpenListClient:
         cfg = self.config()
@@ -686,6 +741,7 @@ class OpenListService:
                 credentials=self.credentials,
                 transport=self._transport,
                 user_agent=self._user_agent,
+                rejections=self.rejections,
             )
             if old is not None:
                 # Best-effort close of the client for a previous base URL.

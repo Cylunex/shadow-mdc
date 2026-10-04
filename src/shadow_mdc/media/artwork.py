@@ -1,8 +1,11 @@
+import asyncio
 import hashlib
 import ipaddress
 import os
 import shutil
 import tempfile
+from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -31,11 +34,54 @@ class ArtworkDownloadResult(BaseModel):
     errors: tuple[str, ...]
 
 
+_RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+# Cap any server-requested wait so a CDN Retry-After cannot stall an export.
+_MAX_RETRY_WAIT_SECONDS = 5.0
+
+
+def _is_retryable_fetch_error(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in _RETRYABLE_STATUS
+    return isinstance(exc, httpx.TransportError)
+
+
+def _retry_wait(exc: BaseException, attempt: int) -> float:
+    if isinstance(exc, httpx.HTTPStatusError):
+        raw = str(exc.response.headers.get("Retry-After") or "")
+        if raw:
+            try:
+                wait: float = float(raw)
+                return min(_MAX_RETRY_WAIT_SECONDS, max(0.0, wait))
+            except ValueError:
+                pass
+    backoff: float = 0.5 * (2.0**attempt)
+    return min(_MAX_RETRY_WAIT_SECONDS, backoff)
+
+
 class ArtworkStore:
-    def __init__(self, root: Path, client: httpx.AsyncClient | None, *, max_bytes: int):
+    def __init__(
+        self,
+        root: Path,
+        client: httpx.AsyncClient | None,
+        *,
+        max_bytes: int,
+        timeout: float | None = None,
+        retries: int = 0,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+    ):
+        """``timeout`` / ``retries`` opt into the short, bounded media-fetch path.
+
+        Small CDN images (poster / fanart before a STRM export) use a per-request
+        timeout and retry only transient failures (transport errors, 408/429/5xx)
+        a bounded number of times; they never share a pan API rate gate.
+        """
+
         self._root = root
         self._client = client
         self._max_bytes = max_bytes
+        self._timeout = timeout
+        self._retries = max(0, int(retries))
+        self._sleep: Callable[[float], Awaitable[None]] = sleep or asyncio.sleep
 
     async def acquire(self, work: Work) -> tuple[ArtworkDownloadResult, dict[str, str]]:
         work_root = self._root / work.id
@@ -120,8 +166,32 @@ class ArtworkStore:
         existing: Path | None,
     ) -> tuple[Path, bool]:
         _validate_remote_url(url)
-        if kind == "sample":
-            return await self._acquire_sample(work_root, url, existing=existing)
+        attempt = 0
+        while True:
+            try:
+                if kind == "sample":
+                    return await self._acquire_sample(work_root, url, existing=existing)
+                return await self._acquire_image(work_root, kind, url, existing=existing)
+            except (httpx.HTTPError, OSError) as exc:
+                if attempt >= self._retries or not _is_retryable_fetch_error(exc):
+                    raise
+                await self._sleep(_retry_wait(exc, attempt))
+                attempt += 1
+
+    def _stream(self, url: str) -> AbstractAsyncContextManager[httpx.Response]:
+        assert self._client is not None
+        if self._timeout is not None:
+            return self._client.stream("GET", url, timeout=self._timeout)
+        return self._client.stream("GET", url)
+
+    async def _acquire_image(
+        self,
+        work_root: Path,
+        kind: str,
+        url: str,
+        *,
+        existing: Path | None,
+    ) -> tuple[Path, bool]:
 
         cached = next(work_root.glob(f"{kind}.*"), None)
         if cached is not None and cached.is_file():
@@ -135,7 +205,7 @@ class ArtworkStore:
 
         if self._client is None:
             raise RuntimeError("artwork download client is unavailable")
-        async with self._client.stream("GET", url) as response:
+        async with self._stream(url) as response:
             response.raise_for_status()
             _validate_remote_url(str(response.url))
             content_type = response.headers.get("content-type", "").split(";", 1)[0].casefold()
@@ -190,7 +260,7 @@ class ArtworkStore:
 
         if self._client is None:
             raise RuntimeError("artwork download client is unavailable")
-        async with self._client.stream("GET", url) as response:
+        async with self._stream(url) as response:
             response.raise_for_status()
             _validate_remote_url(str(response.url))
             content_type = response.headers.get("content-type", "").split(";", 1)[0].casefold()

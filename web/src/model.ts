@@ -781,6 +781,8 @@ export const panStatusSchema = z.object({
   strm_enabled: z.boolean().optional(),
   strm_output_root: z.string().nullable().optional(),
   strm_url_prefix: z.string().optional(),
+  needs_relogin: z.boolean().optional(),
+  auth_rejected_at: z.string().nullable().optional(),
   account: z.object({
     user_id: z.string().nullable().optional(),
     user_name: z.string().nullable().optional(),
@@ -819,7 +821,8 @@ export const panSettingsSchema = z.object({
   openlist_strm_sign: z.boolean().optional().default(false),
   openlist_username: z.string().nullable().optional().default(null),
   openlist_token_set: z.boolean().optional().default(false),
-  openlist_password_set: z.boolean().optional().default(false)
+  openlist_password_set: z.boolean().optional().default(false),
+  strm_config_errors: z.array(z.string()).optional().default([])
 });
 export const openListTestSchema = z.object({
   ok: z.boolean(),
@@ -894,7 +897,13 @@ export const subscriptionWatchStatusSchema = z.object({
   last_refreshed: z.number(),
   last_submitted: z.number(),
   last_skipped_pan: z.number(),
-  last_errors: z.array(z.string())
+  last_errors: z.array(z.string()),
+  last_hunting: z.number().optional().default(0),
+  last_queued: z.number().optional().default(0),
+  last_due: z.number().optional().default(0),
+  batch_cursor: z.number().optional().default(0),
+  batch_total: z.number().optional().default(0),
+  draining: z.boolean().optional().default(false)
 });
 export type SubscriptionWatchStatus = z.infer<typeof subscriptionWatchStatusSchema>;
 export type PanSettings = z.infer<typeof panSettingsSchema>;

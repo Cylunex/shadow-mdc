@@ -130,6 +130,11 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
               ? `${pan.provider} · ${pan.available ? "可用" : "不可用"} — ${pan.reason}`
               : "正在读取 /api/pan/status…"}
           </p>
+          {pan?.needs_relogin && (
+            <p className="danger-text" role="alert">
+              需要重新登录：{pan.backend === "openlist" ? "OpenList 拒绝了已保存的令牌 / 密码，已清除，请重新填写凭据。" : "115 拒绝了已保存的登录，已清除，请重新扫码登录。"}
+            </p>
+          )}
           {pan?.account && (
             <p className="muted">
               账号 {pan.account.user_name || pan.account.user_id || "已连接"}
@@ -508,6 +513,14 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                 </ul>
               )}
               </>)}
+              {panSettings.strm_enabled && panSettings.strm_config_errors.length > 0 && (
+                <div className="danger-text" role="alert">
+                  <strong>STRM 设置不完整，已暂停导出和重写（不会写出半配置的媒体库）：</strong>
+                  <ul>
+                    {panSettings.strm_config_errors.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+              )}
               <label className="check-line">
                 <input
                   type="checkbox"
@@ -592,7 +605,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                 <input
                   value={panSettings.strm_emby_root ?? ""}
                   onChange={(e) => setPanSettings({ ...panSettings, strm_emby_root: e.target.value || null })}
-                  placeholder="与输出根目录相同则留空"
+                  placeholder="开启 Emby 通知时必填（路径相同也要填）"
                 />
               </label>
               <label>

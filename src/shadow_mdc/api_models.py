@@ -866,6 +866,8 @@ class PanSettingsPayload(BaseModel):
     openlist_username: str | None = None
     openlist_token_set: bool = False
     openlist_password_set: bool = False
+    # Missing / invalid settings that block STRM export and rewrite (empty = OK).
+    strm_config_errors: list[str] = Field(default_factory=list)
 
 
 class StrmMigrateRequest(BaseModel):
@@ -943,9 +945,14 @@ class SubscriptionWatchStatusOut(BaseModel):
     last_submitted: int = 0
     last_skipped_pan: int = 0
     last_errors: list[str] = Field(default_factory=list)
+    last_hunting: int = 0
+    last_queued: int = 0
+    last_due: int = 0
     batch_cursor: int = 0
     batch_total: int = 0
     last_pass_completed_at: str | None = None
+    draining: bool = False
+    drain_cutoff: str | None = None
 
 
 class WorkOfflineRequest(BaseModel):

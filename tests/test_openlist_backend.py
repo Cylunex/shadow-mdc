@@ -23,14 +23,13 @@ from shadow_mdc.enums import ContentFamily, MediaCategory
 from shadow_mdc.services import pan_poller as poller_module
 from shadow_mdc.services.media_server import MediaServerStore
 from shadow_mdc.services.openlist import (
-    OpenListAuthError,
     build_openlist_d_url,
     code_pattern,
     map_openlist_state,
     normalize_openlist_path,
     parse_task,
 )
-from shadow_mdc.services.pan import PanOfflineConflictError, PanService, ScanPacer
+from shadow_mdc.services.pan import PanAuthRejectedError, PanOfflineConflictError, PanService, ScanPacer
 from shadow_mdc.services.pan_offline_enqueue import enqueue_work_offline
 from shadow_mdc.services.pan_poller import PanOfflinePoller
 from shadow_mdc.services.strm_export import read_sidecar
@@ -276,11 +275,16 @@ def test_password_login_caches_session_and_relogs_on_401(
         assert len([call for call in fake.calls if call[1] == "/api/auth/login"]) == 2
         # Raw token header (no "Bearer").
         assert fake.calls[-1][3] and not fake.calls[-1][3].startswith("Bearer")
-        # Wrong password surfaces an auth error.
+        # Wrong password is a permanent rejection: "needs re-login", no retry loop.
         fake.users = {"admin": "other"}
         fake.valid_tokens = {TOKEN}
-        with pytest.raises(OpenListAuthError):
+        with pytest.raises(PanAuthRejectedError):
             await client.me()
+        assert pan.status()["needs_relogin"] is True
+        before = len(fake.calls)
+        with pytest.raises(PanAuthRejectedError):
+            await client.me()
+        assert len(fake.calls) == before
         await pan.aclose()
 
     asyncio.run(scenario())

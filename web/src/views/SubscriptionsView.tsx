@@ -70,7 +70,11 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
           <p className="muted">{enabledCount} 位演员正在被追踪 · 队列待审 {pendingQueue.length}</p>
           {watchStatus && (
             <p className="muted">
-              自动盯磁链：{watchStatus.enabled ? "开" : "关"}              {watchStatus.last_check_at ? ` · 上次检查 ${watchStatus.last_check_at}` : ""}              {` · 提交 ${watchStatus.last_submitted} · 跳过115 ${watchStatus.last_skipped_pan}`}
+              自动盯磁链：{watchStatus.enabled ? "开" : "关"}
+              {watchStatus.draining ? ` · 正在检查到期目标 ${watchStatus.batch_cursor}/${watchStatus.batch_total}` : ""}
+              {watchStatus.last_check_at ? ` · 上次检查 ${watchStatus.last_check_at}（到期 ${watchStatus.last_due}）` : ""}
+              {` · 按偏好搜磁链中 ${watchStatus.last_hunting} · 已加入 115 离线 ${watchStatus.last_queued}（本次新提交 ${watchStatus.last_submitted}）`}
+              {watchStatus.last_skipped_pan ? ` · 网盘未就绪 ${watchStatus.last_skipped_pan}` : ""}
             </p>
           )}
         </div>
@@ -98,7 +102,7 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
                 const status = await api.runSubscriptionWatch();
                 setWatchStatus(status);
                 report(
-                  `盯磁链检查完成：目标 ${status.last_targets}，刷新 ${status.last_refreshed}，提交 ${status.last_submitted}，跳过115 ${status.last_skipped_pan}`
+                  `盯磁链检查完成：到期 ${status.last_due}，按偏好搜磁链中 ${status.last_hunting}，已加入 115 离线 ${status.last_queued}（新提交 ${status.last_submitted}），刷新磁链 ${status.last_refreshed}，网盘未就绪 ${status.last_skipped_pan}`
                 );
               });
             }}

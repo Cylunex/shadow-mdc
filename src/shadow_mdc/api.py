@@ -258,6 +258,7 @@ from .services.pan import (
     pan_status,
 )
 from .services.pan_poller import PanOfflinePoller
+from .services.strm_export import StrmConfigError
 from .services.strm_relay import RelayError, StrmRelay, token_ok
 from .services.openlist import OpenListApiError, build_openlist_d_url, path_within
 from .services.actor_images import (
@@ -885,9 +886,16 @@ def pan_set_directory(payload: PanDirectoryRequest, request: Request) -> dict[st
     return {"id": settings.offline_directory_id}
 
 
+def _pan_settings_payload(app_runtime: Runtime) -> PanSettingsPayload:
+    service = app_runtime.pan_service
+    cfg = service.config_store.load()
+    errors = app_runtime.pan_poller.config_problems(cfg) if cfg.strm_enabled else []
+    return PanSettingsPayload.model_validate({**service.settings_status(), "strm_config_errors": errors})
+
+
 @app.get("/api/pan/settings", response_model=PanSettingsPayload)
 def pan_get_settings(request: Request) -> PanSettingsPayload:
-    return PanSettingsPayload.model_validate(runtime(request).pan_service.settings_status())
+    return _pan_settings_payload(runtime(request))
 
 
 _STRM_LOCATOR_KEYS = (
@@ -919,7 +927,11 @@ async def pan_put_settings(payload: PanSettingsUpdatePayload, request: Request) 
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     changed = any(getattr(before, key) != getattr(saved, key) for key in _STRM_LOCATOR_KEYS)
     root_changed = _strm_root_key(before.strm_output_root) != _strm_root_key(saved.strm_output_root)
-    if root_changed and saved.strm_output_root:
+    if (changed or root_changed) and app_runtime.pan_poller.config_problems(saved):
+        # Half-configured: never migrate / rewrite the library. The problems are
+        # returned in strm_config_errors for the UI; nothing on disk is touched.
+        pass
+    elif root_changed and saved.strm_output_root:
         # Export directory moved: relocate managed folders, then rewrite bodies
         # (covers a simultaneous token / URL change too).
         _spawn(
@@ -929,7 +941,7 @@ async def pan_put_settings(payload: PanSettingsUpdatePayload, request: Request) 
     elif changed and saved.strm_output_root:
         # Token / public URL / mode rotation: rewrite existing .strm in place (no re-export).
         _spawn(app_runtime.pan_poller.rewrite(), "shadow-mdc-strm-rewrite")
-    return PanSettingsPayload.model_validate(service.settings_status())
+    return _pan_settings_payload(app_runtime)
 
 
 def _strm_root_key(value: str | None) -> str | None:
@@ -951,6 +963,8 @@ def pan_strm_status(request: Request) -> dict[str, object]:
         "last_reconcile": poller.maintenance.last_reconcile,
         "last_migrate_at": poller.maintenance.last_migrate_at,
         "last_migrate": poller.maintenance.last_migrate,
+        "config_errors": poller.config_problems(),
+        "last_config_error": poller.maintenance.last_config_error,
         "emby_pending": len(notifier.pending),
         "rate_limit": {name: shared_gate(name).snapshot() for name in ("115", "openlist")},
         "emby_last": None
@@ -961,7 +975,10 @@ def pan_strm_status(request: Request) -> dict[str, object]:
 
 @app.post("/api/pan/strm/rewrite")
 async def pan_strm_rewrite(request: Request) -> dict[str, object]:
-    result = await runtime(request).pan_poller.rewrite()
+    try:
+        result = await runtime(request).pan_poller.rewrite()
+    except StrmConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"scanned": result.scanned, "rewritten": len(result.rewritten), "skipped": result.skipped}
 
 
@@ -972,6 +989,9 @@ async def pan_strm_migrate(payload: StrmMigrateRequest, request: Request) -> dic
     poller = runtime(request).pan_poller
     if poller.maintenance.running:
         return {"started": False, "running": poller.maintenance.running}
+    problems = poller.config_problems()
+    if problems:
+        raise HTTPException(status_code=400, detail=str(StrmConfigError(problems)))
     _spawn(poller.migrate_root(payload.old_root), "shadow-mdc-strm-migrate")
     return {"started": True}
 

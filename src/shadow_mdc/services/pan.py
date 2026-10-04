@@ -16,6 +16,7 @@ import os
 import secrets
 import time as time_module
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -43,11 +44,16 @@ from .pan_common import (
     SCAN_PACE_SECONDS as SCAN_PACE_SECONDS,
 )
 from .pan_common import (
+    AuthRejectionStore,
     BackoffGate,
+    SingleFlight,
     shared_gate,
 )
 from .pan_common import (
     PanApiError as PanApiError,
+)
+from .pan_common import (
+    PanAuthRejectedError as PanAuthRejectedError,
 )
 from .pan_common import (
     PanNotConfiguredError as PanNotConfiguredError,
@@ -89,6 +95,9 @@ LOGIN_TTL_SECONDS = 300
 OFFLINE_EXISTS_CODE = 10008
 # 115 reports these codes when a file/folder id no longer exists.
 FILE_GONE_CODES = frozenset({430004, 20018, 70004, 50015})
+# refreshToken answers with these when the refresh token itself is dead
+# (revoked, expired, superseded by a newer login): permanent, never retried.
+REFRESH_REJECT_CODES = frozenset({99, 40140114, 40140115, 40140116, 40140119, 40140120})
 # One UA for every 115 media call (downurl / play / probe). 115 binds download
 # URLs to the UA that requested them, so the relay passes the player UA through
 # and only falls back to this when the player sends none.
@@ -328,14 +337,22 @@ class Pan115Client:
         self._refresh_token: str | None = None
         self._expires_at: datetime | None = None
         self._on_tokens: Any = None
+        # (refresh token that was rejected, detail) → owner clears stored creds.
+        self._on_rejected: Callable[[str, str], None] | None = None
+        # Concurrent refreshes share one call: 115 rotates the refresh token, so
+        # a second parallel refresh with the old one would be rejected.
+        self._refresh_flight: SingleFlight[PanCredentials | None] = SingleFlight()
 
     def bind_tokens(
         self,
         credentials: PanCredentials | None,
         *,
         on_tokens: Any = None,
+        on_rejected: Callable[[str, str], None] | None = None,
     ) -> None:
         self._on_tokens = on_tokens
+        if on_rejected is not None:
+            self._on_rejected = on_rejected
         if credentials is None:
             self._access_token = None
             self._refresh_token = None
@@ -523,22 +540,66 @@ class Pan115Client:
             raise PanApiError("deviceCodeToToken: missing data")
         return self._credentials_from_token_payload(data)
 
-    async def refresh_access_token(self) -> PanCredentials:
-        if not self._refresh_token:
+    @property
+    def refresh_in_flight(self) -> bool:
+        return self._refresh_flight.in_flight("refresh")
+
+    async def refresh_access_token(self, *, stale_access: str | None = None) -> PanCredentials | None:
+        """Single-flight token refresh.
+
+        ``stale_access`` is the access token the caller saw rejected; when the
+        client already holds a different one (another caller refreshed in the
+        meantime) no new refresh is issued. Returns None in that case.
+        A permanent rejection clears the bound tokens, notifies the owner (which
+        clears the stored credentials) and raises :class:`PanAuthRejectedError`.
+        """
+
+        if stale_access is not None and self._access_token and self._access_token != stale_access:
+            return None
+        return await self._refresh_flight.run("refresh", self._refresh_once)
+
+    def _reject_refresh(self, refresh_used: str, detail: str) -> PanAuthRejectedError:
+        if self._refresh_token == refresh_used:
+            self._access_token = None
+            self._refresh_token = None
+            self._expires_at = None
+        if self._on_rejected is not None:
+            try:
+                self._on_rejected(refresh_used, detail)
+            except Exception:
+                logger.warning("115 credential rejection handler failed", exc_info=True)
+        return PanAuthRejectedError(f"115 login rejected, please log in again ({detail})")
+
+    async def _refresh_once(self) -> PanCredentials | None:
+        refresh_used = self._refresh_token
+        if not refresh_used:
             raise PanNotConfiguredError("115 refresh token missing")
         response = await self._request(
             "POST",
             f"{PASSPORT_URL}/open/refreshToken",
-            form={"refresh_token": self._refresh_token},
+            form={"refresh_token": refresh_used},
         )
+        if response.status_code == 401:
+            raise self._reject_refresh(refresh_used, "refreshToken HTTP 401")
         response.raise_for_status()
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise PanApiError("refreshToken: non-JSON response") from exc
         if not isinstance(payload, dict):
             raise PanApiError("refreshToken: unexpected response")
+        code = payload.get("code")
+        if isinstance(code, int) and code in REFRESH_REJECT_CODES:
+            message = str(payload.get("message") or payload.get("error") or f"code {code}")
+            raise self._reject_refresh(refresh_used, f"refreshToken: {message} (code {code})")
         _check_api_ok(payload, context="refreshToken")
         data = _unwrap_data(payload)
         if not isinstance(data, dict):
             raise PanApiError("refreshToken: missing data")
+        if self._refresh_token != refresh_used:
+            # A new login / token import replaced the credentials while this
+            # refresh was in flight: never overwrite the newer ones.
+            return None
         credentials = self._credentials_from_token_payload(data)
         self.bind_tokens(credentials, on_tokens=self._on_tokens)
         if self._on_tokens:
@@ -574,7 +635,7 @@ class Pan115Client:
         # Refresh slightly early when expiry is known.
         if self._expires_at is not None and datetime.now(UTC) + timedelta(seconds=120) < self._expires_at:
             return
-        await self.refresh_access_token()
+        await self.refresh_access_token(stale_access=self._access_token)
 
     async def _authed_json(
         self,
@@ -594,9 +655,11 @@ class Pan115Client:
             "idempotent": idempotent,
             "extra_headers": extra_headers,
         }
+        used_access = self._access_token
         response = await self._request(method, url, **options)
         if response.status_code == 401:
-            await self.refresh_access_token()
+            await self.refresh_access_token(stale_access=used_access)
+            used_access = self._access_token
             response = await self._request(method, url, **options)
         response.raise_for_status()
         payload = response.json()
@@ -612,7 +675,7 @@ class Pan115Client:
             if code in (99, 40140116, 40140117, 40140119) or (
                 isinstance(code, int) and 40100000 <= code < 40200000
             ):
-                await self.refresh_access_token()
+                await self.refresh_access_token(stale_access=used_access)
                 response = await self._request(method, url, **options)
                 response.raise_for_status()
                 payload = response.json()
@@ -1118,11 +1181,14 @@ class PanService:
         self.credentials_store = CredentialStore(pan_dir / "credentials.json")
         self.config_store = PanConfigStore(pan_dir / "config.json")
         self.openlist_credentials = OpenListCredentialStore(pan_dir / "openlist-credentials.json")
+        # "needs re-login" markers set when a backend permanently rejects creds.
+        self.auth_rejections = AuthRejectionStore(pan_dir / "auth-state.json")
         self.openlist = OpenListService(
             credentials=self.openlist_credentials,
             config_loader=self._openlist_config,
             transport=openlist_transport,
             user_agent=user_agent,
+            rejections=self.auth_rejections,
         )
         self.client_id = client_id or DEFAULT_PAN_CLIENT_ID
         self.client_secret = client_secret
@@ -1197,11 +1263,25 @@ class PanService:
         data["session_expires_at"] = None
         self.openlist_credentials.save(OpenListCredentials.model_validate(data))
         self.openlist.reset_session()
+        # New secrets: lift the "needs re-login" block so the next call tries them.
+        self.auth_rejections.clear("openlist")
         return self.openlist_credentials_status()
 
     def clear_openlist_credentials(self) -> None:
         self.openlist_credentials.clear()
         self.openlist.reset_session()
+        self.auth_rejections.clear("openlist")
+
+    def _on_115_rejected(self, refresh_used: str, detail: str) -> None:
+        """115 permanently rejected a refresh token: drop it now (if still current)."""
+
+        stored = self.credentials_store.load()
+        if stored is not None and stored.refresh_token != refresh_used:
+            # A newer login already replaced it; a late rejection must not clear it.
+            return
+        self.credentials_store.clear()
+        self.auth_rejections.mark("115_open", detail)
+        logger.warning("115 rejected the stored login; credentials cleared (%s)", detail)
 
     def _persist_credentials(self, credentials: PanCredentials) -> None:
         existing = self.credentials_store.load()
@@ -1244,7 +1324,11 @@ class PanService:
                 user_agent=self.user_agent,
             )
 
-            self._client.bind_tokens(self.credentials_store.load(), on_tokens=self._persist_credentials)
+            self._client.bind_tokens(
+                self.credentials_store.load(),
+                on_tokens=self._persist_credentials,
+                on_rejected=self._on_115_rejected,
+            )
         else:
             # Keep use_proxy in sync if config changed.
             self._client._proxy = self.proxy_url if cfg.use_proxy and self.proxy_url else None
@@ -1259,8 +1343,14 @@ class PanService:
     def _openlist_status(self, cfg: PanSettings) -> dict[str, object]:
         has_url = bool(cfg.openlist_base_url)
         has_auth = self.openlist_credentials.load().has_auth()
-        configured = has_url and has_auth
-        if not has_url:
+        rejection = self.auth_rejections.get("openlist")
+        configured = has_url and has_auth and rejection is None
+        if rejection is not None:
+            reason = (
+                "Needs re-login: OpenList rejected the saved credentials "
+                f"({rejection.detail}). Enter a new API token or username/password."
+            )
+        elif not has_url:
             reason = "OpenList mode: set the OpenList base URL in Settings."
         elif not has_auth:
             reason = "OpenList mode: set an API token or username/password."
@@ -1274,6 +1364,8 @@ class PanService:
             "configured": configured,
             "available": configured,
             "connected": configured,
+            "needs_relogin": rejection is not None,
+            "auth_rejected_at": rejection.at if rejection else None,
             "reason": reason,
             "offline_target": cfg.openlist_offline_path,
             "offline_ready": bool(configured and cfg.openlist_offline_path),
@@ -1292,14 +1384,23 @@ class PanService:
         configured = creds is not None and bool(creds.access_token and creds.refresh_token)
         directory_set = bool(cfg.offline_directory_id)
         if not configured:
+            rejection = self.auth_rejections.get("115_open")
+            reason = (
+                "Not logged in. Use Settings → 115 QR login "
+                f"(client_id={self._effective_client_id(cfg)}; prefer your own app at open.115.com)."
+            )
+            if rejection is not None:
+                reason = (
+                    "Needs re-login: 115 rejected the saved login and it was cleared "
+                    f"({rejection.detail}). Scan the QR code again."
+                )
             return {
                 "provider": "115",
                 "configured": False,
                 "available": False,
-                "reason": (
-                    "Not logged in. Use Settings → 115 QR login "
-                    f"(client_id={self._effective_client_id(cfg)}; prefer your own app at open.115.com)."
-                ),
+                "needs_relogin": rejection is not None,
+                "auth_rejected_at": rejection.at if rejection else None,
+                "reason": reason,
                 "client_id": self._effective_client_id(cfg),
                 "offline_directory_id": cfg.offline_directory_id,
                 "offline_target": cfg.offline_directory_id,
@@ -1311,6 +1412,7 @@ class PanService:
             "provider": "115",
             "configured": True,
             "available": True,
+            "needs_relogin": False,
             "reason": (
                 "Connected."
                 if directory_set
@@ -1355,6 +1457,7 @@ class PanService:
             user_name=user_name,
         )
         self.credentials_store.save(credentials)
+        self.auth_rejections.clear("115_open")
         self.get_client().bind_tokens(credentials, on_tokens=self._persist_credentials)
         return self.status()
 
@@ -1416,6 +1519,7 @@ class PanService:
                 except Exception:
                     pass
                 self.credentials_store.save(credentials)
+                self.auth_rejections.clear("115_open")
                 client.bind_tokens(credentials, on_tokens=self._persist_credentials)
             except Exception as exc:
                 session.state = "error"
@@ -1425,6 +1529,7 @@ class PanService:
 
     def disconnect(self) -> None:
         self.credentials_store.clear()
+        self.auth_rejections.clear("115_open")
         if self._client is not None:
             self._client.bind_tokens(None)
         self._logins.clear()
@@ -1594,14 +1699,14 @@ def build_strm_locator(*, prefix: str, relative_path: str) -> str:
     return f"{base}/{rel}" if rel else base
 
 
-def write_offline_strm(
+def plan_offline_strm(
     *,
     settings: PanSettings,
     work_code: str | None,
     file_name: str | None,
     remote_relative: str | None = None,
-) -> str | None:
-    """Write `{root}/{CODE}/{CODE}.strm` or best-effort from file name. Returns path or None."""
+) -> tuple[Path, str] | None:
+    """Target path + locator for the legacy single-file OpenList-prefix ``.strm``."""
 
     if not settings.strm_enabled:
         return None
@@ -1619,9 +1724,48 @@ def write_offline_strm(
         locator = build_strm_locator(prefix=settings.strm_url_prefix, relative_path=name)
     else:
         locator = build_strm_locator(prefix=settings.strm_url_prefix, relative_path=f"{stem}.mp4")
-    path = Path(root) / folder / f"{stem}.strm"
+    return Path(root) / folder / f"{stem}.strm", locator
+
+
+def write_offline_strm_changed(
+    *,
+    settings: PanSettings,
+    work_code: str | None,
+    file_name: str | None,
+    remote_relative: str | None = None,
+) -> tuple[str | None, bool]:
+    """Like :func:`write_offline_strm` but skips identical bytes; returns (path, changed)."""
+
+    planned = plan_offline_strm(
+        settings=settings, work_code=work_code, file_name=file_name, remote_relative=remote_relative
+    )
+    if planned is None:
+        return None, False
+    path, locator = planned
+    payload = (locator.strip() + "\n").encode("utf-8")
+    try:
+        unchanged = path.is_file() and path.read_bytes() == payload
+    except OSError:
+        unchanged = False
+    if unchanged:
+        return str(path), False
     write_strm(path, locator)
-    return str(path)
+    return str(path), True
+
+
+def write_offline_strm(
+    *,
+    settings: PanSettings,
+    work_code: str | None,
+    file_name: str | None,
+    remote_relative: str | None = None,
+) -> str | None:
+    """Write `{root}/{CODE}/{CODE}.strm` or best-effort from file name. Returns path or None."""
+
+    path, _changed = write_offline_strm_changed(
+        settings=settings, work_code=work_code, file_name=file_name, remote_relative=remote_relative
+    )
+    return path
 
 
 def pan_status() -> dict[str, object]:

@@ -142,10 +142,11 @@ def test_watch_resumes_from_processed_count(tmp_path: Path, monkeypatch: pytest.
 
     monkeypatch.setattr(service, "_process_work", plain)
     status = asyncio.run(service.run_once(limit=5))
+    # Resumed with the interrupted run's cutoff: only the unchecked items run.
     assert processed == ordered[3:7]
-    assert status.batch_cursor == 0  # wrapped after a full pass
+    assert status.draining is False and status.drain_cutoff is None
     assert status.last_pass_completed_at is not None
     processed.clear()
+    # Everything was just checked: nothing is due again until the recheck window passes.
     asyncio.run(service.run_once(limit=5))
-    assert processed == ordered[:5]
-    assert state.load().batch_cursor == 5
+    assert processed == []

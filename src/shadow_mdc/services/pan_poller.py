@@ -33,17 +33,21 @@ from .pan import (
     RemoteVideo,
     ScanPacer,
     is_file_gone_error,
-    write_offline_strm,
+    write_offline_strm_changed,
 )
 from .strm_export import (
+    ExportResult,
     MigrateResult,
     ReconcileResult,
     RewriteResult,
+    StrmConfigError,
     export_work,
     map_to_emby_path,
     migrate_strm_tree,
     reconcile_deleted,
+    require_strm_config,
     rewrite_strm_tree,
+    strm_config_problems,
 )
 from .task_events import TaskEventHub
 
@@ -59,6 +63,10 @@ POLL_ACTIVE_SECONDS = 3.0
 OPENLIST_MISSING_LIMIT = 300
 OPENLIST_RESULT_LIMIT = 300
 MAINTENANCE_CHECK_SECONDS = 60.0
+# Export-time artwork (CDN images): short timeout + bounded retries, and never
+# routed through the 115 / OpenList API gates (they only meter API quota).
+ARTWORK_FETCH_TIMEOUT = 15.0
+ARTWORK_FETCH_RETRIES = 2
 _ROOT_NAMES = frozenset({"根目录", "根目錄", "/"})
 
 
@@ -80,6 +88,8 @@ class StrmMaintenanceStatus:
     last_migrate_at: str | None = None
     last_migrate: dict[str, object] = field(default_factory=dict)
     running: str | None = None
+    # Last refusal because STRM settings were incomplete (shown in the UI).
+    last_config_error: str | None = None
 
 
 class PanOfflinePoller:
@@ -210,6 +220,36 @@ class PanOfflinePoller:
             except TimeoutError:
                 continue
 
+    # ------------------------------------------------------------- config gate
+
+    def emby_notify_enabled(self) -> bool:
+        try:
+            return bool(self._media_server_store.load().enabled)
+        except Exception:
+            return False
+
+    def config_problems(self, cfg: PanSettings | None = None) -> list[str]:
+        settings = cfg or self._pan.config_store.load()
+        return strm_config_problems(settings, emby_notify=self.emby_notify_enabled())
+
+    def require_config(self, cfg: PanSettings) -> None:
+        """Raise :class:`StrmConfigError` (and remember it for the UI) when incomplete."""
+
+        try:
+            require_strm_config(cfg, emby_notify=self.emby_notify_enabled())
+        except StrmConfigError as exc:
+            self.maintenance.last_config_error = str(exc)
+            raise
+        self.maintenance.last_config_error = None
+
+    def _notify_export(self, result: ExportResult, cfg: PanSettings) -> None:
+        """Queue one Emby path update only when the export changed bytes on disk."""
+
+        if not result.changed:
+            return
+        kind = "Created" if result.created else "Modified"
+        self._notifier.enqueue([map_to_emby_path(result.directory, cfg)], kind)
+
     # ------------------------------------------------------------------ polling
 
     async def poll_once(self) -> bool:
@@ -324,7 +364,17 @@ class PanOfflinePoller:
 
         strm_path: str | None = None
         export_dir: Path | None = None
-        if cfg.strm_enabled and cfg.strm_output_root:
+        export_result: ExportResult | None = None
+        error: str | None = None
+        config_ok = True
+        if cfg.strm_enabled:
+            try:
+                self.require_config(cfg)
+            except StrmConfigError as exc:
+                config_ok = False
+                error = str(exc)[:500]
+                logger.warning("STRM export refused: %s", exc)
+        if cfg.strm_enabled and config_ok and cfg.strm_output_root:
             videos: list[RemoteVideo] = []
             if completion.file_id:
                 try:
@@ -351,27 +401,28 @@ class PanOfflinePoller:
                         work = repo.get_work(completion.work_id)
                         identities = repo.identities_for_work(work.id) if work is not None else []
                         code = work_code or Path(remote_name or "offline").stem
-                        result = export_work(
+                        export_result = export_work(
                             settings=cfg,
                             code=code,
                             videos=videos,
                             work=work,
                             identities=identities,
                         )
-                    export_dir = result.directory
-                    strm_path = str(result.strm_paths[0]) if result.strm_paths else None
+                    export_dir = export_result.directory
+                    strm_path = str(export_result.strm_paths[0]) if export_result.strm_paths else None
                 except Exception as exc:
                     logger.warning("STRM export failed: %s: %s", type(exc).__name__, exc)
+                    error = f"STRM export failed: {exc}"[:500]
             elif cfg.strm_mode != "relay":
                 # Legacy OpenList single-locator path when the walk found nothing.
                 try:
-                    strm_path = write_offline_strm(
+                    strm_path, legacy_changed = write_offline_strm_changed(
                         settings=cfg,
                         work_code=work_code,
                         file_name=remote_name,
                         remote_relative=remote_path,
                     )
-                    if strm_path:
+                    if strm_path and legacy_changed:
                         export_dir = Path(strm_path).parent
                 except Exception as exc:
                     logger.warning("STRM write failed: %s", type(exc).__name__)
@@ -388,9 +439,11 @@ class PanOfflinePoller:
                     remote_name=remote_name,
                     remote_path=remote_path,
                     strm_path=strm_path,
-                    error=None,
+                    error=error,
                 )
-        if export_dir is not None:
+        if export_result is not None:
+            self._notify_export(export_result, cfg)
+        elif export_dir is not None:
             self._notifier.enqueue([map_to_emby_path(export_dir, cfg)], "Created")
 
     # --------------------------------------------------------- OpenList backend
@@ -536,9 +589,17 @@ class PanOfflinePoller:
         self._openlist_misses.pop(task_id, None)
 
         strm_path: str | None = None
-        export_dir: Path | None = None
+        export_result: ExportResult | None = None
         error: str | None = None
-        if cfg.strm_enabled and cfg.strm_output_root:
+        config_ok = True
+        if cfg.strm_enabled:
+            try:
+                self.require_config(cfg)
+            except StrmConfigError as exc:
+                config_ok = False
+                error = str(exc)[:500]
+                logger.warning("STRM export refused: %s", exc)
+        if cfg.strm_enabled and config_ok and cfg.strm_output_root:
             videos: list[RemoteVideo] = []
             try:
                 videos = await service.walk_videos(entry, pacer=ScanPacer())
@@ -554,15 +615,14 @@ class PanOfflinePoller:
                         work = repo.get_work(work_id)
                         identities = repo.identities_for_work(work.id) if work is not None else []
                         code = work_code or Path(entry.name).stem
-                        result = export_work(
+                        export_result = export_work(
                             settings=cfg,
                             code=code,
                             videos=videos,
                             work=work,
                             identities=identities,
                         )
-                    export_dir = result.directory
-                    strm_path = str(result.strm_paths[0]) if result.strm_paths else None
+                    strm_path = str(export_result.strm_paths[0]) if export_result.strm_paths else None
                 except Exception as exc:
                     logger.warning("STRM export failed: %s: %s", type(exc).__name__, exc)
                     error = f"STRM export failed: {exc}"[:500]
@@ -582,8 +642,8 @@ class PanOfflinePoller:
                     strm_path=strm_path,
                     error=error,
                 )
-        if export_dir is not None:
-            self._notifier.enqueue([map_to_emby_path(export_dir, cfg)], "Created")
+        if export_result is not None:
+            self._notify_export(export_result, cfg)
 
     async def _acquire_artwork(self, work_id: str) -> None:
         assert self._data_dir is not None
@@ -595,7 +655,11 @@ class PanOfflinePoller:
             if work is None:
                 return
             _result, local_paths = await ArtworkStore(
-                self._data_dir / "artwork", self._http, max_bytes=self._artwork_max_bytes
+                self._data_dir / "artwork",
+                self._http,
+                max_bytes=self._artwork_max_bytes,
+                timeout=ARTWORK_FETCH_TIMEOUT,
+                retries=ARTWORK_FETCH_RETRIES,
             ).acquire(work)
             if local_paths:
                 with self._database.session() as session:
@@ -612,8 +676,9 @@ class PanOfflinePoller:
         """Rewrite .strm bodies in place for the current mode / public URL / token."""
 
         cfg = self._pan.config_store.load()
-        if not cfg.strm_output_root:
-            return RewriteResult()
+        # Refuse (StrmConfigError) instead of silently skipping every entry.
+        self.require_config(cfg)
+        assert cfg.strm_output_root
         async with self._maintenance_lock:
             self.maintenance.running = "rewrite"
             try:
@@ -642,8 +707,8 @@ class PanOfflinePoller:
         """
 
         cfg = self._pan.config_store.load()
-        if not cfg.strm_output_root:
-            return MigrateResult()
+        self.require_config(cfg)
+        assert cfg.strm_output_root
         new_root = Path(cfg.strm_output_root)
         async with self._maintenance_lock:
             self.maintenance.running = "migrate"

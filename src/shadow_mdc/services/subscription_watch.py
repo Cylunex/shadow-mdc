@@ -8,7 +8,7 @@ import hashlib
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,8 +30,14 @@ from .task_events import TaskEventHub
 logger = logging.getLogger(__name__)
 
 WATCH_IDLE_SECONDS = 15 * 60
-WATCH_BATCH_SIZE = 5
+# Page size while draining the due backlog (checkpoint is saved per item and
+# progress is published per page). Each run drains *every* due target.
+WATCH_BATCH_SIZE = 25
 WATCH_PACE_SECONDS = 2.0
+# A target is due again once its last check is at least this old at the run's
+# cutoff. Slightly below the idle interval so every tick re-checks everything
+# that was not touched by an interrupted / overlapping run.
+WATCH_RECHECK_SECONDS = 10 * 60
 
 
 class SubscriptionWatchStatus(BaseModel):
@@ -44,11 +50,22 @@ class SubscriptionWatchStatus(BaseModel):
     last_submitted: int = 0
     last_skipped_pan: int = 0
     last_errors: list[str] = Field(default_factory=list)
-    # Resume checkpoint: index into the sorted target list processed so far.
+    # Of the targets checked last run: still hunting a magnet that matches the
+    # preferences vs. already handed to 115 offline (running or finished).
+    last_hunting: int = 0
+    last_queued: int = 0
+    last_due: int = 0
+    # Drain progress: items processed out of the due backlog of the current run.
     batch_cursor: int = 0
     batch_total: int = 0
     batch_signature: str | None = None
     last_pass_completed_at: str | None = None
+    # Run in progress (or interrupted): its cutoff is reused on resume so items
+    # already checked in that run are not redone.
+    draining: bool = False
+    drain_cutoff: str | None = None
+    # Per-target last check time (pruned to current targets).
+    checked_at: dict[str, str] = Field(default_factory=dict)
 
 
 def targets_signature(work_ids: list[str]) -> str:
@@ -61,7 +78,37 @@ class _TickStats:
     refreshed: int = 0
     submitted: int = 0
     skipped_pan: int = 0
+    hunting: int = 0
+    queued: int = 0
     errors: list[str] = field(default_factory=list)
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def due_work_ids(
+    all_ids: list[str],
+    checked_at: dict[str, str],
+    cutoff: datetime,
+    *,
+    recheck_seconds: float = WATCH_RECHECK_SECONDS,
+) -> list[str]:
+    """Targets never checked, or last checked at least ``recheck_seconds`` before ``cutoff``."""
+
+    threshold = cutoff - timedelta(seconds=recheck_seconds)
+    due: list[str] = []
+    for work_id in all_ids:
+        last = _parse_iso(checked_at.get(work_id))
+        if last is None or last <= threshold:
+            due.append(work_id)
+    return due
 
 
 class SubscriptionWatchStateStore:
@@ -209,13 +256,16 @@ class SubscriptionWatchService:
         return stored.model_copy(update={"enabled": bool(cfg.subscription_auto_offline)})
 
     async def run_once(self, *, limit: int = WATCH_BATCH_SIZE) -> SubscriptionWatchStatus:
+        """Drain every target due as of this run's cutoff, ``limit`` per page."""
+
         async with self._lock:
             return await self._run_once_unlocked(limit=limit)
 
     async def _run_once_unlocked(self, *, limit: int) -> SubscriptionWatchStatus:
         cfg = self._pan.config_store.load()
         stats = _TickStats()
-        now = datetime.now(UTC).isoformat()
+        started = datetime.now(UTC)
+        now = started.isoformat()
         if not cfg.subscription_auto_offline:
             status = self._state.load().model_copy(update={"enabled": False, "last_check_at": now})
             return self._state.save(status)
@@ -228,14 +278,16 @@ class SubscriptionWatchService:
         if changed:
             self._prefs.replace_subscriptions(list(prefs.subscriptions))
 
-        # Resume from the persisted processed-count checkpoint instead of always
-        # restarting at the head of the list (which starved later targets and
-        # re-did work after a restart). Wrap to 0 after a full pass.
         previous = self._state.load()
         signature = targets_signature(all_ids)
-        start = previous.batch_cursor if 0 <= previous.batch_cursor < len(all_ids) else 0
-        work_ids = all_ids[start : start + max(limit, 0)]
-        stats.targets = len(work_ids)
+        # Resume an interrupted drain with its original cutoff (items it already
+        # checked are newer than that cutoff, so they are not redone).
+        resumed_cutoff = _parse_iso(previous.drain_cutoff) if previous.draining else None
+        cutoff = resumed_cutoff or started
+        targets = set(all_ids)
+        checked_at = {key: value for key, value in previous.checked_at.items() if key in targets}
+        due = due_work_ids(all_ids, checked_at, cutoff)
+        stats.targets = len(due)
 
         pan_status = self._pan.status()
         # "offline_ready" covers both backends (115 cid / OpenList target path).
@@ -247,32 +299,44 @@ class SubscriptionWatchService:
         checkpoint = previous.model_copy(
             update={
                 "enabled": True,
-                "batch_cursor": start,
-                "batch_total": len(all_ids),
+                "draining": True,
+                "drain_cutoff": cutoff.isoformat(),
+                "batch_cursor": 0,
+                "batch_total": len(due),
                 "batch_signature": signature,
+                "last_due": len(due),
+                "checked_at": checked_at,
             }
         )
-        for index, work_id in enumerate(work_ids):
-            if index > 0:
-                await asyncio.sleep(WATCH_PACE_SECONDS)
-            try:
-                await self._process_work(work_id, stats=stats, pan_ready=pan_ready)
-            except Exception as exc:
-                message = f"{work_id}: {type(exc).__name__}"
-                logger.warning("subscription watch work failed: %s", message)
-                stats.errors.append(message)
-            # Persist after every work so a restart resumes mid-batch.
-            checkpoint = checkpoint.model_copy(update={"batch_cursor": start + index + 1})
-            self._state.save(checkpoint)
+        self._state.save(checkpoint)
+        page_size = max(1, limit)
+        processed = 0
+        pace_next = False
+        for page_start in range(0, len(due), page_size):
+            page = due[page_start : page_start + page_size]
+            for work_id in page:
+                if pace_next:
+                    # Only after an item that hit the network (magnet source /
+                    # offline submit); local-only checks are not throttled.
+                    await asyncio.sleep(WATCH_PACE_SECONDS)
+                pace_next = True
+                try:
+                    touched = await self._process_work(work_id, stats=stats, pan_ready=pan_ready)
+                    pace_next = touched is not False
+                except Exception as exc:
+                    message = f"{work_id}: {type(exc).__name__}"
+                    logger.warning("subscription watch work failed: %s", message)
+                    stats.errors.append(message)
+                processed += 1
+                checked_at[work_id] = datetime.now(UTC).isoformat()
+                # Persist after every work so a restart resumes mid-drain.
+                checkpoint = checkpoint.model_copy(
+                    update={"batch_cursor": processed, "checked_at": dict(checked_at)}
+                )
+                self._state.save(checkpoint)
+            if self._task_events is not None and stats.submitted:
+                self._task_events.notify()
 
-        if self._task_events is not None and stats.submitted:
-            self._task_events.notify()
-
-        next_cursor = start + len(work_ids)
-        completed_at = previous.last_pass_completed_at
-        if next_cursor >= len(all_ids):
-            next_cursor = 0
-            completed_at = now
         status = SubscriptionWatchStatus(
             enabled=True,
             last_check_at=now,
@@ -281,10 +345,16 @@ class SubscriptionWatchService:
             last_submitted=stats.submitted,
             last_skipped_pan=stats.skipped_pan,
             last_errors=stats.errors[-10:],
-            batch_cursor=next_cursor,
-            batch_total=len(all_ids),
+            last_hunting=stats.hunting,
+            last_queued=stats.queued,
+            last_due=len(due),
+            batch_cursor=processed,
+            batch_total=len(due),
             batch_signature=signature,
-            last_pass_completed_at=completed_at,
+            last_pass_completed_at=datetime.now(UTC).isoformat(),
+            draining=False,
+            drain_cutoff=None,
+            checked_at=checked_at,
         )
         return self._state.save(status)
 
@@ -294,16 +364,20 @@ class SubscriptionWatchService:
         *,
         stats: _TickStats,
         pan_ready: bool,
-    ) -> None:
+    ) -> bool:
+        """Check one target; returns True when it touched the network."""
+
+        touched = False
         with self._database.session() as session:
             repo = Repository(session)
             work = repo.get_work(work_id)
             if work is None:
-                return
+                return False
             magnets = list(repo.list_work_magnets(work_id))
             lookup = _javdb_lookup(repo, work_id) if not magnets else None
 
         if not magnets and lookup is not None:
+            touched = True
             external_id, source_url = lookup
             try:
                 fetched = await self._discover.list_magnets(
@@ -324,7 +398,7 @@ class SubscriptionWatchService:
                     repo = Repository(session)
                     work = repo.get_work(work_id)
                     if work is None:
-                        return
+                        return touched
                     payload = [item.model_dump(mode="json") for item in fetched]
                     created, _skipped = repo.save_work_magnets(work, payload, provider="javdb")
                     magnets = list(repo.list_work_magnets(work_id))
@@ -332,26 +406,32 @@ class SubscriptionWatchService:
                     stats.refreshed += 1
 
         if not magnets:
-            return
+            stats.hunting += 1
+            return touched
 
         best = pick_best_magnet(magnets)
         if best is None:
-            return
+            # Magnets exist but none matches the preferences yet: keep hunting.
+            stats.hunting += 1
+            return touched
 
         with self._database.session() as session:
             repo = Repository(session)
             if not _work_needs_offline(repo, work_id, best):
-                return
+                stats.queued += 1
+                return touched
 
         if not pan_ready:
+            stats.hunting += 1
             stats.skipped_pan += 1
             logger.info(
                 "subscription watch skip offline (pan not ready) work=%s hash=%s",
                 work_id,
                 best.info_hash[:12],
             )
-            return
+            return touched
 
+        touched = True
         with self._database.session() as session:
             repo = Repository(session)
             try:
@@ -365,7 +445,9 @@ class SubscriptionWatchService:
                 )
                 if exc.status_code == 400:
                     stats.skipped_pan += 1
-                return
+                stats.hunting += 1
+                return touched
+            stats.queued += 1
             if result.created or not result.reused_running:
                 stats.submitted += 1
             logger.info(
@@ -374,6 +456,7 @@ class SubscriptionWatchService:
                 best.info_hash[:12],
                 result.created,
             )
+        return touched
 
 
 class SubscriptionWatchPoller:
