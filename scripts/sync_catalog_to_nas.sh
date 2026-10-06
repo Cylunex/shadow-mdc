@@ -114,7 +114,8 @@ echo "==> start $NAS_SERVICE on NAS"
 ssh "$NAS_HOST" "supervisorctl start '$NAS_SERVICE'"
 
 echo "==> health check"
-ssh "$NAS_HOST" "curl -fsS 'http://127.0.0.1:8700/api/health' || true"
+# The service may still be starting after the restart; retry for up to ~60s.
+ssh "$NAS_HOST" "for i in \$(seq 1 20); do curl -fsS 'http://127.0.0.1:8700/api/health' && exit 0; sleep 3; done; echo 'health check failed after retries' >&2; true"
 
 echo "==> advance export baseline"
 mv -f "$PENDING_STATE" "$STATE_FILE"
