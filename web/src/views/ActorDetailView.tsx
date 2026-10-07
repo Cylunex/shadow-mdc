@@ -1,3 +1,4 @@
+import { CoverImage } from "../components/CoverImage";
 import { useEffect, useMemo } from "react";
 
 import { appUrl } from "../api";
@@ -286,7 +287,7 @@ export function ActorDetailView(props: {
                   >
                     <div className="actor-page-work-poster">
                       {thumb ? (
-                        <img src={thumb} alt="" loading="lazy" decoding="async" onError={hideBrokenImage} />
+                        <CoverImage src={thumb} />
                       ) : (
                         <div className="poster-fallback" aria-hidden />
                       )}

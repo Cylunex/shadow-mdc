@@ -1,3 +1,4 @@
+import { CoverImage } from "./CoverImage";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api, appUrl } from "../api";
 import type {
@@ -434,12 +435,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, wantListIds,
                 >
                   <div className="poster">
                     {item.thumb_url ? (
-                      <img
-                        src={appUrl(item.thumb_url) ?? item.thumb_url}
-                        alt=""
-                        loading="lazy"
-                        decoding="async"
-                      />
+                      <CoverImage src={appUrl(item.thumb_url) ?? item.thumb_url} />
                     ) : (
                       <div className="poster-fallback" aria-hidden />
                     )}

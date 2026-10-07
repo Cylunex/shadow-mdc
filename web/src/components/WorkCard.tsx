@@ -1,3 +1,4 @@
+import { CoverImage } from "./CoverImage";
 import { memo } from "react";
 import { hideBrokenImage, mediaUrl } from "../lib/mediaUrl";
 import type { Work } from "../model";
@@ -33,7 +34,7 @@ export const WorkCard = memo(function WorkCard({
     >
       <div className="poster">
         {thumb ? (
-          <img src={thumb} alt="" loading="lazy" decoding="async" onError={hideBrokenImage} />
+          <CoverImage src={thumb} />
         ) : (
           <div className="poster-fallback" aria-hidden />
         )}

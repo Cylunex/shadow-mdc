@@ -1720,3 +1720,42 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 }
 .danger-text { color: #ffb1b1; }
 .work-offline-strip .magnet-row { grid-template-columns: 1fr auto auto; }
+
+/* —— Unified cover frame (portrait/landscape/square aware) —— */
+.cover-frame { position: absolute; inset: 0; overflow: hidden; background: #0c1214; }
+.cover-frame > img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.cover-frame .cover-bg {
+  object-fit: cover; filter: blur(18px) brightness(0.55) saturate(1.2);
+  transform: scale(1.15); opacity: 0; transition: opacity 0.2s;
+}
+.cover-frame .cover-main {
+  object-fit: contain; object-position: center center; background: transparent !important;
+  transition: transform 0.25s ease, filter 0.2s;
+}
+.cover-frame:not([data-shape="wide"]):not([data-shape="pending"]) .cover-bg { opacity: 1; }
+.cover-frame[data-shape="wide"] .cover-main { object-fit: cover; }
+.cover-frame[data-crop="front"] .cover-main { object-fit: cover; object-position: right center; }
+.cover-frame[data-crop="front"] .cover-bg { opacity: 0; }
+.work:hover .cover-main, .discover-card:hover .cover-main, .actor-page-work-card:hover .cover-main,
+.work-related-card:hover .cover-main, .category-card:hover .cover-main, .actor-work:hover .cover-main {
+  transform: scale(1.04); filter: brightness(1.06);
+}
+/* Landscape card slots site-wide */
+.work .poster { width: 232px; min-height: 0; aspect-ratio: 16 / 9; align-self: start; }
+.dense-rank-card .poster { width: 200px; min-height: 0; aspect-ratio: 16 / 9; align-self: start; }
+.work-related-poster { width: 220px; height: auto; aspect-ratio: 16 / 9; }
+.actor-work-poster { position: relative; aspect-ratio: 16 / 9; min-height: 0; overflow: hidden; }
+.category-cover { position: relative; }
+.work-page-cover { position: relative; width: 100%; aspect-ratio: 16 / 10; border-radius: 14px; overflow: hidden; border: 1px solid #243035; }
+.work-page-front { position: relative; width: 100%; aspect-ratio: 2 / 3; max-width: 200px; border-radius: 10px; overflow: hidden; border: 1px solid #243035; }
+.score-chip, .code-chip, .rank-badge, .in-library-badge, .want-badge { z-index: 2; }
+@media (max-width: 640px) {
+  .work .poster, .dense-rank-card .poster { width: 100%; }
+}
+.lightbox { position: fixed; inset: 0; z-index: 1000; background: rgba(4, 8, 10, 0.92); display: grid; place-items: center; cursor: zoom-out; }
+.lightbox img { max-width: 94vw; max-height: 90vh; object-fit: contain; border-radius: 8px; cursor: default; box-shadow: 0 10px 40px rgba(0,0,0,.6); }
+.lightbox-nav { position: absolute; top: 50%; transform: translateY(-50%); font-size: 2.4rem; background: rgba(0,0,0,.45); border: 0; color: #e6f1f4; width: 52px; height: 72px; border-radius: 10px; cursor: pointer; }
+.lightbox-nav.prev { left: 16px; } .lightbox-nav.next { right: 16px; }
+.lightbox-count { position: absolute; bottom: 16px; color: #9db0b8; font-size: .9rem; }
+.sample-thumb { cursor: zoom-in; }
+.sample-thumb img { transition: transform .2s; } .sample-thumb:hover img { transform: scale(1.05); }

@@ -1,3 +1,4 @@
+import { CoverImage } from "../components/CoverImage";
 import { useEffect, useMemo, useState } from "react";
 
 import { api, appUrl } from "../api";
@@ -91,7 +92,7 @@ export function CategoriesView({ onOpenTag, report }: Props) {
             >
               <div className="category-cover">
                 {item.image_url ? (
-                  <img src={appUrl(item.image_url) ?? item.image_url ?? undefined} alt="" loading="lazy" decoding="async" />
+                  <CoverImage src={appUrl(item.image_url) ?? item.image_url} />
                 ) : (
                   <div className="category-cover-fallback" aria-hidden />
                 )}

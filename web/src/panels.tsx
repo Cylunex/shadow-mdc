@@ -1,3 +1,4 @@
+import { CoverImage } from "./components/CoverImage";
 import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import { api, appUrl } from "./api";
@@ -305,7 +306,7 @@ function JavActors({ actors, prefs, onActorTags, busy, onOpenWork, onOpenActor }
         >
           <div className="actor-work-poster">
             {work.image_url
-              ? <img src={mediaUrl(work.image_url) ?? undefined} alt="" loading="lazy" decoding="async" onError={hideBrokenImage} />
+              ? <CoverImage src={mediaUrl(work.image_url) ?? work.image_url} />
               : null}
           </div>
           <div>

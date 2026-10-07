@@ -1,3 +1,5 @@
+import { Lightbox } from "../components/Lightbox";
+import { CoverImage } from "../components/CoverImage";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api, appUrl } from "../api";
@@ -74,7 +76,7 @@ function RelatedStrip(props: {
               >
                 <div className="work-related-poster">
                   {thumb ? (
-                    <img src={thumb} alt="" loading="lazy" decoding="async" />
+                    <CoverImage src={thumb} />
                   ) : (
                     <div className="poster-fallback" aria-hidden />
                   )}
@@ -155,6 +157,7 @@ export function WorkDetailView(props: {
   const [editOpen, setEditOpen] = useState(false);
   const [titleMode, setTitleMode] = useState<LangMode>("translated");
   const [plotMode, setPlotMode] = useState<LangMode>("translated");
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   const reload = async (workId: string) => {
     setLoading(true);
@@ -329,13 +332,17 @@ export function WorkDetailView(props: {
       <div className="work-page-scroll">
         <header className="work-page-hero">
           <div className="work-page-poster-wrap">
-            {posterUrl ? (
-              <img className="work-page-poster" src={posterUrl} alt="" onError={hideBrokenImage} />
+            {fanartUrl || posterUrl ? (
+              <div className="work-page-cover">
+                <CoverImage src={(fanartUrl || posterUrl)!} loading="eager" />
+              </div>
             ) : (
               <div className="work-page-poster fallback" aria-hidden />
             )}
-            {fanartUrl && fanartUrl !== posterUrl && (
-              <img className="work-page-fanart" src={fanartUrl} alt="" />
+            {fanartUrl && posterUrl && fanartUrl !== posterUrl && (
+              <div className="work-page-front" title="正面封面">
+                <CoverImage src={posterUrl} frontCrop loading="eager" />
+              </div>
             )}
           </div>
 
@@ -521,11 +528,24 @@ export function WorkDetailView(props: {
                     target="_blank"
                     rel="noopener noreferrer"
                     className="sample-thumb"
+                    onClick={(event) => {
+                      if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+                      event.preventDefault();
+                      setLightboxIndex(index);
+                    }}
                   >
                     <img src={appUrl(url) ?? url} alt="" loading="lazy" decoding="async" />
                   </a>
                 ))}
               </div>
+            )}
+            {lightboxIndex != null && (
+              <Lightbox
+                urls={(work.sample_urls ?? []).map((url) => appUrl(url) ?? url)}
+                index={lightboxIndex}
+                onIndex={setLightboxIndex}
+                onClose={() => setLightboxIndex(null)}
+              />
             )}
           </section>
 
