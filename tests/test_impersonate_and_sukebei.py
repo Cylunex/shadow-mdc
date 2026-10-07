@@ -140,3 +140,37 @@ async def test_sukebei_client_tries_variants() -> None:
         magnets = await SukebeiClient(client, retries=0).magnets("SSIS-001")
     assert queries == ["SSIS-001", "SSIS001"]
     assert magnets
+
+
+@pytest.mark.asyncio
+async def test_impersonated_get_uses_default_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    from shadow_mdc.providers import impersonate
+
+    captured: dict[str, object] = {}
+
+    class _Session:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        async def __aenter__(self) -> "_Session":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, url: str, **kwargs: object) -> object:
+            class _R:
+                status_code = 200
+                text = "ok"
+
+            r = _R()
+            r.url = url  # type: ignore[attr-defined]
+            return r
+
+    monkeypatch.setattr(impersonate.curl_requests, "AsyncSession", _Session)
+    impersonate.set_default_proxy("http://proxy.test:1")
+    try:
+        result = await impersonate.impersonated_get("https://x.test/")
+    finally:
+        impersonate.set_default_proxy(None)
+    assert result.ok and captured["proxy"] == "http://proxy.test:1"

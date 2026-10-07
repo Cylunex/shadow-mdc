@@ -18,6 +18,16 @@ DEFAULT_IMPERSONATE = "chrome"
 FALLBACK_STATUSES: frozenset[int] = frozenset({403, 429, 451, 503})
 
 
+_default_proxy: str | None = None
+
+
+def set_default_proxy(proxy_url: str | None) -> None:
+    """Route impersonated requests through the same proxy as the httpx clients."""
+
+    global _default_proxy
+    _default_proxy = proxy_url or None
+
+
 class ImpersonateError(RuntimeError):
     """Transport-level failure (DNS, connect, timeout) in the curl_cffi path."""
 
@@ -48,7 +58,7 @@ async def impersonated_get(
     # Let curl_cffi supply the UA matching the impersonated browser.
     clean_headers = {k: v for k, v in (headers or {}).items() if k.casefold() != "user-agent"}
     try:
-        async with curl_requests.AsyncSession(impersonate=impersonate, proxy=proxy) as session:  # type: ignore[arg-type]
+        async with curl_requests.AsyncSession(impersonate=impersonate, proxy=proxy or _default_proxy) as session:  # type: ignore[arg-type]
             response = await session.get(
                 url,
                 params=params,

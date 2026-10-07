@@ -165,6 +165,7 @@ from .media.nfo import build_nfo, parse_nfo
 from .media.organizer import Organizer, plan_move_cleanup
 from .media.parts import part_group_key
 from .media.screenshots import capture_screenshot
+from .providers.impersonate import set_default_proxy
 from .providers.sukebei import SukebeiClient
 from .providers import (
     AirAvProvider,
@@ -378,6 +379,7 @@ def _http_client(settings: Settings, *, max_connections: int) -> httpx.AsyncClie
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = Settings()
     settings.ensure_directories()
+    set_default_proxy(settings.proxy_url)
     database = Database(settings.database_url)
     database.initialize()
     alias_store = IdentityAliasStore(settings.data_dir / "identity-aliases.json")
