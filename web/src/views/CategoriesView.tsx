@@ -96,10 +96,10 @@ export function CategoriesView({ onOpenTag, report }: Props) {
                 ) : (
                   <div className="category-cover-fallback" aria-hidden />
                 )}
-                <span className="category-count">{item.work_count}</span>
               </div>
               <div className="category-meta">
                 <strong>{item.label}</strong>
+                <span className="category-count">{item.work_count} 部</span>
               </div>
             </button>
           ))}
