@@ -165,6 +165,7 @@ from .media.nfo import build_nfo, parse_nfo
 from .media.organizer import Organizer, plan_move_cleanup
 from .media.parts import part_group_key
 from .media.screenshots import capture_screenshot
+from .providers.sukebei import SukebeiClient
 from .providers import (
     AirAvProvider,
     AvSoxProvider,
@@ -488,6 +489,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         fanza_provider if isinstance(fanza_provider, FanzaProvider) else None,
         r18_dump_path=settings.resolved_r18_dump_db(),
         javdb_api=build_javdb_app_api(settings, client),
+        sukebei=SukebeiClient(client, retries=settings.request_retries),
     )
     task_events = TaskEventHub()
     pan_poller = PanOfflinePoller(

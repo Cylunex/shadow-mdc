@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..domain import IdentityHints, ProviderDescriptor, ProviderRecord
 from .challenge import challenge_kind
+from .impersonate import FALLBACK_STATUSES, ImpersonateError, impersonated_get
 
 
 class ProviderError(RuntimeError):
@@ -42,6 +43,9 @@ class Provider(Protocol):
 
 
 class HttpProvider:
+    # Retry blocked GETs once through the curl_cffi browser-fingerprint transport.
+    impersonate_fallback: bool = True
+
     def __init__(self, client: httpx.AsyncClient, retries: int = 1):
         self._client = client
         self._retries = retries
@@ -84,6 +88,56 @@ class HttpProvider:
         headers: dict[str, str] | None = None,
         cookies: dict[str, str] | None = None,
     ) -> str:
+        try:
+            return await self._httpx_request_text(
+                provider, method, url, params=params, data=data, headers=headers, cookies=cookies
+            )
+        except ProviderError as exc:
+            if method != "GET" or not self.impersonate_fallback or exc.reason != "blocked":
+                raise
+            return await self._impersonated_text(provider, url, exc, params=params, headers=headers, cookies=cookies)
+
+    async def _impersonated_text(
+        self,
+        provider: str,
+        url: str,
+        original: ProviderError,
+        *,
+        params: dict[str, str] | None,
+        headers: dict[str, str] | None,
+        cookies: dict[str, str] | None,
+    ) -> str:
+        merged_cookies = {**{c.name: c.value for c in self._client.cookies.jar}, **(cookies or {})}
+        merged_headers = {k: v for k, v in self._client.headers.items() if k.casefold() not in _HOP_HEADERS}
+        merged_headers.update(headers or {})
+        try:
+            response = await impersonated_get(
+                url,
+                params=params,
+                headers=merged_headers,
+                cookies=merged_cookies or None,
+                timeout=_client_timeout(self._client),
+            )
+        except ImpersonateError as exc:
+            raise ProviderError(provider, "blocked", f"{original.detail}; impersonate: {exc}") from exc
+        kind = challenge_kind(response.text, response.url)
+        if kind is not None:
+            raise ProviderError(provider, "blocked", f"{original.detail}; impersonate: {kind} (HTTP {response.status_code})")
+        if response.status_code in FALLBACK_STATUSES or not response.ok:
+            raise ProviderError(provider, "blocked", f"{original.detail}; impersonate: status={response.status_code}")
+        return response.text
+
+    async def _httpx_request_text(
+        self,
+        provider: str,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        data: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+    ) -> str:
         response: httpx.Response | None = None
         for attempt in range(self._retries + 1):
             try:
@@ -116,7 +170,7 @@ class HttpProvider:
                     continue
                 raise ProviderError(
                     provider,
-                    "blocked" if code in {403, 429} else "http",
+                    "blocked" if code in {403, 429, 451} else "http",
                     f"status={code}; attempts={attempt + 1}",
                 ) from exc
             except httpx.HTTPError as exc:
@@ -131,6 +185,15 @@ class HttpProvider:
         if kind is not None:
             raise ProviderError(provider, "blocked", kind)
         return text
+
+
+_HOP_HEADERS = frozenset({"host", "content-length", "accept-encoding", "connection", "user-agent", "cookie"})
+
+
+def _client_timeout(client: httpx.AsyncClient) -> float:
+    timeout = client.timeout
+    values = [v for v in (timeout.read, timeout.connect) if v is not None]
+    return float(max(values)) if values else 20.0
 
 
 def _safe_text(response: httpx.Response) -> str:

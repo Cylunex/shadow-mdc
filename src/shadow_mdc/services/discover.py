@@ -24,6 +24,7 @@ from ..identity import extract_code
 from ..providers.base import ProviderRegistry
 from ..providers.html import absolute, parse_date
 from ..media.magnets import MagnetLink
+from ..providers.sukebei import SukebeiClient
 from ..providers.fanza import FanzaProvider
 from ..providers.javdb import JavDBProvider
 from ..providers.javdb_api import JavDBApiMovie, JavDBAppApi
@@ -196,7 +197,9 @@ class DiscoverService:
         *,
         r18_dump_path: Path | None = None,
         javdb_api: JavDBAppApi | None = None,
+        sukebei: SukebeiClient | None = None,
     ):
+        self._sukebei = sukebei
         self._providers = providers
         self._javdb = javdb
         self._fanza = fanza
@@ -450,7 +453,16 @@ class DiscoverService:
             )
         return MultiSiteSearchResult(query=query, code=code, hits=tuple(hits), failures=tuple(failures))
 
+    @property
+    def sukebei_available(self) -> bool:
+        return self._sukebei is not None
+
     async def list_magnets(self, *, provider: str, external_id: str, source_url: str | None = None) -> tuple[MagnetLink, ...]:
+        if provider == "sukebei":
+            if self._sukebei is None:
+                raise ValueError("magnets are not available for provider: sukebei")
+            # external_id is the work code (e.g. SSIS-001).
+            return await self._sukebei.magnets(external_id)
         if provider != "javdb" or (self._javdb is None and self._javdb_api is None):
             raise ValueError(f"magnets are not available for provider: {provider}")
         html_error: Exception | None = None

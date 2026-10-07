@@ -535,7 +535,7 @@ def test_javbus_falls_back_to_uncensored_search() -> None:
 
     async def handler(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
-        assert request.headers.get("cookie") == "existmag=all"
+        assert request.headers.get("cookie") == "existmag=all; dv=1"
         if request.url.path.startswith("/uncensored/search"):
             return httpx.Response(200, text='<a class="movie-box" href="/SONE-001">x</a>', request=request)
         if request.url.path.startswith("/search"):

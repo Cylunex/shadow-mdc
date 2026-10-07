@@ -358,6 +358,34 @@ class SubscriptionWatchService:
         )
         return self._state.save(status)
 
+    async def _sukebei_fallback(self, work_id: str, stats: _TickStats) -> list[WorkMagnet]:
+        """JavDB had nothing: search Sukebei by the work's code and persist matches."""
+
+        with self._database.session() as session:
+            work = Repository(session).get_work(work_id)
+            code = work.primary_code if work is not None else None
+        if not code:
+            return []
+        try:
+            fetched = await self._discover.list_magnets(provider="sukebei", external_id=code)
+        except Exception as exc:
+            stats.errors.append(f"{work_id}: sukebei magnets {type(exc).__name__}")
+            logger.info("subscription watch sukebei failed work=%s err=%s", work_id, type(exc).__name__)
+            return []
+        if not fetched:
+            return []
+        with self._database.session() as session:
+            repo = Repository(session)
+            work = repo.get_work(work_id)
+            if work is None:
+                return []
+            payload = [item.model_dump(mode="json") for item in fetched]
+            created, _skipped = repo.save_work_magnets(work, payload, provider="sukebei")
+            magnets = list(repo.list_work_magnets(work_id))
+        if created:
+            stats.refreshed += 1
+        return magnets
+
     async def _process_work(
         self,
         work_id: str,
@@ -404,6 +432,12 @@ class SubscriptionWatchService:
                     magnets = list(repo.list_work_magnets(work_id))
                 if created:
                     stats.refreshed += 1
+
+        if not magnets and self._discover.sukebei_available:
+            touched = True
+            sukebei_magnets = await self._sukebei_fallback(work_id, stats)
+            if sukebei_magnets:
+                magnets = sukebei_magnets
 
         if not magnets:
             stats.hunting += 1

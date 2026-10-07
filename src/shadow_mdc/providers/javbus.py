@@ -12,7 +12,9 @@ from .html import first_text, image_artwork, link_texts, meta_content, parse_dat
 from .html_fields import sample_image_artwork
 
 # existmag=all lists works without magnets too; the default only shows magnet-backed ones.
-_JAVBUS_HEADERS = {"Cookie": "existmag=all"}
+# dv=1 marks the driver-verify (age) gate as passed; without it non-Asian IPs
+# are redirected to /doc/driver-verify.
+_JAVBUS_HEADERS = {"Cookie": "existmag=all; dv=1"}
 
 
 def _panel_code(panel: Node | HTMLParser) -> str | None:

@@ -24,6 +24,8 @@ from ..db.repository import Repository
 from ..identity import extract_code
 from ..normalize_code import normalize_code, to_comparison_key
 from ..media.artwork import ArtworkStore
+from ..providers.challenge import challenge_kind
+from ..providers.impersonate import FALLBACK_STATUSES, ImpersonateError, impersonated_get
 from .daily_chart_seed import merge_tags
 from .discover import DiscoverService
 
@@ -307,16 +309,28 @@ def _is_antibot_html(html: str) -> bool:
 
 
 async def default_fetch_text(client: httpx.AsyncClient, url: str) -> str:
-    response = await client.get(
-        url,
-        headers={
-            "User-Agent": _BROWSER_UA,
-            "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
-            "Accept-Language": "ja,zh-CN;q=0.9,en-US;q=0.8,en;q=0.7",
-        },
+    """GET via httpx; on 403/429/451/503 or an anti-bot page retry with curl_cffi."""
+
+    headers = {
+        "User-Agent": _BROWSER_UA,
+        "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ja,zh-CN;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+    response = await client.get(url, headers=headers)
+    blocked = response.status_code in FALLBACK_STATUSES or (
+        response.is_success and challenge_kind(response.text, str(response.url)) is not None
     )
-    response.raise_for_status()
-    return response.text
+    if not blocked:
+        response.raise_for_status()
+        return response.text
+    try:
+        alt = await impersonated_get(url, headers=headers)
+    except ImpersonateError as exc:
+        raise RuntimeError(f"HTTP {response.status_code}; impersonate: {exc}") from exc
+    kind = challenge_kind(alt.text, alt.url)
+    if kind is not None or not alt.ok:
+        raise RuntimeError(f"HTTP {response.status_code}; impersonate: {kind or f'HTTP {alt.status_code}'}")
+    return alt.text
 
 
 def parse_x_mirror_html(html: str, *, source: str = "x_twitter") -> list[CodeMention]:
