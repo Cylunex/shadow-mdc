@@ -66,6 +66,7 @@ class FakeOpenList:
         # path -> list of entries
         self.tree: dict[str, list[dict[str, Any]]] = {TARGET: []}
         self.storage_missing = False
+        self.public_tools = ["SimpleHttp", "115 Cloud", "115 Open"]
 
     def task_name(self, url: str, dst: str = TARGET) -> str:
         return f"download {url} to ({dst})"
@@ -99,7 +100,7 @@ class FakeOpenList:
                 return _ok({"token": token})
             return _err(400, "password is incorrect")
         if path == "/api/public/offline_download_tools":
-            return _ok(["SimpleHttp", "115 Cloud", "115 Open"])
+            return _ok(list(self.public_tools))
         if auth not in self.valid_tokens:
             return _err(401, "token is invalidated")
         if path == "/api/me":
@@ -296,6 +297,35 @@ def test_password_login_caches_session_and_relogs_on_401(
     assert PASSWORD not in caplog.text and "jwt-" not in caplog.text
     secret_file = tmp_path / "data" / "pan" / "openlist-credentials.json"
     assert secret_file.stat().st_mode & 0o077 == 0
+
+
+def test_connection_treats_driver_tools_omitted_from_public_list_as_unknown(
+    tmp_path: Path,
+) -> None:
+    """OpenList v4 often exposes only SimpleHttp publicly; 115 tools still submit."""
+
+    fake = FakeOpenList()
+    fake.public_tools = ["SimpleHttp"]
+    pan = PanService(data_dir=tmp_path / "data", openlist_transport=httpx.MockTransport(fake))
+    pan.save_settings(
+        {
+            "pan_backend": "openlist",
+            "openlist_base_url": BASE,
+            "openlist_offline_path": TARGET,
+            "openlist_offline_tool": "115 Open",
+        }
+    )
+    pan.set_openlist_credentials(token=TOKEN)
+
+    async def scenario() -> None:
+        result = await pan.openlist.test_connection()
+        assert result["ok"] is True
+        assert result["tools"] == ["SimpleHttp"]
+        assert result["tool_available"] is None
+        assert result["detail"] == "Connected"
+        await pan.aclose()
+
+    asyncio.run(scenario())
 
 
 # ---------------------------------------------------------------- offline flow

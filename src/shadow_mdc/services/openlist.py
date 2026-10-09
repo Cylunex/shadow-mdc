@@ -1026,7 +1026,17 @@ class OpenListService:
         try:
             tools = await client.offline_tools()
             result["tools"] = tools
-            result["tool_available"] = cfg.tool in tools if tools else None
+            # /api/public/offline_download_tools often lists only generic tools
+            # (e.g. SimpleHttp). Driver-backed names like "115 Cloud" / "115 Open"
+            # still work with add_offline_download when that storage is mounted.
+            if not tools:
+                result["tool_available"] = None
+            elif cfg.tool in tools:
+                result["tool_available"] = True
+            elif cfg.tool in OPENLIST_TOOLS_HINT:
+                result["tool_available"] = None
+            else:
+                result["tool_available"] = False
         except OpenListApiError:
             result["tools"] = None
         if cfg.offline_path:
