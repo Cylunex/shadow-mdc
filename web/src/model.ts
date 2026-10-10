@@ -807,6 +807,7 @@ export const panSettingsSchema = z.object({
   strm_token_set: z.boolean().optional().default(false),
   strm_user_agent: z.string().nullable().optional().default(null),
   strm_emby_root: z.string().nullable().optional().default(null),
+  strm_layout_template: z.string().optional().default("{studio}/{code}"),
   strm_reconcile_interval_hours: z.number().optional().default(24),
   use_proxy: z.boolean(),
   subscription_auto_offline: z.boolean().default(true),

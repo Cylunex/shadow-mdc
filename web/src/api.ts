@@ -527,6 +527,7 @@ export const api = {
     strm_token?: string;
     strm_user_agent?: string | null;
     strm_emby_root?: string | null;
+    strm_layout_template?: string;
     strm_reconcile_interval_hours?: number;
     use_proxy: boolean;
     subscription_auto_offline: boolean;

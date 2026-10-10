@@ -851,6 +851,7 @@ class PanSettingsPayload(BaseModel):
     strm_token_set: bool = False
     strm_user_agent: str | None = None
     strm_emby_root: str | None = None
+    strm_layout_template: str = "{studio}/{code}"
     strm_reconcile_interval_hours: int = 24
     use_proxy: bool = False
     subscription_auto_offline: bool = True
@@ -893,6 +894,7 @@ class PanSettingsUpdatePayload(BaseModel):
     strm_token: str | None = None
     strm_user_agent: str | None = None
     strm_emby_root: str | None = None
+    strm_layout_template: str | None = None
     strm_reconcile_interval_hours: int | None = Field(default=None, ge=0, le=24 * 30)
     use_proxy: bool = False
     subscription_auto_offline: bool | None = None

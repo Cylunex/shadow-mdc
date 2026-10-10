@@ -149,6 +149,10 @@ class PanSettings(BaseModel):
     strm_user_agent: str | None = None
     # Path of strm_output_root as seen by Emby (container mount); used for notify paths.
     strm_emby_root: str | None = None
+    # Relative folder template under strm_output_root. Default is multi-level
+    # Emby-friendly ``{studio}/{code}`` (never a flat dump). Placeholders:
+    # studio, code, group (JAV/国产/…), subgroup (有码/无码/…).
+    strm_layout_template: str = "{studio}/{code}"
     # Periodic delete reconciliation (hours, 0 = off). Removes local export dirs
     # whose 115 source files are all gone and notifies Emby.
     strm_reconcile_interval_hours: int = 24
@@ -1602,6 +1606,7 @@ class PanService:
             "strm_token",
             "strm_user_agent",
             "strm_emby_root",
+            "strm_layout_template",
             "strm_reconcile_interval_hours",
             "use_proxy",
             "subscription_auto_offline",
@@ -1650,6 +1655,17 @@ class PanService:
                     value = value.strip() or None
                 if key == "strm_mode" and value not in {"openlist", "relay"}:
                     raise ValueError("strm_mode must be 'openlist' or 'relay'")
+                if key == "strm_layout_template":
+                    if value is None:
+                        continue
+                    if not isinstance(value, str) or not value.strip():
+                        value = "{studio}/{code}"
+                    else:
+                        value = value.strip().replace("\\", "/")
+                        # Validate placeholders without requiring a Work.
+                        from .strm_export import export_relative_dir
+
+                        export_relative_dir("CODE-1", None, template=value)
                 data[key] = value
         old_client_id = self._effective_client_id(current)
         saved = self.config_store.save(PanSettings.model_validate(data))
@@ -1743,8 +1759,10 @@ def plan_offline_strm(
         return None
     code = (work_code or "").strip() or None
     name = (file_name or "").strip() or None
-    folder = code or (Path(name).stem if name else "offline")
     stem = code or (Path(name).stem if name else "offline")
+    from .strm_export import export_relative_dir
+
+    relative = export_relative_dir(stem, None, template=settings.strm_layout_template)
     # Prefer known relative path under OpenList/115; else file name only.
     if remote_relative:
         locator = build_strm_locator(prefix=settings.strm_url_prefix, relative_path=remote_relative)
@@ -1752,7 +1770,7 @@ def plan_offline_strm(
         locator = build_strm_locator(prefix=settings.strm_url_prefix, relative_path=name)
     else:
         locator = build_strm_locator(prefix=settings.strm_url_prefix, relative_path=f"{stem}.mp4")
-    return Path(root) / folder / f"{stem}.strm", locator
+    return Path(root) / relative / f"{stem}.strm", locator
 
 
 def write_offline_strm_changed(
@@ -1788,7 +1806,7 @@ def write_offline_strm(
     file_name: str | None,
     remote_relative: str | None = None,
 ) -> str | None:
-    """Write `{root}/{CODE}/{CODE}.strm` or best-effort from file name. Returns path or None."""
+    """Write `{root}/{studio}/{CODE}/{CODE}.strm` (Unknown Studio when no work). Returns path or None."""
 
     path, _changed = write_offline_strm_changed(
         settings=settings, work_code=work_code, file_name=file_name, remote_relative=remote_relative

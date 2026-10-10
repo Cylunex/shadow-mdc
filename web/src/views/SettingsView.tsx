@@ -601,6 +601,15 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                 </>
               )}
               <label>
+                <span>导出目录模板（相对 STRM 根，多级）</span>
+                <input
+                  value={panSettings.strm_layout_template ?? "{studio}/{code}"}
+                  onChange={(e) => setPanSettings({ ...panSettings, strm_layout_template: e.target.value || "{studio}/{code}" })}
+                  placeholder="{studio}/{code}"
+                />
+                <small>默认 {'{studio}/{code}'} → SODクリエイト/STARS-145/（含 movie.nfo、poster、.strm）。可用 group/subgroup。</small>
+              </label>
+              <label>
                 <span>Emby 看到的 STRM 根目录（容器路径，用于通知）</span>
                 <input
                   value={panSettings.strm_emby_root ?? ""}

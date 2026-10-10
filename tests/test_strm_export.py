@@ -93,7 +93,20 @@ def test_locators_relay_and_openlist_compat() -> None:
     )
 
 
+
+def test_export_relative_dir_studio_code_hierarchy() -> None:
+    from shadow_mdc.services.strm_export import export_relative_dir
+
+    work = SimpleNamespace(studio="SODクリエイト", category="Japan", title="x", primary_code="STARS-145", tags=[])
+    assert export_relative_dir("STARS-145", work) == Path("SODクリエイト") / "STARS-145"  # type: ignore[arg-type]
+    assert export_relative_dir("STARS-145", None) == Path("Unknown Studio") / "STARS-145"
+    assert export_relative_dir("STARS-145", work, template="{group}/{subgroup}/{studio}/{code}") == (  # type: ignore[arg-type]
+        Path("JAV") / "有码" / "SODクリエイト" / "STARS-145"
+    )
+
+
 # ------------------------------------------------------------------ export order
+
 
 
 def test_export_writes_artwork_then_nfo_then_strm_atomically(
@@ -138,7 +151,7 @@ def test_export_writes_artwork_then_nfo_then_strm_atomically(
     assert kinds.index("nfo") > max(i for i, k in enumerate(kinds) if k == "art")
     assert min(i for i, k in enumerate(kinds) if k == "strm") > kinds.index("nfo")
     assert order[-2:] == ["strm:ABC-123-cd1.strm", "strm:ABC-123-cd2.strm"]
-    directory = root / "ABC-123"
+    directory = root / "Unknown Studio" / "ABC-123"
     assert result.directory == directory
     assert (
         directory / "ABC-123-cd1.strm"
@@ -156,7 +169,7 @@ def test_export_bad_config_writes_nothing(tmp_path: Path) -> None:
             code="ABC-1",
             videos=[_video("1", "a.mp4")],
         )
-    assert not (root / "ABC-1").exists()
+    assert not (root / "Unknown Studio" / "ABC-1").exists()
 
 
 def test_openlist_mode_export_uses_prefix(tmp_path: Path) -> None:
@@ -165,7 +178,7 @@ def test_openlist_mode_export_uses_prefix(tmp_path: Path) -> None:
     )
     export_work(settings=settings, code="XYZ-9", videos=[_video("5", "x.mp4", rel="云下载/XYZ-9/x.mp4")])
     assert (
-        tmp_path / "XYZ-9" / "XYZ-9.strm"
+        tmp_path / "Unknown Studio" / "XYZ-9" / "XYZ-9.strm"
     ).read_text().strip() == "http://ol:5244/d/115/云下载/XYZ-9/x.mp4"
 
 
@@ -187,7 +200,7 @@ def test_rewrite_rotates_token_and_base_in_place(tmp_path: Path) -> None:
     result = rewrite_strm_tree(root, rotated)
     assert len(result.rewritten) == 2
     assert (
-        root / "AAA-1" / "AAA-1.strm"
+        root / "Unknown Studio" / "AAA-1" / "AAA-1.strm"
     ).read_text().strip() == "https://media.example/api/strm/play/101?token=t2"
     assert manual.read_text().strip() == "https://media.example/api/strm/play/777?token=t2"
     assert other.read_text().strip() == "/mnt/media/k.mp4"
@@ -195,7 +208,7 @@ def test_rewrite_rotates_token_and_base_in_place(tmp_path: Path) -> None:
 
     no_token = _relay_settings(root, strm_public_base_url="https://media.example", strm_token=None)
     rewrite_strm_tree(root, no_token)
-    assert (root / "AAA-1" / "AAA-1.strm").read_text().strip() == "https://media.example/api/strm/play/101"
+    assert (root / "Unknown Studio" / "AAA-1" / "AAA-1.strm").read_text().strip() == "https://media.example/api/strm/play/101"
 
 
 def test_rewrite_openlist_to_relay_uses_sidecar(tmp_path: Path) -> None:
@@ -205,10 +218,10 @@ def test_rewrite_openlist_to_relay_uses_sidecar(tmp_path: Path) -> None:
     export_work(settings=settings, code="B-2", videos=[_video("55", "b.mp4", rel="dl/b.mp4")])
     result = rewrite_strm_tree(tmp_path, _relay_settings(tmp_path, strm_token=None))
     assert len(result.rewritten) == 1
-    assert (tmp_path / "B-2" / "B-2.strm").read_text().strip() == "http://nas.lan:8700/api/strm/play/55"
+    assert (tmp_path / "Unknown Studio" / "B-2" / "B-2.strm").read_text().strip() == "http://nas.lan:8700/api/strm/play/55"
     # and back to OpenList via the remembered remote path
     rewrite_strm_tree(tmp_path, settings)
-    assert (tmp_path / "B-2" / "B-2.strm").read_text().strip() == "http://ol/d/115/dl/b.mp4"
+    assert (tmp_path / "Unknown Studio" / "B-2" / "B-2.strm").read_text().strip() == "http://ol/d/115/dl/b.mp4"
 
 
 # ------------------------------------------------------------------ reconcile
@@ -230,8 +243,8 @@ def test_reconcile_removes_only_definitively_gone(tmp_path: Path) -> None:
 
     result = asyncio.run(reconcile_deleted(root, exists))
     assert [path.name for path in result.removed] == ["GONE-1"]
-    assert not (root / "GONE-1").exists()
-    assert (root / "LIVE-1").is_dir() and (root / "HALF-1").is_dir() and (root / "UNK-1").is_dir()
+    assert not (root / "Unknown Studio" / "GONE-1").exists()
+    assert (root / "Unknown Studio" / "LIVE-1").is_dir() and (root / "Unknown Studio" / "HALF-1").is_dir() and (root / "Unknown Studio" / "UNK-1").is_dir()
     assert result.unknown == 1 and result.kept == 2 and root.is_dir()
 
 
@@ -243,8 +256,8 @@ def test_file_gone_error_codes() -> None:
 
 def test_map_to_emby_path(tmp_path: Path) -> None:
     settings = _relay_settings(tmp_path, strm_emby_root="/media/strm")
-    assert map_to_emby_path(tmp_path / "ABC-1", settings) == "/media/strm/ABC-1"
-    assert map_to_emby_path(tmp_path / "ABC-1", _relay_settings(tmp_path)) == str(tmp_path / "ABC-1")
+    assert map_to_emby_path(tmp_path / "Unknown Studio" / "ABC-1", settings) == "/media/strm/Unknown Studio/ABC-1"
+    assert map_to_emby_path(tmp_path / "Unknown Studio" / "ABC-1", _relay_settings(tmp_path)) == str(tmp_path / "Unknown Studio" / "ABC-1")
 
 
 # ------------------------------------------------------------------ Emby notify

@@ -424,7 +424,7 @@ Shadow MDC 只管理用户已有本地媒体的元数据与公开图片，不提
 1. 点击「二维码登录」，用 115 App 扫码；轮询状态 `waiting → scanned → ok`。
 2. 选择离线目录 cid（可浏览文件夹或手填），保存。
 3. 可选：启用 STRM，配置本地输出根目录与 OpenList 前缀（如 `http://openlist:5244/d/115`；Emby 侧签名需关闭）。
-4. 在作品磁力列表点「推到 115 离线」；后台轮询任务，完成后按 `{CODE}/{CODE}.strm` 写入并触发 Emby/Jellyfin 路径刷新。
+4. 在作品磁力列表点「推到 115 离线」；后台轮询任务，完成后按 `{studio}/{CODE}/{CODE}.strm`（旁路 `movie.nfo` / poster / fanart）写入并触发 Emby/Jellyfin 路径刷新。
 
 环境变量：`SHADOW_MDC_PAN_CLIENT_ID`（默认社区临时 id `100197303`，**建议申请自有应用**）、可选 `SHADOW_MDC_PAN_CLIENT_SECRET`。设置页也可保存自有 client_id/secret（secret 只返回 `client_secret_set`；切换 client_id 会清除凭证）。凭证落盘 `data/pan/credentials.json`（chmod 600），配置在 `data/pan/config.json`。默认 **不**把 115 流量送进 `SHADOW_MDC_PROXY_URL`（可在设置中打开，但有风控风险）。
 
@@ -456,7 +456,7 @@ Token、用户名和密码只通过 `POST /api/pan/openlist/credentials` 写入 
 
 - **离线**：「推到离线」与订阅自动离线都调用 `POST /api/fs/add_offline_download`（`urls`、目标 `path`、`tool`、`delete_policy`），本地任务行记录 `backend=openlist` 和 OpenList 任务 id。仍按 info_hash 加锁去重：OpenList 上已有同一磁力的未完成任务时直接接管；115 报“任务已存在”时，若目标目录下已能按番号 / 磁力 `dn` 找到结果则直接接管，否则返回 409。
 - **状态**：后台轮询 `GET /api/task/offline_download/{undone,done}`（任务状态 2=完成，4/7=取消/失败，其余视为进行中），并参考 `offline_download_transfer/undone`，转存未结束时保持 99%。OpenList 重启导致任务丢失时，按番号在目标目录里找结果；长时间找不到才标记失败。
-- **STRM**：完成后在目标目录中按磁力 `dn` 名称 → 番号匹配结果文件夹，用 `/api/fs/list`（与 115 冷遍历相同的 ~350 ms + 抖动节奏）遍历视频文件，仍按 poster/fanart → NFO → `.strm` 最后的顺序导出，多分段命名 `{番号}-cdN.strm`，并通知 Emby。`.strm` 内容为 `{OpenList 地址}/d{路径}`（路径按 URL 编码，开启签名时附 `?sign=`）。
+- **STRM**：完成后在目标目录中按磁力 `dn` 名称 → 番号匹配结果文件夹，用 `/api/fs/list`（与 115 冷遍历相同的 ~350 ms + 抖动节奏）遍历视频文件，仍按 poster/fanart → `movie.nfo` → `.strm` 最后的顺序导出，多分段命名 `{番号}-cdN.strm`，并通知 Emby。导出目录为多级 Emby 友好布局（默认 `{studio}/{code}/`，例如 `SODクリエイト/STARS-145/`，可用设置项 `strm_layout_template` 改为 `{group}/{subgroup}/{studio}/{code}` 等；占位符与整理模板一致）。`.strm` 内容为 `{OpenList 地址}/d{路径}`（路径按 URL 编码，开启签名时附 `?sign=`）。
 - **302 中转**：STRM 模式选“本服务 302 中转”时写 `{对外地址}/api/strm/openlist{路径}[?token=]`，请求时 302 到 OpenList `/d` 链接（开启签名时实时取 sign）；只允许离线目标路径以内的文件。
 - **重写 / 删除对账**：`.shadow-strm.json` 以 OpenList 路径为键；修改 OpenList 地址、签名、模式、对外地址或令牌后原地重写。对账用 `/api/fs/get` 判断文件是否存在，只有 OpenList 明确返回“object not found”才删除导出目录；存储未挂载、鉴权失败或网络错误一律保留。
 - 切回 `115_open` 不影响已有 115 任务和 STRM；两种后端的任务行互不干扰，只轮询当前后端的任务。

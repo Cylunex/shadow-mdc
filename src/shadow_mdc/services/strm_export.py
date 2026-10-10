@@ -3,6 +3,11 @@
 Re-implemented from the *ideas* noted in docs/references (Miyabi GPL-3: ideas only,
 no code; openStrm MIT patterns for the 302 gateway):
 
+* Export layout (multi-level, Emby-friendly): ``{root}/{studio}/{CODE}/`` containing
+  ``{CODE}.strm`` (or ``{CODE}-cdN.strm``), ``movie.nfo``, ``poster.*`` / ``fanart.*``,
+  and ``.shadow-strm.json``. Studio segment reuses the same sanitization as the
+  organize templates (``Unknown Studio`` when missing). Configurable via
+  ``strm_layout_template`` (default ``{studio}/{code}``).
 * Export order per title: poster/fanart → NFO → ``.strm`` last, each written to a
   temp file and renamed, so Emby realtime monitors never see a half-built folder.
 * ``.strm`` body is either our relay URL ``{public}/api/strm/play/{file_id}[?token=]``
@@ -153,6 +158,81 @@ class ReconcileResult:
 def safe_stem(value: str) -> str:
     cleaned = _UNSAFE.sub("_", value).strip().strip(".")
     return cleaned[:120] or "untitled"
+
+
+DEFAULT_STRM_LAYOUT = "{studio}/{code}"
+
+
+def _layout_group(category: str | None) -> str:
+    return {
+        "Japan": "JAV",
+        "China": "国产",
+        "Korea": "韩国",
+        "Europe": "欧美",
+        "Other": "其他",
+    }.get(category or "", "其他")
+
+
+def _layout_subgroup(work: Work | None, code: str) -> str:
+    if work is None:
+        return "影片"
+    primary = getattr(work, "primary_code", None) or code
+    title = getattr(work, "title", None) or ""
+    tags = getattr(work, "tags", None) or []
+    if not isinstance(tags, (list, tuple)):
+        tags = []
+    text = " ".join((str(primary), str(title), *[str(tag) for tag in tags])).casefold()
+    category = getattr(work, "category", None)
+    if category == "Japan":
+        if str(primary).upper().startswith("FC2-"):
+            return "FC2"
+        uncensored = ("无码", "無碼", "uncensored", "heyzo", "1pondo", "carib", "10musume")
+        return "无码" if any(marker in text for marker in uncensored) else "有码"
+    if category == "China":
+        for marker, name in (("麻豆", "麻豆"), ("探花", "探花"), ("91", "91"), ("自拍", "自拍")):
+            if marker in text:
+                return name
+        return "其他"
+    return "影片"
+
+
+def export_relative_dir(
+    code: str,
+    work: Work | None = None,
+    *,
+    template: str | None = None,
+) -> Path:
+    """Relative export folder under ``strm_output_root`` (never flat at the root).
+
+    Default ``{studio}/{code}`` → e.g. ``SODクリエイト/STARS-145/``. Placeholders:
+    ``studio``, ``code``, ``group`` (JAV/国产/…), ``subgroup`` (有码/无码/…).
+    """
+
+    stem = safe_stem(code)
+    studio_raw = getattr(work, "studio", None) if work is not None else None
+    studio = safe_stem(studio_raw if isinstance(studio_raw, str) and studio_raw.strip() else "Unknown Studio")
+    category = getattr(work, "category", None) if work is not None else None
+    values = {
+        "studio": studio,
+        "code": stem,
+        "group": safe_stem(_layout_group(category if isinstance(category, str) else None)),
+        "subgroup": safe_stem(_layout_subgroup(work, code)),
+    }
+    raw = (template or DEFAULT_STRM_LAYOUT).strip() or DEFAULT_STRM_LAYOUT
+    try:
+        rendered = raw.format_map(values)
+    except KeyError as exc:
+        raise ValueError(f"unknown strm_layout_template field: {exc.args[0]}") from exc
+    relative = Path(rendered)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("strm_layout_template must be a relative path without '..'")
+    parts = [safe_stem(part) for part in relative.parts if part not in {"", "."}]
+    if not parts:
+        raise ValueError("strm_layout_template rendered empty")
+    # Guarantee at least studio/code depth when the template collapses to one segment.
+    if len(parts) == 1 and parts[0] == stem:
+        parts = [studio, stem]
+    return Path(*parts)
 
 
 def build_relay_locator(public_base_url: str, file_id: str, token: str | None = None) -> str:
@@ -402,11 +482,11 @@ def export_work(
     work: Work | None = None,
     identities: list[ExternalIdentity] | None = None,
 ) -> ExportResult:
-    """Write ``{root}/{code}/``: artwork → NFO → sidecar → ``.strm`` last (all atomic).
+    """Write ``{root}/{studio}/{CODE}/``: artwork → movie.nfo → sidecar → ``.strm`` last.
 
-    Files whose bytes are already identical are skipped (order of the remaining
-    writes is unchanged); ``result.changed`` tells the caller whether anything
-    on disk moved, so a no-op re-export can skip the Emby notify.
+    Layout is multi-level (never a flat dump under the export root). Files whose
+    bytes are already identical are skipped; ``result.changed`` tells the caller
+    whether anything on disk moved, so a no-op re-export can skip Emby notify.
     """
 
     require_strm_config(settings)
@@ -418,7 +498,8 @@ def export_work(
     # Resolve every locator before touching disk so a bad config writes nothing.
     locators = [(entry, locator_for(settings, entry)) for entry in entries]
     stem = safe_stem(code)
-    directory = Path(root) / stem
+    relative = export_relative_dir(code, work, template=settings.strm_layout_template)
+    directory = Path(root) / relative
     result = ExportResult(directory=directory, created=not directory.exists())
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -431,14 +512,19 @@ def export_work(
                 _atomic_copy(source, target)
                 result.changed_paths.append(target)
             result.artwork_paths.append(target)
-    # 2) NFO
+    # 2) NFO (Emby/Kodi movie.nfo beside the .strm, same as Organizer)
     if work is not None:
-        nfo_path = directory / f"{stem}.nfo"
+        nfo_path = directory / "movie.nfo"
         content = build_nfo(work, identities or [])
         if not _same_bytes(nfo_path, content.encode("utf-8")):
             write_nfo(nfo_path, content)
             result.changed_paths.append(nfo_path)
         result.nfo_path = nfo_path
+        # Drop a legacy {CODE}.nfo left by older flat exports in this folder.
+        legacy_nfo = directory / f"{stem}.nfo"
+        if legacy_nfo.is_file() and legacy_nfo != nfo_path:
+            legacy_nfo.unlink(missing_ok=True)
+            result.changed_paths.append(legacy_nfo)
     # 3) sidecar (needed for later rewrite / reconcile; invisible to Emby)
     write_sidecar(directory, code, entries, work_id=work.id if work is not None else None)
     # 4) .strm last

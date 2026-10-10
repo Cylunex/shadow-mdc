@@ -111,15 +111,15 @@ def test_poll_completion_exports_relay_and_reconcile_deletes(tmp_path: Path) -> 
                 data_dir=data_dir,
             )
             assert await poller.poll_once() is True
-            folder = export_root / "ABC-123"
+            folder = export_root / "Unknown Studio" / "ABC-123"
             assert (
                 folder / "ABC-123-cd1.strm"
             ).read_text().strip() == "http://nas:8700/api/strm/play/v1?token=tok"
             assert (
                 folder / "ABC-123-cd2.strm"
             ).read_text().strip() == "http://nas:8700/api/strm/play/v2?token=tok"
-            assert (folder / "ABC-123.nfo").is_file()
-            assert poller.notifier.pending == {"/media/strm/ABC-123": "Created"}
+            assert (folder / "movie.nfo").is_file()
+            assert poller.notifier.pending == {"/media/strm/Unknown Studio/ABC-123": "Created"}
             with database.session() as session:
                 task = Repository(session).list_pan_offline_tasks()[0]
                 assert task.status == "done"
@@ -148,6 +148,6 @@ def test_poll_completion_exports_relay_and_reconcile_deletes(tmp_path: Path) -> 
                 poller_module.ScanPacer = original  # type: ignore[misc]
             assert [path.name for path in result.removed] == ["ABC-123"]
             assert not folder.exists()
-            assert poller.notifier.pending["/media/strm/ABC-123"] == "Deleted"
+            assert poller.notifier.pending["/media/strm/Unknown Studio/ABC-123"] == "Deleted"
 
     asyncio.run(scenario())
