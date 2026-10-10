@@ -141,8 +141,7 @@ def enqueue_emby(path: Path, folders: list[str], update_type: str = "Created") -
     state["pending"] = items
     state["revision"] = rev
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=1) + "
-", encoding="utf-8")
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     return added
 
 
