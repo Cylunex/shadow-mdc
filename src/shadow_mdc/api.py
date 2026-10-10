@@ -933,7 +933,8 @@ async def pan_put_settings(payload: PanSettingsUpdatePayload, request: Request) 
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     changed = any(getattr(before, key) != getattr(saved, key) for key in _STRM_LOCATOR_KEYS)
     root_changed = _strm_root_key(before.strm_output_root) != _strm_root_key(saved.strm_output_root)
-    if (changed or root_changed) and app_runtime.pan_poller.config_problems(saved):
+    layout_changed = (before.strm_layout_template or "").strip() != (saved.strm_layout_template or "").strip()
+    if (changed or root_changed or layout_changed) and app_runtime.pan_poller.config_problems(saved):
         # Half-configured: never migrate / rewrite the library. The problems are
         # returned in strm_config_errors for the UI; nothing on disk is touched.
         pass
@@ -944,6 +945,9 @@ async def pan_put_settings(payload: PanSettingsUpdatePayload, request: Request) 
             app_runtime.pan_poller.migrate_root(before.strm_output_root, before),
             "shadow-mdc-strm-migrate",
         )
+    elif layout_changed and saved.strm_output_root:
+        # Template change (e.g. flat → {studio}/{code}): move managed folders.
+        _spawn(app_runtime.pan_poller.rematerialize(), "shadow-mdc-strm-rematerialize")
     elif changed and saved.strm_output_root:
         # Token / public URL / mode rotation: rewrite existing .strm in place (no re-export).
         _spawn(app_runtime.pan_poller.rewrite(), "shadow-mdc-strm-rewrite")
@@ -969,6 +973,8 @@ def pan_strm_status(request: Request) -> dict[str, object]:
         "last_reconcile": poller.maintenance.last_reconcile,
         "last_migrate_at": poller.maintenance.last_migrate_at,
         "last_migrate": poller.maintenance.last_migrate,
+        "last_rematerialize_at": poller.maintenance.last_rematerialize_at,
+        "last_rematerialize": poller.maintenance.last_rematerialize,
         "config_errors": poller.config_problems(),
         "last_config_error": poller.maintenance.last_config_error,
         "emby_pending": len(notifier.pending),
@@ -1007,6 +1013,21 @@ async def pan_strm_notify_retry(request: Request) -> dict[str, object]:
     """Retry pending Emby path notifications now (clears their backoff)."""
 
     return {"pending": runtime(request).pan_poller.notifier.retry_now()}
+
+
+
+@app.post("/api/pan/strm/rematerialize", status_code=202)
+async def pan_strm_rematerialize(request: Request) -> dict[str, object]:
+    """Apply current strm_layout_template to managed export folders (Miyabi-style)."""
+
+    poller = runtime(request).pan_poller
+    if poller.maintenance.running:
+        return {"started": False, "running": poller.maintenance.running}
+    problems = poller.config_problems()
+    if problems:
+        raise HTTPException(status_code=400, detail=str(StrmConfigError(problems)))
+    _spawn(poller.rematerialize(), "shadow-mdc-strm-rematerialize")
+    return {"started": True}
 
 
 @app.post("/api/pan/strm/reconcile", status_code=202)

@@ -1,6 +1,6 @@
 """Background poller for offline tasks (115 Open or OpenList) → STRM export + Emby notify.
 
-Completed offline tasks are exported as ``{root}/{CODE}/`` with poster/fanart →
+Completed offline tasks are exported as ``{root}/{studio}/{CODE}/`` with poster/fanart →
 NFO → ``.strm`` last. Network calls happen outside DB sessions so the SQLite
 writer lock is never held across slow 115 requests.
 """
@@ -39,12 +39,14 @@ from .strm_export import (
     ExportResult,
     MigrateResult,
     ReconcileResult,
+    RematerializeResult,
     RewriteResult,
     StrmConfigError,
     export_work,
     map_to_emby_path,
     migrate_strm_tree,
     reconcile_deleted,
+    rematerialize_layout,
     require_strm_config,
     rewrite_strm_tree,
     strm_config_problems,
@@ -87,6 +89,8 @@ class StrmMaintenanceStatus:
     last_rewrite: dict[str, object] = field(default_factory=dict)
     last_migrate_at: str | None = None
     last_migrate: dict[str, object] = field(default_factory=dict)
+    last_rematerialize_at: str | None = None
+    last_rematerialize: dict[str, object] = field(default_factory=dict)
     running: str | None = None
     # Last refusal because STRM settings were incomplete (shown in the UI).
     last_config_error: str | None = None
@@ -147,6 +151,8 @@ class PanOfflinePoller:
             self.maintenance.last_rewrite = payload.get("last_rewrite") or {}
             self.maintenance.last_migrate_at = payload.get("last_migrate_at")
             self.maintenance.last_migrate = payload.get("last_migrate") or {}
+            self.maintenance.last_rematerialize_at = payload.get("last_rematerialize_at")
+            self.maintenance.last_rematerialize = payload.get("last_rematerialize") or {}
 
     def _save_state(self) -> None:
         if self._state_path is None:
@@ -748,6 +754,67 @@ class PanOfflinePoller:
             "scanned": result.rewrite.scanned,
             "rewritten": len(result.rewrite.rewritten),
             "skipped": result.rewrite.skipped,
+        }
+        self._save_state()
+        return result
+
+
+    async def rematerialize(self) -> RematerializeResult:
+        """Apply current ``strm_layout_template`` to managed export folders."""
+
+        cfg = self._pan.config_store.load()
+        self.require_config(cfg)
+        assert cfg.strm_output_root
+        root = Path(cfg.strm_output_root)
+
+        def resolve_work(code: str, work_id: str | None):
+            with self._database.session() as session:
+                repo = Repository(session)
+                if work_id:
+                    work = repo.get_work(work_id)
+                    if work is not None:
+                        return work
+                return repo.find_work_by_code(code)
+
+        def identities_for(work):
+            with self._database.session() as session:
+                return Repository(session).identities_for_work(work.id)
+
+        async with self._maintenance_lock:
+            self.maintenance.running = "rematerialize"
+            try:
+                result = await asyncio.to_thread(
+                    rematerialize_layout,
+                    root,
+                    cfg,
+                    resolve_work=resolve_work,
+                    identities_for=identities_for,
+                )
+            finally:
+                self.maintenance.running = None
+        if result.moved:
+            moves = {str(source): str(target) for source, target in result.moved}
+            with self._database.session() as session:
+                Repository(session).rebase_pan_offline_strm_paths(moves)
+            self._notifier.enqueue(
+                [map_to_emby_path(source, cfg) for source, _ in result.moved], "Deleted"
+            )
+            self._notifier.enqueue(
+                [map_to_emby_path(target, cfg) for _, target in result.moved], "Created"
+            )
+        elif result.nfo_written or result.artwork_written:
+            # In-place metadata refresh for folders already on the new layout.
+            self._notifier.enqueue([map_to_emby_path(root, cfg)], "Modified")
+        now = datetime.now(UTC).isoformat()
+        self.maintenance.last_rematerialize_at = now
+        self.maintenance.last_rematerialize = {
+            "scanned": result.scanned,
+            "moved": len(result.moved),
+            "skipped": result.skipped,
+            "conflicts": [str(path) for path in result.conflicts][:50],
+            "failed": [str(path) for path in result.failed][:50],
+            "nfo_written": result.nfo_written,
+            "artwork_written": result.artwork_written,
         }
         self._save_state()
         return result

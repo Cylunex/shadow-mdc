@@ -534,3 +534,55 @@ def test_download_and_play_url_parsing_send_player_ua() -> None:
     assert asyncio.run(client.download_url("pc1", user_agent="Emby/4.9")) == "https://cdn/x?s=1"
     assert asyncio.run(client.video_play_url("pc1", user_agent="Emby/4.9")) == "https://cdn/1080.m3u8"
     assert seen == [("POST", "/open/ufile/downurl", "Emby/4.9"), ("GET", "/open/video/play", "Emby/4.9")]
+
+
+def test_rematerialize_layout_moves_flat_to_studio_code(tmp_path: Path) -> None:
+    from shadow_mdc.db.models import Work
+    from shadow_mdc.services.strm_export import rematerialize_layout, write_sidecar, StrmEntry
+
+    root = tmp_path / "emby"
+    old = root / "AAA-1"
+    old.mkdir(parents=True)
+    (old / "AAA-1.strm").write_text("http://x/d/a\n", encoding="utf-8")
+    write_sidecar(
+        old,
+        "AAA-1",
+        [StrmEntry("AAA-1.strm", "/media/115/a.mp4", remote_path="/media/115/a.mp4")],
+        work_id="w1",
+    )
+    work = Work(
+        id="w1",
+        title="t",
+        primary_code="AAA-1",
+        studio="Studio X",
+        category="Japan",
+        actors=[],
+        tags=[],
+        artwork=[],
+        directors=[],
+    )
+    settings = PanSettings(
+        strm_enabled=True,
+        strm_output_root=str(root),
+        strm_mode="openlist",
+        openlist_base_url="http://ol",
+        strm_layout_template="{studio}/{code}",
+    )
+    result = rematerialize_layout(
+        root,
+        settings,
+        resolve_work=lambda code, work_id: work,
+        identities_for=lambda item: [],
+    )
+    assert len(result.moved) == 1
+    assert (root / "Studio X" / "AAA-1" / "AAA-1.strm").is_file()
+    assert (root / "Studio X" / "AAA-1" / "movie.nfo").is_file()
+    assert not old.exists()
+    again = rematerialize_layout(
+        root,
+        settings,
+        resolve_work=lambda code, work_id: work,
+        identities_for=lambda item: [],
+    )
+    assert again.moved == []
+    assert again.skipped == 1

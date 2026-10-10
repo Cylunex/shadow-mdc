@@ -155,6 +155,19 @@ class ReconcileResult:
     unknown: int = 0
 
 
+@dataclass(slots=True)
+class RematerializeResult:
+    """Layout-template change: managed folders moved to the new relative path."""
+
+    scanned: int = 0
+    moved: list[tuple[Path, Path]] = field(default_factory=list)
+    skipped: int = 0
+    conflicts: list[Path] = field(default_factory=list)
+    failed: list[Path] = field(default_factory=list)
+    nfo_written: int = 0
+    artwork_written: int = 0
+
+
 def safe_stem(value: str) -> str:
     cleaned = _UNSAFE.sub("_", value).strip().strip(".")
     return cleaned[:120] or "untitled"
@@ -724,6 +737,93 @@ async def reconcile_deleted(
             if parent != root and _is_within(parent, root) and not any(parent.iterdir()):
                 parent.rmdir()
         result.removed.append(directory)
+    return result
+
+
+
+
+def rematerialize_layout(
+    root: Path,
+    settings: PanSettings,
+    *,
+    resolve_work: Callable[[str, str | None], Work | None] | None = None,
+    identities_for: Callable[[Work], Sequence[ExternalIdentity]] | None = None,
+) -> RematerializeResult:
+    """Move managed export folders so their relative path matches ``strm_layout_template``.
+
+    Used when the layout template changes (e.g. flat ``{code}`` → ``{studio}/{code}``).
+    Sidecar ``code`` / ``work_id`` drive the destination; optional callbacks supply
+    ``Work`` / identities so missing ``movie.nfo`` and artwork can be regenerated.
+    Conflicts (target already occupied) are left in place.
+    """
+
+    require_strm_config(settings.model_copy(update={"strm_output_root": str(root)}))
+    result = RematerializeResult()
+    if not root.is_dir():
+        return result
+    template = settings.strm_layout_template or DEFAULT_STRM_LAYOUT
+    for directory in list(iter_export_dirs(root)):
+        result.scanned += 1
+        sidecar_path = directory / SIDECAR_NAME
+        try:
+            payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            result.failed.append(directory)
+            continue
+        if not isinstance(payload, dict):
+            result.failed.append(directory)
+            continue
+        code = str(payload.get("code") or "").strip()
+        if not code:
+            # Fall back to folder name for older sidecars.
+            code = directory.name
+        work_id = payload.get("work_id")
+        work_id_s = str(work_id) if isinstance(work_id, str) and work_id.strip() else None
+        work = resolve_work(code, work_id_s) if resolve_work is not None else None
+        try:
+            relative = export_relative_dir(code, work, template=template)
+        except ValueError:
+            result.failed.append(directory)
+            continue
+        target = root / relative
+        try:
+            same = directory.resolve() == target.resolve()
+        except OSError:
+            same = False
+        if not same:
+            if target.exists():
+                result.conflicts.append(directory)
+                continue
+            try:
+                _move_export_dir(directory, target)
+            except OSError:
+                result.failed.append(directory)
+                continue
+            result.moved.append((directory, target))
+            with contextlib.suppress(OSError):
+                _prune_empty_parents(directory.parent, root)
+            directory = target
+        else:
+            result.skipped += 1
+        # Regenerate NFO / artwork when missing and we have a Work.
+        if work is not None:
+            identities = list(identities_for(work)) if identities_for is not None else []
+            nfo_path = directory / "movie.nfo"
+            content = build_nfo(work, identities)
+            if not nfo_path.is_file() or not _same_bytes(nfo_path, content.encode("utf-8")):
+                write_nfo(nfo_path, content)
+                result.nfo_written += 1
+            legacy_nfo = directory / f"{safe_stem(code)}.nfo"
+            if legacy_nfo.is_file() and legacy_nfo != nfo_path:
+                legacy_nfo.unlink(missing_ok=True)
+            for kind, source in _artwork_sources(work).items():
+                extension = (
+                    ".jpg" if source.suffix.casefold() in {".jpg", ".jpeg"} else source.suffix.casefold()
+                )
+                art_target = directory / f"{kind}{extension}"
+                if not art_target.is_file() or not _same_file(source, art_target):
+                    _atomic_copy(source, art_target)
+                    result.artwork_written += 1
     return result
 
 
