@@ -11,6 +11,7 @@
 #   3) supervisorctl stop shadow-mdc
 #   4) import_catalog_bundle.py merge on NAS
 #   5) supervisorctl start shadow-mdc
+#   6) enqueue OpenList offline for today's new daily-chart/hot seeds
 #
 # Usage:
 #   ./scripts/sync_catalog_to_nas.sh
@@ -116,6 +117,15 @@ ssh "$NAS_HOST" "supervisorctl start '$NAS_SERVICE'"
 echo "==> health check"
 # The service may still be starting after the restart; retry for up to ~60s.
 ssh "$NAS_HOST" "for i in \$(seq 1 20); do curl -fsS 'http://127.0.0.1:8700/api/health' && exit 0; sleep 3; done; echo 'health check failed after retries' >&2; true"
+
+echo "==> auto-offline newly seeded daily chart/hot titles on NAS"
+ssh "$NAS_HOST" bash -s <<REMOTE
+set -Eeuo pipefail
+cd '$NAS_PROJECT/current'
+SHADOW_MDC_DATA_DIR='$NAS_DATA_DIR' \
+SHADOW_MDC_DATABASE_URL='sqlite:///$NAS_DATA_DIR/shadow-mdc.db' \
+PYTHONPATH=src .venv/bin/python scripts/enqueue_seed_offline.py --today || true
+REMOTE
 
 echo "==> advance export baseline"
 mv -f "$PENDING_STATE" "$STATE_FILE"

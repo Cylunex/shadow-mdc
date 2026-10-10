@@ -23,6 +23,8 @@
 | `openlist_offline_path` | 离线目标；中继只允许该树下的路径（防任意文件 302） |
 | `strm_emby_root` | 开启媒体服务器通知时，Emby 容器内看到的 STRM 根 |
 | `media_server.enabled` + `api_key` | 仍关闭时，离线→STRM→NFO 照常写盘，只是不推 `Library/Media/Updated` |
+| `media_server.base_url` | Emby **API** 地址（如 `http://192.168.0.21:8096`）。播放用的 Emby302 反代（如 `:8099`）不要填这里 |
+
 
 ## 排错
 

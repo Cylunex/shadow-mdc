@@ -32,8 +32,14 @@ from shadow_mdc.providers.base import ProviderRegistry
 from shadow_mdc.providers.fanza import FanzaProvider
 from shadow_mdc.providers.javdb import JavDBProvider
 from shadow_mdc.providers.javdb_api import build_javdb_app_api  # noqa: E402
+from shadow_mdc.providers.sukebei import SukebeiClient
 from shadow_mdc.services.daily_hot_seed import seed_daily_hot
 from shadow_mdc.services.discover import DiscoverService
+from shadow_mdc.services.pan import PanService
+from shadow_mdc.services.seed_auto_offline import (
+    collect_new_seed_work_ids,
+    enqueue_seeded_offline,
+)
 
 _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -106,8 +112,10 @@ async def _run(arguments: argparse.Namespace) -> int:
         fanza,
         r18_dump_path=settings.resolved_r18_dump_db(),
         javdb_api=build_javdb_app_api(settings, client),
+        sukebei=SukebeiClient(client, retries=settings.request_retries),
     )
 
+    offline_stats = None
     try:
         with database.session() as session:
             result = await seed_daily_hot(
@@ -121,6 +129,16 @@ async def _run(arguments: argparse.Namespace) -> int:
                 artwork_max_bytes=settings.artwork_max_bytes,
                 persist_log=not arguments.no_log,
             )
+        if arguments.auto_offline and not arguments.dry_run:
+            new_ids = collect_new_seed_work_ids(seeded=result.seeded, created_only=True)
+            if new_ids:
+                pan = PanService(data_dir=settings.data_dir, proxy_url=settings.proxy_url)
+                offline_stats = await enqueue_seeded_offline(
+                    database=database,
+                    pan=pan,
+                    discover=discover,
+                    work_ids=new_ids,
+                )
     finally:
         discover.close()
         await client.aclose()
@@ -170,6 +188,15 @@ async def _run(arguments: argparse.Namespace) -> int:
             + (" [dry-run]" if result.dry_run else "")
         )
 
+    if arguments.dry_run:
+        print("auto-offline: skipped (dry-run)")
+    elif not arguments.auto_offline:
+        print("auto-offline: disabled")
+    elif offline_stats is None:
+        print("auto-offline: no newly created works")
+    else:
+        print("auto-offline: " + json.dumps(offline_stats.as_dict(), ensure_ascii=False))
+
     sync_rc = 0
     want_sync = arguments.sync_nas or os.environ.get("SHADOW_MDC_SYNC_NAS", "").strip() in {
         "1",
@@ -213,6 +240,19 @@ def main() -> None:
         "--sync-nas",
         action="store_true",
         help="after a successful non-dry seed, run scripts/sync_catalog_to_nas.sh",
+    )
+    parser.add_argument(
+        "--auto-offline",
+        dest="auto_offline",
+        action="store_true",
+        default=True,
+        help="after seeding new works, pick best magnet (code-match) and queue OpenList/115 offline (default on)",
+    )
+    parser.add_argument(
+        "--no-auto-offline",
+        dest="auto_offline",
+        action="store_false",
+        help="do not auto-submit offline for newly seeded works",
     )
     arguments = parser.parse_args()
     if arguments.limit < 1:
