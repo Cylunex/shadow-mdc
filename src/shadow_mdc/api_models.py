@@ -962,6 +962,28 @@ class WorkOfflineRequest(BaseModel):
     url: str | None = None
 
 
+class OfflineIntakeRequest(BaseModel):
+    """Share-link / magnet intake (TgtoDrive TG-share idea → OpenList offline)."""
+
+    url: str = Field(min_length=3, max_length=4000)
+    work_id: str | None = Field(default=None, max_length=64)
+    code: str | None = Field(default=None, max_length=64)
+
+    @field_validator("url")
+    @classmethod
+    def _url_ok(cls, value: str) -> str:
+        cleaned = value.strip()
+        lower = cleaned.casefold()
+        if not (
+            lower.startswith("magnet:")
+            or lower.startswith("http://")
+            or lower.startswith("https://")
+            or lower.startswith("ed2k://")
+        ):
+            raise ValueError("url must be magnet:, http(s):, or ed2k://")
+        return cleaned
+
+
 class PanOfflineTaskOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

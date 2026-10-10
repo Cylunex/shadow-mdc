@@ -586,3 +586,28 @@ def test_rematerialize_layout_moves_flat_to_studio_code(tmp_path: Path) -> None:
     )
     assert again.moved == []
     assert again.skipped == 1
+
+
+def test_reconcile_drops_unlisted_strm(tmp_path: Path) -> None:
+    """Incremental orphan cleanup: keep live sources, delete stale .strm not in sidecar."""
+
+    root = tmp_path / "emby"
+    settings = _relay_settings(root)
+    export_work(
+        settings=settings,
+        code="KEEP-1",
+        videos=[_video("k1", "a-cd1.mp4", 9), _video("k2", "a-cd2.mp4", 9)],
+    )
+    folder = root / "Unknown Studio" / "KEEP-1"
+    ghost = folder / "KEEP-1-cd9.strm"
+    ghost.write_text("http://ghost\n", encoding="utf-8")
+
+    async def exists(file_id: str) -> bool | None:
+        return True
+
+    result = asyncio.run(reconcile_deleted(root, exists))
+    assert result.kept == 1
+    assert [path.name for path in result.orphan_strm_removed] == ["KEEP-1-cd9.strm"]
+    assert not ghost.exists()
+    assert (folder / "KEEP-1-cd1.strm").is_file()
+    assert (folder / "KEEP-1-cd2.strm").is_file()

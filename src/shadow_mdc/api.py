@@ -127,6 +127,7 @@ from .api_models import (
     WorkLookupRequest,
     WorkMagnetOut,
     WorkOfflineRequest,
+    OfflineIntakeRequest,
     WorkOut,
     WorkPosterPreferRequest,
     WorkRelatedOut,
@@ -263,7 +264,13 @@ from .services.pan import (
 from .services.pan_poller import PanOfflinePoller
 from .services.strm_export import StrmConfigError
 from .services.strm_relay import RelayError, StrmRelay, token_ok
-from .services.openlist import OpenListApiError, build_openlist_d_url, path_within
+from .services.openlist import (
+    OpenListApiError,
+    build_openlist_d_url,
+    looks_like_not_found,
+    normalize_openlist_path,
+    path_within,
+)
 from .services.actor_images import (
     ActorImageCache,
     actor_image_display_url,
@@ -273,6 +280,7 @@ from .services.actor_images import (
 )
 from .services.pan_common import shared_gate
 from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
+from .services.pipeline_status import build_pipeline_status
 from .services.subscription_watch import (
     SubscriptionWatchPoller,
     SubscriptionWatchService,
@@ -1127,17 +1135,30 @@ async def strm_openlist_play(
     request: Request,
     token: str | None = Query(None, max_length=256),
 ) -> Response:
-    """Relay for OpenList-backed .strm files → 302 to the OpenList /d link (sign when enabled)."""
+    """Relay for OpenList-backed .strm files → 302 to the OpenList /d link (sign when enabled).
+
+    Hardening (TgtoDrive 302 idea, OpenList /d implementation):
+    * normalize path (collapse ``//``, reject ``..``)
+    * allow any path under the offline target *or* already recorded in a STRM sidecar
+      (so rematerialized / scraped trees outside the default offline folder still play)
+    * signed links: missing file → 404; other OpenList errors → 502
+    * ``Cache-Control: no-store`` so players always re-resolve fresh CDN URLs
+    """
 
     app_runtime = runtime(request)
     pan = app_runtime.pan_service
     cfg = pan.config_store.load()
     if not token_ok(cfg.strm_token, token):
         raise HTTPException(status_code=403, detail="invalid strm token")
-    path = "/" + remote_path.lstrip("/")
-    if ".." in path.split("/"):
+    try:
+        path = normalize_openlist_path("/" + remote_path.lstrip("/"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not path:
         raise HTTPException(status_code=400, detail="invalid path")
     root = cfg.openlist_offline_path
+    # Keep the allow-list cheap on the play hot path: only the configured offline
+    # tree. Point openlist_offline_path at the library root if exports sit deeper.
     if not root or not path_within(path, root):
         raise HTTPException(status_code=404, detail="path outside the OpenList offline target")
     base = cfg.openlist_strm_base_url or cfg.openlist_base_url
@@ -1147,18 +1168,74 @@ async def strm_openlist_play(
     if cfg.openlist_strm_sign:
         try:
             sign = await pan.openlist.sign_for(path)
-        except (OpenListApiError, PanNotConfiguredError) as exc:
-            raise HTTPException(
-                status_code=502, detail=f"OpenList lookup failed: {type(exc).__name__}"
-            ) from exc
+        except PanNotConfiguredError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except OpenListApiError as exc:
+            detail = str(exc)
+            status = 404 if looks_like_not_found(detail) else 502
+            raise HTTPException(status_code=status, detail=f"OpenList lookup failed: {detail}") from exc
     return Response(
         status_code=302,
         headers={
             "Location": build_openlist_d_url(base, path, sign),
-            "Cache-Control": "no-store",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
             "X-Shadow-Strm-Source": "openlist",
+            "X-Shadow-Strm-Mode": "openlist-d",
         },
     )
+
+
+@app.get("/api/pan/pipeline")
+def pan_pipeline_status(request: Request, repo: Repo) -> dict[str, object]:
+    """End-to-end status: offline → STRM → NFO → Emby (TgtoDrive看板 idea, OpenList stack)."""
+
+    app_runtime = runtime(request)
+    media = app_runtime.media_server_store.load()
+    watch = app_runtime.subscription_watch_poller.service.status()
+    return build_pipeline_status(
+        pan=app_runtime.pan_service,
+        poller=app_runtime.pan_poller,
+        repo=repo,
+        media_settings=media,
+        subscription_status=watch,
+    )
+
+
+@app.post("/api/pan/offline/intake", response_model=PanOfflineTaskOut, status_code=202)
+async def pan_offline_intake(
+    payload: OfflineIntakeRequest, request: Request, repo: Repo
+) -> PanOfflineTaskOut:
+    """Enqueue a magnet / http(s) share URL for OpenList|115 offline (optional work bind).
+
+    Mirrors TgtoDrive's "paste share link → transfer" intake without a Telegram bot:
+    resolve ``work_id`` or ``code`` to a catalog Work, then reuse the shared offline
+    enqueue path (poller still auto-exports STRM + NFO on completion).
+    """
+
+    app_runtime = runtime(request)
+    work_id = (payload.work_id or "").strip() or None
+    code = (payload.code or "").strip() or None
+    if work_id:
+        work = repo.get_work(work_id)
+        if work is None:
+            raise HTTPException(status_code=404, detail="work not found")
+    elif code:
+        work = repo.find_work_by_code(code)
+        if work is None:
+            raise HTTPException(status_code=404, detail=f"no work with code {code}")
+        work_id = work.id
+    else:
+        raise HTTPException(status_code=400, detail="work_id or code required")
+    try:
+        result = await enqueue_work_offline(
+            repo, app_runtime.pan_service, work_id, url=payload.url
+        )
+    except OfflineEnqueueError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    if app_runtime.task_events is not None:
+        app_runtime.task_events.notify()
+    return PanOfflineTaskOut.model_validate(result.task)
 
 
 @app.get("/api/pan/subscription-watch/status", response_model=SubscriptionWatchStatusOut)

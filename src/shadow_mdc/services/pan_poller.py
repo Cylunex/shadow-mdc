@@ -861,12 +861,18 @@ class PanOfflinePoller:
                 self.maintenance.running = None
         if result.removed:
             self._notifier.enqueue([map_to_emby_path(path, cfg) for path in result.removed], "Deleted")
+        if result.orphan_strm_removed:
+            # Parent folders changed (stale part titles gone); Emby should re-scan them.
+            parents = {path.parent for path in result.orphan_strm_removed}
+            self._notifier.enqueue([map_to_emby_path(path, cfg) for path in parents], "Modified")
         self.maintenance.last_reconcile_at = datetime.now(UTC).isoformat()
         self.maintenance.last_reconcile = {
             "checked": result.checked,
             "removed": [str(path) for path in result.removed][:50],
             "kept": result.kept,
             "unknown": result.unknown,
+            "orphan_strm_removed": [str(path) for path in result.orphan_strm_removed][:50],
+            "orphan_strm_removed_count": len(result.orphan_strm_removed),
         }
         self._save_state()
         return result
@@ -889,6 +895,8 @@ class PanOfflinePoller:
             self.maintenance.last_reconcile_at = datetime.now(UTC).isoformat()
             self._save_state()
             return
+        # OpenList-only installs report connected via OpenList credentials; 115 Open
+        # still needs a live token. Either backend is enough to check source existence.
         if not self._pan.status().get("connected"):
             return
         await self.reconcile()

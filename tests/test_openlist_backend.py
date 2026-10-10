@@ -433,7 +433,7 @@ def test_poll_progress_completion_export_rewrite_reconcile(
             )
             fake.tree[TARGET].append({"name": "OTHER-999", "is_dir": True, "size": 0})
             assert await poller.poll_once() is True
-            folder = export_root / "ABC-123"
+            folder = export_root / "Unknown Studio" / "ABC-123"
             cd1 = (folder / "ABC-123-cd1.strm").read_text().strip()
             cd2 = (folder / "ABC-123-cd2.strm").read_text().strip()
             assert cd1 == (
@@ -441,13 +441,13 @@ def test_poll_progress_completion_export_rewrite_reconcile(
             )
             assert cd2.endswith("/ABC-123-CD2.mp4")
             assert not (folder / "ABC-123-cd3.strm").exists()
-            assert (folder / "ABC-123.nfo").is_file()
+            assert (folder / "movie.nfo").is_file()
             entries = read_sidecar(folder)
             assert {entry.file_id for entry in entries} == {
                 f"{TARGET}/[HD] ABC-123/ABC-123-CD1.mp4",
                 f"{TARGET}/[HD] ABC-123/ABC-123-CD2.mp4",
             }
-            assert poller.notifier.pending == {"/media/strm/ABC-123": "Created"}
+            assert poller.notifier.pending == {"/media/strm/Unknown Studio/ABC-123": "Created"}
             with database.session() as session:
                 row = Repository(session).list_pan_offline_tasks()[0]
                 assert row.status == "done"
@@ -476,7 +476,7 @@ def test_poll_progress_completion_export_rewrite_reconcile(
             result = await poller.reconcile()
             assert [path.name for path in result.removed] == ["ABC-123"]
             assert not folder.exists()
-            assert poller.notifier.pending["/media/strm/ABC-123"] == "Deleted"
+            assert poller.notifier.pending["/media/strm/Unknown Studio/ABC-123"] == "Deleted"
         await pan.aclose()
 
     asyncio.run(scenario())
@@ -502,7 +502,7 @@ def test_signed_export_and_failed_task(tmp_path: Path, monkeypatch: pytest.Monke
             fake.finish("tid-2")
             fake.add_result("ABC-123", [("ABC-123.mkv", 1000)])
             await poller.poll_once()
-            body = (export_root / "ABC-123" / "ABC-123.strm").read_text().strip()
+            body = (export_root / "Unknown Studio" / "ABC-123" / "ABC-123.strm").read_text().strip()
             assert body == (
                 f"{BASE}/d/115/%E4%BA%91%E4%B8%8B%E8%BD%BD/ABC-123/ABC-123.mkv"
                 "?sign=sig%3A%2F115%2F%E4%BA%91%E4%B8%8B%E8%BD%BD%2FABC-123%2FABC-123.mkv"

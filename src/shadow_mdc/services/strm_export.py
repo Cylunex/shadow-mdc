@@ -153,6 +153,8 @@ class ReconcileResult:
     removed: list[Path] = field(default_factory=list)
     kept: int = 0
     unknown: int = 0
+    # Incremental cleanup inside managed folders: .strm not listed in the sidecar.
+    orphan_strm_removed: list[Path] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -712,6 +714,10 @@ async def reconcile_deleted(
     ``exists(file_id)`` (115 id, or OpenList path for ``/``-prefixed ids) returns
     True/False, or None when unknown (network error,
     rate limit). Folders are only removed when *every* entry is definitively gone.
+
+    Also performs an incremental orphan pass inside *kept* managed folders: any
+    ``.strm`` not listed in the sidecar is deleted (same rule as ``export_work``),
+    so a partial re-export or layout change cannot leave stale ghost titles for Emby.
     """
 
     result = ReconcileResult()
@@ -723,9 +729,12 @@ async def reconcile_deleted(
         states = [await exists(entry.file_id) for entry in entries]
         if any(state is None for state in states):
             result.unknown += 1
+            # Still tidy stale .strm names while the remote check is inconclusive.
+            result.orphan_strm_removed.extend(_drop_unlisted_strm(directory, entries))
             continue
         if any(states):
             result.kept += 1
+            result.orphan_strm_removed.extend(_drop_unlisted_strm(directory, entries))
             continue
         if not _is_within(directory, root):
             result.unknown += 1
@@ -738,6 +747,20 @@ async def reconcile_deleted(
                 parent.rmdir()
         result.removed.append(directory)
     return result
+
+
+def _drop_unlisted_strm(directory: Path, entries: Sequence[StrmEntry]) -> list[Path]:
+    """Delete ``.strm`` files in ``directory`` that the sidecar no longer lists."""
+
+    keep = {entry.name for entry in entries}
+    removed: list[Path] = []
+    for stale in directory.glob("*.strm"):
+        if stale.name in keep:
+            continue
+        with contextlib.suppress(OSError):
+            stale.unlink(missing_ok=True)
+            removed.append(stale)
+    return removed
 
 
 

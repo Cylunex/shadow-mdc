@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { FieldPrioritySettings } from "../components/FieldPrioritySettings";
 import { IdentifyByUrlPanel } from "../components/IdentifyByUrlPanel";
-import type { Library, MediaServerSettings, OpenListTest, PanOfflineTask, PanSettings, PanStatus } from "../model";
+import type { Library, MediaServerSettings, OpenListTest, PanOfflineTask, PanPipeline, PanSettings, PanStatus } from "../model";
 import { AliasEditor, CatalogImportEditor, FilterWordsEditor, Libraries, ProviderDiagnostics } from "../panels";
 
 type RefreshMode = "none" | "works" | "actors" | "inbox" | "tasks" | "core" | "all";
@@ -37,12 +37,16 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
   const [olBrowsePath, setOlBrowsePath] = useState("/");
   const [olBrowseItems, setOlBrowseItems] = useState<Array<{ name: string; path: string }>>([]);
   const [browseItems, setBrowseItems] = useState<Array<{ id: string; name: string; is_directory: boolean }>>([]);
+  const [pipeline, setPipeline] = useState<PanPipeline | null>(null);
+  const [intakeUrl, setIntakeUrl] = useState("");
+  const [intakeCode, setIntakeCode] = useState("");
 
   const reloadPan = async () => {
-    const [status, settings, tasks] = await Promise.all([
+    const [status, settings, tasks, pipe] = await Promise.all([
       api.panStatus(),
       api.panSettings().catch(() => null),
       api.panOfflineTasks().catch(() => []),
+      api.panPipeline().catch(() => null),
     ]);
     setPan(status);
     if (settings) {
@@ -54,6 +58,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
       if (settings.openlist_offline_path) setOlBrowsePath(settings.openlist_offline_path);
     }
     setOfflineTasks(tasks);
+    setPipeline(pipe);
   };
 
   useEffect(() => {
@@ -642,7 +647,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                 <button
                   type="button"
                   className="ghost"
-                  disabled={!pan?.connected || busy === "strm-reconcile"}
+                  disabled={!(pan?.connected || pan?.available) || busy === "strm-reconcile"}
                   onClick={() => {
                     void run("strm-reconcile", async () => {
                       const result = await api.strmReconcile();
@@ -692,6 +697,124 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                 ))}
               </div>
             )}
+        </article>
+
+        <article className="settings-card">
+          <h2>管线状态 · offline → STRM → NFO → Emby</h2>
+          <p className="muted">
+            借鉴 TgtoDrive 看板思路：OpenList 离线完成后自动导出 STRM/NFO，再进入 Emby 通知队列（媒体服务器仍可关闭）。
+          </p>
+          <div className="command-bar-row" style={{ gap: "0.5rem", flexWrap: "wrap", marginBottom: 8 }}>
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy === "pipeline-refresh"}
+              onClick={() => {
+                void run("pipeline-refresh", async () => {
+                  await reloadPan();
+                  report("管线状态已刷新");
+                }, "none");
+              }}
+            >刷新管线</button>
+            <button
+              type="button"
+              className="ghost"
+              disabled={!(pan?.connected || pan?.available) || busy === "strm-reconcile"}
+              onClick={() => {
+                void run("strm-reconcile", async () => {
+                  const result = await api.strmReconcile();
+                  report(result.started ? "已开始增量对账（含孤儿 .strm 清理）" : "对账/重写正在进行中");
+                  await reloadPan();
+                }, "none");
+              }}
+            >增量对账 / 清孤儿 STRM</button>
+          </div>
+          {pipeline ? (
+            <div className="magnet-list">
+              <div className="magnet-row">
+                <span>① 离线</span>
+                <small className="muted">
+                  {pipeline.stages.offline.connected ? "已连接" : "未就绪"}
+                  {" · "}运行 {pipeline.stages.offline.counts.running}
+                  {" / "}完成 {pipeline.stages.offline.counts.done}
+                  {" / "}失败 {pipeline.stages.offline.counts.failed}
+                  {pipeline.stages.offline.auto_export_on_complete ? " · 完成后自动导出" : ""}
+                </small>
+              </div>
+              <div className="magnet-row">
+                <span>② STRM</span>
+                <small className="muted">
+                  {pipeline.stages.strm.enabled ? "开启" : "关闭"}
+                  {" · "}目录 {pipeline.stages.strm.export_dirs}
+                  {" · "}有 strm {pipeline.stages.strm.with_strm}
+                  {" · "}孤儿 {pipeline.stages.strm.orphan_strm_files}
+                  {pipeline.stages.strm.maintenance_running ? ` · 维护中 ${pipeline.stages.strm.maintenance_running}` : ""}
+                  {pipeline.stages.strm.config_errors.length > 0 ? ` · 配置问题 ${pipeline.stages.strm.config_errors.length}` : ""}
+                </small>
+              </div>
+              <div className="magnet-row">
+                <span>③ NFO</span>
+                <small className="muted">
+                  有 nfo {pipeline.stages.nfo.with_nfo}
+                  {" · "}缺 nfo {pipeline.stages.nfo.missing_nfo}
+                </small>
+              </div>
+              <div className="magnet-row">
+                <span>④ Emby 通知</span>
+                <small className="muted">
+                  {pipeline.stages.emby.notify_enabled ? (pipeline.stages.emby.ready ? "就绪" : "未就绪") : "已关闭"}
+                  {" · "}待发送 {pipeline.stages.emby.pending}
+                  {pipeline.stages.emby.needs.length > 0 ? ` · 缺：${pipeline.stages.emby.needs.join("；")}` : ""}
+                </small>
+              </div>
+              {pipeline.playback?.notes && pipeline.playback.notes.length > 0 && (
+                <p className="muted" style={{ marginTop: 8 }}>
+                  播放：{pipeline.playback.notes[0]}
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="muted">管线状态尚未加载。</p>
+          )}
+          <h3 style={{ marginTop: 16 }}>分享链 / 磁链摄入</h3>
+          <p className="muted">类似 TgtoDrive「粘贴分享链转存」：绑定番号后推 OpenList/115 离线，完成后自动 STRM。</p>
+          <form
+            className="settings-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void run("offline-intake", async () => {
+                const task = await api.panOfflineIntake({
+                  url: intakeUrl.trim(),
+                  code: intakeCode.trim() || undefined,
+                });
+                setIntakeUrl("");
+                report(`已推送离线：${task.status} · ${task.remote_name || task.info_hash.slice(0, 12)}`);
+                await reloadPan();
+              }, "none");
+            }}
+          >
+            <label>
+              <span>番号（必填，需已在目录中）</span>
+              <input
+                value={intakeCode}
+                onChange={(e) => setIntakeCode(e.target.value)}
+                placeholder="STARS-145"
+                required
+              />
+            </label>
+            <label>
+              <span>磁链 / http(s) 分享链 / ed2k</span>
+              <input
+                value={intakeUrl}
+                onChange={(e) => setIntakeUrl(e.target.value)}
+                placeholder="magnet:?xt=… 或 https://…"
+                required
+              />
+            </label>
+            <button type="submit" disabled={busy === "offline-intake" || !intakeUrl.trim() || !intakeCode.trim()}>
+              推送到离线
+            </button>
+          </form>
         </article>
 
         <article className="settings-card">

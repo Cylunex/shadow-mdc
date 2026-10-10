@@ -909,3 +909,68 @@ export const subscriptionWatchStatusSchema = z.object({
 export type SubscriptionWatchStatus = z.infer<typeof subscriptionWatchStatusSchema>;
 export type PanSettings = z.infer<typeof panSettingsSchema>;
 export type PanOfflineTask = z.infer<typeof panOfflineTaskSchema>;
+export const panPipelineSchema = z.object({
+  backend: z.string().optional(),
+  connected: z.boolean().optional(),
+  reason: z.string().nullable().optional(),
+  flow: z.array(z.string()).optional().default([]),
+  stages: z.object({
+    offline: z.object({
+      backend: z.string().optional(),
+      connected: z.boolean().optional(),
+      offline_ready: z.boolean().optional(),
+      target: z.string().nullable().optional(),
+      counts: z.object({
+        running: z.number(),
+        done: z.number(),
+        failed: z.number(),
+        other: z.number().optional().default(0)
+      }),
+      auto_export_on_complete: z.boolean().optional(),
+      recent: z.array(z.record(z.string(), z.unknown())).optional().default([])
+    }).passthrough(),
+    strm: z.object({
+      enabled: z.boolean(),
+      mode: z.string().optional(),
+      output_root: z.string().nullable().optional(),
+      layout_template: z.string().optional(),
+      config_errors: z.array(z.string()).optional().default([]),
+      export_dirs: z.number().optional().default(0),
+      with_strm: z.number().optional().default(0),
+      orphan_strm_files: z.number().optional().default(0),
+      truncated: z.boolean().optional(),
+      maintenance_running: z.string().nullable().optional(),
+      last_reconcile_at: z.string().nullable().optional(),
+      last_reconcile: z.record(z.string(), z.unknown()).optional().nullable(),
+      last_rewrite_at: z.string().nullable().optional(),
+      last_rematerialize_at: z.string().nullable().optional()
+    }).passthrough(),
+    nfo: z.object({
+      with_nfo: z.number().optional().default(0),
+      missing_nfo: z.number().optional().default(0),
+      note: z.string().optional()
+    }).passthrough(),
+    emby: z.object({
+      notify_enabled: z.boolean().optional(),
+      ready: z.boolean().optional(),
+      kind: z.string().optional(),
+      base_url_set: z.boolean().optional(),
+      api_key_set: z.boolean().optional(),
+      strm_emby_root: z.string().nullable().optional(),
+      pending: z.number().optional().default(0),
+      needs: z.array(z.string()).optional().default([]),
+      last: z.object({
+        attempted: z.boolean(),
+        ok: z.boolean(),
+        sent: z.number(),
+        detail: z.string()
+      }).nullable().optional()
+    }).passthrough()
+  }).passthrough(),
+  playback: z.object({
+    mode: z.string().optional(),
+    notes: z.array(z.string()).optional().default([])
+  }).passthrough().optional(),
+  subscription_watch: z.record(z.string(), z.unknown()).nullable().optional()
+}).passthrough();
+export type PanPipeline = z.infer<typeof panPipelineSchema>;

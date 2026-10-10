@@ -64,6 +64,7 @@ import {
   panFilesSchema,
   panOfflineTaskSchema,
   panSettingsSchema,
+  panPipelineSchema,
   openListTestSchema,
   openListFilesSchema,
   subscriptionWatchStatusSchema,
@@ -576,6 +577,12 @@ export const api = {
   strmReconcile: () =>
     request(z.object({ started: z.boolean() }).passthrough(), "/api/pan/strm/reconcile", { method: "POST" }),
   panOfflineTasks: () => request(z.array(panOfflineTaskSchema), "/api/pan/offline/tasks"),
+  panPipeline: () => request(panPipelineSchema, "/api/pan/pipeline"),
+  panOfflineIntake: (payload: { url: string; work_id?: string; code?: string }) =>
+    request(panOfflineTaskSchema, "/api/pan/offline/intake", {
+      method: "POST", body: JSON.stringify(payload)
+    }),
+  strmStatus: () => request(z.record(z.string(), z.unknown()), "/api/pan/strm/status"),
   subscriptionWatchStatus: () =>
     request(subscriptionWatchStatusSchema, "/api/pan/subscription-watch/status"),
   runSubscriptionWatch: () =>
