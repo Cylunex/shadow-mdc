@@ -1,7 +1,8 @@
 import os
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
-from xml.etree.ElementTree import Element, ElementTree, SubElement, fromstring, indent, tostring
+from xml.etree.ElementTree import Element, SubElement, fromstring, indent, tostring
 
 from ..db.models import ExternalIdentity, MediaAsset, Work
 from ..domain import MediaTechnicalInfo
@@ -11,7 +12,15 @@ def build_nfo(
     work: Work,
     identities: list[ExternalIdentity],
     asset: MediaAsset | None = None,
+    *,
+    local_artwork: Mapping[str, str] | None = None,
 ) -> str:
+    """Build a Kodi/Emby movie.nfo.
+
+    Artwork thumb/fanart entries reference **local sibling files** only
+    (``poster.jpg`` / ``fanart.jpg`` next to the NFO/STRM). Remote http(s)
+    URLs are never written — Emby should use the copied local images.
+    """
     movie = Element("movie")
     title = _display_title(work.title, work.primary_code)
     SubElement(movie, "title").text = title
@@ -56,28 +65,66 @@ def build_nfo(
             continue
         unique = SubElement(movie, "uniqueid", {"type": identity.provider})
         unique.text = identity.value
-    poster_url: str | None = None
-    fanart_url: str | None = None
-    for item in work.artwork:
-        url = item.get("url")
-        if not isinstance(url, str):
-            continue
-        kind = str(item.get("kind", "thumb")).casefold()
-        if kind in {"fanart", "background", "backdrop"}:
-            fanart_url = fanart_url or url
-        else:
-            poster_url = poster_url or url
-    poster_url = poster_url or fanart_url
-    fanart_url = fanart_url or poster_url
-    if poster_url:
-        SubElement(movie, "thumb", {"aspect": "poster"}).text = poster_url
-    if fanart_url:
+    poster_ref, fanart_ref = _nfo_local_artwork_refs(work, local_artwork)
+    if poster_ref:
+        SubElement(movie, "thumb", {"aspect": "poster"}).text = poster_ref
+    if fanart_ref:
         fanart = SubElement(movie, "fanart")
-        SubElement(fanart, "thumb").text = fanart_url
+        SubElement(fanart, "thumb").text = fanart_ref
     _append_file_info(movie, media_info)
     indent(movie, space="  ")
     body = tostring(movie, encoding="unicode")
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n' + body + "\n"
+
+
+
+def _nfo_local_artwork_refs(
+    work: Work,
+    local_artwork: Mapping[str, str] | None,
+) -> tuple[str | None, str | None]:
+    """Return (poster, fanart) relative filenames for NFO — never remote URLs.
+
+    Prefer explicit ``local_artwork`` (kind → filename written beside the NFO).
+    Else derive conventional ``poster.*`` / ``fanart.*`` names from cached
+    ``local_path`` entries that exist on disk. Remote ``url`` values are ignored.
+    """
+
+    if local_artwork:
+        poster = local_artwork.get("poster") or local_artwork.get("fanart")
+        fanart = local_artwork.get("fanart") or local_artwork.get("poster")
+        return _nonempty(poster), _nonempty(fanart)
+
+    poster: str | None = None
+    fanart: str | None = None
+    for item in work.artwork or []:
+        if not isinstance(item, dict):
+            continue
+        raw_path = item.get("local_path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        path = Path(raw_path)
+        if not path.is_file():
+            continue
+        kind = str(item.get("kind", "thumb")).casefold()
+        # Export/organize always rename to poster.* / fanart.*; mirror that here
+        # so NFO paths match siblings even when the cache file is poster.jpg.
+        extension = path.suffix if path.suffix else ".jpg"
+        if extension.casefold() in {".jpeg"}:
+            extension = ".jpg"
+        if kind in {"fanart", "background", "backdrop"}:
+            fanart = fanart or f"fanart{extension.casefold()}"
+        elif kind != "sample":
+            poster = poster or f"poster{extension.casefold()}"
+    poster = poster or fanart
+    fanart = fanart or poster
+    return poster, fanart
+
+
+def _nonempty(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
 
 
 def _media_info(asset: MediaAsset | None) -> MediaTechnicalInfo:

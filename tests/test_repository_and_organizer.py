@@ -540,6 +540,9 @@ def test_default_jav_layout_writes_four_media_server_files(
     assert "<width>3840</width>" in nfo
     assert "<height>2160</height>" in nfo
     assert "<framerate>23.976</framerate>" in nfo
+    assert '<thumb aspect="poster">poster.jpg</thumb>' in nfo
+    assert '<thumb>fanart.jpg</thumb>' in nfo
+    assert 'https://images.example' not in nfo
 
 
 def test_organize_plan_shortens_long_windows_paths_deterministically(

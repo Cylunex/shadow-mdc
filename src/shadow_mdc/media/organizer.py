@@ -164,7 +164,15 @@ class Organizer:
             if operation.kind is OperationKind.WRITE_NFO:
                 if operation.conflict and nfo_policy is NfoPolicy.SKIP:
                     continue
-                write_nfo(destination, build_nfo(work, identities, asset))
+                write_nfo(
+                    destination,
+                    build_nfo(
+                        work,
+                        identities,
+                        asset,
+                        local_artwork=_nfo_artwork_names_for_dir(destination.parent, work),
+                    ),
+                )
                 continue
             if operation.source is None:
                 raise ValueError("media operation has no source")
@@ -406,6 +414,39 @@ def _target_root(value: str | None) -> Path:
     if not root.is_dir():
         raise ValueError("target_root must be an existing directory")
     return root
+
+
+
+def _nfo_artwork_names_for_dir(destination_dir: Path, work: Work) -> dict[str, str] | None:
+    """Basenames Emby expects beside movie.nfo (poster.*/fanart.*) when local cache exists."""
+
+    names: dict[str, str] = {}
+    sources: dict[str, Path] = {}
+    for item in work.artwork or []:
+        raw_path = item.get("local_path") if isinstance(item, dict) else None
+        if not isinstance(raw_path, str):
+            continue
+        source = Path(raw_path)
+        if not source.is_file():
+            continue
+        raw_kind = str(item.get("kind", "thumb")).casefold()
+        if raw_kind == "sample":
+            continue
+        kind = "fanart" if raw_kind in {"fanart", "background", "backdrop"} else "poster"
+        sources.setdefault(kind, source)
+    if not sources:
+        # Still prefer already-copied siblings if present.
+        for kind in ("poster", "fanart"):
+            match = next(destination_dir.glob(f"{kind}.*"), None)
+            if match is not None and match.is_file():
+                names[kind] = match.name
+        return names or None
+    sources.setdefault("fanart", sources.get("poster", next(iter(sources.values()))))
+    sources.setdefault("poster", sources.get("fanart", next(iter(sources.values()))))
+    for kind, source in sources.items():
+        extension = ".jpg" if source.suffix.casefold() in {".jpg", ".jpeg"} else source.suffix.casefold()
+        names[kind] = f"{kind}{extension}"
+    return names
 
 
 def _artwork_operations(work: Work, destination_dir: Path) -> list[FileOperation]:

@@ -424,7 +424,7 @@ Shadow MDC 只管理用户已有本地媒体的元数据与公开图片，不提
 1. 点击「二维码登录」，用 115 App 扫码；轮询状态 `waiting → scanned → ok`。
 2. 选择离线目录 cid（可浏览文件夹或手填），保存。
 3. 可选：启用 STRM，配置本地输出根目录与 OpenList 前缀（如 `http://openlist:5244/d/115`；Emby 侧签名需关闭）。
-4. 每日「榜单补库 / 热门补库」对新入库作品会自动选最佳磁力（优先番号匹配）并经 OpenList 提交 115 离线（`--no-auto-offline` 可关；box→NAS 同步后也会在 NAS 再跑一遍）。也可在作品磁力列表点「推到 115 离线」；后台轮询任务，完成后按 `{studio}/{CODE}/{CODE}.strm`（旁路 `movie.nfo` / poster / fanart）写入并触发 Emby/Jellyfin 路径刷新。
+4. 每日「榜单补库 / 热门补库」对新入库作品会自动选最佳磁力（优先番号匹配）并经 OpenList 提交 115 离线（`--no-auto-offline` 可关；box→NAS 同步后也会在 NAS 再跑一遍）。也可在作品磁力列表点「推到 115 离线」；后台轮询任务，完成后按 `{studio}/{CODE}/{CODE}.strm`（旁路 `movie.nfo` / poster / fanart（NFO 只引用同目录本地文件名，不写远程图片 URL；入库时封面会下载到 `data/artwork/`））写入并触发 Emby/Jellyfin 路径刷新。
 
 环境变量：`SHADOW_MDC_PAN_CLIENT_ID`（默认社区临时 id `100197303`，**建议申请自有应用**）、可选 `SHADOW_MDC_PAN_CLIENT_SECRET`。设置页也可保存自有 client_id/secret（secret 只返回 `client_secret_set`；切换 client_id 会清除凭证）。凭证落盘 `data/pan/credentials.json`（chmod 600），配置在 `data/pan/config.json`。默认 **不**把 115 流量送进 `SHADOW_MDC_PROXY_URL`（可在设置中打开，但有风控风险）。
 

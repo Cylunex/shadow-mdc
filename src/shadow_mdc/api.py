@@ -26,6 +26,7 @@ from .api_models import (
     ActorSummaryOut,
     ActorTagsEdit,
     ActorXHandleEdit,
+    ArtworkBackfillOut,
     AssetInboxHintsOut,
     AssetInboxMediaOut,
     AssetInboxOut,
@@ -196,10 +197,13 @@ from .services.actor_catalog import (
     sync_actor_catalog_from_relations,
 )
 from .services.actor_images import (
+    LOCAL_ROUTE,
     ActorImageCache,
     actor_image_display_url,
     actor_images,
     configure_actor_images,
+    is_remote_url,
+    remote_key,
     valid_key,
 )
 from .services.alias_store import IdentityAliasStore
@@ -1699,6 +1703,7 @@ async def discover_seed(
     work = repo.get_work(result.work_id)
     if work is not None:
         await app_runtime.translator.translate_work(repo, work)
+        await _ensure_artwork_cached(work, app_runtime, repo)
     _invalidate_library_caches(app_runtime.response_cache)
     return DiscoverSeedOut.model_validate(result.model_dump())
 
@@ -2990,6 +2995,7 @@ async def identify_library(
             return
         async with translation_slots:
             await app_runtime.translator.translate_work(repo, work)
+            await _ensure_artwork_cached(work, app_runtime, repo)
 
     await asyncio.gather(*(translate(work_id) for work_id in accepted_work_ids))
     remaining = max(0, len(groups) - len(selected))
@@ -3118,11 +3124,13 @@ async def batch_accept_inbox(
                 skipped += 1
                 continue
             await app_runtime.translator.translate_work(repo, local)
+            await _ensure_artwork_cached(local, app_runtime, repo)
             succeeded += 1
             continue
         try:
             work = repo.accept_candidate(candidate.id)
             await app_runtime.translator.translate_work(repo, work)
+            await _ensure_artwork_cached(work, app_runtime, repo)
             succeeded += 1
         except LookupError as exc:
             errors.append(f"{asset_id}: {exc}")
@@ -3266,6 +3274,7 @@ async def identify_asset(
         work = repo.get_work(result.accepted_work_id)
         if work is not None:
             await app_runtime.translator.translate_work(repo, work)
+            await _ensure_artwork_cached(work, app_runtime, repo)
     return IdentifyOut.model_validate(result.model_dump())
 
 
@@ -3328,6 +3337,7 @@ async def accept_candidate(candidate_id: str, request: Request, repo: Repo) -> W
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     app_runtime = runtime(request)
     await app_runtime.translator.translate_work(repo, work)
+    await _ensure_artwork_cached(work, app_runtime, repo)
     return _work_out(repo, work)
 
 
@@ -3614,6 +3624,7 @@ async def lookup_work_by_code(
             work = repo.upsert_provider_record(record, overwrite=False)
     app_runtime = runtime(request)
     await app_runtime.translator.translate_work(repo, work)
+    await _ensure_artwork_cached(work, app_runtime, repo)
     repo.finish_task_run(
         task,
         status="partial" if batch.failures else "succeeded",
@@ -3803,6 +3814,7 @@ async def refresh_work_metadata(work_id: str, request: Request, repo: Repo) -> I
         accepted_ids.append(candidate.record.external_id)
     if accepted_work is not None:
         await app_runtime.translator.translate_work(repo, accepted_work)
+        await _ensure_artwork_cached(accepted_work, app_runtime, repo)
         _invalidate_library_caches(app_runtime.response_cache)
     return IdentifyOut(
         asset_id=asset.id if asset is not None else work.id,
@@ -3912,6 +3924,59 @@ async def download_work_artwork(work_id: str, request: Request, repo: Repo) -> A
             },
         )
     return result
+
+
+
+
+@app.post("/api/works/artwork/backfill", response_model=ArtworkBackfillOut)
+async def backfill_recent_artwork(
+    request: Request,
+    repo: Repo,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> ArtworkBackfillOut:
+    """Cheap optional backfill: download covers for recent works still on remote URLs."""
+
+    app_runtime = runtime(request)
+    works = repo.list_works()[:limit]
+    scanned = 0
+    downloaded = 0
+    cached = 0
+    failed = 0
+    actors_localized = 0
+    for work in works:
+        scanned += 1
+        needs = any(
+            isinstance(item, dict)
+            and isinstance(item.get("url"), str)
+            and str(item["url"]).startswith(("http://", "https://"))
+            and not (
+                isinstance(item.get("local_path"), str)
+                and item.get("local_path")
+                and Path(str(item["local_path"])).is_file()
+            )
+            for item in (work.artwork or [])
+        )
+        if needs:
+            result, local_paths = await ArtworkStore(
+                app_runtime.settings.data_dir / "artwork",
+                app_runtime.http,
+                max_bytes=app_runtime.settings.artwork_max_bytes,
+            ).acquire(work)
+            if local_paths:
+                repo.update_artwork_local_paths(work, local_paths)
+            downloaded += result.downloaded
+            cached += result.cached
+            failed += result.failed
+        actors_localized += await _localize_work_actor_images(work, repo)
+    if downloaded or actors_localized:
+        _invalidate_library_caches(app_runtime.response_cache)
+    return ArtworkBackfillOut(
+        scanned=scanned,
+        downloaded=downloaded,
+        cached=cached,
+        failed=failed,
+        actors_localized=actors_localized,
+    )
 
 
 
@@ -5053,14 +5118,57 @@ def _library_works(repo: Repository, library: Library) -> list[Work]:
 
 
 async def _ensure_artwork_cached(work: Work, app_runtime: Runtime, repo: Repository) -> None:
-    if not work.artwork:
-        return
-    _, local_paths = await ArtworkStore(
-        app_runtime.settings.data_dir / "artwork",
-        app_runtime.http,
-        max_bytes=app_runtime.settings.artwork_max_bytes,
-    ).acquire(work)
-    repo.update_artwork_local_paths(work, local_paths)
+    """Download remote work/actor covers into local artwork at ingest time.
+
+    Catalog cards and STRM/NFO export require local files; remote links alone are
+    not enough (NFO never embeds http URLs). Actor CDN portraits are localized
+    into ``data/actor-images/`` so the API serves ``/api/actor-images/...``.
+    """
+
+    if work.artwork:
+        needs = any(
+            isinstance(item, dict)
+            and isinstance(item.get("url"), str)
+            and str(item.get("url")).startswith(("http://", "https://"))
+            and not (
+                isinstance(item.get("local_path"), str)
+                and item.get("local_path")
+                and Path(str(item["local_path"])).is_file()
+            )
+            for item in work.artwork
+        )
+        # Still run acquire when local_path is set but file missing, or to adopt cache.
+        if needs or any(
+            isinstance(item, dict) and isinstance(item.get("url"), str) for item in work.artwork
+        ):
+            _, local_paths = await ArtworkStore(
+                app_runtime.settings.data_dir / "artwork",
+                app_runtime.http,
+                max_bytes=app_runtime.settings.artwork_max_bytes,
+            ).acquire(work)
+            if local_paths:
+                repo.update_artwork_local_paths(work, local_paths)
+    await _localize_work_actor_images(work, repo)
+
+
+async def _localize_work_actor_images(work: Work, repo: Repository) -> int:
+    """Eagerly download remote actor portraits linked to ``work`` (ingest-time)."""
+
+    cache = actor_images()
+    localized = 0
+    for actor in repo.actors_for_work(work.id):
+        url = actor.image_url
+        if not is_remote_url(url):
+            continue
+        assert url is not None
+        key = remote_key(url)
+        cache.display_url(url)  # register key → url for localize
+        path = await cache.localize(key)
+        if path is None:
+            continue
+        actor.image_url = f"{LOCAL_ROUTE}{path.name}"
+        localized += 1
+    return localized
 
 
 def _batch_token(plans: list[OperationPlan]) -> str:

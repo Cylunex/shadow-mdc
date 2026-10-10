@@ -299,6 +299,16 @@ class BulkTranslateOut(BaseModel):
     errors: tuple[str, ...]
 
 
+
+class ArtworkBackfillOut(BaseModel):
+    scanned: int = 0
+    downloaded: int = 0
+    cached: int = 0
+    failed: int = 0
+    actors_localized: int = 0
+
+
+
 class ScreenshotGenerateOut(BaseModel):
     attempted: int
     generated: int

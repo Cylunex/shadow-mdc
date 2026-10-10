@@ -85,7 +85,7 @@ def test_reexport_identical_bytes_writes_nothing(tmp_path: Path, monkeypatch: py
     art = tmp_path / "art"
     art.mkdir()
     work = _work(art)
-    monkeypatch.setattr(strm_export, "build_nfo", lambda w, ids: "<movie><title>x</title></movie>\n")
+    monkeypatch.setattr(strm_export, "build_nfo", lambda w, ids, **_kw: "<movie><title>x</title></movie>\n")
     root = tmp_path / "emby"
     videos = [_video("11", "a.mp4")]
     first = export_work(settings=_relay(root), code="ABC-123", videos=videos, work=work)
@@ -107,7 +107,7 @@ def test_reexport_identical_bytes_writes_nothing(tmp_path: Path, monkeypatch: py
 
     # Token rotation: only the .strm differs → only it is written (still last).
     monkeypatch.undo()
-    monkeypatch.setattr(strm_export, "build_nfo", lambda w, ids: "<movie><title>x</title></movie>\n")
+    monkeypatch.setattr(strm_export, "build_nfo", lambda w, ids, **_kw: "<movie><title>x</title></movie>\n")
     third = export_work(settings=_relay(root, strm_token="t2"), code="ABC-123", videos=videos, work=work)
     assert [path.name for path in third.changed_paths] == ["ABC-123.strm"]
     assert (folder / "poster.jpg").stat().st_mtime_ns == 1

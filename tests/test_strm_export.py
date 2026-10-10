@@ -135,7 +135,7 @@ def test_export_writes_artwork_then_nfo_then_strm_atomically(
         strm_export, "_atomic_copy", lambda s, d: (order.append(f"art:{d.name}"), real_copy(s, d))[1]
     )
     monkeypatch.setattr(strm_export, "write_nfo", lambda p, c: (order.append("nfo"), real_nfo(p, c))[1])
-    monkeypatch.setattr(strm_export, "build_nfo", lambda w, ids: "<movie><title>x</title></movie>")
+    monkeypatch.setattr(strm_export, "build_nfo", lambda w, ids, **_kw: "<movie><title>x</title></movie>")
     monkeypatch.setattr(
         strm_export, "write_strm", lambda p, loc: (order.append(f"strm:{Path(p).name}"), real_strm(p, loc))[1]
     )

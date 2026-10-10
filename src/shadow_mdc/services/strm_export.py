@@ -518,7 +518,8 @@ def export_work(
     result = ExportResult(directory=directory, created=not directory.exists())
     directory.mkdir(parents=True, exist_ok=True)
 
-    # 1) poster / fanart
+    # 1) poster / fanart (local files beside STRM; NFO must reference these names)
+    local_artwork: dict[str, str] = {}
     if work is not None:
         for kind, source in _artwork_sources(work).items():
             extension = ".jpg" if source.suffix.casefold() in {".jpg", ".jpeg"} else source.suffix.casefold()
@@ -527,10 +528,11 @@ def export_work(
                 _atomic_copy(source, target)
                 result.changed_paths.append(target)
             result.artwork_paths.append(target)
+            local_artwork[kind] = target.name
     # 2) NFO (Emby/Kodi movie.nfo beside the .strm, same as Organizer)
     if work is not None:
         nfo_path = directory / "movie.nfo"
-        content = build_nfo(work, identities or [])
+        content = build_nfo(work, identities or [], local_artwork=local_artwork or None)
         if not _same_bytes(nfo_path, content.encode("utf-8")):
             write_nfo(nfo_path, content)
             result.changed_paths.append(nfo_path)
@@ -828,17 +830,10 @@ def rematerialize_layout(
             directory = target
         else:
             result.skipped += 1
-        # Regenerate NFO / artwork when missing and we have a Work.
+        # Regenerate artwork then NFO (local sibling filenames in NFO, never remote URLs).
         if work is not None:
             identities = list(identities_for(work)) if identities_for is not None else []
-            nfo_path = directory / "movie.nfo"
-            content = build_nfo(work, identities)
-            if not nfo_path.is_file() or not _same_bytes(nfo_path, content.encode("utf-8")):
-                write_nfo(nfo_path, content)
-                result.nfo_written += 1
-            legacy_nfo = directory / f"{safe_stem(code)}.nfo"
-            if legacy_nfo.is_file() and legacy_nfo != nfo_path:
-                legacy_nfo.unlink(missing_ok=True)
+            local_artwork: dict[str, str] = {}
             for kind, source in _artwork_sources(work).items():
                 extension = (
                     ".jpg" if source.suffix.casefold() in {".jpg", ".jpeg"} else source.suffix.casefold()
@@ -847,6 +842,21 @@ def rematerialize_layout(
                 if not art_target.is_file() or not _same_file(source, art_target):
                     _atomic_copy(source, art_target)
                     result.artwork_written += 1
+                local_artwork[kind] = art_target.name
+            # Prefer already-present siblings when cache was empty but files exist on disk.
+            if not local_artwork:
+                for kind in ("poster", "fanart"):
+                    match = next(directory.glob(f"{kind}.*"), None)
+                    if match is not None and match.is_file():
+                        local_artwork[kind] = match.name
+            nfo_path = directory / "movie.nfo"
+            content = build_nfo(work, identities, local_artwork=local_artwork or None)
+            if not nfo_path.is_file() or not _same_bytes(nfo_path, content.encode("utf-8")):
+                write_nfo(nfo_path, content)
+                result.nfo_written += 1
+            legacy_nfo = directory / f"{safe_stem(code)}.nfo"
+            if legacy_nfo.is_file() and legacy_nfo != nfo_path:
+                legacy_nfo.unlink(missing_ok=True)
     return result
 
 
