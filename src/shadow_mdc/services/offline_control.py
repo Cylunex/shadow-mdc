@@ -103,10 +103,12 @@ class OfflineRecoveryController:
             if state.action:
                 raise OfflineControlError("recovery action already in progress", status_code=409)
             magnets = list(repo.list_work_magnets(task.work_id))
+            work = repo.get_work(task.work_id)
             candidate = next_magnet_candidate(
                 magnets,
                 state,
                 exclude_hashes=self._busy_hashes(repo, task.work_id, except_task_id=task.id),
+                expected_code=work.primary_code if work is not None else None,
             )
             state = begin_switch(
                 state, reason=SWITCH_REASON_MANUAL, next_magnet=candidate, manual=True
@@ -155,10 +157,12 @@ class OfflineRecoveryController:
             repo.update_pan_offline_task(task, recovery_json=state.to_dict())
             return True
         magnets = list(repo.list_work_magnets(task.work_id))
+        work = repo.get_work(task.work_id)
         candidate = next_magnet_candidate(
             magnets,
             state,
             exclude_hashes=self._busy_hashes(repo, task.work_id, except_task_id=task.id),
+            expected_code=work.primary_code if work is not None else None,
         )
         state = begin_switch(state, reason=reason, next_magnet=candidate, manual=False)
         if state.exhausted:

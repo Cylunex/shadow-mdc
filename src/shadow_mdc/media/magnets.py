@@ -3,6 +3,11 @@
 Size pairing ideas adapted from raawaa/jav-scrapy ``extractMagnetLinks``:
 pair magnet hrefs with nearby ``N.NNGB|MB`` labels, harden when counts differ,
 and prefer largest / subtitle / HD when picking a default.
+
+Release-name ↔ work-code match (``magnet_code_match``) is inspired by
+SilenceSik/media-indexer ``magnet_judge`` (MIT): prefer magnets whose ``dn``
+extracts the same 番号 as the Work, demote clear conflicts. Reimplemented with
+our ``extract_code`` / ``to_comparison_key`` — no source copy.
 """
 
 from __future__ import annotations
@@ -11,6 +16,9 @@ import re
 from urllib.parse import parse_qs, unquote, urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from ..identity import extract_code
+from ..normalize_code import to_comparison_key
 
 _BTIH = re.compile(r"(?i)urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})")
 _MAGNET_HREF = re.compile(r"(?i)magnet:\?[^\s\"'<>]+")
@@ -193,6 +201,41 @@ _SAMPLE_NAME = re.compile(r"(?i)(?:sample|trailer|preview|预告|預告)")
 _TINY_RELEASE_BYTES = 300 * 1024 * 1024
 
 
+def magnet_code_match(name: str | None, expected_code: str | None) -> bool | None:
+    """Whether a magnet release name belongs to ``expected_code``.
+
+    Returns:
+      * ``True`` — name extracts a code that matches ``expected_code``
+      * ``False`` — name extracts a *different* code (likely wrong title)
+      * ``None`` — no expected code, empty name, or no extractable code
+        (keep the magnet; JavDB App API often omits a useful ``dn``)
+    """
+
+    if not expected_code or not (name or "").strip():
+        return None
+    expected_key = to_comparison_key(expected_code)
+    if not expected_key:
+        return None
+    extracted, _family = extract_code(name or "")
+    if not extracted:
+        return None
+    found_key = to_comparison_key(extracted)
+    if not found_key:
+        return None
+    return found_key == expected_key
+
+
+def _code_match_rank(name: str | None, expected_code: str | None) -> int:
+    """Sort tier: matching code (2) > unknown (1) > conflicting code (0)."""
+
+    verdict = magnet_code_match(name, expected_code)
+    if verdict is True:
+        return 2
+    if verdict is False:
+        return 0
+    return 1
+
+
 def magnet_quality_flags(name: str | None) -> tuple[bool, bool]:
     """``(has_subtitle, hd)`` inferred from a release name.
 
@@ -240,17 +283,23 @@ def magnet_sort_key(
     size_bytes: int | None,
     has_subtitle: bool,
     hd: bool,
-) -> tuple[int, int]:
-    """Sort key (descending): quality score, then larger size."""
+    expected_code: str | None = None,
+) -> tuple[int, int, int]:
+    """Sort key (descending): code match, quality score, then larger size."""
 
     return (
+        _code_match_rank(name, expected_code),
         magnet_quality_score(name=name, size_bytes=size_bytes, has_subtitle=has_subtitle, hd=hd),
         size_bytes or 0,
     )
 
 
-def rank_magnets(magnets: list[MagnetLink] | tuple[MagnetLink, ...]) -> list[MagnetLink]:
-    """Best first: subtitle/resolution quality score (samples penalised), then size."""
+def rank_magnets(
+    magnets: list[MagnetLink] | tuple[MagnetLink, ...],
+    *,
+    expected_code: str | None = None,
+) -> list[MagnetLink]:
+    """Best first: code match, quality score (samples penalised), then size."""
 
     return sorted(
         magnets,
@@ -259,13 +308,18 @@ def rank_magnets(magnets: list[MagnetLink] | tuple[MagnetLink, ...]) -> list[Mag
             size_bytes=item.size_bytes,
             has_subtitle=item.has_subtitle,
             hd=item.hd,
+            expected_code=expected_code,
         ),
         reverse=True,
     )
 
 
-def pick_best_magnet_link(magnets: list[MagnetLink] | tuple[MagnetLink, ...]) -> MagnetLink | None:
-    ranked = rank_magnets(magnets)
+def pick_best_magnet_link(
+    magnets: list[MagnetLink] | tuple[MagnetLink, ...],
+    *,
+    expected_code: str | None = None,
+) -> MagnetLink | None:
+    ranked = rank_magnets(magnets, expected_code=expected_code)
     return ranked[0] if ranked else None
 
 

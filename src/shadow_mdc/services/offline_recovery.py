@@ -211,7 +211,11 @@ def attempted_hashes(state: RecoveryCheckpoint) -> set[str]:
     return {item.info_hash.upper() for item in state.attempts if item.info_hash}
 
 
-def rank_candidate_magnets(magnets: list[WorkMagnet]) -> list[WorkMagnet]:
+def rank_candidate_magnets(
+    magnets: list[WorkMagnet],
+    *,
+    expected_code: str | None = None,
+) -> list[WorkMagnet]:
     return sorted(
         magnets,
         key=lambda item: magnet_sort_key(
@@ -219,6 +223,7 @@ def rank_candidate_magnets(magnets: list[WorkMagnet]) -> list[WorkMagnet]:
             size_bytes=item.size_bytes,
             has_subtitle=bool(item.has_subtitle),
             hd=bool(item.hd),
+            expected_code=expected_code,
         ),
         reverse=True,
     )
@@ -230,13 +235,14 @@ def next_magnet_candidate(
     *,
     policy: RecoveryPolicy = DEFAULT_POLICY,
     exclude_hashes: set[str] | None = None,
+    expected_code: str | None = None,
 ) -> WorkMagnet | None:
     used = attempted_hashes(state)
     if exclude_hashes:
         used |= {item.strip().upper() for item in exclude_hashes if item}
     if len(state.attempts) >= policy.max_attempts:
         return None
-    for magnet in rank_candidate_magnets(magnets):
+    for magnet in rank_candidate_magnets(magnets, expected_code=expected_code):
         digest = (magnet.info_hash or "").strip().upper()
         if not digest or digest in used:
             continue

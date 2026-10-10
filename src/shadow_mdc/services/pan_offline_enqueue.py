@@ -163,8 +163,12 @@ async def enqueue_work_offline(
     return OfflineEnqueueResult(task=task, created=True)
 
 
-def pick_best_magnet(magnets: list[WorkMagnet]) -> WorkMagnet | None:
-    """Best quality first (shared JHS-style score: subtitle, resolution, no samples), then size."""
+def pick_best_magnet(
+    magnets: list[WorkMagnet],
+    *,
+    expected_code: str | None = None,
+) -> WorkMagnet | None:
+    """Best first: code match, quality score (subtitle/resolution/no samples), then size."""
 
     if not magnets:
         return None
@@ -175,5 +179,6 @@ def pick_best_magnet(magnets: list[WorkMagnet]) -> WorkMagnet | None:
             size_bytes=item.size_bytes,
             has_subtitle=bool(item.has_subtitle),
             hd=bool(item.hd),
+            expected_code=expected_code,
         ),
     )

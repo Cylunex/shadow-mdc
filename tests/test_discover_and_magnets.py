@@ -10,9 +10,12 @@ from shadow_mdc.domain import ProviderRecord
 from shadow_mdc.enums import ContentFamily, MediaCategory
 from shadow_mdc.media.artwork import ensure_list_thumbnail
 from shadow_mdc.media.magnets import (
+    MagnetLink,
+    magnet_code_match,
     parse_magnet_links_from_html,
     parse_size_label_to_bytes,
     pick_best_magnet_link,
+    rank_magnets,
 )
 from shadow_mdc.media.nfo_import import resolve_sidecar_nfo
 from shadow_mdc.services.discover import parse_javdb_list
@@ -178,3 +181,38 @@ def test_parse_magnet_links_hardens_when_sizes_fewer_than_magnets() -> None:
     magnets = parse_magnet_links_from_html(html, provider="javbus")
     assert magnets[0].size_bytes == parse_size_label_to_bytes("1GB")
     assert magnets[1].size_bytes is None  # no throw, no stolen size
+
+
+def test_magnet_code_match_accepts_normalized_and_rejects_conflict() -> None:
+    assert magnet_code_match("SSIS-001-C.mp4", "SSIS-001") is True
+    assert magnet_code_match("ssis_001 1080p", "SSIS-001") is True
+    assert magnet_code_match("FC2-PPV-1234567", "FC2-1234567") is True
+    assert magnet_code_match("ABP-4540-C", "ABP-454") is False
+    assert magnet_code_match("IPX-999 FHD", "SSIS-001") is False
+    assert magnet_code_match(None, "SSIS-001") is None
+    assert magnet_code_match("1080p.mkv", "SSIS-001") is None
+    assert magnet_code_match("SSIS-001", None) is None
+
+
+def test_rank_magnets_demotes_wrong_code_even_if_higher_quality() -> None:
+    wrong = MagnetLink(
+        provider="sukebei",
+        info_hash="A" * 40,
+        uri="magnet:?xt=urn:btih:" + "A" * 40,
+        name="IPX-999-C 2160p",
+        size_bytes=20 << 30,
+        has_subtitle=True,
+        hd=True,
+    )
+    right = MagnetLink(
+        provider="javdb",
+        info_hash="B" * 40,
+        uri="magnet:?xt=urn:btih:" + "B" * 40,
+        name="SSIS-001",
+        size_bytes=3 << 30,
+        has_subtitle=False,
+        hd=False,
+    )
+    ranked = rank_magnets([wrong, right], expected_code="SSIS-001")
+    assert ranked[0] is right
+    assert pick_best_magnet_link([wrong, right], expected_code="SSIS-001") is right

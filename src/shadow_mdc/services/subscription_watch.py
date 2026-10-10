@@ -396,11 +396,13 @@ class SubscriptionWatchService:
         """Check one target; returns True when it touched the network."""
 
         touched = False
+        primary_code: str | None = None
         with self._database.session() as session:
             repo = Repository(session)
             work = repo.get_work(work_id)
             if work is None:
                 return False
+            primary_code = work.primary_code
             magnets = list(repo.list_work_magnets(work_id))
             lookup = _javdb_lookup(repo, work_id) if not magnets else None
 
@@ -443,7 +445,7 @@ class SubscriptionWatchService:
             stats.hunting += 1
             return touched
 
-        best = pick_best_magnet(magnets)
+        best = pick_best_magnet(magnets, expected_code=primary_code)
         if best is None:
             # Magnets exist but none matches the preferences yet: keep hunting.
             stats.hunting += 1

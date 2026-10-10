@@ -53,3 +53,13 @@ Shadow MDC remains MIT-licensed; see LICENSE.
   `.video-title strong` list codes → `services/discover.py`
 - p115client: 115 `errno` field handling, `state: 0` failures, file-gone / access-token /
   throttle error-code tables → `services/pan.py`
+
+## 2026-10-10 peer survey — SilenceSik/media-indexer (MIT)
+- Local clone: `/workspace/refs/media-indexer` (not on 3-day standing sync).
+- Product is 保卡删源 (metadata + covers + magnets; delete local video) — **orthogonal**
+  to shadow-mdc OpenList→STRM→NFO→Emby. No 115 / OpenList / STRM / Emby / NFO surface.
+- Borrowed idea only: magnet release-name ↔ work-code match when ranking offline magnets
+  (`media/magnets.magnet_code_match`), reimplemented with our extract_code / to_comparison_key.
+  Skipped: trash/delete gates, duration×confidence product score, pure-Python duration probe
+  (we keep ffprobe for full streamdetails), MCP agent layer, JavDB native (already have
+  `providers/javdb_api.py` from the same javdb-cli MIT contract).
