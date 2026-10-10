@@ -532,6 +532,7 @@ export const api = {
     strm_reconcile_interval_hours?: number;
     use_proxy: boolean;
     subscription_auto_offline: boolean;
+    auto_switch?: boolean;
     client_id?: string;
     client_secret?: string;
     pan_backend?: "115_open" | "openlist";
@@ -577,6 +578,10 @@ export const api = {
   strmReconcile: () =>
     request(z.object({ started: z.boolean() }).passthrough(), "/api/pan/strm/reconcile", { method: "POST" }),
   panOfflineTasks: () => request(z.array(panOfflineTaskSchema), "/api/pan/offline/tasks"),
+  panOfflineCancel: (taskId: string) =>
+    request(panOfflineTaskSchema, `/api/pan/offline/tasks/${taskId}/cancel`, { method: "POST" }),
+  panOfflineNext: (taskId: string) =>
+    request(panOfflineTaskSchema, `/api/pan/offline/tasks/${taskId}/next`, { method: "POST" }),
   panPipeline: () => request(panPipelineSchema, "/api/pan/pipeline"),
   panOfflineIntake: (payload: { url: string; work_id?: string; code?: string }) =>
     request(panOfflineTaskSchema, "/api/pan/offline/intake", {

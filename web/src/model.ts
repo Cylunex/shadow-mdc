@@ -811,6 +811,7 @@ export const panSettingsSchema = z.object({
   strm_reconcile_interval_hours: z.number().optional().default(24),
   use_proxy: z.boolean(),
   subscription_auto_offline: z.boolean().default(true),
+  auto_switch: z.boolean().default(true),
   client_id: z.string(),
   client_secret_set: z.boolean(),
   pan_backend: z.enum(["115_open", "openlist"]).catch("115_open").default("115_open"),
@@ -869,7 +870,12 @@ export const panOfflineTaskSchema = z.object({
   backend: z.string().nullable().optional(),
   remote_task_id: z.string().nullable().optional(),
   created_at: z.string(),
-  updated_at: z.string()
+  updated_at: z.string(),
+  download_state: z.string().nullable().optional(),
+  attempt_count: z.number().nullable().optional(),
+  switch_reason: z.string().nullable().optional(),
+  can_cancel: z.boolean().nullable().optional(),
+  can_switch: z.boolean().nullable().optional()
 });
 export const panFilesSchema = z.object({
   directory_id: z.string(),

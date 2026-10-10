@@ -855,6 +855,7 @@ class PanSettingsPayload(BaseModel):
     strm_reconcile_interval_hours: int = 24
     use_proxy: bool = False
     subscription_auto_offline: bool = True
+    auto_switch: bool = True
     client_id: str
     client_secret_set: bool
     pan_backend: Literal["115_open", "openlist"] = "115_open"
@@ -898,6 +899,7 @@ class PanSettingsUpdatePayload(BaseModel):
     strm_reconcile_interval_hours: int | None = Field(default=None, ge=0, le=24 * 30)
     use_proxy: bool = False
     subscription_auto_offline: bool | None = None
+    auto_switch: bool | None = None
     client_id: str | None = None
     client_secret: str | None = None
     pan_backend: Literal["115_open", "openlist"] | None = None
@@ -1004,6 +1006,11 @@ class PanOfflineTaskOut(BaseModel):
     remote_task_id: str | None = None
     created_at: datetime
     updated_at: datetime
+    download_state: str | None = None
+    attempt_count: int | None = None
+    switch_reason: str | None = None
+    can_cancel: bool | None = None
+    can_switch: bool | None = None
 
 
 

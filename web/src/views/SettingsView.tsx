@@ -672,6 +672,14 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                 />
                 订阅 / 想看自动盯磁链并推离线（115 Open 或 OpenList，未配置时仅保存磁链）
               </label>
+              <label className="check-line">
+                <input
+                  type="checkbox"
+                  checked={panSettings.auto_switch ?? true}
+                  onChange={(e) => setPanSettings({ ...panSettings, auto_switch: e.target.checked })}
+                />
+                离线失败 / 卡住时自动换下一个磁力（超时策略内置，最多 3 次）
+              </label>
               <button type="submit" disabled={busy === "pan-settings"}>
                 {panSettings.pan_backend === "openlist" ? "保存 STRM / 订阅设置" : "保存 115 设置"}
               </button>

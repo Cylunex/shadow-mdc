@@ -21,6 +21,7 @@ from ..db.repository import Database, Repository
 from ..media.artwork import ArtworkStore
 from .emby_notify import EmbyNotifier
 from .media_server import MediaServerStore
+from .offline_control import OfflineRecoveryController
 from .openlist import (
     OpenListEntry,
     OpenListTask,
@@ -131,6 +132,7 @@ class PanOfflinePoller:
         self.maintenance = StrmMaintenanceStatus()
         self._state_path = (data_dir / "pan" / "strm-maintenance.json") if data_dir else None
         self._openlist_misses: dict[str, int] = {}
+        self.recovery = OfflineRecoveryController(database=database, pan=pan)
         self._load_state()
 
     @property
@@ -304,6 +306,9 @@ class PanOfflinePoller:
                         file_id=str(file_id) if file_id else None,
                         remote_name=remote_name,
                     )
+                    self.recovery.note_observation(
+                        repo, row, progress=progress, remote_failed=False, remote_running=True
+                    )
                     continue
                 if local_status == "failed":
                     repo.update_pan_offline_task(
@@ -312,6 +317,9 @@ class PanOfflinePoller:
                         progress=progress,
                         error="115 offline task failed",
                         remote_name=remote_name,
+                    )
+                    self.recovery.note_observation(
+                        repo, row, progress=progress, remote_failed=True, remote_running=False
                     )
                     continue
                 completions.append(
@@ -327,6 +335,8 @@ class PanOfflinePoller:
         cfg = self._pan.config_store.load()
         for completion in completions:
             await self._complete(completion, cfg)
+
+        await self.recovery.advance_pending()
 
         if self._task_events is not None:
             self._task_events.notify()
@@ -512,6 +522,13 @@ class PanOfflinePoller:
                     repo.update_pan_offline_task(
                         row, progress=task.progress, remote_task_id=task.id or None, error=None
                     )
+                    self.recovery.note_observation(
+                        repo,
+                        row,
+                        progress=task.progress,
+                        remote_failed=False,
+                        remote_running=True,
+                    )
                     continue
                 if status == "failed":
                     repo.update_pan_offline_task(
@@ -520,6 +537,13 @@ class PanOfflinePoller:
                         progress=task.progress,
                         remote_task_id=task.id or None,
                         error=f"OpenList offline task failed: {task.error or task.status or 'unknown'}"[:500],
+                    )
+                    self.recovery.note_observation(
+                        repo,
+                        row,
+                        progress=task.progress,
+                        remote_failed=True,
+                        remote_running=False,
                     )
                     continue
                 if any(path_within(dst, target) for dst in snapshot.pending_transfer_dsts):
@@ -536,6 +560,7 @@ class PanOfflinePoller:
                 await self._complete_openlist(done_id, done_target, done_url, started_at, cfg)
             except Exception as exc:
                 logger.warning("OpenList completion failed: %s", type(exc).__name__)
+        await self.recovery.advance_pending()
         if self._task_events is not None:
             self._task_events.notify()
         return True

@@ -88,11 +88,12 @@ from .api_models import (
     NonJavActorEdit,
     NonJavActorOut,
     NonJavActorWorkOut,
-    OrganizeApplyRequest,
-    OrganizeRequest,
+    OfflineIntakeRequest,
     OpenListCredentialsOut,
     OpenListCredentialsRequest,
     OpenListTestOut,
+    OrganizeApplyRequest,
+    OrganizeRequest,
     PanCredentialsImportRequest,
     PanDirectoryRequest,
     PanLoginOut,
@@ -100,8 +101,6 @@ from .api_models import (
     PanOfflineTaskOut,
     PanSettingsPayload,
     PanSettingsUpdatePayload,
-    StrmMigrateRequest,
-    SubscriptionWatchStatusOut,
     PlanOut,
     ProviderDiagnoseOut,
     ProviderDiagnoseRequest,
@@ -118,7 +117,9 @@ from .api_models import (
     ScanRequest,
     ScreenshotGenerateOut,
     ScreenshotGenerateRequest,
+    StrmMigrateRequest,
     SubscriptionScanOut,
+    SubscriptionWatchStatusOut,
     TaskRunOut,
     WantListEdit,
     WorkDetailOut,
@@ -127,7 +128,6 @@ from .api_models import (
     WorkLookupRequest,
     WorkMagnetOut,
     WorkOfflineRequest,
-    OfflineIntakeRequest,
     WorkOut,
     WorkPosterPreferRequest,
     WorkRelatedOut,
@@ -166,8 +166,6 @@ from .media.nfo import build_nfo, parse_nfo
 from .media.organizer import Organizer, plan_move_cleanup
 from .media.parts import part_group_key
 from .media.screenshots import capture_screenshot
-from .providers.impersonate import set_default_proxy
-from .providers.sukebei import SukebeiClient
 from .providers import (
     AirAvProvider,
     AvSoxProvider,
@@ -188,11 +186,21 @@ from .providers import (
     R18DumpProvider,
     ThePornDBProvider,
 )
+from .providers.impersonate import set_default_proxy
+from .providers.javdb_api import build_javdb_app_api
+from .providers.sukebei import SukebeiClient
 from .services.actor_catalog import (
     ActorCatalogStore,
     ActorProfile,
     enrich_actor_aliases,
     sync_actor_catalog_from_relations,
+)
+from .services.actor_images import (
+    ActorImageCache,
+    actor_image_display_url,
+    actor_images,
+    configure_actor_images,
+    valid_key,
 )
 from .services.alias_store import IdentityAliasStore
 from .services.catalog_export import export_catalog_bundle, state_path
@@ -206,9 +214,10 @@ from .services.directory_actor_rules import (
     DirectoryActorRule,
     DirectoryActorRuleStore,
 )
-from .providers.javdb_api import build_javdb_app_api
 from .services.discover import DiscoverService
 from .services.field_priority import FieldPriorityConfig, FieldPriorityStore
+from .services.gfriends import GfriendsActorImageResolver
+from .services.gfriends_fill import fill_actor_images_from_gfriends, localize_cdn_actor_images
 from .services.identify import IdentifyService
 from .services.javdb_yearly_top250 import (
     current_calendar_year,
@@ -253,17 +262,8 @@ from .services.non_jav_actor_catalog import (
     enrich_non_jav_actor_aliases,
 )
 from .services.non_jav_work_seed import seed_non_jav_works
-from .services.pan import (
-    PanApiError,
-    PanNotConfiguredError,
-    PanOfflineConflictError,
-    PanOfflineExistsError,
-    PanService,
-    pan_status,
-)
-from .services.pan_poller import PanOfflinePoller
-from .services.strm_export import StrmConfigError
-from .services.strm_relay import RelayError, StrmRelay, token_ok
+from .services.offline_control import OfflineControlError
+from .services.offline_recovery import project_offline
 from .services.openlist import (
     OpenListApiError,
     build_openlist_d_url,
@@ -271,22 +271,18 @@ from .services.openlist import (
     normalize_openlist_path,
     path_within,
 )
-from .services.actor_images import (
-    ActorImageCache,
-    actor_image_display_url,
-    actor_images,
-    configure_actor_images,
-    valid_key,
+from .services.pan import (
+    PanApiError,
+    PanNotConfiguredError,
+    PanService,
+    SourceChangedError,
+    pan_status,
 )
 from .services.pan_common import shared_gate
 from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
-from .services.pipeline_status import build_pipeline_status
-from .services.subscription_watch import (
-    SubscriptionWatchPoller,
-    SubscriptionWatchService,
-    SubscriptionWatchStateStore,
-)
+from .services.pan_poller import PanOfflinePoller
 from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
+from .services.pipeline_status import build_pipeline_status
 from .services.response_cache import (
     TTL_ACTORS,
     TTL_CATEGORIES,
@@ -305,7 +301,14 @@ from .services.response_cache import (
     works_tags_key,
 )
 from .services.scanner import Scanner
+from .services.strm_export import StrmConfigError
+from .services.strm_relay import RelayError, StrmRelay, token_ok
 from .services.studio_guard import reject_non_jav_studio_label
+from .services.subscription_watch import (
+    SubscriptionWatchPoller,
+    SubscriptionWatchService,
+    SubscriptionWatchStateStore,
+)
 from .services.subscriptions import (
     ActorSubscription,
     SubscriptionQueueItem,
@@ -319,8 +322,6 @@ from .services.translation import (
     build_translation_backends,
 )
 from .services.work_samples import enrich_work_samples, sample_urls_for_work
-from .services.gfriends import GfriendsActorImageResolver
-from .services.gfriends_fill import fill_actor_images_from_gfriends, localize_cdn_actor_images
 from .services.x_handle import (
     XHandleError,
     require_verified_x_handle,
@@ -887,7 +888,11 @@ async def pan_files(
     if not pan.status().get("connected"):
         raise HTTPException(status_code=400, detail="115 not connected")
     try:
-        return await pan.get_client().list_directory(directory_id, page=page)
+        return await pan.read_after_check(
+            lambda: pan.get_client().list_directory(directory_id, page=page)
+        )
+    except SourceChangedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PanNotConfiguredError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PanApiError as exc:
@@ -1113,7 +1118,11 @@ async def pan_openlist_files(
     if not pan.openlist_configured():
         raise HTTPException(status_code=400, detail="OpenList not configured")
     try:
-        entries, total = await pan.openlist.client().list_dir(path or "/", page=page, per_page=100)
+        entries, total = await pan.read_after_check(
+            lambda: pan.openlist.client().list_dir(path or "/", page=page, per_page=100)
+        )
+    except SourceChangedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PanNotConfiguredError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OpenListApiError as exc:
@@ -1167,7 +1176,9 @@ async def strm_openlist_play(
     sign: str | None = None
     if cfg.openlist_strm_sign:
         try:
-            sign = await pan.openlist.sign_for(path)
+            sign = await pan.read_after_check(lambda: pan.openlist.sign_for(path))
+        except SourceChangedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except PanNotConfiguredError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except OpenListApiError as exc:
@@ -1202,6 +1213,21 @@ def pan_pipeline_status(request: Request, repo: Repo) -> dict[str, object]:
     )
 
 
+
+def _pan_offline_out(task: object) -> PanOfflineTaskOut:
+    projection = project_offline(task)  # type: ignore[arg-type]
+    payload = PanOfflineTaskOut.model_validate(task).model_dump()
+    payload.update(
+        {
+            "download_state": projection.download_state or None,
+            "attempt_count": projection.attempt_count,
+            "switch_reason": projection.switch_reason,
+            "can_cancel": projection.can_cancel,
+            "can_switch": projection.can_switch,
+        }
+    )
+    return PanOfflineTaskOut.model_validate(payload)
+
 @app.post("/api/pan/offline/intake", response_model=PanOfflineTaskOut, status_code=202)
 async def pan_offline_intake(
     payload: OfflineIntakeRequest, request: Request, repo: Repo
@@ -1235,7 +1261,7 @@ async def pan_offline_intake(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     if app_runtime.task_events is not None:
         app_runtime.task_events.notify()
-    return PanOfflineTaskOut.model_validate(result.task)
+    return _pan_offline_out(result.task)
 
 
 @app.get("/api/pan/subscription-watch/status", response_model=SubscriptionWatchStatusOut)
@@ -1254,7 +1280,31 @@ async def pan_subscription_watch_run(request: Request) -> SubscriptionWatchStatu
 
 @app.get("/api/pan/offline/tasks", response_model=list[PanOfflineTaskOut])
 def pan_offline_tasks(repo: Repo, limit: int = Query(50, ge=1, le=200)) -> list[PanOfflineTaskOut]:
-    return [PanOfflineTaskOut.model_validate(item) for item in repo.list_pan_offline_tasks(limit=limit)]
+    return [_pan_offline_out(item) for item in repo.list_pan_offline_tasks(limit=limit)]
+
+
+@app.post("/api/pan/offline/tasks/{task_id}/cancel", response_model=PanOfflineTaskOut)
+async def pan_offline_cancel(task_id: str, request: Request) -> PanOfflineTaskOut:
+    app_runtime = runtime(request)
+    try:
+        result = await app_runtime.pan_poller.recovery.request_cancel(task_id)
+    except OfflineControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    if app_runtime.task_events is not None:
+        app_runtime.task_events.notify()
+    return _pan_offline_out(result.task)
+
+
+@app.post("/api/pan/offline/tasks/{task_id}/next", response_model=PanOfflineTaskOut)
+async def pan_offline_next(task_id: str, request: Request) -> PanOfflineTaskOut:
+    app_runtime = runtime(request)
+    try:
+        result = await app_runtime.pan_poller.recovery.request_next(task_id)
+    except OfflineControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    if app_runtime.task_events is not None:
+        app_runtime.task_events.notify()
+    return _pan_offline_out(result.task)
 
 
 @app.post("/api/works/{work_id}/offline", response_model=PanOfflineTaskOut, status_code=202)
@@ -1276,7 +1326,7 @@ async def submit_work_offline(
     except OfflineEnqueueError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     app_runtime.task_events.notify()
-    return PanOfflineTaskOut.model_validate(result.task)
+    return _pan_offline_out(result.task)
 
 
 @app.get("/api/works/{work_id}/offline", response_model=list[PanOfflineTaskOut])
@@ -1284,7 +1334,7 @@ def list_work_offline(work_id: str, repo: Repo) -> list[PanOfflineTaskOut]:
     if repo.get_work(work_id) is None:
         raise HTTPException(status_code=404, detail="work not found")
     return [
-        PanOfflineTaskOut.model_validate(item)
+        _pan_offline_out(item)
         for item in repo.list_pan_offline_tasks(work_id=work_id, limit=100)
     ]
 

@@ -402,6 +402,16 @@ def test_walk_videos_paced_and_recursive(monkeypatch: pytest.MonkeyPatch) -> Non
 
 # ------------------------------------------------------------------ relay
 
+def _fake_source():
+    from shadow_mdc.services.pan import SourceFingerprint
+
+    return SourceFingerprint(account_id="a1", directory_id="d1", auth_version=1, backend="115_open")
+
+
+async def _passthrough_read(factory):
+    return await factory()
+
+
 
 class _FakeRelayClient:
     def __init__(self, *, download: str | Exception | None, play: str | None) -> None:
@@ -430,22 +440,25 @@ def _fake_pan(client: _FakeRelayClient, connected: bool = True, ua: str | None =
         status=lambda: {"connected": connected},
         get_client=lambda: client,
         config_store=SimpleNamespace(load=lambda: PanSettings(strm_user_agent=ua)),
+        source_fingerprint=_fake_source,
+        read_after_check=_passthrough_read,
     )
 
 
 def test_relay_prefers_direct_download_and_caches() -> None:
-    fake = _FakeRelayClient(download="https://cdn.115/direct", play="https://cdn.115/play.m3u8")
+    signed = "https://cdn.115/direct?t=1791631985&s=sig"
+    fake = _FakeRelayClient(download=signed, play="https://cdn.115/play.m3u8?t=1791631985")
     relay = StrmRelay(_fake_pan(fake))
     first = asyncio.run(relay.resolve("42", "Emby/4.8"))
     second = asyncio.run(relay.resolve("42", "Emby/4.8"))
-    assert first.url == "https://cdn.115/direct" and first.source == "download"
+    assert first.url == signed and first.source == "download"
     assert second == first
     assert fake.uas == ["Emby/4.8"]  # cached, same UA used for 115 call
     assert fake.info_calls == 1
 
 
 def test_relay_falls_back_to_play_url_and_default_ua() -> None:
-    fake = _FakeRelayClient(download=PanApiError("no", code=1), play="https://cdn.115/play.m3u8")
+    fake = _FakeRelayClient(download=PanApiError("no", code=1), play="https://cdn.115/play.m3u8?t=1791631985")
     relay = StrmRelay(_fake_pan(fake, ua="MyUA/1"))
     target = asyncio.run(relay.resolve("7", None))
     assert target.source == "play"
@@ -538,7 +551,7 @@ def test_download_and_play_url_parsing_send_player_ua() -> None:
 
 def test_rematerialize_layout_moves_flat_to_studio_code(tmp_path: Path) -> None:
     from shadow_mdc.db.models import Work
-    from shadow_mdc.services.strm_export import rematerialize_layout, write_sidecar, StrmEntry
+    from shadow_mdc.services.strm_export import StrmEntry, rematerialize_layout, write_sidecar
 
     root = tmp_path / "emby"
     old = root / "AAA-1"

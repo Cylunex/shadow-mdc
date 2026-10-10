@@ -62,7 +62,14 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
         {offlineTasks.slice(0, 10).map((task) => (
           <div className="magnet-row" key={task.id}>
             <span>{task.remote_name || task.info_hash.slice(0, 16)}</span>
-            <small className="muted">{task.status} · {Math.round(task.progress || 0)}%</small>
+            <small className="muted">
+              {task.status}
+              {task.download_state ? `/${task.download_state}` : ""}
+              {" · "}
+              {Math.round(task.progress || 0)}%
+              {task.attempt_count && task.attempt_count > 1 ? ` · 第${task.attempt_count}次` : ""}
+              {task.switch_reason ? ` · ${task.switch_reason}` : ""}
+            </small>
             {task.strm_path ? <small className="muted">STRM 已写</small> : null}
             {task.error ? <small className="danger-text">{task.error}</small> : null}
           </div>

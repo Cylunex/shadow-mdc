@@ -278,6 +278,7 @@ def test_relay_uses_sidecar_pick_code_so_only_downurl_hits_api(tmp_path: Path) -
     root = tmp_path / "emby"
     export_work(settings=_relay(root), code="ABC-9", videos=[_video("77", "a.mp4")])
     calls: list[str] = []
+    future = 1_900_000_000
 
     class _Client:
         async def get_folder_info(self, file_id: str) -> dict[str, Any]:
@@ -286,16 +287,25 @@ def test_relay_uses_sidecar_pick_code_so_only_downurl_hits_api(tmp_path: Path) -
 
         async def download_url(self, pick_code: str, *, user_agent: str) -> str:
             calls.append(f"downurl:{pick_code}")
-            return f"https://cdn.115/{pick_code}"
+            return f"https://cdn.115/{pick_code}?t={future}"
+
+    from shadow_mdc.services.pan import SourceFingerprint
+
+    async def _read(factory):
+        return await factory()
 
     pan = SimpleNamespace(
         status=lambda: {"connected": True},
         get_client=lambda: _Client(),
         config_store=SimpleNamespace(load=lambda: _relay(root)),
+        source_fingerprint=lambda: SourceFingerprint(
+            account_id="a", directory_id="d", auth_version=1, backend="115_open"
+        ),
+        read_after_check=_read,
     )
     relay = StrmRelay(pan)  # type: ignore[arg-type]
     target = asyncio.run(relay.resolve("77", "Emby"))
-    assert target.url == "https://cdn.115/pc77"
+    assert target.url.startswith("https://cdn.115/pc77")
     assert calls == ["downurl:pc77"]
     # Unknown id (never exported) still falls back to the API lookup.
     asyncio.run(relay.resolve("88", "Emby"))

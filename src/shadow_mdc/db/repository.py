@@ -164,6 +164,8 @@ class Database:
                 connection.exec_driver_sql(
                     "ALTER TABLE pan_offline_tasks ADD COLUMN remote_task_id VARCHAR(64)"
                 )
+            if offline_columns and "recovery_json" not in offline_columns:
+                connection.exec_driver_sql("ALTER TABLE pan_offline_tasks ADD COLUMN recovery_json JSON")
             connection.exec_driver_sql(
                 """
                 UPDATE libraries
@@ -1014,6 +1016,7 @@ class Repository:
         progress: float = 0.0,
         backend: str | None = None,
         remote_task_id: str | None = None,
+        recovery_json: dict | None = None,
     ) -> PanOfflineTask:
         row = PanOfflineTask(
             work_id=work_id,
@@ -1026,6 +1029,7 @@ class Repository:
             remote_name=remote_name,
             backend=backend,
             remote_task_id=remote_task_id,
+            recovery_json=recovery_json,
         )
         self._session.add(row)
         self._session.flush()
@@ -1080,7 +1084,11 @@ class Repository:
         remote_path: str | None = None,
         strm_path: str | None = None,
         error: str | None = ...,  # type: ignore[assignment]
-        remote_task_id: str | None = None,
+        remote_task_id: str | None = ...,  # type: ignore[assignment]
+        info_hash: str | None = None,
+        url: str | None = None,
+        magnet_id: str | None = None,
+        recovery_json: dict | None = ...,  # type: ignore[assignment]
     ) -> PanOfflineTask:
         if status is not None:
             task.status = status
@@ -1096,8 +1104,16 @@ class Repository:
             task.strm_path = strm_path
         if error is not ...:
             task.error = error
-        if remote_task_id is not None:
+        if remote_task_id is not ...:
             task.remote_task_id = remote_task_id
+        if info_hash is not None:
+            task.info_hash = info_hash.strip().upper()
+        if url is not None:
+            task.url = url
+        if magnet_id is not None:
+            task.magnet_id = magnet_id
+        if recovery_json is not ...:
+            task.recovery_json = recovery_json
         task.updated_at = utc_now()
         self._session.flush()
         return task

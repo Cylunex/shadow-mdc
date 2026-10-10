@@ -276,7 +276,7 @@ class PanOfflineTask(Base):
     info_hash: Mapped[str] = mapped_column(String(64))
     url: Mapped[str | None] = mapped_column(Text)
     directory_id: Mapped[str] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(String(30), default="running")  # running|done|failed
+    status: Mapped[str] = mapped_column(String(30), default="running")  # running|done|failed|cancelled
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     file_id: Mapped[str | None] = mapped_column(String(64))
     remote_name: Mapped[str | None] = mapped_column(Text)
@@ -288,5 +288,7 @@ class PanOfflineTask(Base):
     backend: Mapped[str | None] = mapped_column(String(20))
     # OpenList task id (tid) for /api/task/offline_download polling.
     remote_task_id: Mapped[str | None] = mapped_column(String(64))
+    # Durable magnet-failover checkpoint (attempts / current_hash / stalled / exhausted).
+    recovery_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

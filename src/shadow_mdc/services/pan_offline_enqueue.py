@@ -9,6 +9,7 @@ import httpx
 from ..db.models import PanOfflineTask, WorkMagnet, utc_now
 from ..db.repository import Repository
 from ..media.magnets import magnet_sort_key
+from .offline_recovery import seed_recovery
 from .openlist import offline_info_hash
 from .pan import (
     PanApiError,
@@ -130,6 +131,10 @@ async def enqueue_work_offline(
     raw_task_id = submit_result.get("remote_task_id") if backend == "openlist" else None
     remote_task_id = str(raw_task_id) if raw_task_id else None
 
+    recovery = seed_recovery(
+        info_hash=info_hash, magnet_id=resolved_magnet_id, url=resolved_url
+    ).to_dict()
+
     existing = repo.find_pan_offline_by_hash(work_id, info_hash)
     if existing is not None:
         existing.status = "running"
@@ -140,6 +145,7 @@ async def enqueue_work_offline(
         existing.magnet_id = resolved_magnet_id
         existing.backend = row_backend
         existing.remote_task_id = remote_task_id
+        existing.recovery_json = recovery
         existing.updated_at = utc_now()
         repo._session.flush()
         return OfflineEnqueueResult(task=existing, created=False)
@@ -152,6 +158,7 @@ async def enqueue_work_offline(
         magnet_id=resolved_magnet_id,
         backend=row_backend,
         remote_task_id=remote_task_id,
+        recovery_json=recovery,
     )
     return OfflineEnqueueResult(task=task, created=True)
 

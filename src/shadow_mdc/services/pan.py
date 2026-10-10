@@ -16,7 +16,7 @@ import os
 import secrets
 import time as time_module
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -121,6 +121,18 @@ class PanClient(Protocol):
     async def enqueue_remote_urls(self, urls: list[str], *, directory_id: str) -> object: ...
 
 
+class SourceChangedError(RuntimeError):
+    """Account / mount / auth version changed while a source-bound read was in flight."""
+
+
+@dataclass(frozen=True, slots=True)
+class SourceFingerprint:
+    account_id: str
+    directory_id: str
+    auth_version: int
+    backend: str
+
+
 class PanCredentials(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -160,6 +172,9 @@ class PanSettings(BaseModel):
     # When true, background watcher refreshes magnets for subscribed/want
     # works and submits the best magnet to 115 offline (if connected).
     subscription_auto_offline: bool = True
+    # When true, offline recovery may cancel a stalled/failed remote task and
+    # submit the next ranked magnet (timeouts/max attempts are internal policy).
+    auto_switch: bool = True
     # Optional per-instance app credentials; unset values fall back to environment defaults.
     client_id: str | None = None
     client_secret: str | None = None
@@ -1230,6 +1245,8 @@ class PanService:
         self._client: Pan115Client | None = None
         self._submit_locks: dict[str, asyncio.Lock] = {}
         self._submit_locks_guard = asyncio.Lock()
+        # Bumped on login / disconnect / mount / backend change; scopes derived reads.
+        self._auth_version = 1
 
     def _config(self) -> PanSettings:
         return self.config_store.load()
@@ -1255,6 +1272,47 @@ class PanService:
         if settings.pan_backend == "openlist":
             return settings.openlist_offline_path
         return settings.offline_directory_id
+
+
+    def bump_auth_version(self) -> int:
+        self._auth_version += 1
+        return self._auth_version
+
+    @property
+    def authorization_version(self) -> int:
+        return self._auth_version
+
+    def source_fingerprint(self) -> SourceFingerprint:
+        cfg = self._config()
+        backend = cfg.pan_backend
+        if backend == "openlist":
+            creds = self.openlist_credentials.load()
+            account = creds.username or ("token" if creds.token else "") or (cfg.openlist_base_url or "")
+            directory = cfg.openlist_offline_path or ""
+        else:
+            stored = self.credentials_store.load()
+            account = (stored.user_id if stored else None) or (stored.user_name if stored else None) or ""
+            directory = cfg.offline_directory_id or ""
+        return SourceFingerprint(
+            account_id=str(account),
+            directory_id=str(directory),
+            auth_version=self._auth_version,
+            backend=backend,
+        )
+
+    async def read_after_check[T](self, factory: Callable[[], Awaitable[T]]) -> T:
+        """Run a source-bound read; discard the result if account/mount/auth changed mid-flight."""
+
+        before = self.source_fingerprint()
+        result = await factory()
+        after = self.source_fingerprint()
+        if after != before:
+            raise SourceChangedError(
+                f"pan source changed during read (was {before.backend}:{before.account_id}/"
+                f"{before.directory_id}@v{before.auth_version})"
+            )
+        return result
+
 
     def open115_connected(self) -> bool:
         creds = self.credentials_store.load()
@@ -1297,9 +1355,11 @@ class PanService:
         self.openlist.reset_session()
         # New secrets: lift the "needs re-login" block so the next call tries them.
         self.auth_rejections.clear("openlist")
+        self.bump_auth_version()
         return self.openlist_credentials_status()
 
     def clear_openlist_credentials(self) -> None:
+        self.bump_auth_version()
         self.openlist_credentials.clear()
         self.openlist.reset_session()
         self.auth_rejections.clear("openlist")
@@ -1313,6 +1373,7 @@ class PanService:
             return
         self.credentials_store.clear()
         self.auth_rejections.mark("115_open", detail)
+        self.bump_auth_version()
         logger.warning("115 rejected the stored login; credentials cleared (%s)", detail)
 
     def _persist_credentials(self, credentials: PanCredentials) -> None:
@@ -1565,6 +1626,7 @@ class PanService:
         if self._client is not None:
             self._client.bind_tokens(None)
         self._logins.clear()
+        self.bump_auth_version()
 
     def account(self) -> dict[str, object]:
         status = self.status()
@@ -1610,6 +1672,7 @@ class PanService:
             "strm_reconcile_interval_hours",
             "use_proxy",
             "subscription_auto_offline",
+            "auto_switch",
             "client_id",
             "client_secret",
             "pan_backend",
@@ -1683,10 +1746,27 @@ class PanService:
         # Keep use_proxy in sync if config changed.
         if self._client is not None and "use_proxy" in patch:
             self._client._proxy = self.proxy_url if saved.use_proxy and self.proxy_url else None
+        source_keys = {
+            "pan_backend",
+            "offline_directory_id",
+            "openlist_offline_path",
+            "openlist_base_url",
+        }
+        if source_keys & set(patch) and (
+            current.pan_backend != saved.pan_backend
+            or current.offline_directory_id != saved.offline_directory_id
+            or current.openlist_offline_path != saved.openlist_offline_path
+            or current.openlist_base_url != saved.openlist_base_url
+        ):
+            self.bump_auth_version()
         return saved
 
     def set_directory(self, directory_id: str) -> PanSettings:
-        return self.save_settings({"offline_directory_id": directory_id.strip() or None})
+        before = self.offline_target()
+        saved = self.save_settings({"offline_directory_id": directory_id.strip() or None})
+        if self.offline_target(saved) != before:
+            self.bump_auth_version()
+        return saved
 
     def _purge_logins(self) -> None:
         now = time_module.monotonic()

@@ -699,6 +699,30 @@ class OpenListClient:
         data = await self._call("GET", f"/api/task/{kind}/{'done' if done else 'undone'}")
         return [parse_task(item) for item in data or [] if isinstance(item, dict)]
 
+    async def cancel_task(self, kind: str, tid: str) -> None:
+        """Cancel an in-flight OpenList task (``POST /api/task/{kind}/cancel?tid=``)."""
+
+        if kind not in {"offline_download", "offline_download_transfer"}:
+            raise ValueError("unsupported task kind")
+        await self._call(
+            "POST",
+            f"/api/task/{kind}/cancel",
+            params={"tid": tid},
+            idempotent=True,
+        )
+
+    async def delete_task(self, kind: str, tid: str) -> None:
+        """Remove a finished/canceled OpenList task record."""
+
+        if kind not in {"offline_download", "offline_download_transfer"}:
+            raise ValueError("unsupported task kind")
+        await self._call(
+            "POST",
+            f"/api/task/{kind}/delete",
+            params={"tid": tid},
+            idempotent=True,
+        )
+
 
 class OpenListService:
     """Backend orchestration: submit with dedup, task snapshot, result match, walk, exists."""
@@ -788,6 +812,24 @@ class OpenListService:
             # Transfer listing is advisory only.
             logger.debug("OpenList transfer task listing failed", exc_info=True)
         return snapshot
+
+
+    async def cancel_offline_task(self, tid: str) -> None:
+        """Cancel then delete one offline_download task so a failover can submit next."""
+
+        client = self.client()
+        try:
+            await client.cancel_task("offline_download", tid)
+        except OpenListApiError:
+            # Already finished / missing: still try delete so history is cleared.
+            pass
+        try:
+            await client.delete_task("offline_download", tid)
+        except OpenListApiError as exc:
+            message = str(exc).lower()
+            if exc.code == 404 or "not found" in message:
+                return
+            raise
 
     async def submit_offline(
         self,
