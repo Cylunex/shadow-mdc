@@ -8,10 +8,11 @@
 # Flow:
 #   1) export_catalog_bundle.py --incremental → /workspace/exports/…
 #   2) rsync light bundle to NAS imports/
-#   3) supervisorctl stop shadow-mdc
-#   4) import_catalog_bundle.py merge on NAS
-#   5) supervisorctl start shadow-mdc
-#   6) enqueue OpenList offline for today's new daily-chart/hot seeds
+#   3) rsync data/category-covers/ → NAS shared/data (no --delete; skip if empty)
+#   4) supervisorctl stop shadow-mdc
+#   5) import_catalog_bundle.py merge on NAS
+#   6) supervisorctl start shadow-mdc
+#   7) enqueue OpenList offline for today's new daily-chart/hot seeds
 #
 # Usage:
 #   ./scripts/sync_catalog_to_nas.sh
@@ -97,6 +98,18 @@ ssh "$NAS_HOST" "mkdir -p '$NAS_IMPORTS'"
 REMOTE_BUNDLE="$NAS_IMPORTS/$(basename "$BUNDLE_DIR")"
 echo "==> rsync bundle → $NAS_HOST:$REMOTE_BUNDLE"
 rsync -a --delete "$BUNDLE_DIR/" "$NAS_HOST:$REMOTE_BUNDLE/"
+
+# Category covers live outside the portable catalog bundle (artwork/actor-images only).
+# Sync TO NAS without --delete so an empty/partial box never wipes restored NAS covers.
+COVERS_SRC="$SOURCE_DATA_DIR/category-covers"
+COVERS_REMOTE="$NAS_DATA_DIR/category-covers"
+if [[ -f "$COVERS_SRC/manifest.json" ]] || compgen -G "$COVERS_SRC/*" > /dev/null; then
+  echo "==> rsync category-covers → $NAS_HOST:$COVERS_REMOTE (no --delete)"
+  ssh "$NAS_HOST" "mkdir -p '$COVERS_REMOTE'"
+  rsync -a "$COVERS_SRC/" "$NAS_HOST:$COVERS_REMOTE/"
+else
+  echo "==> skip category-covers: no manifest/files under $COVERS_SRC (refusing to wipe NAS)"
+fi
 
 echo "==> stop $NAS_SERVICE on NAS"
 ssh "$NAS_HOST" "supervisorctl stop '$NAS_SERVICE'"

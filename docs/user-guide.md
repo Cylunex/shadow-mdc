@@ -233,7 +233,7 @@ python scripts/export_catalog_bundle.py \
 
 增量依据 `data/export-manifest.json` 中的逐项指纹：演员资料哈希、作品字段/海报文件 sha、`actor-images/` 与 `artwork/` 文件 sha。完整导出与增量导出成功后都会刷新该基线（可用 `--no-update-state` 跳过）。旧脚本 `scripts/export_nas_catalog.py` 仍可用，等同于完整导出。
 
-导出目录可直接交给 `scripts/import_catalog_bundle.py` 在另一台机器合并导入。
+导出目录可直接交给 `scripts/import_catalog_bundle.py` 在另一台机器合并导入。`scripts/sync_catalog_to_nas.sh` 在推送增量包之外，还会把本地 `data/category-covers/` rsync 到 NAS `shared/data/category-covers/`（不加 `--delete`；源端无 manifest/文件时跳过，避免清空 NAS）。
 
 
 ## 作品详情与字段锁
