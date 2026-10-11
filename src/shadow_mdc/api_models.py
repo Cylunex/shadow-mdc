@@ -788,6 +788,8 @@ class DiscoverSeedRequest(BaseModel):
     external_id: str | None = None
     source_url: str | None = None
     code: str | None = None
+    # Every manual/forum intake goes to 115 offline by default (→ STRM/NFO/Emby via poller).
+    auto_offline: bool = True
 
 
 class DiscoverSeedOut(BaseModel):

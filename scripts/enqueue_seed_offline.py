@@ -38,7 +38,9 @@ from shadow_mdc.services.pan import PanService
 from shadow_mdc.services.seed_auto_offline import (
     enqueue_seeded_offline,
     resolve_work_ids_by_codes,
+    resolve_work_ids_created_on,
     resolve_work_ids_for_day,
+    work_codes_from_bundle,
     work_ids_from_run_logs,
 )
 
@@ -76,9 +78,21 @@ async def _run(arguments: argparse.Namespace) -> int:
 
     if arguments.work_id:
         _add(list(arguments.work_id))
-    if arguments.code:
+    codes = list(arguments.code)
+    for bundle in arguments.bundle:
+        bundle_codes = work_codes_from_bundle(bundle)
+        print(f"bundle {bundle}: {len(bundle_codes)} work code(s) {bundle_codes}", file=sys.stderr)
+        codes.extend(bundle_codes)
+    if codes:
         with database.session() as session:
-            _add(resolve_work_ids_by_codes(Repository(session), arguments.code))
+            repo = Repository(session)
+            _add(resolve_work_ids_by_codes(repo, codes))
+            missing = [c for c in codes if repo.find_work_by_code(c) is None]
+        if missing:
+            print(f"warning: codes not in catalog: {missing}", file=sys.stderr)
+    if arguments.created_today:
+        with database.session() as session:
+            _add(resolve_work_ids_created_on(Repository(session), day=day))
     if arguments.from_run_logs or arguments.today:
         _add(work_ids_from_run_logs(settings.data_dir, day=day, created_only=not arguments.include_existing))
     if arguments.from_day_tags or arguments.today:
@@ -92,6 +106,11 @@ async def _run(arguments: argparse.Namespace) -> int:
                 )
             )
 
+    if not settings.proxy_url:
+        print(
+            "warning: SHADOW_MDC_PROXY_URL unset; javdb/sukebei magnet refresh usually fails without it",
+            file=sys.stderr,
+        )
     if not work_ids:
         print(json.dumps({"day": day.isoformat(), "work_ids": [], "note": "nothing to enqueue"}))
         return 0
@@ -139,7 +158,9 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, default=None)
     parser.add_argument("--database-url", default=None)
     parser.add_argument("--day", default=None, help="YYYY-MM-DD (default today)")
-    parser.add_argument("--today", action="store_true", help="from today's run logs + day tags")
+    parser.add_argument("--today", action="store_true", help="today's run logs + day tags")
+    parser.add_argument("--created-today", action="store_true", help="works whose created_at is --day (local tz)")
+    parser.add_argument("--bundle", type=Path, action="append", default=[], help="catalog bundle dir; offline its works by code")
     parser.add_argument("--from-run-logs", action="store_true")
     parser.add_argument("--from-day-tags", action="store_true")
     parser.add_argument("--chart-only", action="store_true")
@@ -156,8 +177,10 @@ def main() -> None:
         or arguments.from_day_tags
         or arguments.work_id
         or arguments.code
+        or arguments.bundle
+        or arguments.created_today
     ):
-        raise SystemExit("pass --today and/or --work-id/--code/--from-run-logs/--from-day-tags")
+        raise SystemExit("pass --today and/or --bundle/--work-id/--code/--created-today/--from-run-logs/--from-day-tags")
     raise SystemExit(asyncio.run(_run(arguments)))
 
 

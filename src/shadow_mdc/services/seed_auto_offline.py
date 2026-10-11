@@ -7,10 +7,12 @@ Used by ``seed_daily_chart`` / ``seed_daily_hot`` (``--auto-offline``) and
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 from sqlalchemy import select, text
@@ -39,6 +41,11 @@ class SeedOfflineStats:
     skipped_pan: int = 0
     skipped_existing: int = 0
     errors: list[str] = field(default_factory=list)
+    # Per-work outcome rows: {"work_id", "code", "outcome", "reason"}.
+    results: list[dict[str, object]] = field(default_factory=list)
+
+    def record(self, work_id: str, code: str | None, outcome: str, reason: str = "") -> None:
+        self.results.append({"work_id": work_id, "code": code, "outcome": outcome, "reason": reason})
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -49,6 +56,7 @@ class SeedOfflineStats:
             "skipped_pan": self.skipped_pan,
             "skipped_existing": self.skipped_existing,
             "errors": list(self.errors[-20:]),
+            "results": list(self.results),
         }
 
 
@@ -138,8 +146,6 @@ def work_ids_from_run_logs(
         if not path.is_file():
             continue
         try:
-            import json
-
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError):
             continue
@@ -188,6 +194,8 @@ async def enqueue_seeded_offline(
     if not pan_ready:
         stats.skipped_pan = len(work_ids)
         stats.hunting = len(work_ids)
+        for work_id in work_ids:
+            stats.record(work_id, None, "skipped", "pan/OpenList offline not ready")
         logger.info("seed auto-offline: pan not ready; skipping %s works", len(work_ids))
         return stats
 
@@ -208,6 +216,7 @@ async def enqueue_seeded_offline(
         except Exception as exc:  # noqa: BLE001 - continue remaining works
             message = f"{work_id}: {type(exc).__name__}: {exc}"
             stats.errors.append(message)
+            stats.record(work_id, None, "error", message)
             logger.warning("seed auto-offline failed: %s", message)
     return stats
 
@@ -229,6 +238,7 @@ async def _process_one(
         work = repo.get_work(work_id)
         if work is None:
             stats.errors.append(f"{work_id}: work not found")
+            stats.record(work_id, None, "error", "work not found")
             return False
         primary_code = work.primary_code
         magnets = list(repo.list_work_magnets(work_id))
@@ -281,17 +291,20 @@ async def _process_one(
 
     if not magnets:
         stats.hunting += 1
+        stats.record(work_id, primary_code, "hunting", "no magnets found (javdb/sukebei)")
         return touched
 
     best = pick_best_magnet(magnets, expected_code=primary_code)
     if best is None:
         stats.hunting += 1
+        stats.record(work_id, primary_code, "hunting", "no suitable magnet")
         return touched
 
     with database.session() as session:
         repo = Repository(session)
         if not _work_needs_offline(repo, work_id, best):
             stats.skipped_existing += 1
+            stats.record(work_id, primary_code, "skipped", "offline task already running/done")
             return touched
 
     touched = True
@@ -304,11 +317,14 @@ async def _process_one(
             if exc.status_code == 400:
                 stats.skipped_pan += 1
             stats.hunting += 1
+            stats.record(work_id, primary_code, "error", exc.message)
             return touched
         if result.reused_running:
             stats.reused += 1
-        elif result.created or not result.reused_running:
+            stats.record(work_id, primary_code, "reused", "matching offline task already running")
+        else:
             stats.submitted += 1
+            stats.record(work_id, primary_code, "submitted", best.info_hash[:12])
         logger.info(
             "seed auto-offline enqueued work=%s code=%s hash=%s created=%s",
             work_id,
@@ -337,3 +353,77 @@ def collect_new_seed_work_ids(
             seen.add(work_id)
             out.append(work_id)
     return out
+
+
+def work_codes_from_bundle(bundle_dir: Path) -> list[str]:
+    """Primary codes of the works carried by a catalog bundle (``export_catalog_bundle``).
+
+    Work ids are remapped on import, so the NAS must re-resolve by code. Uses
+    ``manifest.incremental.works`` when present, else every work in the bundle DB.
+    """
+
+    bundle_dir = Path(bundle_dir)
+    db_path = bundle_dir / "data" / "shadow-mdc.db"
+    if not db_path.is_file():
+        return []
+    wanted: list[str] | None = None
+    manifest = bundle_dir / "manifest.json"
+    if manifest.is_file():
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            incremental = payload.get("incremental")
+            if isinstance(incremental, dict) and isinstance(incremental.get("works"), list):
+                wanted = [str(item) for item in incremental["works"]]
+        except (OSError, UnicodeError, ValueError):
+            wanted = None
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        rows = conn.execute("SELECT id, primary_code FROM works").fetchall()
+    finally:
+        conn.close()
+    wanted_set = set(wanted) if wanted is not None else None
+    codes: list[str] = []
+    seen: set[str] = set()
+    for work_id, code in rows:
+        if wanted_set is not None and str(work_id) not in wanted_set:
+            continue
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        codes.append(str(code))
+    return codes
+
+
+def resolve_work_ids_created_on(repo: Repository, *, day: date) -> list[str]:
+    """Works whose ``created_at`` (stored UTC) falls on local ``day`` (box/NAS tz)."""
+
+    start_local = datetime.combine(day, time()).astimezone()
+    start = start_local.astimezone(UTC).replace(tzinfo=None)
+    end = (start_local + timedelta(days=1)).astimezone(UTC).replace(tzinfo=None)
+    rows = repo._session.execute(
+        text("SELECT id FROM works WHERE created_at >= :start AND created_at < :end ORDER BY created_at"),
+        {"start": start.isoformat(sep=" "), "end": end.isoformat(sep=" ")},
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+async def auto_offline_new_works(
+    *,
+    settings: object,
+    database: Database,
+    discover: DiscoverService,
+    work_ids: Sequence[str],
+    pace_seconds: float = DEFAULT_PACE_SECONDS,
+) -> SeedOfflineStats | None:
+    """Shared post-seed hook for every intake script (chart/hot/VR/manual codes)."""
+
+    ids = [item for item in work_ids if item and item != "dry-run"]
+    if not ids:
+        return None
+    pan = PanService(
+        data_dir=getattr(settings, "data_dir"),
+        proxy_url=getattr(settings, "proxy_url", None),
+    )
+    return await enqueue_seeded_offline(
+        database=database, pan=pan, discover=discover, work_ids=ids, pace_seconds=pace_seconds
+    )

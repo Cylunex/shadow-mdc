@@ -28,6 +28,8 @@ NAS_PROJECT="${NAS_PROJECT:-/data/project/shadow-mdc}"
 NAS_DATA_DIR="${NAS_DATA_DIR:-$NAS_PROJECT/shared/data}"
 NAS_IMPORTS="${NAS_IMPORTS:-$NAS_PROJECT/shared/imports}"
 NAS_SERVICE="${NAS_SERVICE:-shadow-mdc}"
+# Proxy for the post-sync magnet refresh on NAS (javdb/sukebei need it); same as supervisor env.
+NAS_PROXY_URL="${NAS_PROXY_URL:-http://192.168.0.110:7893}"
 TARGET_DATA_DIR="${TARGET_DATA_DIR:-$NAS_DATA_DIR}"
 PYTHON_BIN="${PYTHON_BIN:-$ROOT/.venv/bin/python}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -118,13 +120,14 @@ echo "==> health check"
 # The service may still be starting after the restart; retry for up to ~60s.
 ssh "$NAS_HOST" "for i in \$(seq 1 20); do curl -fsS 'http://127.0.0.1:8700/api/health' && exit 0; sleep 3; done; echo 'health check failed after retries' >&2; true"
 
-echo "==> auto-offline newly seeded daily chart/hot titles on NAS"
+echo "==> auto-offline every work in this bundle (+ today's seeds) on NAS"
 ssh "$NAS_HOST" bash -s <<REMOTE
 set -Eeuo pipefail
 cd '$NAS_PROJECT/current'
 SHADOW_MDC_DATA_DIR='$NAS_DATA_DIR' \
 SHADOW_MDC_DATABASE_URL='sqlite:///$NAS_DATA_DIR/shadow-mdc.db' \
-PYTHONPATH=src .venv/bin/python scripts/enqueue_seed_offline.py --today || true
+SHADOW_MDC_PROXY_URL='$NAS_PROXY_URL' \
+PYTHONPATH=src .venv/bin/python scripts/enqueue_seed_offline.py --bundle '$REMOTE_BUNDLE' --today || true
 REMOTE
 
 echo "==> advance export baseline"

@@ -30,6 +30,7 @@ if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
 from shadow_mdc.config import Settings
+from shadow_mdc.services.seed_auto_offline import auto_offline_new_works
 from shadow_mdc.db.repository import Database, Repository
 from shadow_mdc.media.artwork import ArtworkStore
 from shadow_mdc.providers.base import ProviderRegistry
@@ -115,6 +116,13 @@ async def _run(arguments: argparse.Namespace) -> int:
             except Exception as exc:
                 entry.update(ok=False, error=f"{type(exc).__name__}: {exc}")
             results.append(entry)
+        if arguments.auto_offline:
+            ids = [str(item["work_id"]) for item in results if item.get("ok") and item.get("work_id")]
+            offline_stats = await auto_offline_new_works(
+                settings=settings, database=database, discover=discover, work_ids=ids
+            )
+            if offline_stats is not None:
+                print("auto-offline: " + json.dumps(offline_stats.as_dict(), ensure_ascii=False), file=sys.stderr)
     finally:
         discover.close()
         await client.aclose()
@@ -132,6 +140,14 @@ def main() -> None:
     parser.add_argument("--no-posters", action="store_true", help="skip artwork download")
     parser.add_argument("--data-dir", type=Path, default=None)
     parser.add_argument("--database-url", default=None)
+    parser.add_argument(
+        "--auto-offline",
+        dest="auto_offline",
+        action="store_true",
+        default=True,
+        help="queue OpenList/115 offline (best code-matched magnet) for seeded works (default on)",
+    )
+    parser.add_argument("--no-auto-offline", dest="auto_offline", action="store_false")
     raise SystemExit(asyncio.run(_run(parser.parse_args())))
 
 

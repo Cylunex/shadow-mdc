@@ -29,6 +29,7 @@ if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
 from shadow_mdc.config import Settings
+from shadow_mdc.services.seed_auto_offline import auto_offline_new_works
 from shadow_mdc.db.repository import Database, Repository
 from shadow_mdc.providers.base import ProviderRegistry
 from shadow_mdc.providers.fanza import FanzaProvider
@@ -118,7 +119,14 @@ async def _run(arguments: argparse.Namespace) -> int:
                 artwork_max_bytes=settings.artwork_max_bytes,
                 persist_log=not arguments.no_log,
             )
+        offline_stats = None
+        if arguments.auto_offline and not result.dry_run:
+            new_ids = [item.work_id for item in result.seeded if item.created]
+            offline_stats = await auto_offline_new_works(
+                settings=settings, database=database, discover=discover, work_ids=new_ids
+            )
     finally:
+        discover.close()
         await client.aclose()
 
     summary = {
@@ -169,6 +177,9 @@ async def _run(arguments: argparse.Namespace) -> int:
             + (" [dry-run]" if result.dry_run else "")
         )
 
+    if offline_stats is not None:
+        print("auto-offline: " + json.dumps(offline_stats.as_dict(), ensure_ascii=False))
+
     sync_rc = 0
     want_sync = arguments.sync_nas or os.environ.get("SHADOW_MDC_SYNC_NAS", "").strip() in {
         "1",
@@ -212,6 +223,14 @@ def main() -> None:
         action="store_true",
         help="after a successful non-dry seed, run scripts/sync_catalog_to_nas.sh",
     )
+    parser.add_argument(
+        "--auto-offline",
+        dest="auto_offline",
+        action="store_true",
+        default=True,
+        help="queue OpenList/115 offline (best code-matched magnet) for seeded works (default on)",
+    )
+    parser.add_argument("--no-auto-offline", dest="auto_offline", action="store_false")
     arguments = parser.parse_args()
     if arguments.limit < 1:
         raise SystemExit("--limit must be >= 1")

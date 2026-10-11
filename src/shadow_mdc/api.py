@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import hashlib
 import json
 import mimetypes
@@ -930,6 +931,7 @@ _STRM_LOCATOR_KEYS = (
     "openlist_strm_base_url",
     "openlist_strm_sign",
 )
+logger = logging.getLogger(__name__)
 _BACKGROUND_TASKS: set[asyncio.Task[object]] = set()
 
 
@@ -1705,7 +1707,30 @@ async def discover_seed(
         await app_runtime.translator.translate_work(repo, work)
         await _ensure_artwork_cached(work, app_runtime, repo)
     _invalidate_library_caches(app_runtime.response_cache)
+    if payload.auto_offline and work is not None:
+        _spawn(
+            _discover_seed_auto_offline(app_runtime, work.id),
+            f"shadow-mdc-seed-offline-{work.id}",
+        )
     return DiscoverSeedOut.model_validate(result.model_dump())
+
+
+async def _discover_seed_auto_offline(app_runtime: Runtime, work_id: str) -> None:
+    from .services.seed_auto_offline import enqueue_seeded_offline
+
+    try:
+        stats = await enqueue_seeded_offline(
+            database=app_runtime.database,
+            pan=app_runtime.pan_service,
+            discover=app_runtime.discover,
+            work_ids=[work_id],
+            pace_seconds=0,
+        )
+        logger.info("discover seed auto-offline work=%s %s", work_id, stats.as_dict())
+        if app_runtime.task_events is not None:
+            app_runtime.task_events.notify()
+    except Exception:  # noqa: BLE001 - background best effort
+        logger.exception("discover seed auto-offline failed work=%s", work_id)
 
 
 @app.get("/api/discover/{provider}/{external_id}", response_model=DiscoverDetailOut)
