@@ -89,6 +89,8 @@ def test_sync_script_passes_proxy_and_bundle() -> None:
     text = (ROOT / "scripts" / "sync_catalog_to_nas.sh").read_text(encoding="utf-8")
     assert "SHADOW_MDC_PROXY_URL='$NAS_PROXY_URL'" in text
     assert "enqueue_seed_offline.py --bundle '$REMOTE_BUNDLE' --today" in text
+    assert "offline_rc" in text
+    assert "|| true" not in text.split("auto-offline every work")[-1].split("advance export baseline")[0]
 
 
 @pytest.mark.parametrize("script", ["seed_codes.py", "seed_weekly_vr.py", "seed_daily_hot.py", "seed_daily_chart.py"])

@@ -134,14 +134,24 @@ echo "==> health check"
 ssh "$NAS_HOST" "for i in \$(seq 1 20); do curl -fsS 'http://127.0.0.1:8700/api/health' && exit 0; sleep 3; done; echo 'health check failed after retries' >&2; true"
 
 echo "==> auto-offline every work in this bundle (+ today's seeds) on NAS"
+# Catalog merge already succeeded; do not abort the baseline advance if offline fails,
+# but never hide the exit code (routine used to report "未做 115" while this step was silent).
+set +e
 ssh "$NAS_HOST" bash -s <<REMOTE
 set -Eeuo pipefail
 cd '$NAS_PROJECT/current'
 SHADOW_MDC_DATA_DIR='$NAS_DATA_DIR' \
 SHADOW_MDC_DATABASE_URL='sqlite:///$NAS_DATA_DIR/shadow-mdc.db' \
 SHADOW_MDC_PROXY_URL='$NAS_PROXY_URL' \
-PYTHONPATH=src .venv/bin/python scripts/enqueue_seed_offline.py --bundle '$REMOTE_BUNDLE' --today || true
+PYTHONPATH=src .venv/bin/python scripts/enqueue_seed_offline.py --bundle '$REMOTE_BUNDLE' --today
 REMOTE
+offline_rc=$?
+set -e
+if [[ "$offline_rc" -ne 0 ]]; then
+  echo "WARNING: NAS auto-offline exited $offline_rc (catalog sync kept; inspect enqueue output above)" >&2
+else
+  echo "NAS auto-offline: ok"
+fi
 
 echo "==> advance export baseline"
 mv -f "$PENDING_STATE" "$STATE_FILE"

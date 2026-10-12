@@ -231,6 +231,15 @@ async def _run(arguments: argparse.Namespace) -> int:
         print("auto-offline: no newly created works")
     else:
         print("auto-offline: " + json.dumps(offline_stats.as_dict(), ensure_ascii=False))
+        will_sync = bool(getattr(arguments, "sync_nas", False)) or os.environ.get(
+            "SHADOW_MDC_SYNC_NAS", ""
+        ).strip().casefold() in {"1", "true", "yes"}
+        if offline_stats.skipped_pan and will_sync:
+            print(
+                "note: box pan/OpenList not ready — skipped local offline; "
+                "NAS post-sync enqueue will submit 115 via OpenList",
+                file=sys.stderr,
+            )
 
     sync_rc = 0
     want_sync = arguments.sync_nas or os.environ.get("SHADOW_MDC_SYNC_NAS", "").strip() in {
