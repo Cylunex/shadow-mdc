@@ -37,6 +37,7 @@ from shadow_mdc.providers.base import ProviderRegistry
 from shadow_mdc.providers.fanza import FanzaProvider
 from shadow_mdc.providers.javdb import JavDBProvider
 from shadow_mdc.providers.javdb_api import build_javdb_app_api  # noqa: E402
+from shadow_mdc.providers.sukebei import SukebeiClient
 from shadow_mdc.services.daily_hot_seed import merge_tags
 from shadow_mdc.services.discover import DiscoverService
 
@@ -71,7 +72,12 @@ async def _run(arguments: argparse.Namespace) -> int:
     providers = ProviderRegistry([fanza, javdb], max_concurrent_calls=4)
     dump_path = settings.resolved_r18_dump_db()
     discover = DiscoverService(
-        providers, javdb, fanza, r18_dump_path=dump_path, javdb_api=build_javdb_app_api(settings, client)
+        providers,
+        javdb,
+        fanza,
+        r18_dump_path=dump_path,
+        javdb_api=build_javdb_app_api(settings, client),
+        sukebei=SukebeiClient(client, retries=settings.request_retries),
     )
     if not discover.r18_fallback_available:
         print(f"note: r18 dump not found at {dump_path}; offline fallback disabled", file=sys.stderr)
