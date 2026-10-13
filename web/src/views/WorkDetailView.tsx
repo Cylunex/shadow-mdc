@@ -146,6 +146,10 @@ export function WorkDetailView(props: {
   onRefresh: (workId: string) => void;
   onDownload: (workId: string) => void;
   onSelectGenreTag?: (tag: string) => void;
+  onSelectStudio?: (studio: string) => void;
+  onSelectSeries?: (series: string) => void;
+  onSelectYear?: (year: string) => void;
+  onSelectCategory?: (category: string) => void;
   onOpenActor?: (name: string) => void;
   report?: (message: string) => void;
 }) {
@@ -418,7 +422,16 @@ export function WorkDetailView(props: {
               </MetaRow>
 
               <MetaRow label="日期" empty={!work.release_date}>
-                {work.release_date ?? "—"}
+                {work.release_date ? (
+                  props.onSelectYear && work.release_date.length >= 4 ? (
+                    <button
+                      type="button"
+                      className="display-tag-chip"
+                      title={`按年份「${work.release_date.slice(0, 4)}」筛选`}
+                      onClick={() => props.onSelectYear?.(work.release_date!.slice(0, 4))}
+                    >{work.release_date}</button>
+                  ) : work.release_date
+                ) : "—"}
               </MetaRow>
 
               <MetaRow label="时长" empty={!runtimeLabel}>
@@ -430,14 +443,32 @@ export function WorkDetailView(props: {
               </MetaRow>
 
               <MetaRow label="片商" empty={!work.studio}>
-                {work.studio ?? "—"}
+                {work.studio ? (
+                  props.onSelectStudio ? (
+                    <button
+                      type="button"
+                      className="display-tag-chip"
+                      title={`按片商「${work.studio}」筛选`}
+                      onClick={() => props.onSelectStudio?.(work.studio!)}
+                    >{work.studio}</button>
+                  ) : work.studio
+                ) : "—"}
                 {work.label && work.label !== work.studio ? (
                   <span className="muted-hint"> · 厂牌 {work.label}</span>
                 ) : null}
               </MetaRow>
 
               <MetaRow label="系列" empty={!work.series}>
-                {work.series ?? "—"}
+                {work.series ? (
+                  props.onSelectSeries ? (
+                    <button
+                      type="button"
+                      className="display-tag-chip"
+                      title={`搜索系列「${work.series}」`}
+                      onClick={() => props.onSelectSeries?.(work.series!)}
+                    >{work.series}</button>
+                  ) : work.series
+                ) : "—"}
               </MetaRow>
 
               <MetaRow label="评分" empty={!ratingLabel}>
@@ -445,7 +476,16 @@ export function WorkDetailView(props: {
               </MetaRow>
 
               <MetaRow label="分类" empty={!work.category}>
-                {work.category ? <span className="pill">{work.category}</span> : "—"}
+                {work.category ? (
+                  props.onSelectCategory ? (
+                    <button
+                      type="button"
+                      className="display-tag-chip"
+                      title={`按分类「${work.category}」筛选`}
+                      onClick={() => props.onSelectCategory?.(work.category)}
+                    >{work.category}</button>
+                  ) : <span className="pill">{work.category}</span>
+                ) : "—"}
               </MetaRow>
 
               <MetaRow label="标签" empty={displayTags.length === 0}>

@@ -8,6 +8,15 @@ import type { NonJavActorEditPayload, OrganizePayload } from "./api";
 import { identityAliasesSchema } from "./model";
 import type { ActorProfile, Asset, BatchPlan, Candidate, IdentityAliases, Library, LibraryPrefs, NonJavActor, TaskRun, Work } from "./model";
 import { WorkCard } from "./components/WorkCard";
+import {
+  EMPTY_WORKS_FILTERS,
+  readWorksFiltersFromSearch,
+  worksFiltersActive,
+  worksFiltersEqual,
+  writeWorksFiltersToUrl,
+  type WorksCategory,
+  type WorksFilterState
+} from "./lib/worksFilters";
 import { javActorRef, nonJavActorRef } from "./views/ActorDetailView";
 
 type DisplayCategory = "all" | "Japan" | "China" | "Korea" | "Europe" | "Other";
@@ -98,8 +107,12 @@ export function DisplayFilterBar(props: {
   placeholder: string;
   setQuery: (value: string) => void;
   setCategory: (value: DisplayCategory) => void;
+  sticky?: boolean;
+  onResetAll?: () => void;
+  hasExtraFilters?: boolean;
 }) {
-  return <div className="display-filter" aria-label="展示筛选">
+  const canReset = Boolean(props.query || props.category !== "all" || props.hasExtraFilters || props.onResetAll);
+  return <div className={props.sticky ? "display-filter display-filter--sticky" : "display-filter"} aria-label="展示筛选">
     <input
       id="shadow-mdc-search"
       value={props.query}
@@ -118,15 +131,18 @@ export function DisplayFilterBar(props: {
       ))}
     </select>
     <span>显示 {props.visible} / {props.total}</span>
-    {(props.query || props.category !== "all") && (
+    {canReset && (
       <button
         type="button"
         className="ghost"
         onClick={() => {
-          props.setQuery("");
-          props.setCategory("all");
+          if (props.onResetAll) props.onResetAll();
+          else {
+            props.setQuery("");
+            props.setCategory("all");
+          }
         }}
-      >清空筛选</button>
+      >重置筛选</button>
     )}
   </div>;
 }
@@ -251,7 +267,9 @@ function JavActors({ actors, prefs, onActorTags, busy, onOpenWork, onOpenActor }
     return <Empty title="JAV 演员作品库为空" detail="扫描并接受带番号的作品后会出现在这里。国产/欧美请切换到「非 JAV 演员 / 作品」。" />;
   }
   return <>
+    <div className="works-filter-stack">
     <DisplayFilterBar
+      sticky
       query={query}
       category={category}
       visible={visibleActors.length}
@@ -259,6 +277,8 @@ function JavActors({ actors, prefs, onActorTags, busy, onOpenWork, onOpenActor }
       placeholder="搜索演员、别名、作品或番号"
       setQuery={setQuery}
       setCategory={setCategory}
+      hasExtraFilters={tagFilter !== "all"}
+      onResetAll={() => { setQuery(""); setCategory("all"); setTagFilter("all"); }}
     />
     <div className="tag-capsules" aria-label="标签筛选">
       <span>标签筛选:</span>
@@ -273,8 +293,10 @@ function JavActors({ actors, prefs, onActorTags, busy, onOpenWork, onOpenActor }
         </button>
       ))}
     </div>
+    </div>
     {visibleActors.length === 0
-      ? <Empty title="没有匹配的演员" detail="可以清空关键词或切换展示分类。" />
+      ? <div className="empty"><div>◇</div><h2>没有匹配的演员</h2><p>可以清空关键词、标签或切换展示分类。</p>
+          <button type="button" className="secondary" onClick={() => { setQuery(""); setCategory("all"); setTagFilter("all"); }}>重置筛选</button></div>
       : <><div className="actor-grid">{renderedActors.map((actor) => (
     <article className="actor-card actor-card--openable" key={actor.name}>
       <div
@@ -1038,29 +1060,95 @@ function AssetReview(props: {
 export function Works(props: {
   works: Work[];
   busy: string | null;
+  /** @deprecated prefer URL filters; kept for one-shot external tag apply */
   initialSelectedTags?: string[];
+  filterEpoch?: number;
   onOpenWork: (workId: string) => void;
   refreshMetadata: (work: Work) => Promise<void>;
   lookupWork: (query: string) => Promise<void>;
   translateWorks: () => Promise<void>;
   seedCollections: () => Promise<void>;
   onToggleWant?: (work: Work) => Promise<void>;
+  onFiltersChange?: (filters: WorksFilterState) => void;
 }) {
   const { works } = props;
   const [code, setCode] = useState("");
-  const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<DisplayCategory>("all");
-  const [collectionFilter, setCollectionFilter] = useState("all");
-  const [selectedTags, setSelectedTags] = useState<string[]>(() => props.initialSelectedTags ?? []);
-  useEffect(() => {
-    if (props.initialSelectedTags && props.initialSelectedTags.length > 0) {
-      setSelectedTags(props.initialSelectedTags);
+  const [filters, setFilters] = useState<WorksFilterState>(() => {
+    const fromUrl = readWorksFiltersFromSearch();
+    if (props.initialSelectedTags?.length && fromUrl.tags.length === 0) {
+      return { ...fromUrl, tags: [...props.initialSelectedTags] };
     }
-  }, [props.initialSelectedTags]);
-  const [page, setPage] = useState(1);
-  const categories = ["Japan", "China", "Korea", "Europe", "Other"] as const;
-  const deferredQuery = useDeferredValue(query);
-  const normalizedQuery = deferredQuery.trim().toLocaleLowerCase();
+    return fromUrl;
+  });
+  const [queryInput, setQueryInput] = useState(filters.q);
+  const [castInput, setCastInput] = useState(filters.cast);
+  const deferredQuery = useDeferredValue(queryInput);
+  const deferredCast = useDeferredValue(castInput);
+
+  // External epoch (categories / detail / rankings) → re-read URL
+  useEffect(() => {
+    const next = readWorksFiltersFromSearch();
+    setFilters((current) => (worksFiltersEqual(current, next) ? current : next));
+    setQueryInput(next.q);
+    setCastInput(next.cast);
+  }, [props.filterEpoch, props.initialSelectedTags]);
+
+  // Debounced q / cast → filters + URL
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      const q = deferredQuery.trim();
+      const castValue = deferredCast.trim();
+      setFilters((current) => {
+        if (current.q === q && current.cast === castValue) return current;
+        const next = { ...current, q, cast: castValue, page: 1 };
+        writeWorksFiltersToUrl(next, "replace");
+        props.onFiltersChange?.(next);
+        return next;
+      });
+    }, 180);
+    return () => window.clearTimeout(handle);
+  }, [deferredQuery, deferredCast, props.onFiltersChange]);
+
+  useEffect(() => {
+    function onPop() {
+      const next = readWorksFiltersFromSearch();
+      setFilters(next);
+      setQueryInput(next.q);
+      setCastInput(next.cast);
+    }
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  function commitFilters(patch: Partial<WorksFilterState>, mode: "replace" | "push" = "replace") {
+    setFilters((current) => {
+      const keys = Object.keys(patch) as Array<keyof WorksFilterState>;
+      const touchesNonPage = keys.some((key) => key !== "page");
+      const next: WorksFilterState = {
+        ...current,
+        ...patch,
+        tags: patch.tags !== undefined ? [...patch.tags] : [...current.tags],
+        page: patch.page !== undefined ? patch.page : touchesNonPage ? 1 : current.page
+      };
+      if (patch.q !== undefined) setQueryInput(patch.q);
+      if (patch.cast !== undefined) setCastInput(patch.cast);
+      writeWorksFiltersToUrl(next, mode);
+      props.onFiltersChange?.(next);
+      return next;
+    });
+  }
+
+  function resetFilters() {
+    setQueryInput("");
+    setCastInput("");
+    setFilters({ ...EMPTY_WORKS_FILTERS });
+    writeWorksFiltersToUrl({ ...EMPTY_WORKS_FILTERS }, "replace");
+    props.onFiltersChange?.({ ...EMPTY_WORKS_FILTERS });
+  }
+
+  const { category, collection: collectionFilter, tags: selectedTags, studio, cast, year } = filters;
+  const normalizedQuery = filters.q.trim().toLocaleLowerCase();
+
   const genreFacets = useMemo(() => {
     const counts = new Map<string, number>();
     const categories = new Set(["Japan", "China", "Korea", "Europe", "Other"]);
@@ -1097,6 +1185,7 @@ export function Works(props: {
     top.sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], "zh"));
     return top;
   }, [works]);
+
   const collectionOptions = useMemo(() => {
     const counts = new Map<string, number>();
     for (const work of works) {
@@ -1109,35 +1198,105 @@ export function Works(props: {
       .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
       .slice(0, 80);
   }, [works]);
-  const visibleWorks = useMemo(() => {
-    const filtered = works.filter((work) => {
-      const categoryMatches = category === "all" || work.category === category;
-      const collectionMatches = collectionFilter === "all" || (work.collections ?? []).some((item) => `${item.kind}:${item.name}` === collectionFilter);
-      const display = new Set(work.display_tags ?? []);
-      const tagMatches = selectedTags.length === 0 || selectedTags.every((tag) => display.has(tag));
-      if (!categoryMatches || !collectionMatches || !tagMatches) return false;
-      if (!normalizedQuery) return true;
-      return scoreWorkMatch(deferredQuery, work) > 0;
-    });
-    if (!normalizedQuery) return filtered;
-    return [...filtered].sort((left, right) => {
-      const scoreDelta = scoreWorkMatch(deferredQuery, right) - scoreWorkMatch(deferredQuery, left);
-      if (scoreDelta !== 0) return scoreDelta;
-      return (right.primary_code ?? "").localeCompare(left.primary_code ?? "", "en");
-    });
-  }, [works, category, collectionFilter, selectedTags, normalizedQuery, deferredQuery]);
-  useEffect(() => setPage(1), [category, collectionFilter, selectedTags, deferredQuery]);
 
-  function toggleGenreTag(tag: string) {
-    setSelectedTags((current) =>
-      current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]
-    );
-  }
+  const studioOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const work of works) {
+      const name = work.studio?.trim();
+      if (!name) continue;
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], "zh"))
+      .slice(0, 40);
+  }, [works]);
+
+  const yearOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const work of works) {
+      const y = work.release_date?.slice(0, 4);
+      if (!y || !/^\d{4}$/.test(y)) continue;
+      counts.set(y, (counts.get(y) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((left, right) => right[0].localeCompare(left[0]));
+  }, [works]);
+
+  const scoredWorks = useMemo(() => {
+    const castNeedle = cast.trim().toLocaleLowerCase();
+    const studioNeedle = studio.trim().toLocaleLowerCase();
+    const rows: Array<{ work: Work; score: number }> = [];
+    for (const work of works) {
+      if (category !== "all" && work.category !== category) continue;
+      if (collectionFilter && collectionFilter !== "all") {
+        if (!(work.collections ?? []).some((item) => `${item.kind}:${item.name}` === collectionFilter)) continue;
+      }
+      if (selectedTags.length > 0) {
+        const display = new Set(work.display_tags ?? []);
+        if (!selectedTags.every((tag) => display.has(tag))) continue;
+      }
+      if (studioNeedle) {
+        if ((work.studio ?? "").toLocaleLowerCase() !== studioNeedle
+          && !(work.studio ?? "").toLocaleLowerCase().includes(studioNeedle)) continue;
+      }
+      if (castNeedle) {
+        const names = [
+          ...work.actors.map((name) => name.toLocaleLowerCase()),
+          ...work.actor_entities.map((actor) => actor.name.toLocaleLowerCase())
+        ];
+        if (!names.some((name) => name === castNeedle || name.includes(castNeedle))) continue;
+      }
+      if (year) {
+        if (!(work.release_date ?? "").startsWith(year)) continue;
+      }
+      const score = normalizedQuery ? scoreWorkMatch(filters.q, work) : 1;
+      if (normalizedQuery && score <= 0) continue;
+      rows.push({ work, score });
+    }
+    if (!normalizedQuery) return rows;
+    rows.sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      return (right.work.primary_code ?? "").localeCompare(left.work.primary_code ?? "", "en");
+    });
+    return rows;
+  }, [works, category, collectionFilter, selectedTags, studio, cast, year, normalizedQuery, filters.q]);
+
+  const visibleWorks = scoredWorks.map((row) => row.work);
+  const scoreById = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const row of scoredWorks) map.set(row.work.id, row.score);
+    return map;
+  }, [scoredWorks]);
+
+  const page = filters.page;
   const currentPage = Math.min(page, Math.max(1, Math.ceil(visibleWorks.length / WORK_PAGE_SIZE)));
   const renderedWorks = visibleWorks.slice(
     (currentPage - 1) * WORK_PAGE_SIZE,
     currentPage * WORK_PAGE_SIZE
   );
+  const categories = ["Japan", "China", "Korea", "Europe", "Other"] as const;
+  const active = worksFiltersActive(filters);
+
+  function toggleGenreTag(tag: string) {
+    const next = selectedTags.includes(tag)
+      ? selectedTags.filter((item) => item !== tag)
+      : [...selectedTags, tag];
+    commitFilters({ tags: next });
+  }
+
+  const activeChips: Array<{ key: string; label: string; clear: () => void }> = [];
+  if (filters.q) activeChips.push({ key: "q", label: `搜索：${filters.q}`, clear: () => commitFilters({ q: "" }) });
+  if (filters.category !== "all") {
+    const label = displayCategoryOptions.find((item) => item.value === filters.category)?.label ?? filters.category;
+    activeChips.push({ key: "cat", label: `分类：${label}`, clear: () => commitFilters({ category: "all" }) });
+  }
+  if (filters.studio) activeChips.push({ key: "studio", label: `片商：${filters.studio}`, clear: () => commitFilters({ studio: "" }) });
+  if (filters.cast) activeChips.push({ key: "cast", label: `演员：${filters.cast}`, clear: () => commitFilters({ cast: "" }) });
+  if (filters.year) activeChips.push({ key: "year", label: `年份：${filters.year}`, clear: () => commitFilters({ year: "" }) });
+  if (filters.collection) activeChips.push({ key: "col", label: `合集：${filters.collection}`, clear: () => commitFilters({ collection: "" }) });
+  for (const tag of filters.tags) {
+    activeChips.push({ key: `tag-${tag}`, label: `标签：${tag}`, clear: () => commitFilters({ tags: filters.tags.filter((item) => item !== tag) }) });
+  }
+
   return <>
     <div className="command-bar">
       <div className="command-bar-head">
@@ -1155,50 +1314,98 @@ export function Works(props: {
         <button type="button" className="ghost" disabled={props.busy === "seed-collections"} onClick={() => void props.seedCollections()}>重建合集</button>
       </form>
     </div>
-    {works.length > 0 && <>
-    <div className="display-filter" aria-label="合集筛选">
-      <select value={collectionFilter} onChange={(event) => setCollectionFilter(event.target.value)} aria-label="按合集筛选">
-        <option value="all">全部合集</option>
-        {collectionOptions.map(([value, count]) => (
-          <option key={value} value={value}>{value} · {count}</option>
-        ))}
-      </select>
-      {collectionFilter !== "all" && <button type="button" className="ghost" onClick={() => setCollectionFilter("all")}>清除合集</button>}
-    </div>
-    <div className="tag-capsules genre-tag-capsules" aria-label="类型标签筛选">
-      <span>类型筛选:</span>
-      <button
-        type="button"
-        className={selectedTags.length === 0 ? "active" : "ghost"}
-        onClick={() => setSelectedTags([])}
-      >全部</button>
-      {genreFacets.map(([name, count]) => (
-        <button
-          key={name}
-          type="button"
-          className={selectedTags.includes(name) ? "active" : "ghost"}
-          onClick={() => toggleGenreTag(name)}
-          title={`筛选含「${name}」的作品（多选为 AND）`}
-        >{name} · {count}</button>
-      ))}
-      {selectedTags.length > 0 && (
-        <button type="button" className="ghost" onClick={() => setSelectedTags([])}>清除类型</button>
-      )}
-    </div>
-    <DisplayFilterBar
-      query={query}
-      category={category}
-      visible={visibleWorks.length}
-      total={works.length}
-      placeholder="搜索番号 / 标题 / 演员 / 片商 / 标签（自动排序）"
-      setQuery={setQuery}
-      setCategory={setCategory}
-    /></>}
+    {works.length > 0 && (
+      <div className="works-filter-stack">
+        <DisplayFilterBar
+          sticky
+          query={queryInput}
+          category={category as DisplayCategory}
+          visible={visibleWorks.length}
+          total={works.length}
+          placeholder="搜索番号 / 标题 / 演员 / 片商 / 标签（自动排序）"
+          setQuery={setQueryInput}
+          setCategory={(value) => commitFilters({ category: value as WorksCategory })}
+          hasExtraFilters={active && (Boolean(studio || cast || year || collectionFilter) || selectedTags.length > 0)}
+          onResetAll={resetFilters}
+        />
+        <div className="works-filter-secondary" aria-label="组合筛选">
+          <select
+            value={collectionFilter || "all"}
+            onChange={(event) => commitFilters({ collection: event.target.value === "all" ? "" : event.target.value })}
+            aria-label="按合集筛选"
+          >
+            <option value="all">全部合集</option>
+            {collectionOptions.map(([value, count]) => (
+              <option key={value} value={value}>{value} · {count}</option>
+            ))}
+          </select>
+          <select
+            value={studio || ""}
+            onChange={(event) => commitFilters({ studio: event.target.value })}
+            aria-label="按片商筛选"
+          >
+            <option value="">全部片商</option>
+            {studioOptions.map(([name, count]) => (
+              <option key={name} value={name}>{name} · {count}</option>
+            ))}
+          </select>
+          <select
+            value={year || ""}
+            onChange={(event) => commitFilters({ year: event.target.value })}
+            aria-label="按年份筛选"
+          >
+            <option value="">全部年份</option>
+            {yearOptions.map(([name, count]) => (
+              <option key={name} value={name}>{name} · {count}</option>
+            ))}
+          </select>
+          <input
+            value={castInput}
+            onChange={(event) => setCastInput(event.target.value)}
+            placeholder="演员筛选"
+            aria-label="按演员筛选"
+            className="cast-filter-input"
+          />
+        </div>
+        {activeChips.length > 0 && (
+          <div className="active-filter-chips" aria-label="当前筛选">
+            {activeChips.map((chip) => (
+              <button key={chip.key} type="button" className="active-filter-chip" onClick={chip.clear} title="移除该条件">
+                {chip.label} <span aria-hidden>×</span>
+              </button>
+            ))}
+            <button type="button" className="ghost" onClick={resetFilters}>全部重置</button>
+          </div>
+        )}
+        <div className="tag-capsules genre-tag-capsules" aria-label="类型标签筛选">
+          <span>类型筛选:</span>
+          <button
+            type="button"
+            className={selectedTags.length === 0 ? "active" : "ghost"}
+            onClick={() => commitFilters({ tags: [] })}
+          >全部</button>
+          {genreFacets.map(([name, count]) => (
+            <button
+              key={name}
+              type="button"
+              className={selectedTags.includes(name) ? "active" : "ghost"}
+              onClick={() => toggleGenreTag(name)}
+              title={`筛选含「${name}」的作品（多选为 AND）`}
+            >{name} · {count}</button>
+          ))}
+        </div>
+      </div>
+    )}
     <div className="works-layout">
       {works.length === 0
         ? <Empty title="作品库为空" detail="可按番号查询 JAV，或依赖非 JAV 种子作品 / 扫描媒体库后接受候选。打开演员库可查看已写入的非 JAV 作品。" />
         : visibleWorks.length === 0
-          ? <Empty title="没有匹配的作品" detail="可以清空关键词或切换展示分类。" />
+          ? <div className="empty">
+              <div>◇</div>
+              <h2>没有匹配的作品</h2>
+              <p>可清空关键词、标签、片商或年份后再试。</p>
+              {active && <button type="button" className="secondary" onClick={resetFilters}>重置全部筛选</button>}
+            </div>
           : <div className="work-sections">{categories.map((sectionCategory) => {
       const categoryWorks = renderedWorks.filter((work) => work.category === sectionCategory);
       if (categoryWorks.length === 0) return null;
@@ -1209,14 +1416,22 @@ export function Works(props: {
             key={work.id}
             work={work}
             busy={props.busy}
+            matchScore={normalizedQuery ? scoreById.get(work.id) : undefined}
             onSelect={props.onOpenWork}
             onRefresh={(item) => void props.refreshMetadata(item)}
             onToggleWant={props.onToggleWant ? (item) => void props.onToggleWant?.(item) : undefined}
+            onFilterStudio={(name) => commitFilters({ studio: name })}
+            onFilterCast={(name) => commitFilters({ cast: name })}
           />
         ))}</div>
       </section>;
         })}</div>}
-      <Pagination page={currentPage} total={visibleWorks.length} pageSize={WORK_PAGE_SIZE} setPage={setPage} />
+      <Pagination
+        page={currentPage}
+        total={visibleWorks.length}
+        pageSize={WORK_PAGE_SIZE}
+        setPage={(nextPage) => commitFilters({ page: nextPage })}
+      />
     </div>
   </>;
 }

@@ -1801,3 +1801,95 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   .work-related-card { flex-basis: 78vw !important; }
   .work-related-poster { width: 100% !important; }
 }
+
+/* —— UX polish: sticky filters, active chips, match rank —— */
+.works-filter-stack {
+  position: sticky;
+  top: 64px;
+  z-index: 25;
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 12px 12px 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(45, 212, 191, 0.14);
+  background: rgba(11, 16, 18, 0.92);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+}
+.display-filter--sticky {
+  margin: 0;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  box-shadow: none;
+}
+.works-filter-secondary {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.works-filter-secondary .cast-filter-input { width: 100%; }
+.active-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.active-filter-chip {
+  border-radius: 999px;
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  background: color-mix(in srgb, #2dd4bf 16%, #152025);
+  color: #e7fffb;
+  font-size: 12px;
+  font-weight: 650;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.active-filter-chip:hover {
+  border-color: #2dd4bf;
+  background: color-mix(in srgb, #2dd4bf 28%, #152025);
+}
+.active-filter-chip span { opacity: 0.75; margin-left: 4px; }
+.match-rank-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  border-radius: 999px;
+  background: rgba(8, 14, 16, 0.82);
+  border: 1px solid rgba(250, 204, 21, 0.45);
+  color: #fde68a;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  letter-spacing: .02em;
+}
+.meta-link-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  background: #202a2e;
+  border-radius: 5px;
+  color: #b9c4c8;
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 7px;
+  cursor: pointer;
+}
+.meta-link-chip:hover,
+.meta-link-chip:focus-visible {
+  background: color-mix(in srgb, #2dd4bf 22%, #202a2e);
+  color: #e7fffb;
+  outline: none;
+}
+.work-meta-line { color: var(--muted); font-size: 13px; margin: 0; }
+.work .tags { gap: 6px; }
+.empty > button { margin-top: 14px; }
+@media (max-width: 900px) {
+  .works-filter-stack { top: 0; }
+  .works-filter-secondary { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 640px) {
+  .works-filter-secondary { grid-template-columns: 1fr; }
+}

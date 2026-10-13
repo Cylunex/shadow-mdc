@@ -137,6 +137,7 @@ export function ActorDetailView(props: {
   tags?: TagState;
   onBack: () => void;
   onOpenWork: (workId: string) => void;
+  onFilterWorks?: (actorName: string) => void;
   onActorTags?: (actorKey: string, tags: TagState) => Promise<void>;
   report?: (message: string) => void;
 }) {
@@ -214,6 +215,14 @@ export function ActorDetailView(props: {
         <div className="work-page-toolbar-actions">
           <span className="pill">{actor.source === "jav" ? "JAV" : "非 JAV"}</span>
           <span className="muted">作品 {actor.work_count}</span>
+          {props.onFilterWorks && (
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => props.onFilterWorks?.(actor.name)}
+              title="在影片库按此演员筛选"
+            >片库筛选</button>
+          )}
         </div>
       </div>
 

@@ -74,7 +74,16 @@ export function CategoriesView({ onOpenTag, report }: Props) {
         </div>
       </div>
 
-      {visible.length === 0 && !loading ? (
+      {loading ? (
+        <div className="skeleton-grid" aria-busy="true" aria-label="分类加载中">
+          {Array.from({ length: 8 }, (_, index) => (
+            <div className="skeleton-card" key={index}>
+              <div className="skeleton-poster" />
+              <div className="skeleton-lines"><span /><span /></div>
+            </div>
+          ))}
+        </div>
+      ) : visible.length === 0 ? (
         <div className="empty">
           <div>▣</div>
           <h2>暂无分类</h2>

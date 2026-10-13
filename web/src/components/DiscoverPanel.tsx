@@ -14,6 +14,7 @@ type Props = {
   report: (message: string) => void;
   onSeeded: () => Promise<void>;
   onOpenWork?: (workId: string) => void;
+  onFilterByCode?: (code: string) => void;
   wantListIds?: ReadonlySet<string> | readonly string[];
   onToggleWant?: (workId: string, wanted: boolean) => void | Promise<void>;
 };
@@ -38,7 +39,7 @@ function isCataloged(state: string | null | undefined, workId?: string | null): 
   return Boolean(workId) || state === "catalog_only" || state === "in_library";
 }
 
-export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, wantListIds, onToggleWant }: Props) {
+export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCode, wantListIds, onToggleWant }: Props) {
   const wantSet = useMemo(() => {
     if (!wantListIds) return new Set<string>();
     return wantListIds instanceof Set ? wantListIds : new Set(wantListIds);
@@ -409,9 +410,16 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, wantListIds,
 
           <div className="discover-grid dense-rank-grid">
             {loading && (!jrList || jrList.items.length === 0) ? (
-              <p className="empty-detail">正在拉取榜单…</p>
+              <div className="skeleton-grid" aria-busy="true" aria-label="榜单加载中">
+                {Array.from({ length: 6 }, (_, index) => (
+                  <div className="skeleton-card" key={index}>
+                    <div className="skeleton-poster" />
+                    <div className="skeleton-lines"><span /><span /><span /></div>
+                  </div>
+                ))}
+              </div>
             ) : !jrList || jrList.items.length === 0 ? (
-              <p className="empty-detail">选择上方分区查看只读榜单。</p>
+              <div className="empty"><div>◆</div><h2>暂无榜单</h2><p>选择上方分区查看只读榜单。</p></div>
             ) : (
               jrList.items.map((item) => {
                 const linked = Boolean(item.work_id);
@@ -419,18 +427,18 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, wantListIds,
                 return (
                 <article
                   key={`${jrList.section.slug}-${item.position}-${item.code ?? item.name ?? item.title}`}
-                  className={`discover-card dense-rank-card${linked ? " is-linked" : ""}`}
-                  role={linked ? "button" : undefined}
-                  tabIndex={linked ? 0 : undefined}
+                  className={`discover-card dense-rank-card${linked || (item.code && onFilterByCode) ? " is-linked" : ""}`}
+                  role={linked || (item.code && onFilterByCode) ? "button" : undefined}
+                  tabIndex={linked || (item.code && onFilterByCode) ? 0 : undefined}
                   onClick={() => {
                     if (linked && item.work_id && onOpenWork) onOpenWork(item.work_id);
+                    else if (!linked && item.code && onFilterByCode) onFilterByCode(item.code);
                   }}
                   onKeyDown={(event) => {
-                    if (!linked || !item.work_id || !onOpenWork) return;
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onOpenWork(item.work_id);
-                    }
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    if (linked && item.work_id && onOpenWork) onOpenWork(item.work_id);
+                    else if (!linked && item.code && onFilterByCode) onFilterByCode(item.code);
                   }}
                 >
                   <div className="poster">
@@ -483,6 +491,11 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, wantListIds,
                           }}
                         >
                           {wantSet.has(item.work_id) ? "取消想看" : "想看"}
+                        </button>
+                      )}
+                      {item.code && onFilterByCode && (
+                        <button type="button" className="secondary" onClick={() => onFilterByCode(item.code!)}>
+                          片库筛选
                         </button>
                       )}
                       {item.code && (
@@ -598,6 +611,11 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, wantListIds,
                   </header>
                   <p>{[hit.item.code, hit.item.release_date].filter(Boolean).join(" · ")}</p>
                   <div className="discover-actions">
+                    {hit.item.code && onFilterByCode && (
+                      <button type="button" className="secondary" onClick={() => onFilterByCode(hit.item.code!)}>
+                        片库筛选
+                      </button>
+                    )}
                     {hit.item.code && (
                       <button type="button" className="ghost" onClick={() => void copyText(hit.item.code!, "番号")}>
                         复制番号
@@ -662,6 +680,11 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, wantListIds,
                       <h2>{item.title}</h2>
                       <p>{[item.code, item.release_date].filter(Boolean).join(" · ")}</p>
                       <div className="discover-actions">
+                        {item.code && onFilterByCode && (
+                          <button type="button" className="secondary" onClick={() => onFilterByCode(item.code!)}>
+                            片库筛选
+                          </button>
+                        )}
                         {item.code && (
                           <button type="button" className="ghost" onClick={() => void copyText(item.code!, "番号")}>
                             复制番号

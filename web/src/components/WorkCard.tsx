@@ -1,6 +1,6 @@
 import { CoverImage } from "./CoverImage";
 import { memo } from "react";
-import { hideBrokenImage, mediaUrl } from "../lib/mediaUrl";
+import { mediaUrl } from "../lib/mediaUrl";
 import type { Work } from "../model";
 import { StatusBadges } from "./StatusBadges";
 
@@ -8,20 +8,36 @@ type Props = {
   work: Work;
   selected?: boolean;
   busy?: string | null;
+  /** Client search match score (0–100); shown when searching. */
+  matchScore?: number;
   onSelect: (workId: string) => void;
   onRefresh?: (work: Work) => void;
   onToggleWant?: (work: Work) => void;
+  onFilterStudio?: (studio: string) => void;
+  onFilterCast?: (name: string) => void;
 };
+
+function matchRankLabel(score: number): string {
+  if (score >= 90) return "番号命中";
+  if (score >= 70) return "精确匹配";
+  if (score >= 50) return "高相关";
+  if (score >= 35) return "相关";
+  return "弱相关";
+}
 
 export const WorkCard = memo(function WorkCard({
   work,
   selected,
   busy,
+  matchScore,
   onSelect,
   onRefresh,
-  onToggleWant
+  onToggleWant,
+  onFilterStudio,
+  onFilterCast
 }: Props) {
   const thumb = mediaUrl(work.image_url);
+  const showRank = matchScore != null && matchScore > 0;
   return (
     <article
       className={selected ? "work selected" : "work"}
@@ -37,6 +53,11 @@ export const WorkCard = memo(function WorkCard({
           <CoverImage src={thumb} />
         ) : (
           <div className="poster-fallback" aria-hidden />
+        )}
+        {showRank && (
+          <span className="match-rank-badge" title={`匹配分 ${matchScore}`}>
+            {matchRankLabel(matchScore)} · {matchScore}
+          </span>
         )}
       </div>
       <div className="work-body">
@@ -74,14 +95,56 @@ export const WorkCard = memo(function WorkCard({
         {work.original_title && work.original_title !== work.title && (
           <p className="original-title">原文：{work.original_title}</p>
         )}
-        <p>{[work.studio, work.release_date].filter(Boolean).join(" · ")}</p>
+        <p className="work-meta-line">
+          {work.studio ? (
+            onFilterStudio ? (
+              <button
+                type="button"
+                className="meta-link-chip"
+                title={`按片商「${work.studio}」筛选`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onFilterStudio(work.studio!);
+                }}
+              >{work.studio}</button>
+            ) : work.studio
+          ) : null}
+          {work.studio && work.release_date ? " · " : null}
+          {work.release_date ?? null}
+        </p>
         <div className="tags">
           {(work.actor_entities.length > 0
             ? work.actor_entities.slice(0, 4).map((actor) => (
-              <span key={actor.id}>{actor.name}</span>
+              onFilterCast ? (
+                <button
+                  key={actor.id}
+                  type="button"
+                  className="meta-link-chip"
+                  title={`按演员「${actor.name}」筛选`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onFilterCast(actor.name);
+                  }}
+                >{actor.name}</button>
+              ) : (
+                <span key={actor.id}>{actor.name}</span>
+              )
             ))
             : work.actors.slice(0, 4).map((name) => (
-              <span key={name}>{name}</span>
+              onFilterCast ? (
+                <button
+                  key={name}
+                  type="button"
+                  className="meta-link-chip"
+                  title={`按演员「${name}」筛选`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onFilterCast(name);
+                  }}
+                >{name}</button>
+              ) : (
+                <span key={name}>{name}</span>
+              )
             )))}
         </div>
         <div className="work-card-actions">

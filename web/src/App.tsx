@@ -15,6 +15,10 @@ import {
   findActorRefByName,
   resolveActorDetail
 } from "./views/ActorDetailView";
+import {
+  patchWorksFilters,
+  type WorksFilterState
+} from "./lib/worksFilters";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -55,9 +59,17 @@ function writeDetailToUrl(opts: { workId?: string | null; actorRef?: string | nu
   if (next !== current) window.history.pushState({ workId, actorRef }, "", next);
 }
 
-function writeWorkIdToUrl(workId: string | null): void {
-  writeDetailToUrl({ workId });
+function applyWorksFilterPatch(
+  patch: Partial<WorksFilterState>,
+  options: { replaceAll?: boolean; message?: string } = {}
+): void {
+  patchWorksFilters(patch, {
+    replaceAll: options.replaceAll,
+    clearDetail: true,
+    mode: "push"
+  });
 }
+
 
 export function App() {
   const initialWorkId = typeof window !== "undefined" ? readWorkIdFromUrl() : null;
@@ -67,7 +79,7 @@ export function App() {
   );
   const [selectedWorkId, setSelectedWorkId] = useState<string | null>(initialWorkId);
   const [selectedActorRef, setSelectedActorRef] = useState<string | null>(initialActorRef);
-  const [worksTagFilter, setWorksTagFilter] = useState<string[] | undefined>(undefined);
+  const [worksFilterEpoch, setWorksFilterEpoch] = useState(0);
   const [worksListScroll, setWorksListScroll] = useState(0);
   const [actorsListScroll, setActorsListScroll] = useState(0);
   const [detailReturnView, setDetailReturnView] = useState<"works" | "actors" | "actor-detail">(
@@ -261,6 +273,21 @@ export function App() {
     writeDetailToUrl({ actorRef });
   }, [view]);
 
+  const navigateToFilteredWorks = useCallback((
+    patch: Partial<WorksFilterState>,
+    message: string,
+    replaceAll = true
+  ) => {
+    if (view === "works") setWorksListScroll(window.scrollY);
+    setSelectedWorkId(null);
+    setSelectedActorRef(null);
+    applyWorksFilterPatch(patch, { replaceAll });
+    setWorksFilterEpoch((value) => value + 1);
+    setView("works");
+    setMessage(message);
+    requestAnimationFrame(() => window.scrollTo(0, 0));
+  }, [view]);
+
   const closeWorkDetail = useCallback(() => {
     setSelectedWorkId(null);
     if (detailReturnView === "actor-detail" && selectedActorRef) {
@@ -272,6 +299,7 @@ export function App() {
     setView(next);
     writeDetailToUrl({});
     if (next === "works") {
+      setWorksFilterEpoch((value) => value + 1);
       requestAnimationFrame(() => window.scrollTo(0, worksListScroll));
     } else if (next === "actors") {
       requestAnimationFrame(() => window.scrollTo(0, actorsListScroll));
@@ -280,10 +308,17 @@ export function App() {
 
   const closeActorDetail = useCallback(() => {
     setSelectedActorRef(null);
+    if (detailReturnView === "works") {
+      setView("works");
+      writeDetailToUrl({});
+      setWorksFilterEpoch((value) => value + 1);
+      requestAnimationFrame(() => window.scrollTo(0, worksListScroll));
+      return;
+    }
     setView("actors");
     writeDetailToUrl({});
     requestAnimationFrame(() => window.scrollTo(0, actorsListScroll));
-  }, [actorsListScroll]);
+  }, [actorsListScroll, worksListScroll, detailReturnView]);
 
   useEffect(() => {
     function onPopState() {
@@ -317,10 +352,10 @@ export function App() {
         view={view}
         onChange={(next) => {
           if (next === "works") {
-            setWorksTagFilter(undefined);
             setSelectedWorkId(null);
             setSelectedActorRef(null);
             writeDetailToUrl({});
+            // Keep URL filter params so list↔detail round trips survive.
           } else if (next === "actors") {
             setSelectedWorkId(null);
             setSelectedActorRef(null);
@@ -433,6 +468,9 @@ export function App() {
             })()}
             onBack={closeActorDetail}
             onOpenWork={openWorkDetail}
+            onFilterWorks={(name) => {
+              navigateToFilteredWorks({ cast: name }, `已筛选演员作品：${name}`, true);
+            }}
             report={setMessage}
             onActorTags={(actorKey, tags) => run(`tag-${actorKey}`, async () => {
               let next = await api.setActorTags({ actor_key: actorKey, ...tags });
@@ -464,9 +502,7 @@ export function App() {
           <CategoriesView
             report={setMessage}
             onOpenTag={(tag) => {
-              setWorksTagFilter([tag]);
-              setView("works");
-              setMessage(`已筛选标签：${tag}`);
+              navigateToFilteredWorks({ tags: [tag] }, `已筛选标签：${tag}`, true);
             }}
           />
         )}
@@ -485,10 +521,9 @@ export function App() {
         )}
         {view === "works" && loaded.works && (
           <Works
-            key={worksTagFilter ? worksTagFilter.join("|") : "works-all"}
             works={works}
             busy={busy}
-            initialSelectedTags={worksTagFilter}
+            filterEpoch={worksFilterEpoch}
             onOpenWork={openWorkDetail}
             onToggleWant={(work) => run(`want-${work.id}`, async () => {
               const next = await api.setWantList(work.id, !work.want_list);
@@ -540,11 +575,23 @@ export function App() {
             onOpenWork={openWorkDetail}
             report={setMessage}
             onSelectGenreTag={(tag) => {
-              setWorksTagFilter([tag]);
-              setSelectedWorkId(null);
-              writeWorkIdToUrl(null);
-              setView("works");
-              setMessage(`已筛选标签：${tag}`);
+              navigateToFilteredWorks({ tags: [tag] }, `已筛选标签：${tag}`, true);
+            }}
+            onSelectStudio={(studio) => {
+              navigateToFilteredWorks({ studio }, `已筛选片商：${studio}`, true);
+            }}
+            onSelectSeries={(series) => {
+              navigateToFilteredWorks({ q: series }, `已搜索系列：${series}`, true);
+            }}
+            onSelectYear={(year) => {
+              navigateToFilteredWorks({ year }, `已筛选年份：${year}`, true);
+            }}
+            onSelectCategory={(category) => {
+              navigateToFilteredWorks(
+                { category: category as WorksFilterState["category"] },
+                `已筛选分类：${category}`,
+                true
+              );
             }}
             onOpenActor={(name) => {
               const ref = findActorRefByName(name, actors, nonJavActors);
@@ -608,6 +655,9 @@ export function App() {
             busy={busy}
             report={setMessage}
             onOpenWork={openWorkDetail}
+            onFilterByCode={(code) => {
+              navigateToFilteredWorks({ q: code }, `已按番号筛选：${code}`, true);
+            }}
             wantListIds={prefs.want_list}
             onToggleWant={async (workId, wanted) => {
               await run(`want-${workId}`, async () => {
