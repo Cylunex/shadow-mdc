@@ -299,6 +299,67 @@ def test_password_login_caches_session_and_relogs_on_401(
     assert secret_file.stat().st_mode & 0o077 == 0
 
 
+
+def test_expired_static_token_relogs_with_password_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Expired JWT in ``token`` + stored password → clear token, login, retry once."""
+
+    fake = FakeOpenList()
+    pan = PanService(data_dir=tmp_path / "data", openlist_transport=httpx.MockTransport(fake))
+    pan.save_settings({"pan_backend": "openlist", "openlist_base_url": BASE})
+    # Ops historically stored only the JWT; password enables auto recovery.
+    pan.set_openlist_credentials(token=TOKEN, username="admin", password=PASSWORD)
+
+    async def scenario() -> None:
+        client = pan.openlist.client()
+        await client.me()
+        assert len([c for c in fake.calls if c[1] == "/api/auth/login"]) == 0
+        # Server invalidates the static JWT (same shape as OpenList "token is expired").
+        fake.valid_tokens = set()
+        me = await client.me()
+        assert me["username"] == "admin"
+        logins = [c for c in fake.calls if c[1] == "/api/auth/login"]
+        assert len(logins) == 1
+        # Static token was cleared; session JWT is what subsequent calls use.
+        creds = pan.openlist_credentials.load()
+        assert creds.token is None
+        assert creds.session_token
+        await client.me()
+        assert len([c for c in fake.calls if c[1] == "/api/auth/login"]) == 1
+        await pan.aclose()
+
+    asyncio.run(scenario())
+    assert pan.status()["needs_relogin"] is False
+
+
+def test_env_password_recovers_from_persisted_token_expiry_rejection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NAS env password fills credentials file gaps and clears sticky token-expiry rejection."""
+
+    fake = FakeOpenList()
+    pan = PanService(data_dir=tmp_path / "data", openlist_transport=httpx.MockTransport(fake))
+    pan.save_settings({"pan_backend": "openlist", "openlist_base_url": BASE})
+    pan.set_openlist_credentials(token=TOKEN)
+    # Simulate the prior failure mode: static token rejected, no password on disk.
+    pan.auth_rejections.mark("openlist", "OpenList rejected the API token: token is expired")
+    pan.openlist_credentials.save(
+        pan.openlist_credentials.load().model_copy(update={"token": None})
+    )
+    monkeypatch.setenv("SHADOW_MDC_OPENLIST_USERNAME", "admin")
+    monkeypatch.setenv("SHADOW_MDC_OPENLIST_PASSWORD", PASSWORD)
+
+    async def scenario() -> None:
+        client = pan.openlist.client()
+        me = await client.me()
+        assert me["username"] == "admin"
+        assert pan.status()["needs_relogin"] is False
+        await pan.aclose()
+
+    asyncio.run(scenario())
+
+
 def test_connection_treats_driver_tools_omitted_from_public_list_as_unknown(
     tmp_path: Path,
 ) -> None:

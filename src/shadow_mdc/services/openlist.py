@@ -353,11 +353,31 @@ class OpenListCredentialStore:
 
     def load(self) -> OpenListCredentials:
         if not self._path.is_file():
-            return OpenListCredentials()
-        try:
-            return OpenListCredentials.model_validate_json(self._path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
-            return OpenListCredentials()
+            creds = OpenListCredentials()
+        else:
+            try:
+                creds = OpenListCredentials.model_validate_json(self._path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+                creds = OpenListCredentials()
+        return self._merge_env(creds)
+
+    @staticmethod
+    def _merge_env(creds: OpenListCredentials) -> OpenListCredentials:
+        """Fill missing username/password from NAS-only env (never logged).
+
+        ``SHADOW_MDC_OPENLIST_USERNAME`` / ``SHADOW_MDC_OPENLIST_PASSWORD`` let
+        ops keep the password out of git while still enabling auto re-login when
+        a stored JWT expires. File values win when already set.
+        """
+
+        updates: dict[str, str] = {}
+        env_user = (os.environ.get("SHADOW_MDC_OPENLIST_USERNAME") or "").strip()
+        env_pass = os.environ.get("SHADOW_MDC_OPENLIST_PASSWORD")
+        if not creds.username and env_user:
+            updates["username"] = env_user
+        if not creds.password and env_pass:
+            updates["password"] = env_pass
+        return creds.model_copy(update=updates) if updates else creds
 
     def save(self, credentials: OpenListCredentials) -> OpenListCredentials:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -462,6 +482,23 @@ class OpenListClient:
         if self._rejections is not None:
             rejection = self._rejections.get(REJECTION_KEY)
             if rejection is not None:
+                # Token-expiry rejections are recoverable when username/password
+                # (file or SHADOW_MDC_OPENLIST_* env) is available: clear the
+                # marker and re-login once. Wrong-password rejections stay sticky.
+                creds_probe = self._credentials.load()
+                detail = (rejection.detail or "").casefold()
+                recoverable = any(
+                    marker in detail
+                    for marker in (
+                        "token is expired",
+                        "token is invalidated",
+                        "rejected the api token",
+                        "unauthorized",
+                    )
+                )
+                if recoverable and creds_probe.username and creds_probe.password:
+                    self._rejections.clear(REJECTION_KEY)
+                    return await self.login()
                 # Do not retry rejected credentials until the user replaces them.
                 raise PanAuthRejectedError(f"OpenList needs re-login: {rejection.detail}")
         creds = self._credentials.load()
@@ -522,6 +559,9 @@ class OpenListClient:
                 }
             )
         )
+        # Fresh login succeeded: lift any prior "needs re-login" marker.
+        if self._rejections is not None:
+            self._rejections.clear(REJECTION_KEY)
         return token
 
     def _drop_session(self) -> None:
