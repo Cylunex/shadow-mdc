@@ -512,23 +512,43 @@ async def find_best_scene(tpdb: TpdbClient, work: Work) -> tuple[dict[str, Any] 
     best_score = 0.0
     sites = resolve_tpdb_sites(work)
     queries = build_search_queries(work)
+    # Prefer fewer queries when we already have a site hint.
+    if sites:
+        queries = queries[:3]
     # Site-scoped passes first (much higher precision for Model Media / SWAGLive).
-    passes: list[str | None] = [*sites, None]
+    # Only fall back to unscoped search when site passes stay weak.
+    passes: list[str | None] = list(sites) if sites else [None]
+    if sites:
+        passes = passes[:2]
     seen_pass: set[str | None] = set()
     for site in passes:
         if site in seen_pass:
             continue
         seen_pass.add(site)
         for query in queries:
-            for row in await tpdb.search(query, site=site):
+            for row in await tpdb.search(query, site=site, per_page=3):
                 score = _score_candidate(work, row)
                 if score > best_score:
                     best_score = score
                     best = row
-            if best_score >= 4.5:
+            # Accept a solid site-scoped hit without burning more queries.
+            if site is not None and best_score >= 3.0:
                 break
-        if best_score >= 4.5:
+            if best_score >= 4.0:
+                break
+        if site is not None and best_score >= 3.0:
             break
+        if best_score >= 4.0:
+            break
+    if best_score < 2.5 and sites:
+        for query in queries[:2]:
+            for row in await tpdb.search(query, per_page=3):
+                score = _score_candidate(work, row)
+                if score > best_score:
+                    best_score = score
+                    best = row
+            if best_score >= 3.5:
+                break
     if best is None or best_score < 2.5:
         return None, best_score
     scene_id = str(best.get("id") or "")
