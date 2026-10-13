@@ -62,12 +62,19 @@ _TPDB_SCENES = "https://api.theporndb.net/scenes"
 _COLLAPSE = re.compile(r"[^a-z0-9\u4e00-\u9fff]+")
 
 # TPDB REST `site=` short_name hints keyed by studio / title markers.
+# Prefer short_names proven via local artwork / refresh_chinese_media; TPDB
+# returns unrelated popular scenes for unknown site slugs.
 _STUDIO_SITE_HINTS: tuple[tuple[str, str], ...] = (
     ("model media asia", "modelmediaasia"),
     ("model media us", "modelmediaus"),
     ("model media", "modelmediaasia"),
     ("麻豆", "modelmediaasia"),
     ("madou", "modelmediaasia"),
+    ("hongkongdoll", "fansdbhongkongdollonlyfans"),
+    ("hong kong doll", "fansdbhongkongdollonlyfans"),
+    ("蜜桃影像", "swaglivepeachmedia"),
+    ("蜜桃", "swaglivepeachmedia"),
+    ("peach media", "swaglivepeachmedia"),
     ("jules jordan", "julesjordan"),
     ("vixen", "vixen"),
     ("tushy", "tushy"),
@@ -80,7 +87,67 @@ _STUDIO_SITE_HINTS: tuple[tuple[str, str], ...] = (
     ("onlyfans", "onlyfans"),
 )
 
+# Secondary site aliases to try after the primary studio hint (same work family).
+_STUDIO_SITE_EXTRA: tuple[tuple[str, str], ...] = (
+    ("modelmediaasia", "teamskeetxmodelmediaasia"),
+    ("modelmediaus", "teamskeetxmodelmediaus"),
+    ("fansdbhongkongdollonlyfans", "hobbypornhongkongdoll"),
+)
+
+# Proven creator-handle → TPDB site short_names (from local artwork folders).
+# Do NOT invent fansdb/swaglive guesses for unknown handles — unknown site=
+# queries return junk popular scenes.
+_KNOWN_CREATOR_SITES: dict[str, tuple[str, ...]] = {
+    "hongkongdoll": ("fansdbhongkongdollonlyfans", "hobbypornhongkongdoll", "fansdbhongkongdollfansly"),
+    "anaimiya": ("fansdbanaimiyaonlyfans", "hobbypornnaiminaimi"),
+    "naimi": ("fansdbanaimiyaonlyfans", "hobbypornnaiminaimi"),
+    "nanataipei": ("fansdbnanataipeionlyfans",),
+    "yuixintw": ("fansdbyuixintwonlyfans",),
+    "spicygum": ("spicygum",),
+    "spicyguml": ("spicygum",),
+    "oshiximiya": ("manyvidsoshiximiya",),
+    # High-volume SwagLive creators already seen in artwork.
+    "sunnyday9": ("swaglivesunnyday9",),
+    "ezrabebe": ("swagliveezrabebe",),
+    "peachmedia": ("swaglivepeachmedia",),
+    "daxiangtw": ("swaglivedaxiangtw",),
+    "roostersclubtw": ("swagliveroostersclubtw",),
+    "miababe": ("swaglivemiababe",),
+    "woshisuchang": ("swaglivewoshisuchang",),
+    "edmosaic": ("swagliveedmosaic",),
+    "princessdolly": ("swagliveprincessdolly",),
+    "linlinbebe": ("swaglivelinlinbebe",),
+    "weijoannana": ("swagliveweijoannana",),
+    "asiaxxxtour": ("swagliveasiaxxxtour",),
+    "elvababe": ("swagliveelvababe",),
+}
+
+
+# Scene-code prefix → TPDB site= (Madou / Model Media Asia family).
+# Keep conservative: only prefixes repeatedly seen with modelmediaasia hits.
+_CODE_PREFIX_SITE: dict[str, str] = {
+    "MD": "modelmediaasia",
+    "MDJ": "modelmediaasia",
+    "MSD": "modelmediaasia",
+    "MT": "modelmediaasia",
+    "MM": "modelmediaasia",
+    "MMZ": "modelmediaasia",
+    "MKY": "modelmediaasia",
+    "MAD": "modelmediaasia",
+    "MDL": "modelmediaasia",
+    "MDHT": "modelmediaasia",
+    "MDHG": "modelmediaasia",
+    "MDWP": "modelmediaasia",
+    "MDHS": "modelmediaasia",
+    "MDAG": "modelmediaasia",
+    "MDSR": "modelmediaasia",
+    "MTVQ": "modelmediaasia",
+    "MTVSQ": "modelmediaasia",
+}
+
 _SWAG_HANDLE_RE = re.compile(r"@([A-Za-z0-9_]{2,32})", re.I)
+# Titles like Jxzeroc_clip01 / CreatorName-001 (opaque no-studio chinese rows).
+_CREATOR_PREFIX_RE = re.compile(r"^([A-Za-z][A-Za-z0-9]{2,24})(?:[_-]|\d)")
 _BRACKET_CODE_RE = re.compile(r"\[\s*([A-Za-z]{1,10}[-_]?\d{2,6})\s*\]")
 _INLINE_CODE_RE = re.compile(r"\b([A-Z]{1,10}-\d{2,6})\b")
 _SQLITE_LOCK_MARKERS = ("database is locked", "database table is locked", "database is busy")
@@ -107,6 +174,30 @@ def extract_scene_codes(*parts: str | None) -> list[str]:
     return found
 
 
+def extract_creator_handle(*parts: str | None) -> str | None:
+    """Best-effort latin creator handle from opaque titles like `Jxzeroc_01`."""
+
+    for part in parts:
+        if not part:
+            continue
+        text = part.strip()
+        at = _SWAG_HANDLE_RE.search(text)
+        if at:
+            handle = re.sub(r"[^a-z0-9]", "", at.group(1).casefold())
+            if len(handle) >= 3:
+                return handle
+        if text.casefold().startswith("swaglive:"):
+            handle = re.sub(r"[^a-z0-9]", "", text.split(":", 1)[1].casefold())
+            if len(handle) >= 3:
+                return handle
+        match = _CREATOR_PREFIX_RE.match(text)
+        if match:
+            handle = re.sub(r"[^a-z0-9]", "", match.group(1).casefold())
+            if len(handle) >= 3:
+                return handle
+    return None
+
+
 def resolve_tpdb_sites(work: Work) -> list[str]:
     """Best-effort TPDB site short_names for a work (may be empty)."""
 
@@ -120,10 +211,12 @@ def resolve_tpdb_sites(work: Work) -> list[str]:
         handle = re.sub(r"[^a-z0-9]", "", handle)
         if handle:
             sites.append(f"swaglive{handle}")
+            sites.extend(_KNOWN_CREATOR_SITES.get(handle, ()))
     for match in _SWAG_HANDLE_RE.finditer(title):
         handle = re.sub(r"[^a-z0-9]", "", match.group(1).casefold())
         if handle:
             sites.append(f"swaglive{handle}")
+            sites.extend(_KNOWN_CREATOR_SITES.get(handle, ()))
     if "swag" in blob and not any(s.startswith("swaglive") for s in sites):
         # Broad SWAG query still helps when creator handle is unknown.
         pass
@@ -131,6 +224,26 @@ def resolve_tpdb_sites(work: Work) -> list[str]:
     for marker, short in _STUDIO_SITE_HINTS:
         if marker in blob:
             sites.append(short)
+
+    # Empty-studio Madou/Model Media rows often only carry MD-/MSD-/MT- codes.
+    # Route those prefixes to TPDB site= for precision (HTML scrapers still skipped).
+    for code in extract_scene_codes(work.primary_code, work.title):
+        prefix = code.split("-", 1)[0].upper()
+        site = _CODE_PREFIX_SITE.get(prefix)
+        if site:
+            sites.append(site)
+
+    # Opaque no-studio titles: only map *known* creator handles (unknown site=
+    # queries return junk — see import_nv_pu_sa_bloggers note).
+    creator = extract_creator_handle(studio, title)
+    if creator:
+        sites.extend(_KNOWN_CREATOR_SITES.get(creator, ()))
+
+    extras: list[str] = []
+    for primary, extra in _STUDIO_SITE_EXTRA:
+        if primary in sites:
+            extras.append(extra)
+    sites.extend(extras)
 
     # unique preserve order
     out: list[str] = []
@@ -482,7 +595,19 @@ class TpdbClient:
             rows = response.json().get("data") or []
         except ValueError:
             return []
-        return [row for row in rows if isinstance(row, dict)]
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            # TPDB returns unrelated popular scenes for unknown site slugs —
+            # only keep rows whose site.short_name matches the requested site.
+            if site:
+                row_site = row.get("site") if isinstance(row.get("site"), dict) else {}
+                actual = str(row_site.get("short_name") or "").casefold()
+                if actual != site.casefold():
+                    continue
+            out.append(row)
+        return out
 
     async def detail(self, scene_id: str) -> dict[str, Any] | None:
         if scene_id in self._detail_cache:

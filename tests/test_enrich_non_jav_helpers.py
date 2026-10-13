@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from enrich_non_jav_incomplete import (  # noqa: E402
     build_search_queries,
+    extract_creator_handle,
     extract_scene_codes,
     looks_like_placeholder_work,
     plot_is_meaningful,
@@ -64,3 +65,45 @@ def test_placeholder_brand_seed_skipped() -> None:
         actors=["苏畅"],
     )
     assert looks_like_placeholder_work(work) is True  # type: ignore[arg-type]
+
+
+def test_resolve_tpdb_sites_from_madou_code_prefix() -> None:
+    """Empty-studio titles with MD-/MSD- codes should still get site=modelmediaasia."""
+    work = SimpleNamespace(
+        studio=None,
+        title="Saleswoman Footjob Md-0265",
+        primary_code=None,
+        actors=[],
+    )
+    assert "modelmediaasia" in resolve_tpdb_sites(work)  # type: ignore[arg-type]
+    work2 = SimpleNamespace(
+        studio="",
+        title="Stepbrother Seduce Me",
+        primary_code="MSD-001",
+        actors=[],
+    )
+    assert "modelmediaasia" in resolve_tpdb_sites(work2)  # type: ignore[arg-type]
+
+def test_resolve_tpdb_sites_hongkongdoll_and_peach() -> None:
+    work = SimpleNamespace(studio="HongKongDoll", title="Scene", primary_code=None, actors=[])
+    sites = resolve_tpdb_sites(work)  # type: ignore[arg-type]
+    assert "fansdbhongkongdollonlyfans" in sites
+    assert "hobbypornhongkongdoll" in sites
+    work2 = SimpleNamespace(studio="蜜桃影像", title="Clip", primary_code=None, actors=[])
+    assert "swaglivepeachmedia" in resolve_tpdb_sites(work2)  # type: ignore[arg-type]
+
+
+def test_extract_creator_handle_and_known_map() -> None:
+    assert extract_creator_handle("Jxzeroc_clip01") == "jxzeroc"
+    assert extract_creator_handle("Sunnyday9_01") == "sunnyday9"
+    work = SimpleNamespace(studio="", title="Sunnyday9_home", primary_code=None, actors=[])
+    assert "swaglivesunnyday9" in resolve_tpdb_sites(work)  # type: ignore[arg-type]
+    # Unknown handles must not invent fansdb/swaglive site guesses.
+    work2 = SimpleNamespace(studio="", title="Jxzeroc_clip01", primary_code=None, actors=[])
+    assert resolve_tpdb_sites(work2) == []  # type: ignore[arg-type]
+
+
+def test_madou_code_prefix_routes_to_modelmediaasia() -> None:
+    work = SimpleNamespace(studio="", title="Sales", primary_code="MD-0265", actors=[])
+    assert "modelmediaasia" in resolve_tpdb_sites(work)  # type: ignore[arg-type]
+
