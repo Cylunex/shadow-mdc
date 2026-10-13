@@ -1,7 +1,7 @@
 import asyncio
-import logging
 import hashlib
 import json
+import logging
 import mimetypes
 import re
 import tempfile
@@ -15,11 +15,11 @@ from typing import Annotated
 import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
+from starlette.middleware.gzip import GZipMiddleware
 
 from . import __version__
 from .api_models import (
@@ -27,6 +27,8 @@ from .api_models import (
     ActorSubscriptionEdit,
     ActorSummaryOut,
     ActorTagsEdit,
+    ActorWorkRefOut,
+    ActorWorksOut,
     ActorXHandleEdit,
     ArtworkBackfillOut,
     AssetInboxHintsOut,
@@ -135,11 +137,9 @@ from .api_models import (
     WorkPosterPreferRequest,
     WorkRelatedOut,
     WorkSampleGenerateOut,
-    WorkTagFacetOut,
     WorkSearchOut,
+    WorkTagFacetOut,
     WorkTagFacetsOut,
-    ActorWorkRefOut,
-    ActorWorksOut,
     WorkUpdateRequest,
 )
 from .config import Settings
@@ -252,6 +252,7 @@ from .services.javranking_client import (
 )
 from .services.javranking_seed import seed_javranking
 from .services.library_prefs import ActorTagState, LibraryPrefsStore, new_queue_id
+from .services.library_search import rank_work_dicts
 from .services.local_catalog import (
     build_local_catalog_record,
     family_for_category,
@@ -309,8 +310,6 @@ from .services.response_cache import (
     works_list_key,
     works_tags_key,
 )
-from .services.library_search import rank_work_dicts
-
 from .services.scanner import Scanner
 from .services.strm_export import StrmConfigError
 from .services.strm_relay import RelayError, StrmRelay, token_ok
@@ -1736,7 +1735,7 @@ async def _discover_seed_auto_offline(app_runtime: Runtime, work_id: str) -> Non
         logger.info("discover seed auto-offline work=%s %s", work_id, stats.as_dict())
         if app_runtime.task_events is not None:
             app_runtime.task_events.notify()
-    except Exception:  # noqa: BLE001 - background best effort
+    except Exception:
         logger.exception("discover seed auto-offline failed work=%s", work_id)
 
 
@@ -2923,19 +2922,22 @@ def scan_library(
             repo.update_task_progress(task, summary)
             app_runtime.task_events.notify()
 
-        result = Scanner(
+        scanner = Scanner(
             repo,
             effective_alias_rules,
             MediaPathFilter(app_runtime.filter_words_store.load().words),
             app_runtime.directory_actor_store.load(),
             non_jav_actor_catalog,
             artwork_dir=app_runtime.settings.data_dir / "artwork",
-        ).scan(
+        )
+        result = scanner.scan(
             library,
             only_new=options.only_new,
             progress=_scan_progress,
             cancelled=lambda: repo.is_task_cancel_requested(task.id),
         )
+        if scanner.last_obsolete_codes:
+            app_runtime.pan_poller.queue_obsolete_codes(scanner.last_obsolete_codes)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     repo.finish_task_run(
@@ -2949,6 +2951,7 @@ def scan_library(
             "filtered": result.filtered,
             "skipped": result.skipped,
             "errors": len(result.errors),
+            "obsolete_codes": list(scanner.last_obsolete_codes),
         },
     )
     return ScanOut.model_validate(result.model_dump())

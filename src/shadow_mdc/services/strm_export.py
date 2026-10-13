@@ -314,8 +314,16 @@ def locator_for(settings: PanSettings, entry: StrmEntry) -> str:
 
 
 def detect_part_number(name: str) -> int | None:
-    match = _PART_RE.search(Path(name).stem)
-    return int(match.group(1)) if match else None
+    """Numeric CD/PART marker, or lettered volume A=1…Z when present."""
+
+    stem = Path(name).stem
+    match = _PART_RE.search(stem)
+    if match:
+        return int(match.group(1))
+    from ..media.parts import parse_letter_volume
+
+    volume = parse_letter_volume(stem)
+    return volume.index if volume is not None else None
 
 
 def plan_strm_entries(code: str, videos: Sequence[RemoteVideo]) -> list[StrmEntry]:
@@ -858,6 +866,49 @@ def rematerialize_layout(
             if legacy_nfo.is_file() and legacy_nfo != nfo_path:
                 legacy_nfo.unlink(missing_ok=True)
     return result
+
+
+
+def find_export_dirs_for_code(root: Path, code: str) -> list[Path]:
+    """Managed export folders whose sidecar (or folder name) matches ``code``."""
+
+    from ..normalize_code import is_format_equivalent, normalize_code
+
+    target = normalize_code(code) or code.strip()
+    if not target or not root.is_dir():
+        return []
+    found: list[Path] = []
+    for directory in iter_export_dirs(root):
+        sidecar_path = directory / SIDECAR_NAME
+        sidecar_code = ""
+        try:
+            payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                sidecar_code = str(payload.get("code") or "").strip()
+        except (OSError, UnicodeError, ValueError):
+            sidecar_code = ""
+        candidate = sidecar_code or directory.name
+        if is_format_equivalent(candidate, target) or (
+            normalize_code(candidate) == normalize_code(target)
+        ):
+            found.append(directory)
+    return found
+
+
+def remove_export_dirs_for_code(root: Path, code: str) -> list[Path]:
+    """Delete managed export folders for ``code``; prune empty parents under root."""
+
+    removed: list[Path] = []
+    for directory in find_export_dirs_for_code(root, code):
+        if not _is_within(directory, root):
+            continue
+        shutil.rmtree(directory, ignore_errors=True)
+        removed.append(directory)
+        with contextlib.suppress(OSError):
+            parent = directory.parent
+            if parent != root and _is_within(parent, root) and parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+    return removed
 
 
 def map_to_emby_path(local: Path, settings: PanSettings) -> str:

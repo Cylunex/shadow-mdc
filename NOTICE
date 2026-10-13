@@ -63,3 +63,10 @@ Shadow MDC remains MIT-licensed; see LICENSE.
   Skipped: trash/delete gates, duration×confidence product score, pure-Python duration probe
   (we keep ffprobe for full streamdetails), MCP agent layer, JavDB native (already have
   `providers/javdb_api.py` from the same javdb-cli MIT contract).
+
+## 2026-10-13 Miyabi scan ideas (GPL-3.0 — ideas only, no code copy)
+- Directory letter-volume merge (folder basename = valid 番号 + contiguous A/B… parts)
+  → `media/parts.directory_volume_merge_code` + Scanner pre-pass; STRM letter ordering
+  via `strm_export.detect_part_number`.
+- Obsolete Emby-export cleanup on reassignment (durable pending code list, delete export
+  dir + Media/Updated, retry-safe) → `services/obsolete_exports.py` + pan_poller drain.

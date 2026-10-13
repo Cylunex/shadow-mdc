@@ -21,6 +21,7 @@ from ..db.repository import Database, Repository
 from ..media.artwork import ArtworkStore
 from .emby_notify import EmbyNotifier
 from .media_server import MediaServerStore
+from .obsolete_exports import ObsoleteExportDrainResult, ObsoleteExportQueue
 from .offline_control import OfflineRecoveryController
 from .openlist import (
     OpenListEntry,
@@ -133,6 +134,9 @@ class PanOfflinePoller:
         self._state_path = (data_dir / "pan" / "strm-maintenance.json") if data_dir else None
         self._openlist_misses: dict[str, int] = {}
         self.recovery = OfflineRecoveryController(database=database, pan=pan)
+        self.obsolete_exports = ObsoleteExportQueue(
+            (data_dir / "pan" / "obsolete-export-codes.json") if data_dir else None
+        )
         self._load_state()
 
     @property
@@ -166,6 +170,10 @@ class PanOfflinePoller:
             "last_rewrite": self.maintenance.last_rewrite,
             "last_migrate_at": self.maintenance.last_migrate_at,
             "last_migrate": self.maintenance.last_migrate,
+            "last_rematerialize_at": self.maintenance.last_rematerialize_at,
+            "last_rematerialize": self.maintenance.last_rematerialize,
+            "last_obsolete_export_at": self.maintenance.last_obsolete_export_at,
+            "last_obsolete_export": self.maintenance.last_obsolete_export,
         }
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._state_path.with_suffix(".tmp")
@@ -222,6 +230,12 @@ class PanOfflinePoller:
                 raise
             except Exception:
                 logger.exception("STRM delete reconcile failed")
+            try:
+                await self.drain_obsolete_exports()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("obsolete export cleanup failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=MAINTENANCE_CHECK_SECONDS)
                 break
@@ -842,6 +856,48 @@ class PanOfflinePoller:
             "artwork_written": result.artwork_written,
         }
         self._save_state()
+        return result
+
+
+    def queue_obsolete_codes(self, codes: list[str] | tuple[str, ...]) -> int:
+        """Remember codes whose Emby export dirs should be removed if absent from DB."""
+
+        return self.obsolete_exports.mark(codes)
+
+    async def drain_obsolete_exports(self) -> ObsoleteExportDrainResult:
+        """Delete queued obsolete export dirs (retry-safe) and notify Emby."""
+
+        cfg = self._pan.config_store.load()
+        if not cfg.strm_enabled or not cfg.strm_output_root or not self.obsolete_exports.codes:
+            return ObsoleteExportDrainResult(remaining=list(self.obsolete_exports.codes))
+
+        def code_exists(code: str) -> bool:
+            with self._database.session() as session:
+                return Repository(session).find_work_by_code(code) is not None
+
+        async with self._maintenance_lock:
+            previous = self.maintenance.running
+            self.maintenance.running = "obsolete-exports"
+            try:
+                result = await asyncio.to_thread(
+                    lambda: self.obsolete_exports.drain(
+                        settings=cfg,
+                        code_exists=code_exists,
+                        notify=lambda paths, kind: self._notifier.enqueue(list(paths), kind),
+                    )
+                )
+            finally:
+                self.maintenance.running = previous
+        if result.removed or result.errors:
+            self.maintenance.last_obsolete_export_at = datetime.now(UTC).isoformat()
+            self.maintenance.last_obsolete_export = {
+                "attempted": result.attempted[:50],
+                "removed": [str(path) for path in result.removed][:50],
+                "skipped_still_present": result.skipped_still_present[:50],
+                "remaining": result.remaining[:50],
+                "errors": result.errors[:20],
+            }
+            self._save_state()
         return result
 
     async def reconcile(self) -> ReconcileResult:

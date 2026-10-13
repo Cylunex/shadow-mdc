@@ -1,4 +1,5 @@
 import os
+import shutil
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -9,12 +10,16 @@ from ..db.repository import Repository
 from ..domain import MediaTechnicalInfo
 from ..enums import ContentFamily, MediaCategory, QueryMode, RecognitionScope
 from ..identity import IdentityAliasRules, build_identity_hints
-from ..media.oshash import compute_oshash
-from ..media.probe import probe_media_info
-from ..media.nfo_import import NfoImporter, NfoImportPolicy, resolve_sidecar_nfo, sibling_artwork_paths
 from ..media.artwork import ensure_list_thumbnail
-import shutil
+from ..media.nfo_import import NfoImporter, NfoImportPolicy, resolve_sidecar_nfo, sibling_artwork_paths
+from ..media.oshash import compute_oshash
+from ..media.parts import (
+    directory_volume_merge_code,
+    volume_merge_identity_blocks,
+)
+from ..media.probe import probe_media_info
 from ..media.strm import read_strm_locator, redact_media_locator
+from ..normalize_code import is_format_equivalent
 from .directory_actor_rules import DirectoryActorRules
 from .local_catalog import (
     build_local_catalog_record,
@@ -92,6 +97,7 @@ class Scanner:
         self._directory_actor_rules = directory_actor_rules or DirectoryActorRules()
         self._non_jav_actor_catalog = non_jav_actor_catalog or NonJavActorCatalog()
         self._artwork_dir = artwork_dir
+        self.last_obsolete_codes: tuple[str, ...] = ()
 
     def scan(
         self,
@@ -109,7 +115,9 @@ class Scanner:
         filtered = 0
         skipped = 0
         errors: list[str] = []
+        obsolete_codes: list[str] = []
         paths = list(_walk_files(root, recursive=library.recursive, errors=errors))
+        volume_codes = _directory_volume_codes(paths)
         total = len(paths)
         for index, path in enumerate(paths, start=1):
             if cancelled is not None and cancelled():
@@ -139,13 +147,20 @@ class Scanner:
                         skipped += 1
                         continue
             try:
-                created, newly_queued = self._scan_asset(library, root, path)
+                created, newly_queued, obsolete = self._scan_asset(
+                    library,
+                    root,
+                    path,
+                    volume_code=volume_codes.get(path.parent.resolve()),
+                )
                 discovered += int(created)
                 updated += int(not created)
                 queued += int(newly_queued)
                 identified += int(not newly_queued)
+                obsolete_codes.extend(obsolete)
             except (OSError, ValueError) as exc:
                 errors.append(f"{path}: {exc}")
+        self.last_obsolete_codes = tuple(dict.fromkeys(obsolete_codes))
         return ScanResult(
             discovered=discovered,
             updated=updated,
@@ -156,7 +171,14 @@ class Scanner:
             errors=tuple(errors),
         )
 
-    def _scan_asset(self, library: Library, root: Path, path: Path) -> tuple[bool, bool]:
+    def _scan_asset(
+        self,
+        library: Library,
+        root: Path,
+        path: Path,
+        *,
+        volume_code: str | None = None,
+    ) -> tuple[bool, bool, tuple[str, ...]]:
         stat = path.stat()
         is_strm = path.suffix.casefold() == ".strm"
         existing = self._repository.get_asset_by_path(str(path))
@@ -193,6 +215,24 @@ class Scanner:
         )
         if raw_media_locator is not None:
             hints = hints.model_copy(update={"media_locator": redact_media_locator(raw_media_locator)})
+        obsolete: list[str] = []
+        merged_code = _apply_volume_merge_code(
+            self._repository,
+            path=path,
+            existing=existing,
+            hints_code=hints.code,
+            volume_code=volume_code,
+            obsolete=obsolete,
+        )
+        if merged_code:
+            hints = hints.model_copy(
+                update={
+                    "code": merged_code,
+                    "mode": QueryMode.CODE,
+                    "term": merged_code,
+                    "alias_evidence": (*hints.alias_evidence, "directory-volume-merge"),
+                }
+            )
         directory_rule = self._directory_actor_rules.match(path, root)
         directory_profile = match_non_jav_actor_directory(
             context_names,
@@ -272,12 +312,79 @@ class Scanner:
             and library.recognition_scope != RecognitionScope.JAV_ONLY.value
         ):
             self._repository.catalog_asset(asset, local_record)
-            return created, False
+            return created, False, tuple(obsolete)
         newly_queued = self._repository.queue_local_candidate(
             asset,
             local_record,
         )
-        return created, newly_queued
+        return created, newly_queued, tuple(obsolete)
+
+
+
+def _directory_volume_codes(paths: list[Path]) -> dict[Path, str]:
+    """Map parent directories to a volume-merge code when the lettered set qualifies."""
+
+    by_parent: dict[Path, list[Path]] = {}
+    for path in paths:
+        if path.suffix.casefold() not in MEDIA_EXTENSIONS:
+            continue
+        try:
+            parent = path.parent.resolve()
+        except OSError:
+            parent = path.parent
+        by_parent.setdefault(parent, []).append(path)
+
+    result: dict[Path, str] = {}
+    for parent, media in by_parent.items():
+        names: list[str] = []
+        sizes: list[int | None] = []
+        for item in media:
+            names.append(item.name)
+            try:
+                sizes.append(item.stat().st_size)
+            except OSError:
+                sizes.append(None)
+        sidecars: list[str] = []
+        try:
+            for entry in parent.iterdir():
+                if entry.is_file() and entry.suffix.casefold() in {".nfo", ".txt"}:
+                    sidecars.append(entry.name)
+        except OSError:
+            sidecars = []
+        code = directory_volume_merge_code(parent, names, sidecars, sizes=sizes)
+        if code:
+            result[parent] = code
+    return result
+
+
+def _apply_volume_merge_code(
+    repository: Repository,
+    *,
+    path: Path,
+    existing,
+    hints_code: str | None,
+    volume_code: str | None,
+    obsolete: list[str],
+) -> str | None:
+    """Apply directory volume merge unless a confirmed identity conflicts."""
+
+    if not volume_code:
+        return None
+    previous_codes: list[str] = []
+    if hints_code and not is_format_equivalent(hints_code, volume_code):
+        previous_codes.append(hints_code)
+    if existing is not None and existing.work_id is not None:
+        work = repository.get_work(existing.work_id)
+        if work is not None and work.primary_code:
+            confirmed = repository.work_has_verified_evidence(work.id)
+            if volume_merge_identity_blocks(volume_code, work.primary_code, confirmed=confirmed):
+                return None
+            if not is_format_equivalent(work.primary_code, volume_code):
+                previous_codes.append(work.primary_code)
+    for code in previous_codes:
+        if repository.find_work_by_code(code) is None:
+            obsolete.append(code)
+    return volume_code
 
 
 def _family_for_category(category: MediaCategory) -> ContentFamily:

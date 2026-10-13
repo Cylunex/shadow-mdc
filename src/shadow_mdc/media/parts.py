@@ -1,4 +1,6 @@
 import re
+import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -98,3 +100,178 @@ def part_group_key(path: Path, code: str | None) -> str:
             stem = stem[: match.start()].rstrip("-_. ")
             break
     return f"stem:{_compact(stem) or path.name.casefold()}"
+
+
+# --- Directory letter-volume merge (miyabi-inspired; ideas only / no GPL copy) ---
+
+_GENERIC_SIDECAR_STEMS = frozenset(
+    {
+        "movie",
+        "tvshow",
+        "album",
+        "artist",
+        "extrafanart",
+        "poster",
+        "fanart",
+        "landscape",
+        "folder",
+    }
+)
+_VIDEO_NAME_SUFFIXES = frozenset(
+    {
+        ".3gp",
+        ".avi",
+        ".f4v",
+        ".flv",
+        ".iso",
+        ".m2ts",
+        ".m4v",
+        ".mkv",
+        ".mov",
+        ".mp4",
+        ".mpeg",
+        ".mpg",
+        ".rm",
+        ".rmvb",
+        ".ts",
+        ".vob",
+        ".webm",
+        ".wmv",
+        ".strm",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class LetterVolume:
+    """One lettered CD part: exact stem prefix (incl. separators) + A-Z letter."""
+
+    prefix: str
+    letter: str
+    base: str
+
+    @property
+    def index(self) -> int:
+        return ord(self.letter) - ord("A") + 1
+
+
+def parse_letter_volume(stem: str) -> LetterVolume | None:
+    """Parse ``…A`` / ``…-B`` / bare ``C`` letter volume markers from a file stem."""
+
+    name = unicodedata.normalize("NFKC", stem).strip().upper()
+    if len(name) < 1:
+        return None
+    letter = name[-1]
+    if letter < "A" or letter > "Z":
+        return None
+    prefix = name[:-1]
+    base = prefix.rstrip("-_. ")
+    return LetterVolume(prefix=prefix, letter=letter, base=base)
+
+
+
+def _directory_catalogue_code(directory_name: str) -> str | None:
+    """Basename must itself be a catalogue code (format-tolerant), not merely contain one."""
+
+    from ..identity import extract_code
+    from ..normalize_code import is_format_equivalent, normalize_code
+
+    code, _family = extract_code(directory_name)
+    if code and is_format_equivalent(normalize_code(directory_name) or directory_name, code):
+        return code
+    # Bare uncensored date folders (060326_001) are valid directory identities.
+    match = re.fullmatch(r"(\d{6})[-_](\d{2,4})", unicodedata.normalize("NFKC", directory_name).strip())
+    if match:
+        return f"{match.group(1)}-{match.group(2)}"
+    return None
+
+
+def directory_volume_merge_code(
+    directory: str | Path,
+    video_names: Sequence[str],
+    sidecar_names: Sequence[str] = (),
+    *,
+    sizes: Sequence[int | None] | None = None,
+    min_video_bytes: int = 0,
+) -> str | None:
+    """Return the directory 番号 when videos form a contiguous letter-volume set.
+
+    Requires:
+    * directory basename is itself a valid catalogue code (not merely containing one)
+    * ≥2 eligible videos share one exact stem prefix + letters A,B,… with no gaps/dupes
+    * each non-empty stem base is format-equivalent to the directory code (padding OK)
+    * bare letters (``a.mp4`` / ``B.mkv``) are allowed
+    * conflicting / per-part sidecars veto the whole group
+    Undersized files (when ``min_video_bytes`` > 0) are ignored as trailers.
+    """
+
+    from ..normalize_code import is_format_equivalent
+
+    directory_name = Path(directory).name.strip()
+    if not directory_name:
+        return None
+    code = _directory_catalogue_code(directory_name)
+    if not code:
+        return None
+
+    if sizes is not None and len(sizes) != len(video_names):
+        raise ValueError("sizes must align with video_names")
+
+    stem: str | None = None
+    parts: dict[str, bool] = {}
+    for index, raw_name in enumerate(video_names):
+        size = sizes[index] if sizes is not None else None
+        if min_video_bytes > 0 and size is not None and size < min_video_bytes:
+            continue
+        name = Path(raw_name).name
+        suffix = Path(name).suffix.casefold()
+        file_stem = Path(name).stem if suffix in _VIDEO_NAME_SUFFIXES or suffix == "" else name
+        volume = parse_letter_volume(file_stem)
+        if volume is None:
+            return None
+        if volume.base and not is_format_equivalent(volume.base, code):
+            return None
+        if volume.letter in parts:
+            return None
+        if stem is None:
+            stem = volume.prefix
+        elif volume.prefix != stem:
+            return None
+        parts[volume.letter] = True
+
+    if len(parts) < 2:
+        return None
+    for offset in range(len(parts)):
+        expected = chr(ord("A") + offset)
+        if expected not in parts:
+            return None
+
+    for sidecar in sidecar_names:
+        if _sidecar_conflicts_volume_merge(code, sidecar):
+            return None
+    return code
+
+
+def _sidecar_conflicts_volume_merge(directory_code: str, sidecar_name: str) -> bool:
+    from ..identity import extract_code
+    from ..normalize_code import is_format_equivalent
+
+    stem = Path(sidecar_name).stem.strip()
+    if not stem or stem.casefold() in _GENERIC_SIDECAR_STEMS:
+        return False
+    volume = parse_letter_volume(stem)
+    if volume is not None and volume.base and is_format_equivalent(volume.base, directory_code):
+        # Per-part sidecar (e.g. FJIN-106A.nfo) outweighs the directory convention.
+        return True
+    other, _family = extract_code(stem)
+    return bool(other and not is_format_equivalent(other, directory_code))
+
+
+def volume_merge_identity_blocks(directory_code: str, existing_code: str | None, *, confirmed: bool) -> bool:
+    """True when a confirmed manual/scraped identity vetoes directory volume merge."""
+
+    from ..normalize_code import is_format_equivalent
+
+    if not confirmed or not existing_code:
+        return False
+    return not is_format_equivalent(existing_code, directory_code)
