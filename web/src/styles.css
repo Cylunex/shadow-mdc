@@ -1723,9 +1723,11 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 
 /* —— Unified cover frame (portrait/landscape/square aware) —— */
 .cover-frame { position: absolute; inset: 0; overflow: hidden; background: #0c1214; }
-.cover-frame > img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.cover-frame > img,
+.cover-frame > .cover-bg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .cover-frame .cover-bg {
-  object-fit: cover; filter: blur(18px) brightness(0.55) saturate(1.2);
+  background-position: center; background-size: cover;
+  filter: blur(18px) brightness(0.55) saturate(1.2);
   transform: scale(1.15); opacity: 0; transition: opacity 0.2s;
 }
 .cover-frame .cover-main {
@@ -1733,7 +1735,7 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   transition: transform 0.25s ease, filter 0.2s;
 }
 .cover-frame:not([data-shape="wide"]):not([data-shape="pending"]) .cover-bg { opacity: 1; }
-.cover-frame[data-shape="wide"] .cover-main { object-fit: cover; }
+.cover-frame[data-shape="wide"] .cover-main { object-fit: contain; }
 .cover-frame[data-crop="front"] .cover-main { object-fit: cover; object-position: right center; }
 .cover-frame[data-crop="front"] .cover-bg { opacity: 0; }
 .work:hover .cover-main, .discover-card:hover .cover-main, .actor-page-work-card:hover .cover-main,
@@ -1763,21 +1765,21 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 /* —— Bigger covers, text below the image (no overlays) —— */
 .cover-frame[data-shape="wide"] .cover-main { object-fit: contain; }
 .cover-frame[data-shape="wide"] .cover-bg { opacity: 1; }
-.work-grid { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)) !important; gap: 18px; }
+.work-grid { grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)) !important; gap: 20px; }
 .work { display: flex !important; flex-direction: column; grid-template-columns: none !important; contain-intrinsic-size: auto 420px; }
 .work .poster { position: relative; width: 100% !important; aspect-ratio: 16 / 9; min-height: 0; flex: none; }
 .work-code-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .work-code { color: var(--accent); font-family: "Cascadia Code", Consolas, monospace; font-weight: 700; font-size: 13px; cursor: copy; }
 .work-score { color: #fde68a; font-size: 12px; font-weight: 700; }
 .work-body h2 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 0; }
-.dense-rank-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)) !important; gap: 16px; }
+.dense-rank-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)) !important; gap: 18px; }
 .dense-rank-card { display: flex !important; flex-direction: column; grid-template-columns: none !important; }
 .dense-rank-card .poster { position: relative; width: 100% !important; aspect-ratio: 16 / 9; min-height: 0; height: auto; flex: none; }
 .dense-rank-card .overlay-rank { top: 6px; left: 6px; padding: 1px 7px; font-size: 11px; min-width: 0; height: auto; border-radius: 999px; }
 .dense-rank-card > div:last-child { padding: 10px 12px; }
 .dense-rank-card .rank-card-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .in-library-badge, .want-badge { font-size: 10px; padding: 1px 6px; }
-.actor-page-work-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)) !important; gap: 16px; }
+.actor-page-work-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)) !important; gap: 18px; }
 .actor-page-work-meta span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .category-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)) !important; gap: 14px; }
 .category-cover { aspect-ratio: 16 / 9; }

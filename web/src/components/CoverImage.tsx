@@ -25,7 +25,7 @@ type Props = {
   loading?: "lazy" | "eager";
 };
 
-/** Whole-image cover: never hard-cropped or stretched; blurred same-image backdrop instead of black bars. */
+/** Whole-image cover: one network fetch; blurred backdrop uses CSS background (HTTP cache). */
 export function CoverImage({ src, className, frontCrop, loading = "lazy" }: Props) {
   const [shape, setShape] = useState<CoverShape | null>(null);
   const [broken, setBroken] = useState(false);
@@ -35,13 +35,18 @@ export function CoverImage({ src, className, frontCrop, loading = "lazy" }: Prop
     setShape(classifyCover(img.naturalWidth, img.naturalHeight));
   };
   const crop = frontCrop && (shape === "landscape" || shape === "wide");
+  const showBg = shape != null && shape !== "wide" && !crop;
   return (
     <div
       className={["cover-frame", className].filter(Boolean).join(" ")}
       data-shape={shape ?? "pending"}
       data-crop={crop ? "front" : undefined}
     >
-      <img className="cover-bg" src={src} alt="" aria-hidden loading={loading} decoding="async" />
+      <div
+        className="cover-bg"
+        aria-hidden
+        style={showBg ? { backgroundImage: `url("${src}")` } : undefined}
+      />
       <img
         className="cover-main"
         src={src}

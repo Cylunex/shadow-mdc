@@ -1,7 +1,7 @@
 import { CoverImage } from "../components/CoverImage";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { appUrl } from "../api";
+import { api, appUrl } from "../api";
 import { hideBrokenImage, mediaUrl } from "../lib/mediaUrl";
 import { XHandleLink } from "../components/XHandleLink";
 import type { ActorJavRankingInfo, ActorProfile, NonJavActor } from "../model";
@@ -140,9 +140,36 @@ export function ActorDetailView(props: {
   onActorTags?: (actorKey: string, tags: TagState) => Promise<void>;
   report?: (message: string) => void;
 }) {
+  const [extraWorks, setExtraWorks] = useState<ActorWorkRef[] | null>(null);
+  const [worksLoading, setWorksLoading] = useState(false);
+
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [props.model?.ref]);
+
+  useEffect(() => {
+    setExtraWorks(null);
+    const model = props.model;
+    if (!model || model.source !== "jav") return;
+    if (model.works.length >= model.work_count) return;
+    let cancelled = false;
+    setWorksLoading(true);
+    void api.actorWorks(model.ref).then((page) => {
+      if (cancelled) return;
+      setExtraWorks(page.works.map((work) => ({
+        id: work.id,
+        title: work.title,
+        code: work.code ?? null,
+        image_url: work.image_url ?? null,
+        category: work.category
+      })));
+    }).catch(() => {
+      if (!cancelled) setExtraWorks(null);
+    }).finally(() => {
+      if (!cancelled) setWorksLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [props.model?.ref, props.model?.work_count, props.model?.works.length, props.model?.source]);
 
   const portrait = useMemo(() => {
     if (!props.model?.image_url) return null;
@@ -176,6 +203,7 @@ export function ActorDetailView(props: {
   }
 
   const actor = props.model;
+  const works = extraWorks ?? actor.works;
   const tag = props.tags ?? { favorite: false, subscribe: false, blacklist: false };
   const tagBusy = props.busy === `tag-${actor.tagKey}`;
 
@@ -267,13 +295,13 @@ export function ActorDetailView(props: {
         <section className="work-page-section actor-page-works">
           <div className="work-related-head">
             <h2>作品</h2>
-            <span className="muted">{actor.works.length}</span>
+            <span className="muted">{works.length}{worksLoading ? " · 加载中" : ""}</span>
           </div>
-          {actor.works.length === 0 ? (
-            <p className="muted">暂无关联作品</p>
+          {works.length === 0 ? (
+            <p className="muted">{worksLoading ? "正在加载作品列表…" : "暂无关联作品"}</p>
           ) : (
             <div className="actor-page-work-grid" role="list">
-              {actor.works.map((work) => {
+              {works.map((work) => {
                 const thumb = mediaUrl(work.image_url);
                 const codeLabel = work.code ?? work.studio ?? work.series ?? null;
                 return (

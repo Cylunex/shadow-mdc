@@ -216,34 +216,34 @@ export type GfriendsFillResult = z.infer<typeof gfriendsFillResultSchema>;
 export const workSchema = z.object({
   id: z.string(),
   title: z.string(),
-  original_title: z.string().nullable(),
-  primary_code: z.string().nullable(),
+  original_title: z.string().nullable().optional().default(null),
+  primary_code: z.string().nullable().optional().default(null),
   family: z.string(),
   category: z.enum(["Japan", "China", "Korea", "Europe", "Other"]),
-  release_date: z.string().nullable(),
-  runtime_seconds: z.number().nullable(),
-  studio: z.string().nullable(),
-  label: z.string().nullable(),
-  series: z.string().nullable(),
-  plot: z.string().nullable(),
-  original_plot: z.string().nullable().optional(),
-  actors: z.array(z.string()),
-  actor_entities: z.array(actorSummarySchema),
-  directors: z.array(z.string()),
-  tags: z.array(z.string()),
-  artwork: z.array(z.record(z.string(), z.unknown())),
-  image_url: z.string().nullable(),
-  fanart_url: z.string().nullable(),
+  release_date: z.string().nullable().optional().default(null),
+  runtime_seconds: z.number().nullable().optional().default(null),
+  studio: z.string().nullable().optional().default(null),
+  label: z.string().nullable().optional().default(null),
+  series: z.string().nullable().optional().default(null),
+  plot: z.string().nullable().optional().default(null),
+  original_plot: z.string().nullable().optional().default(null),
+  actors: z.array(z.string()).default([]),
+  actor_entities: z.array(actorSummarySchema).default([]),
+  directors: z.array(z.string()).default([]),
+  tags: z.array(z.string()).default([]),
+  artwork: z.array(z.record(z.string(), z.unknown())).default([]),
+  image_url: z.string().nullable().optional().default(null),
+  fanart_url: z.string().nullable().optional().default(null),
   sample_urls: z.array(z.string()).optional().default([]),
-  rating_value: z.number().nullable().optional(),
-  rating_max: z.number().nullable().optional(),
-  rating_count: z.number().nullable().optional(),
-  rating_source: z.string().nullable().optional(),
+  rating_value: z.number().nullable().optional().default(null),
+  rating_max: z.number().nullable().optional().default(null),
+  rating_count: z.number().nullable().optional().default(null),
+  rating_source: z.string().nullable().optional().default(null),
   reviews: z.array(z.record(z.string(), z.unknown())).optional().default([]),
   display_tags: z.array(z.string()).optional().default([]),
-  field_sources: z.record(z.string(), z.string()),
+  field_sources: z.record(z.string(), z.string()).default({}),
   field_locks: z.array(z.string()).default([]),
-  identities: z.array(identitySchema),
+  identities: z.array(identitySchema).default([]),
   collections: z.array(collectionSummarySchema).default([]),
   want_list: z.boolean().optional().default(false),
   has_local_media: z.boolean().optional().default(false),
@@ -251,6 +251,30 @@ export const workSchema = z.object({
   updated_at: z.string()
 });
 export const worksSchema = z.array(workSchema);
+
+export const workSearchSchema = z.object({
+  items: z.array(workSchema),
+  total: z.number(),
+  offset: z.number().default(0),
+  limit: z.number().default(48),
+  query: z.string().default("")
+});
+export type WorkSearch = z.infer<typeof workSearchSchema>;
+
+export const actorWorksSchema = z.object({
+  actor_id: z.string().nullable().optional(),
+  name: z.string(),
+  work_count: z.number().default(0),
+  works: z.array(z.object({
+    id: z.string(),
+    title: z.string(),
+    code: z.string().nullable().optional().default(null),
+    category: z.string(),
+    image_url: z.string().nullable().optional().default(null)
+  }))
+});
+export type ActorWorks = z.infer<typeof actorWorksSchema>;
+
 
 export const workTagFacetSchema = z.object({
   name: z.string(),
@@ -353,6 +377,7 @@ export const actorProfileSchema = z.object({
     category: z.string(),
     image_url: z.string().nullable()
   })),
+  work_codes: z.array(z.string()).optional().default([]),
   image_url: z.string().nullable().optional(),
   x_handle: z.string().nullable().optional(),
   x_url: z.string().nullable().optional(),

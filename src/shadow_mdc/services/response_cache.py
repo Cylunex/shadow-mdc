@@ -25,7 +25,7 @@ TTL_COLLECTIONS = 60 * 60 * 24 * 7  # 7 days
 TTL_TAGS = 60 * 10  # 10 minutes
 TTL_CATEGORIES = 60 * 10  # 10 minutes
 TTL_ACTORS = 60 * 15  # 15 minutes
-TTL_WORKS = 60 * 2  # 2 minutes — library cards; overlay want_list at serve
+TTL_WORKS = 60 * 5  # 5 minutes — lean cards; client overlays want_list
 
 KEY_PREFIX = "shadow_mdc:api:"
 
@@ -147,6 +147,18 @@ class ResponseCache:
             return CacheStats(backend=self._backend_name, hits=self._hits, misses=self._misses)
 
     def get_json(self, key: str) -> Any | None:
+        raw = self.get_raw(key)
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            self._backend.delete(self._full_key(key))
+            return None
+
+    def get_raw(self, key: str) -> str | None:
+        """Return the cached JSON string without decoding (fast Response path)."""
+
         full = self._full_key(key)
         raw = self._backend.get(full)
         if raw is None:
@@ -155,16 +167,16 @@ class ResponseCache:
             return None
         with self._lock:
             self._hits += 1
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            self._backend.delete(full)
-            return None
+        return raw
 
     def set_json(self, key: str, value: Any, *, ttl_seconds: int | None = TTL_STATIC) -> None:
-        full = self._full_key(key)
         payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
-        self._backend.set(full, payload, ttl_seconds)
+        self.set_raw(key, payload, ttl_seconds=ttl_seconds)
+
+    def set_raw(self, key: str, value: str, *, ttl_seconds: int | None = TTL_STATIC) -> None:
+        """Store a pre-serialized JSON string."""
+
+        self._backend.set(self._full_key(key), value, ttl_seconds)
 
     def invalidate(self, *keys: str) -> None:
         for key in keys:
@@ -246,7 +258,7 @@ def works_tags_key(limit: int) -> str:
 
 
 def actors_list_key() -> str:
-    return "actors:list"
+    return "actors:list:v2"
 
 
 def works_list_key(
@@ -258,7 +270,7 @@ def works_list_key(
 ) -> str:
     tag_part = ",".join(sorted(tags))
     return (
-        f"works:list:cid={collection_id or ''}:"
+        f"works:list:v2:cid={collection_id or ''}:"
         f"ck={collection_kind or ''}:"
         f"cn={collection or ''}:"
         f"tags={tag_part}"

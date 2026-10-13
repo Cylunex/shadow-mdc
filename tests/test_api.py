@@ -56,7 +56,7 @@ def test_work_and_actor_apis_expose_cached_images_and_relations(
         work = client.post("/api/works/lookup", json={"code": "SONE-118"}).json()["work"]
         work_id = work["id"]
         cached = data_dir / "artwork" / work_id / "poster.jpg"
-        cached.parent.mkdir(parents=True)
+        cached.parent.mkdir(parents=True, exist_ok=True)
         cached.write_bytes(b"\xff\xd8fixture")
         with app.state.runtime.database.session() as session:
             repo = Repository(session)
@@ -209,9 +209,7 @@ def test_non_jav_local_video_requires_screenshot_but_strm_does_not(
             json=organize_payload,
         ).json()
         assert after_batch["asset_count"] == 2
-        work = next(
-            item for item in client.get("/api/works").json() if item["id"] == video_asset["work_id"]
-        )
+        work = client.get(f"/api/works/{video_asset['work_id']}").json()
         generated = [item for item in work["artwork"] if item.get("source") == "local-screenshot"]
         assert {item["kind"] for item in generated} == {"fanart", "poster"}
         assert all(item["asset_id"] == video_asset["id"] for item in generated)

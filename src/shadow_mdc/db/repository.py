@@ -136,6 +136,9 @@ class Database:
                 )
             if "original_plot" not in work_columns:
                 connection.exec_driver_sql("ALTER TABLE works ADD COLUMN original_plot TEXT")
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_works_created_at ON works (created_at)"
+            )
             asset_columns = {
                 str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(media_assets)")
             }
@@ -688,8 +691,43 @@ class Repository:
         collection_id: str | None = None,
         collection_kind: CollectionKind | str | None = None,
         collection_name: str | None = None,
+        lean: bool = False,
     ) -> list[Work]:
+        """List works newest-first.
+
+        ``lean=True`` skips heavy JSON columns (plot/artwork/reviews/field_sources)
+        that list/search cards never display — cuts SQLite decode cost on large catalogs.
+        """
+
         statement = select(Work)
+        if lean:
+            from sqlalchemy.orm import load_only
+
+            statement = statement.options(
+                load_only(
+                    Work.id,
+                    Work.title,
+                    Work.original_title,
+                    Work.primary_code,
+                    Work.family,
+                    Work.category,
+                    Work.release_date,
+                    Work.runtime_seconds,
+                    Work.studio,
+                    Work.label,
+                    Work.series,
+                    Work.actors,
+                    Work.directors,
+                    Work.tags,
+                    Work.artwork,
+                    Work.rating_value,
+                    Work.rating_max,
+                    Work.rating_count,
+                    Work.rating_source,
+                    Work.created_at,
+                    Work.updated_at,
+                )
+            )
         if collection_id or collection_kind or collection_name:
             statement = statement.join(WorkCollection, WorkCollection.work_id == Work.id).join(
                 Collection, Collection.id == WorkCollection.collection_id
@@ -774,6 +812,30 @@ class Repository:
             .join(WorkActor, WorkActor.actor_id == Actor.id)
             .where(WorkActor.work_id == work_id)
             .order_by(WorkActor.position)
+        )
+        return list(self._session.scalars(statement))
+
+    def works_for_actor(
+        self,
+        *,
+        actor_id: str | None = None,
+        name: str | None = None,
+    ) -> list[Work]:
+        """Works linked to an actor (by id and/or display name), newest release first."""
+
+        if not actor_id and not (name and name.strip()):
+            return []
+        conditions = []
+        if actor_id:
+            conditions.append(Actor.id == actor_id)
+        if name and name.strip():
+            conditions.append(Actor.name == name.strip())
+        statement = (
+            select(Work)
+            .join(WorkActor, WorkActor.work_id == Work.id)
+            .join(Actor, Actor.id == WorkActor.actor_id)
+            .where(or_(*conditions))
+            .order_by(Work.release_date.desc(), Work.created_at.desc(), Work.title)
         )
         return list(self._session.scalars(statement))
 

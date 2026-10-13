@@ -76,9 +76,13 @@ export const WorkCard = memo(function WorkCard({
         )}
         <p>{[work.studio, work.release_date].filter(Boolean).join(" · ")}</p>
         <div className="tags">
-          {work.actor_entities.slice(0, 4).map((actor) => (
-            <span key={actor.id}>{actor.name}</span>
-          ))}
+          {(work.actor_entities.length > 0
+            ? work.actor_entities.slice(0, 4).map((actor) => (
+              <span key={actor.id}>{actor.name}</span>
+            ))
+            : work.actors.slice(0, 4).map((name) => (
+              <span key={name}>{name}</span>
+            )))}
         </div>
         <div className="work-card-actions">
           {onToggleWant && (

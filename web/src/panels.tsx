@@ -26,6 +26,47 @@ const COMMON_GENRE_FILTER_TAGS = [
   "潮吹", "颜射", "多人", "女同", "VR", "4K", "单体作品"
 ] as const;
 
+
+function normalizeSearchText(value: string): string {
+  return value.normalize("NFKC").trim().toLocaleLowerCase();
+}
+
+function scoreWorkMatch(query: string, work: Work): number {
+  const needle = normalizeSearchText(query);
+  if (!needle) return 1;
+  const code = (work.primary_code ?? "").normalize("NFKC").toLocaleUpperCase();
+  const qCode = query.normalize("NFKC").trim().toLocaleUpperCase().replace(/[\s_]+/g, "-");
+  const qKey = qCode.replace(/-/g, "");
+  const codeKey = code.replace(/-/g, "");
+  let best = 0;
+  if (code && (code === qCode || codeKey === qKey)) best = Math.max(best, 100);
+  else if (code && qCode && code.startsWith(qCode)) best = Math.max(best, 92);
+  else if (codeKey && qKey && codeKey.includes(qKey)) best = Math.max(best, 84);
+  const title = normalizeSearchText(work.title);
+  const original = normalizeSearchText(work.original_title ?? "");
+  if (title === needle || (original && original === needle)) best = Math.max(best, 75);
+  else if (title.startsWith(needle) || (original && original.startsWith(needle))) best = Math.max(best, 65);
+  else if (title.includes(needle) || (original && original.includes(needle))) best = Math.max(best, 48);
+  for (const actor of work.actors) {
+    const name = normalizeSearchText(actor);
+    if (!name) continue;
+    if (name === needle) { best = Math.max(best, 70); break; }
+    if (name.includes(needle) || needle.includes(name)) best = Math.max(best, 52);
+  }
+  const studio = normalizeSearchText(work.studio ?? "");
+  if (studio && studio.includes(needle)) best = Math.max(best, 36);
+  const series = normalizeSearchText(work.series ?? "");
+  if (series && series.includes(needle)) best = Math.max(best, 34);
+  for (const tag of [...work.tags, ...(work.display_tags ?? [])]) {
+    const tagText = normalizeSearchText(tag);
+    if (tagText && (tagText === needle || tagText.includes(needle))) {
+      best = Math.max(best, 30);
+      break;
+    }
+  }
+  return best;
+}
+
 const displayCategoryOptions: ReadonlyArray<{ value: DisplayCategory; label: string }> = [
   { value: "all", label: "全部分类" },
   { value: "Japan", label: "JAV" },
@@ -171,21 +212,35 @@ function JavActors({ actors, prefs, onActorTags, busy, onOpenWork, onOpenActor }
     subscribe: Object.values(tags).filter((item) => item.subscribe).length,
     blacklist: Object.values(tags).filter((item) => item.blacklist).length
   }), [tags]);
-  const visibleActors = useMemo(() => actors.filter((actor) => {
-    const key = actor.id ?? actor.name;
-    const tag = tags[key] ?? tags[actor.name];
-    const tagMatches = tagFilter === "all"
-      || (tagFilter === "favorite" && tag?.favorite)
-      || (tagFilter === "subscribe" && tag?.subscribe)
-      || (tagFilter === "blacklist" && tag?.blacklist);
-    const categoryMatches = category === "all" || actor.categories.includes(category);
-    const text = [
-      actor.name,
-      ...actor.aliases,
-      ...actor.works.flatMap((work) => [work.code ?? "", work.title])
-    ].join(" ").toLocaleLowerCase();
-    return tagMatches && categoryMatches && (!normalizedQuery || text.includes(normalizedQuery));
-  }), [actors, category, normalizedQuery, tagFilter, tags]);
+  const visibleActors = useMemo(() => {
+    const needle = normalizedQuery;
+    const filtered = actors.filter((actor) => {
+      const key = actor.id ?? actor.name;
+      const tag = tags[key] ?? tags[actor.name];
+      const tagMatches = tagFilter === "all"
+        || (tagFilter === "favorite" && tag?.favorite)
+        || (tagFilter === "subscribe" && tag?.subscribe)
+        || (tagFilter === "blacklist" && tag?.blacklist);
+      const categoryMatches = category === "all" || actor.categories.includes(category);
+      if (!tagMatches || !categoryMatches) return false;
+      if (!needle) return true;
+      const haystack = [
+        actor.name,
+        ...actor.aliases,
+        ...actor.works.flatMap((work) => [work.code ?? "", work.title]),
+        ...((actor as { work_codes?: string[] }).work_codes ?? [])
+      ].join(" ").toLocaleLowerCase();
+      return haystack.includes(needle);
+    });
+    if (!needle) return filtered;
+    return [...filtered].sort((left, right) => {
+      const leftName = left.name.toLocaleLowerCase();
+      const rightName = right.name.toLocaleLowerCase();
+      const leftExact = leftName === needle || left.aliases.some((alias) => alias.toLocaleLowerCase() === needle) ? 2 : leftName.includes(needle) ? 1 : 0;
+      const rightExact = rightName === needle || right.aliases.some((alias) => alias.toLocaleLowerCase() === needle) ? 2 : rightName.includes(needle) ? 1 : 0;
+      return rightExact - leftExact || right.work_count - left.work_count;
+    });
+  }, [actors, category, normalizedQuery, tagFilter, tags]);
   useEffect(() => setPage(1), [category, deferredQuery, tagFilter]);
   const currentPage = Math.min(page, Math.max(1, Math.ceil(visibleActors.length / ACTOR_PAGE_SIZE)));
   const renderedActors = visibleActors.slice(
@@ -1054,23 +1109,23 @@ export function Works(props: {
       .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
       .slice(0, 80);
   }, [works]);
-  const visibleWorks = useMemo(() => works.filter((work) => {
-    const categoryMatches = category === "all" || work.category === category;
-    const collectionMatches = collectionFilter === "all" || (work.collections ?? []).some((item) => `${item.kind}:${item.name}` === collectionFilter);
-    const display = new Set(work.display_tags ?? []);
-    const tagMatches = selectedTags.length === 0 || selectedTags.every((tag) => display.has(tag));
-    const text = [
-      work.title,
-      work.original_title ?? "",
-      work.primary_code ?? "",
-      work.studio ?? "",
-      work.series ?? "",
-      ...work.actors,
-      ...work.tags,
-      ...(work.display_tags ?? [])
-    ].join(" ").toLocaleLowerCase();
-    return categoryMatches && collectionMatches && tagMatches && (!normalizedQuery || text.includes(normalizedQuery));
-  }), [works, category, collectionFilter, selectedTags, normalizedQuery]);
+  const visibleWorks = useMemo(() => {
+    const filtered = works.filter((work) => {
+      const categoryMatches = category === "all" || work.category === category;
+      const collectionMatches = collectionFilter === "all" || (work.collections ?? []).some((item) => `${item.kind}:${item.name}` === collectionFilter);
+      const display = new Set(work.display_tags ?? []);
+      const tagMatches = selectedTags.length === 0 || selectedTags.every((tag) => display.has(tag));
+      if (!categoryMatches || !collectionMatches || !tagMatches) return false;
+      if (!normalizedQuery) return true;
+      return scoreWorkMatch(deferredQuery, work) > 0;
+    });
+    if (!normalizedQuery) return filtered;
+    return [...filtered].sort((left, right) => {
+      const scoreDelta = scoreWorkMatch(deferredQuery, right) - scoreWorkMatch(deferredQuery, left);
+      if (scoreDelta !== 0) return scoreDelta;
+      return (right.primary_code ?? "").localeCompare(left.primary_code ?? "", "en");
+    });
+  }, [works, category, collectionFilter, selectedTags, normalizedQuery, deferredQuery]);
   useEffect(() => setPage(1), [category, collectionFilter, selectedTags, deferredQuery]);
 
   function toggleGenreTag(tag: string) {
@@ -1135,7 +1190,7 @@ export function Works(props: {
       category={category}
       visible={visibleWorks.length}
       total={works.length}
-      placeholder="搜索标题、番号、演员、片商或标签"
+      placeholder="搜索番号 / 标题 / 演员 / 片商 / 标签（自动排序）"
       setQuery={setQuery}
       setCategory={setCategory}
     /></>}

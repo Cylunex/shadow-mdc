@@ -15,6 +15,7 @@ from typing import Annotated
 import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import or_, select
@@ -135,7 +136,10 @@ from .api_models import (
     WorkRelatedOut,
     WorkSampleGenerateOut,
     WorkTagFacetOut,
+    WorkSearchOut,
     WorkTagFacetsOut,
+    ActorWorkRefOut,
+    ActorWorksOut,
     WorkUpdateRequest,
 )
 from .config import Settings
@@ -305,6 +309,8 @@ from .services.response_cache import (
     works_list_key,
     works_tags_key,
 )
+from .services.library_search import rank_work_dicts
+
 from .services.scanner import Scanner
 from .services.strm_export import StrmConfigError
 from .services.strm_relay import RelayError, StrmRelay, token_ok
@@ -651,6 +657,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=4)
 
 
 def runtime(request: Request) -> Runtime:
@@ -2054,26 +2061,71 @@ def update_library(library_id: str, payload: LibraryUpdate, repo: Repo) -> Libra
     return LibraryOut.model_validate(updated)
 
 
-@app.get("/api/actors", response_model=tuple[ActorProfile, ...])
-def list_actor_catalog(request: Request, repo: Repo) -> tuple[ActorProfile, ...]:
+@app.get("/api/actors")
+def list_actor_catalog(request: Request, repo: Repo) -> Response:
+    """Actor cards with capped work previews; full works via ``/api/actors/{id}/works``."""
+
     app_runtime = runtime(request)
     cache = app_runtime.response_cache
     cache_key = actors_list_key()
-    cached = cache.get_json(cache_key)
-    if cached is not None:
-        return _local_actor_images(tuple(ActorProfile.model_validate(item) for item in cached))
+    cached_raw = cache.get_raw(cache_key)
+    if cached_raw is not None:
+        return Response(content=cached_raw, media_type="application/json")
     profiles = sync_actor_catalog_from_relations(
         app_runtime.actor_store,
         repo.list_actor_work_relations(),
         app_runtime.alias_store.load(),
     )
-    enriched = _attach_actor_javranking(profiles, app_runtime.settings.data_dir)
-    cache.set_json(
-        cache_key,
-        [item.model_dump(mode="json") for item in enriched],
-        ttl_seconds=TTL_ACTORS,
+    enriched = _local_actor_images(
+        _attach_actor_javranking(profiles, app_runtime.settings.data_dir)
     )
-    return _local_actor_images(enriched)
+    payload = [_slim_actor_profile_dict(item.model_dump(mode="json")) for item in enriched]
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+    cache.set_raw(cache_key, raw, ttl_seconds=TTL_ACTORS)
+    return Response(content=raw, media_type="application/json")
+
+
+@app.get("/api/actors/{actor_ref}/works", response_model=ActorWorksOut)
+def list_actor_works(actor_ref: str, request: Request, repo: Repo) -> ActorWorksOut:
+    """Full work list for an actor detail page (list cards only embed a short preview)."""
+
+    app_runtime = runtime(request)
+    key = actor_ref.strip()
+    if key.startswith("jav:"):
+        key = key[4:]
+    actor = repo.get_actor(key)
+    name = actor.name if actor is not None else key
+    actor_id = actor.id if actor is not None else None
+    if actor is None:
+        # Fall back to catalog name match when the client only has a display name.
+        for profile in app_runtime.actor_store.load():
+            if profile.id == key or profile.name == key:
+                actor_id = profile.id
+                name = profile.name
+                break
+    works = repo.works_for_actor(actor_id=actor_id, name=name)
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    refs: list[ActorWorkRefOut] = []
+    for work in works:
+        if work.id in seen:
+            continue
+        seen.add(work.id)
+        refs.append(
+            ActorWorkRefOut(
+                id=work.id,
+                title=work.title,
+                code=work.primary_code,
+                category=str(work.category),
+                image_url=_work_display_artwork(work, "poster"),
+            )
+        )
+    return ActorWorksOut(
+        actor_id=actor_id,
+        name=name,
+        work_count=len(refs),
+        works=refs,
+    )
 
 
 def _local_actor_images(profiles: tuple[ActorProfile, ...]) -> tuple[ActorProfile, ...]:
@@ -3446,7 +3498,7 @@ def get_collection(collection_id: str, request: Request, repo: Repo) -> Collecti
     return output
 
 
-@app.get("/api/works", response_model=list[WorkOut])
+@app.get("/api/works")
 def list_works(
     request: Request,
     repo: Repo,
@@ -3454,12 +3506,14 @@ def list_works(
     collection_kind: CollectionKind | None = None,
     collection: str | None = None,
     tag: Annotated[list[str] | None, Query()] = None,
-) -> list[WorkOut]:
-    """Lean library cards: omit plot/reviews/identities; batch collections; short TTL cache."""
+) -> Response:
+    """Lean library cards: slim JSON, Redis raw-byte cache, no Pydantic re-validate on hit.
+
+    Client overlays ``want_list`` from ``/api/library-prefs`` so the shared cache stays
+    user-agnostic and responses stay fast (~raw Redis GET + gzip).
+    """
 
     app_runtime = runtime(request)
-    prefs = app_runtime.library_prefs_store.load()
-    want = set(prefs.want_list)
     selected_tags = tuple(
         sorted({item.strip() for item in (tag or []) if item and item.strip()})
     )
@@ -3470,12 +3524,9 @@ def list_works(
         collection=collection,
         tags=selected_tags,
     )
-    cached = cache.get_json(cache_key)
-    if cached is not None:
-        return [
-            WorkOut.model_validate({**item, "want_list": item.get("id") in want})
-            for item in cached
-        ]
+    cached_raw = cache.get_raw(cache_key)
+    if cached_raw is not None:
+        return Response(content=cached_raw, media_type="application/json")
 
     local_ids = repo.work_ids_with_local_media()
     works = [
@@ -3484,6 +3535,7 @@ def list_works(
             collection_id=collection_id,
             collection_kind=collection_kind,
             collection_name=collection,
+            lean=True,
         )
         if not selected_tags or work_matches_tags(work.tags, list(selected_tags))
     ]
@@ -3497,14 +3549,50 @@ def list_works(
         )
         for work in works
     ]
-    cache.set_json(
-        cache_key,
-        [item.model_dump(mode="json") for item in results],
-        ttl_seconds=TTL_WORKS,
+    payload = [_slim_work_card_dict(item.model_dump(mode="json")) for item in results]
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+    cache.set_raw(cache_key, raw, ttl_seconds=TTL_WORKS)
+    return Response(content=raw, media_type="application/json")
+
+
+@app.get("/api/works/search", response_model=WorkSearchOut)
+def search_works(
+    request: Request,
+    repo: Repo,
+    q: Annotated[str, Query(min_length=1, max_length=200)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 48,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    category: str | None = None,
+    tag: Annotated[list[str] | None, Query()] = None,
+) -> WorkSearchOut:
+    """Ranked local search over code / title / actor / studio / tags."""
+
+    app_runtime = runtime(request)
+    selected_tags = tuple(
+        sorted({item.strip() for item in (tag or []) if item and item.strip()})
     )
-    return [
-        item.model_copy(update={"want_list": item.id in want}) for item in results
+    cache = app_runtime.response_cache
+    cache_key = works_list_key(
+        collection_id=None,
+        collection_kind=None,
+        collection=None,
+        tags=selected_tags,
+    )
+    rows = cache.get_json(cache_key)
+    if rows is None:
+        # Populate the same lean list cache used by /api/works.
+        list_works(request, repo, tag=list(selected_tags) or None)
+        rows = cache.get_json(cache_key) or []
+    if category and category != "all":
+        rows = [row for row in rows if str(row.get("category") or "") == category]
+    page, total = rank_work_dicts(q, rows, limit=limit, offset=offset)
+    prefs = app_runtime.library_prefs_store.load()
+    want = set(prefs.want_list)
+    items = [
+        WorkOut.model_validate({**item, "want_list": item.get("id") in want})
+        for item in page
     ]
+    return WorkSearchOut(items=items, total=total, offset=offset, limit=limit, query=q.strip())
 
 
 @app.get("/api/works/tags", response_model=WorkTagFacetsOut)
@@ -3520,7 +3608,7 @@ def list_work_tag_facets(
     cached = cache.get_json(cache_key)
     if cached is not None:
         return WorkTagFacetsOut.model_validate(cached)
-    facets = facet_tags((work.tags for work in repo.list_works()), limit=limit)
+    facets = facet_tags((work.tags for work in repo.list_works(lean=True)), limit=limit)
     output = WorkTagFacetsOut(
         tags=[WorkTagFacetOut(name=name, count=count) for name, count in facets]
     )
@@ -3542,7 +3630,7 @@ def list_categories(
     cached = cache.get_json(cache_key)
     if cached is not None:
         return CategoriesOut.model_validate(cached)
-    counts = facet_count_map([work.tags for work in repo.list_works()])
+    counts = facet_count_map([work.tags for work in repo.list_works(lean=True)])
     rows = build_category_list(
         app_runtime.settings.data_dir,
         facet_counts=counts,
@@ -3913,7 +4001,12 @@ def work_artwork_file(work_id: str, kind: str, request: Request, repo: Repo) -> 
     path = next((item for item in sorted(root.glob(f"{kind}.*")) if item.is_file()), None)
     if path is None:
         raise HTTPException(status_code=404, detail="cached artwork not found")
-    return FileResponse(path)
+    media_type, _ = mimetypes.guess_type(str(path))
+    return FileResponse(
+        path,
+        media_type=media_type or "application/octet-stream",
+        headers={"Cache-Control": "public, max-age=604800, immutable"},
+    )
 
 
 @app.post("/api/works/{work_id}/artwork/download", response_model=ArtworkDownloadResult)
@@ -4580,6 +4673,7 @@ def _work_list_out(
 ) -> WorkOut:
     """Card-oriented WorkOut: no plot/reviews/identities/artwork blobs, no per-work DB hits."""
 
+    actors = [name for name in (work.actors or [])[:6] if isinstance(name, str) and name.strip()]
     actor_entities = [
         ActorSummaryOut(
             id=f"name:{name}",
@@ -4588,8 +4682,7 @@ def _work_list_out(
             x_handle=None,
             x_url=None,
         )
-        for name in (work.actors or [])[:8]
-        if isinstance(name, str) and name.strip()
+        for name in actors
     ]
     collection_rows = collections if collections is not None else []
     collection_outs = [
@@ -4597,10 +4690,11 @@ def _work_list_out(
             id=item.id,
             name=item.name,
             kind=CollectionKind(item.kind),
-            aliases=list(item.aliases or []),
+            aliases=[],  # aliases bloat list payloads; detail endpoints still expose them
         )
         for item in collection_rows
     ]
+    tags = [tag for tag in (work.tags or [])[:16] if isinstance(tag, str) and tag.strip()]
     return WorkOut(
         id=work.id,
         title=work.title,
@@ -4609,16 +4703,16 @@ def _work_list_out(
         family=work.family,
         category=MediaCategory(work.category),
         release_date=work.release_date,
-        runtime_seconds=work.runtime_seconds,
+        runtime_seconds=None,
         studio=work.studio,
-        label=work.label,
+        label=None,
         series=work.series,
         plot=None,
         original_plot=None,
-        actors=list(work.actors or []),
+        actors=actors,
         actor_entities=actor_entities,
-        directors=list(work.directors or []),
-        tags=list(work.tags or []),
+        directors=[],
+        tags=tags,
         artwork=[],
         image_url=_work_display_artwork(work, "poster"),
         fanart_url=None,
@@ -4628,7 +4722,7 @@ def _work_list_out(
         rating_count=getattr(work, "rating_count", None),
         rating_source=getattr(work, "rating_source", None),
         reviews=[],
-        display_tags=_display_tags(work),
+        display_tags=_display_tags(work)[:24],
         field_sources={},
         field_locks=[],
         identities=[],
@@ -4638,6 +4732,65 @@ def _work_list_out(
         created_at=work.created_at,
         updated_at=work.updated_at,
     )
+
+
+_NULLABLE_CARD_OMIT = frozenset(
+    {
+        "plot",
+        "original_plot",
+        "fanart_url",
+        "label",
+        "runtime_seconds",
+        "rating_value",
+        "rating_max",
+        "rating_count",
+        "rating_source",
+    }
+)
+
+
+def _slim_work_card_dict(row: dict[str, object]) -> dict[str, object]:
+    """Shrink list cards: drop null extras and collection aliases (largest repeated bloat)."""
+
+    out: dict[str, object] = {}
+    for key, value in row.items():
+        if key in _NULLABLE_CARD_OMIT and value is None:
+            continue
+        if key == "want_list" and value is False:
+            continue
+        if key == "has_local_media" and value is False:
+            continue
+        if key == "collections" and isinstance(value, list):
+            out[key] = [
+                {ck: cv for ck, cv in item.items() if ck != "aliases"}
+                if isinstance(item, dict)
+                else item
+                for item in value
+            ]
+            continue
+        out[key] = value
+    return out
+
+
+_ACTOR_LIST_WORK_CAP = 8
+
+
+def _slim_actor_profile_dict(row: dict[str, object]) -> dict[str, object]:
+    """Keep list cards light: preview works only; codes stay searchable client-side."""
+
+    works = list(row.get("works") or [])
+    codes = [
+        str(item.get("code"))
+        for item in works
+        if isinstance(item, dict) and item.get("code")
+    ]
+    preview = works[:_ACTOR_LIST_WORK_CAP]
+    out = dict(row)
+    out["works"] = preview
+    # Compact search aid for codes beyond the preview window.
+    if codes:
+        out["work_codes"] = codes[:80]
+    return out
 
 
 def _work_out(

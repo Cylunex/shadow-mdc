@@ -104,9 +104,11 @@ export function App() {
   }, []);
 
   const refreshWorks = useCallback(async () => {
-    setWorks(await api.works());
+    const rows = await api.works();
+    const want = new Set(prefs.want_list);
+    setWorks(rows.map((item) => (want.has(item.id) ? { ...item, want_list: true } : { ...item, want_list: false })));
     setLoaded((current) => ({ ...current, works: true }));
-  }, []);
+  }, [prefs.want_list]);
 
   const refreshActors = useCallback(async () => {
     const [nextActors, nextNonJav] = await Promise.all([api.actors(), api.nonJavActors()]);

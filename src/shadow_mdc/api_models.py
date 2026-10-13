@@ -191,22 +191,22 @@ class CollectionSummaryOut(BaseModel):
 class WorkOut(BaseModel):
     id: str
     title: str
-    original_title: str | None
-    primary_code: str | None
+    original_title: str | None = None
+    primary_code: str | None = None
     family: str
     category: MediaCategory
-    release_date: date | None
-    runtime_seconds: int | None
-    studio: str | None
-    label: str | None
-    series: str | None
-    plot: str | None
+    release_date: date | None = None
+    runtime_seconds: int | None = None
+    studio: str | None = None
+    label: str | None = None
+    series: str | None = None
+    plot: str | None = None
     original_plot: str | None = None
-    actors: list[str]
+    actors: list[str] = Field(default_factory=list)
     actor_entities: list[ActorSummaryOut] = Field(default_factory=list)
-    directors: list[str]
-    tags: list[str]
-    artwork: list[dict[str, object]]
+    directors: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    artwork: list[dict[str, object]] = Field(default_factory=list)
     image_url: str | None = None
     fanart_url: str | None = None
     sample_urls: list[str] = Field(default_factory=list)
@@ -216,7 +216,7 @@ class WorkOut(BaseModel):
     rating_source: str | None = None
     reviews: list[dict[str, object]] = Field(default_factory=list)
     display_tags: list[str] = Field(default_factory=list)
-    field_sources: dict[str, str]
+    field_sources: dict[str, str] = Field(default_factory=dict)
     field_locks: list[str] = Field(default_factory=list)
     identities: list[IdentityOut] = Field(default_factory=list)
     collections: list[CollectionSummaryOut] = Field(default_factory=list)
@@ -1117,3 +1117,28 @@ class SubscriptionScanOut(BaseModel):
     queued: int
     skipped: int
     notes: list[str] = Field(default_factory=list)
+
+
+class WorkSearchOut(BaseModel):
+    """Paginated, ranked local library search results."""
+
+    items: list[WorkOut] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 48
+    query: str = ""
+
+
+class ActorWorkRefOut(BaseModel):
+    id: str
+    title: str
+    code: str | None = None
+    category: str
+    image_url: str | None = None
+
+
+class ActorWorksOut(BaseModel):
+    actor_id: str | None = None
+    name: str
+    work_count: int = 0
+    works: list[ActorWorkRefOut] = Field(default_factory=list)

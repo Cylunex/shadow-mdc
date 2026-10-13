@@ -60,6 +60,7 @@ class Library(Base):
 
 class Work(Base):
     __tablename__ = "works"
+    __table_args__ = (Index("ix_works_created_at", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     title: Mapped[str] = mapped_column(Text)

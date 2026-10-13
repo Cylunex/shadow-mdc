@@ -43,6 +43,8 @@ import {
   workSchema,
   workLookupSchema,
   worksSchema,
+  workSearchSchema,
+  actorWorksSchema,
   workTagFacetsSchema,
   categoriesPageSchema,
   collectionsSchema,
@@ -271,6 +273,25 @@ export const api = {
     const suffix = query.toString() ? `?${query}` : "";
     return request(worksSchema, `/api/works${suffix}`);
   },
+  searchWorks: (params: {
+    q: string;
+    limit?: number;
+    offset?: number;
+    category?: string;
+    tags?: string[];
+  }) => {
+    const query = new URLSearchParams();
+    query.set("q", params.q);
+    if (params.limit != null) query.set("limit", String(params.limit));
+    if (params.offset != null) query.set("offset", String(params.offset));
+    if (params.category && params.category !== "all") query.set("category", params.category);
+    for (const tag of params.tags ?? []) {
+      if (tag.trim()) query.append("tag", tag.trim());
+    }
+    return request(workSearchSchema, `/api/works/search?${query}`);
+  },
+  actorWorks: (actorRef: string) =>
+    request(actorWorksSchema, `/api/actors/${encodeURIComponent(actorRef)}/works`),
   workTagFacets: (limit = 40) =>
     request(workTagFacetsSchema, `/api/works/tags?limit=${limit}`),
   categories: (params: { onlyWithWorks?: boolean } = {}) => {
