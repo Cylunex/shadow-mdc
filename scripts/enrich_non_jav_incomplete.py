@@ -29,6 +29,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -721,126 +722,204 @@ async def _run(arguments: argparse.Namespace) -> int:
         for work_stub in targets:
             stats.scanned += 1
             try:
-                with database.session() as session:
-                    repo = Repository(session)
-                    work = repo.get_work(work_stub.id)
-                    if work is None:
-                        continue
-                    gaps_before = field_gaps(work)
-                    if not gaps_before:
-                        stats.skipped_complete += 1
-                        continue
-                    if arguments.dry_run:
-                        scene, score = await find_best_scene(tpdb, work)
-                        if scene is None:
-                            stats.skipped_no_match += 1
-                            print(f"[dry] {work.title[:50]!r} gaps={gaps_before} no_match score={score:.2f}")
-                        else:
-                            stats.matched += 1
-                            print(
-                                f"[dry] {work.title[:50]!r} gaps={gaps_before} "
-                                f"match={scene.get('title')!r} score={score:.2f}"
-                            )
-                        continue
+                # Phase 1: short read — detach work fields before any HTTP.
+                def _read():
+                    with database.session() as session:
+                        work = Repository(session).get_work(work_stub.id)
+                        if work is None:
+                            return None
+                        # expire-safe snapshot
+                        return {
+                            "id": work.id,
+                            "title": work.title,
+                            "primary_code": work.primary_code,
+                            "family": work.family,
+                            "category": work.category,
+                            "studio": work.studio,
+                            "actors": list(work.actors or []),
+                            "tags": list(work.tags or []),
+                            "plot": work.plot,
+                            "original_plot": getattr(work, "original_plot", None),
+                            "release_date": work.release_date,
+                            "rating_value": work.rating_value,
+                            "artwork": list(work.artwork or []) if isinstance(work.artwork, list) else [],
+                            "field_sources": dict(work.field_sources or {}),
+                            "gaps": field_gaps(work),
+                        }
 
-                    scene, score = await find_best_scene(tpdb, work)
+                snap = with_sqlite_retry(_read)
+                if snap is None:
+                    continue
+                gaps_before = snap["gaps"]
+                if not gaps_before:
+                    stats.skipped_complete += 1
+                    continue
+                work_view = SimpleNamespace(
+                    id=snap["id"],
+                    title=snap["title"],
+                    primary_code=snap["primary_code"],
+                    family=snap["family"],
+                    category=snap["category"],
+                    studio=snap["studio"],
+                    actors=snap["actors"],
+                    tags=snap["tags"],
+                    plot=snap["plot"],
+                    original_plot=snap["original_plot"],
+                    release_date=snap["release_date"],
+                    rating_value=snap["rating_value"],
+                    artwork=snap["artwork"],
+                    field_sources=snap["field_sources"],
+                )
+
+                # Phase 2: network outside any DB session.
+                scene, score = await find_best_scene(tpdb, work_view)  # type: ignore[arg-type]
+                if arguments.dry_run:
                     if scene is None:
                         stats.skipped_no_match += 1
-                        print(f"[skip] {work.primary_code or work.title[:40]!r} no_match score={score:.2f}")
-                        continue
-                    stats.matched += 1
-                    family = ContentFamily(work.family) if work.family in ContentFamily._value2member_map_ else ContentFamily.WESTERN
-                    category = MediaCategory(work.category) if work.category in MediaCategory._value2member_map_ else MediaCategory.EUROPE
-                    record = scene_to_record(scene, family=family, category=category)
-                    # NEVER create new works — only fill gaps on the target row.
-                    updated = work
-                    sources = dict(updated.field_sources or {})
-                    if not (updated.plot or getattr(updated, "original_plot", None)) and record.plot:
-                        repo.update_work_fields(updated, plot=record.plot, lock_edited=False)
-                        updated = repo.get_work(updated.id) or updated
-                        sources = dict(updated.field_sources or {})
-                        sources["plot"] = "theporndb"
-                        updated.field_sources = sources
-                    if not updated.actors and record.actors:
-                        repo.update_work_fields(updated, actors=list(record.actors), lock_edited=False)
-                        updated = repo.get_work(updated.id) or updated
-                    if not updated.tags and record.tags:
-                        repo.update_work_fields(updated, tags=list(record.tags), lock_edited=False)
-                        updated = repo.get_work(updated.id) or updated
-                    if updated.release_date is None and record.release_date is not None:
-                        updated.release_date = record.release_date
-                        sources = dict(updated.field_sources or {})
-                        sources["release_date"] = "theporndb"
-                        updated.field_sources = sources
-                    if updated.rating_value is None and record.rating is not None and float(record.rating) > 0:
-                        updated.rating_value = float(record.rating)
-                        updated.rating_max = float(record.rating_max) if record.rating_max else 5.0
-                        updated.rating_source = "theporndb"
-                        sources = dict(updated.field_sources or {})
-                        sources["rating"] = "theporndb"
-                        updated.field_sources = sources
-                    if (not updated.artwork) and record.artwork:
-                        updated.artwork = [
-                            {"url": item.url, "kind": item.kind, "source": "theporndb"}
-                            for item in record.artwork
-                            if item.url
-                        ]
-                        sources = dict(updated.field_sources or {})
-                        sources["artwork"] = "theporndb"
-                        updated.field_sources = sources
-                    # Persist identity link without creating a second work.
-                    try:
-                        repo._add_record_identities(updated, record)  # noqa: SLF001
-                    except Exception:
-                        pass
-                    repo._session.flush()
-                    updated = repo.get_work(updated.id) or updated
+                        print(f"[dry] {(snap['title'] or '')[:50]!r} gaps={gaps_before} no_match score={score:.2f}")
+                    else:
+                        stats.matched += 1
+                        print(
+                            f"[dry] {(snap['title'] or '')[:50]!r} gaps={gaps_before} "
+                            f"match={scene.get('title')!r} score={score:.2f}"
+                        )
+                    continue
+                if scene is None:
+                    stats.skipped_no_match += 1
+                    print(f"[skip] {snap['primary_code'] or (snap['title'] or '')[:40]!r} no_match score={score:.2f}")
+                    continue
 
-                    gaps_after_meta = field_gaps(updated)
-                    for name in ("plot", "actors", "release_date", "tags", "cover", "rating"):
-                        if name in gaps_before and name not in gaps_after_meta:
-                            stats.filled[name] += 1
+                family = (
+                    ContentFamily(snap["family"])
+                    if snap["family"] in ContentFamily._value2member_map_
+                    else ContentFamily.WESTERN
+                )
+                category = (
+                    MediaCategory(snap["category"])
+                    if snap["category"] in MediaCategory._value2member_map_
+                    else MediaCategory.EUROPE
+                )
+                record = scene_to_record(scene, family=family, category=category)
 
-                    if not arguments.no_posters and updated.artwork:
-                        art_result, local_paths = await ArtworkStore(
-                            settings.data_dir / "artwork",
-                            client,
-                            max_bytes=settings.artwork_max_bytes,
-                        ).acquire(updated)
-                        if local_paths:
-                            repo.update_artwork_local_paths(updated, local_paths)
-                        if art_result.downloaded:
-                            stats.filled["cover"] += 0  # already counted if cover gap closed
-                        updated = repo.get_work(updated.id) or updated
-
-                    if (not arguments.no_translate) and settings.translation_enabled and ("title_cn" in gaps_before or "plot" in gaps_before):
+                # Phase 3: short write transaction only.
+                def _write():
+                    with database.session() as session:
+                        repo = Repository(session)
+                        updated = repo.get_work(snap["id"])
+                        if updated is None:
+                            return None, gaps_before, gaps_before
+                        gaps_now = field_gaps(updated)
+                        sources = dict(updated.field_sources or {})
+                        if not plot_is_meaningful(updated) and record.plot:
+                            repo.update_work_fields(updated, plot=record.plot, lock_edited=False)
+                            updated = repo.get_work(updated.id) or updated
+                            sources = dict(updated.field_sources or {})
+                            sources["plot"] = "theporndb"
+                            updated.field_sources = sources
+                        if not updated.actors and record.actors:
+                            repo.update_work_fields(updated, actors=list(record.actors), lock_edited=False)
+                            updated = repo.get_work(updated.id) or updated
+                        if not updated.tags and record.tags:
+                            repo.update_work_fields(updated, tags=list(record.tags), lock_edited=False)
+                            updated = repo.get_work(updated.id) or updated
+                        if updated.release_date is None and record.release_date is not None:
+                            updated.release_date = record.release_date
+                            sources = dict(updated.field_sources or {})
+                            sources["release_date"] = "theporndb"
+                            updated.field_sources = sources
+                        if updated.rating_value is None and record.rating is not None and float(record.rating) > 0:
+                            updated.rating_value = float(record.rating)
+                            updated.rating_max = float(record.rating_max) if record.rating_max else 5.0
+                            updated.rating_source = "theporndb"
+                            sources = dict(updated.field_sources or {})
+                            sources["rating"] = "theporndb"
+                            updated.field_sources = sources
+                        if (not updated.artwork) and record.artwork:
+                            updated.artwork = [
+                                {"url": item.url, "kind": item.kind, "source": "theporndb"}
+                                for item in record.artwork
+                                if item.url
+                            ]
+                            sources = dict(updated.field_sources or {})
+                            sources["artwork"] = "theporndb"
+                            updated.field_sources = sources
                         try:
-                            result = await asyncio.wait_for(translator.translate_work(repo, updated), timeout=25.0)
+                            repo._add_record_identities(updated, record)  # noqa: SLF001
+                        except Exception:
+                            pass
+                        repo._session.flush()
+                        updated = repo.get_work(updated.id) or updated
+                        return updated, gaps_now, field_gaps(updated)
+
+                updated, gaps_meta_before, gaps_after_meta = with_sqlite_retry(_write, attempts=10, base_delay=0.5)
+                if updated is None:
+                    continue
+                stats.matched += 1
+                for name in ("plot", "actors", "release_date", "tags", "cover", "rating"):
+                    if name in gaps_before and name not in gaps_after_meta:
+                        stats.filled[name] += 1
+
+                # Phase 4: optional artwork/translate in their own short sessions.
+                if not arguments.no_posters and updated.artwork:
+                    art_result, local_paths = await ArtworkStore(
+                        settings.data_dir / "artwork",
+                        client,
+                        max_bytes=settings.artwork_max_bytes,
+                    ).acquire(updated)
+
+                    def _art_write():
+                        with database.session() as session:
+                            repo = Repository(session)
+                            current = repo.get_work(updated.id)
+                            if current is None or not local_paths:
+                                return current
+                            repo.update_artwork_local_paths(current, local_paths)
+                            return repo.get_work(current.id)
+
+                    updated = with_sqlite_retry(_art_write) or updated
+
+                if (
+                    (not arguments.no_translate)
+                    and settings.translation_enabled
+                    and ("title_cn" in gaps_before or "plot" in gaps_before)
+                ):
+                    try:
+                        def _translate():
+                            with database.session() as session:
+                                repo = Repository(session)
+                                current = repo.get_work(updated.id)
+                                if current is None:
+                                    return None
+                                return current, repo
+
+                        pair = with_sqlite_retry(_translate)
+                        if pair is not None:
+                            current, repo = pair
+                            result = await asyncio.wait_for(
+                                translator.translate_work(repo, current), timeout=25.0
+                            )
                             if result.status == "translated":
                                 stats.filled["translated"] += 1
-                        except TimeoutError:
-                            print(f"[warn] translate timeout {updated.id}", flush=True)
-                        except Exception as exc:  # noqa: BLE001 - translation is best-effort
-                            print(f"[warn] translate {updated.id}: {type(exc).__name__}: {exc}", flush=True)
-                        updated = repo.get_work(updated.id) or updated
+                            # session closes after translate_work may have written via repo
+                    except TimeoutError:
+                        print(f"[warn] translate timeout {updated.id}", flush=True)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[warn] translate {updated.id}: {type(exc).__name__}: {exc}", flush=True)
 
-                    gaps_after = field_gaps(updated)
-                    print(
-                        f"[ok] score={score:.2f} title={updated.title[:48]!r} "
-                        f"filled_closed={sorted(set(gaps_before) - set(gaps_after))} remain={gaps_after}",
-                        flush=True,
-                    )
-                    await asyncio.sleep(float(arguments.delay))
+                    def _reload():
+                        with database.session() as session:
+                            return Repository(session).get_work(updated.id)
+
+                    updated = with_sqlite_retry(_reload) or updated
+
+                gaps_after = field_gaps(updated)
+                print(
+                    f"[ok] score={score:.2f} title={(updated.title or '')[:48]!r} "
+                    f"filled_closed={sorted(set(gaps_before) - set(gaps_after))} remain={gaps_after}",
+                    flush=True,
+                )
+                await asyncio.sleep(float(arguments.delay))
             except Exception as exc:  # noqa: BLE001
-                message = str(exc).casefold()
-                if any(marker in message for marker in _SQLITE_LOCK_MARKERS):
-                    print(f"[retry-lock] {work_stub.id} {exc}", flush=True)
-                    try:
-                        await asyncio.sleep(1.2)
-                        # Re-queue by continuing; count as scanned already.
-                        continue
-                    except Exception:
-                        pass
                 stats.failed += 1
                 stats.failures.append({"id": work_stub.id, "error": f"{type(exc).__name__}: {exc}"})
                 print(f"[fail] {work_stub.id} {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
