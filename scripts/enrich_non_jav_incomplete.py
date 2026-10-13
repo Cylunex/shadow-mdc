@@ -11,6 +11,8 @@ Example::
 
     PYTHONPATH=src .venv/bin/python scripts/enrich_non_jav_incomplete.py --dry-run --limit 20
     PYTHONPATH=src .venv/bin/python scripts/enrich_non_jav_incomplete.py --limit 200
+    PYTHONPATH=src .venv/bin/python scripts/enrich_non_jav_incomplete.py --family western --limit 120
+    PYTHONPATH=src .venv/bin/python scripts/enrich_non_jav_incomplete.py --studio-contains "Model Media" --limit 80
     PYTHONPATH=src .venv/bin/python scripts/enrich_non_jav_incomplete.py --sync-nas
 """
 
@@ -58,6 +60,125 @@ except ImportError:  # pragma: no cover
 _TPDB_SCENES = "https://api.theporndb.net/scenes"
 _COLLAPSE = re.compile(r"[^a-z0-9\u4e00-\u9fff]+")
 
+# TPDB REST `site=` short_name hints keyed by studio / title markers.
+_STUDIO_SITE_HINTS: tuple[tuple[str, str], ...] = (
+    ("model media asia", "modelmediaasia"),
+    ("model media us", "modelmediaus"),
+    ("model media", "modelmediaasia"),
+    ("麻豆", "modelmediaasia"),
+    ("madou", "modelmediaasia"),
+    ("jules jordan", "julesjordan"),
+    ("vixen", "vixen"),
+    ("tushy", "tushy"),
+    ("blacked", "blacked"),
+    ("deeper", "deeper"),
+    ("bangbros", "bangbros"),
+    ("evil angel", "evilangel"),
+    ("digital playground", "digitalplayground"),
+    ("lubed", "lubed"),
+    ("onlyfans", "onlyfans"),
+)
+
+_SWAG_HANDLE_RE = re.compile(r"@([A-Za-z0-9_]{2,32})", re.I)
+_BRACKET_CODE_RE = re.compile(r"\[\s*([A-Za-z]{1,10}[-_]?\d{2,6})\s*\]")
+_INLINE_CODE_RE = re.compile(r"\b([A-Z]{1,10}-\d{2,6})\b")
+_SQLITE_LOCK_MARKERS = ("database is locked", "database table is locked", "database is busy")
+
+
+def extract_scene_codes(*parts: str | None) -> list[str]:
+    """Pull Madou/SWAG-style scene codes from title/code blobs."""
+
+    found: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        if not part:
+            continue
+        for match in _BRACKET_CODE_RE.finditer(part):
+            code = match.group(1).upper().replace("_", "-")
+            if code not in seen:
+                seen.add(code)
+                found.append(code)
+        for match in _INLINE_CODE_RE.finditer(part.upper()):
+            code = match.group(1)
+            if code not in seen:
+                seen.add(code)
+                found.append(code)
+    return found
+
+
+def resolve_tpdb_sites(work: Work) -> list[str]:
+    """Best-effort TPDB site short_names for a work (may be empty)."""
+
+    sites: list[str] = []
+    studio = (work.studio or "").strip()
+    title = work.title or ""
+    blob = f"{studio} {title}".casefold()
+
+    if studio.lower().startswith("swaglive:"):
+        handle = studio.split(":", 1)[1].strip().casefold()
+        handle = re.sub(r"[^a-z0-9]", "", handle)
+        if handle:
+            sites.append(f"swaglive{handle}")
+    for match in _SWAG_HANDLE_RE.finditer(title):
+        handle = re.sub(r"[^a-z0-9]", "", match.group(1).casefold())
+        if handle:
+            sites.append(f"swaglive{handle}")
+    if "swag" in blob and not any(s.startswith("swaglive") for s in sites):
+        # Broad SWAG query still helps when creator handle is unknown.
+        pass
+
+    for marker, short in _STUDIO_SITE_HINTS:
+        if marker in blob:
+            sites.append(short)
+
+    # unique preserve order
+    out: list[str] = []
+    seen: set[str] = set()
+    for site in sites:
+        if site and site not in seen:
+            seen.add(site)
+            out.append(site)
+    return out[:4]
+
+
+def plot_is_meaningful(work: Work) -> bool:
+    """Reject empty or title-echo plots that prior seeds left behind."""
+
+    plot = ((work.plot or "") or (getattr(work, "original_plot", None) or "")).strip()
+    if not plot:
+        return False
+    title = (work.title or "").strip()
+    if not title:
+        return True
+    if collapse_key(plot) == collapse_key(title):
+        return False
+    # Truncated title dump used as plot (common for early SWAG seeds).
+    if len(plot) < 80 and collapse_key(plot) in collapse_key(title):
+        return False
+    if len(plot) < 24:
+        return False
+    return True
+
+
+def with_sqlite_retry(operation, *, attempts: int = 8, base_delay: float = 0.4):
+    """Retry a callable when SQLite reports a lock (parallel JAV enrich)."""
+
+    import time
+
+    last_exc: BaseException | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return operation()
+        except Exception as exc:  # noqa: BLE001 - narrow by message
+            message = str(exc).casefold()
+            if not any(marker in message for marker in _SQLITE_LOCK_MARKERS):
+                raise
+            last_exc = exc
+            time.sleep(base_delay * (1.6 ** attempt))
+    assert last_exc is not None
+    raise last_exc
+
+
 
 @dataclass
 class EnrichStats:
@@ -90,7 +211,7 @@ def has_cjk(value: str | None) -> bool:
 
 def field_gaps(work: Work) -> list[str]:
     gaps: list[str] = []
-    if not (work.plot or getattr(work, "original_plot", None)):
+    if not plot_is_meaningful(work):
         gaps.append("plot")
     if not work.actors:
         gaps.append("actors")
@@ -226,22 +347,57 @@ def _score_candidate(work: Work, row: dict[str, Any]) -> float:
     elif studio and site_name and collapse_key(site_name) in collapse_key(studio):
         score += 0.75
 
+    expected_sites = set(resolve_tpdb_sites(work))
+    site_short = str(site.get("short_name") or "").casefold()
+    if expected_sites and site_short and site_short in expected_sites:
+        score += 1.25
+
+    # Exact scene-code hit in title/sku
+    for code in extract_scene_codes(work.primary_code, work.title):
+        blob = collapse_key(
+            " ".join(
+                str(x)
+                for x in (title, row.get("sku"), row.get("external_id"), row.get("title"))
+                if x
+            )
+        )
+        if collapse_key(code) and collapse_key(code) in blob:
+            score += 2.0
+            break
+
     return score
 
 
 def build_search_queries(work: Work) -> list[str]:
     queries: list[str] = []
-    code = (work.primary_code or "").strip()
-    if code and code.upper() not in {"N/A", "NA", "NONE"}:
+    for code in extract_scene_codes(work.primary_code, work.title):
         queries.append(code)
+    code = (work.primary_code or "").strip()
+    if code and code.upper() not in {"N/A", "NA", "NONE"} and len(code) >= 3:
+        # Skip Mongo-ish seed ids; prefer human codes.
+        if not re.fullmatch(r"[0-9a-f]{16,}", code.casefold()):
+            queries.append(code)
     title = (work.title or "").strip()
+    # Strip trailing "| Swag @handle video" noise for cleaner TPDB search.
+    title_clean = re.sub(r"\s*[|｜].*$", "", title).strip()
+    title_clean = re.sub(r"\s*\|?\s*Swag\s*@\S+.*$", "", title_clean, flags=re.I).strip()
     actors = [a for a in (work.actors or []) if a and classify_non_jav_actor_rejection(a) is None]
-    if title and actors:
-        queries.append(f"{title} {actors[0]}")
-    if title:
-        queries.append(title)
+    if title_clean and actors:
+        # Prefer short title + actor (TPDB ranking is sensitive to extra tokens).
+        short = title_clean
+        if len(short) > 80:
+            short = short[:80].rsplit(" ", 1)[0]
+        queries.append(f"{short} {actors[0]}")
+        queries.append(f"{actors[0]} {short}")
+    if title_clean:
+        queries.append(title_clean)
     if actors and work.studio:
-        queries.append(f"{actors[0]} {work.studio}")
+        studio = work.studio
+        if studio.casefold().startswith("swaglive:"):
+            studio = studio.split(":", 1)[1].strip() or studio
+        queries.append(f"{actors[0]} {studio}")
+    if actors and work.family == ContentFamily.WESTERN.value:
+        queries.append(actors[0])
     # unique preserve order
     seen: set[str] = set()
     out: list[str] = []
@@ -251,7 +407,7 @@ def build_search_queries(work: Work) -> list[str]:
             continue
         seen.add(key)
         out.append(q)
-    return out[:4]
+    return out[:6]
 
 
 def scene_to_record(row: dict[str, Any], *, family: ContentFamily, category: MediaCategory) -> ProviderRecord:
@@ -290,7 +446,6 @@ def scene_to_record(row: dict[str, Any], *, family: ContentFamily, category: Med
         runtime_seconds=runtime,
         studio=studio,
         plot=plot_text or None,
-         
         actors=actors,
         tags=tags,
         artwork=artwork,
@@ -306,11 +461,16 @@ class TpdbClient:
         self._token = token
         self._detail_cache: dict[str, dict[str, Any]] = {}
 
-    async def search(self, query: str, *, per_page: int = 5) -> list[dict[str, Any]]:
+    async def search(
+        self, query: str, *, per_page: int = 5, site: str | None = None
+    ) -> list[dict[str, Any]]:
+        params: dict[str, object] = {"q": query, "per_page": per_page}
+        if site:
+            params["site"] = site
         try:
             response = await self._client.get(
                 _TPDB_SCENES,
-                params={"q": query, "per_page": per_page},
+                params=params,
                 headers={"Authorization": f"Bearer {self._token}"},
             )
         except httpx.HTTPError:
@@ -349,13 +509,24 @@ class TpdbClient:
 async def find_best_scene(tpdb: TpdbClient, work: Work) -> tuple[dict[str, Any] | None, float]:
     best: dict[str, Any] | None = None
     best_score = 0.0
-    for query in build_search_queries(work):
-        for row in await tpdb.search(query):
-            score = _score_candidate(work, row)
-            if score > best_score:
-                best_score = score
-                best = row
-        if best_score >= 4.0:
+    sites = resolve_tpdb_sites(work)
+    queries = build_search_queries(work)
+    # Site-scoped passes first (much higher precision for Model Media / SWAGLive).
+    passes: list[str | None] = [*sites, None]
+    seen_pass: set[str | None] = set()
+    for site in passes:
+        if site in seen_pass:
+            continue
+        seen_pass.add(site)
+        for query in queries:
+            for row in await tpdb.search(query, site=site):
+                score = _score_candidate(work, row)
+                if score > best_score:
+                    best_score = score
+                    best = row
+            if best_score >= 4.5:
+                break
+        if best_score >= 4.5:
             break
     if best is None or best_score < 2.5:
         return None, best_score
@@ -392,6 +563,8 @@ _PLACEHOLDER_TITLE_MARKERS = (
     "居家日常",
     "校园邂逅",
     "都市情感",
+    "职场主题",
+    "闺蜜主题",
 )
 
 
@@ -400,6 +573,14 @@ def looks_like_placeholder_work(work: Work) -> bool:
     code = (work.primary_code or "").strip().upper()
     if any(marker in title for marker in _PLACEHOLDER_TITLE_MARKERS):
         return True
+    if code.endswith(("-01", "-02")) and any(
+        code.startswith(p) for p in ("TH-", "XK-", "MD-BRAND", "TM-", "MD-", "MDX-", "SWAG-CN")
+    ):
+        # Brand / actor "精选" seed rows (MD-SUCHANG-01, SWAG-CN-01…).
+        if any(marker in title for marker in ("精选", "主题", "华语创作者")) or re.fullmatch(
+            r"(?:MD|MDX|SWAG-CN|TH|XK|TM)-[A-Z0-9]+-0[12]", code
+        ):
+            return True
     if code.endswith("-01") and any(code.startswith(p) for p in ("TH-", "XK-", "MD-BRAND", "TM-")):
         return True
     # Geographic 探花 channel placeholders without a concrete person
@@ -408,14 +589,28 @@ def looks_like_placeholder_work(work: Work) -> bool:
     return False
 
 
-def list_incomplete_non_jav(repo: Repository, *, limit: int | None) -> list[Work]:
-    works = [
-        work
-        for work in repo.list_works()
-        if work.family != ContentFamily.JAV.value
-        and field_gaps(work)
-        and not looks_like_placeholder_work(work)
-    ]
+def list_incomplete_non_jav(
+    repo: Repository,
+    *,
+    limit: int | None,
+    family: str | None = None,
+    studio_contains: str | None = None,
+) -> list[Work]:
+    family_key = family.casefold().strip() if family else None
+    studio_key = studio_contains.casefold().strip() if studio_contains else None
+    works = []
+    for work in repo.list_works():
+        if work.family == ContentFamily.JAV.value:
+            continue
+        if family_key and (work.family or "").casefold() != family_key:
+            continue
+        if studio_key and studio_key not in (work.studio or "").casefold():
+            continue
+        if not field_gaps(work):
+            continue
+        if looks_like_placeholder_work(work):
+            continue
+        works.append(work)
 
     def priority(work: Work) -> tuple[int, int, int, int]:
         gaps = field_gaps(work)
@@ -424,11 +619,16 @@ def list_incomplete_non_jav(repo: Repository, *, limit: int | None) -> list[Work
         searchable = 0
         if work.actors:
             searchable += 2
+        codes = extract_scene_codes(work.primary_code, work.title)
+        if codes:
+            searchable += 3
         code = (work.primary_code or "").strip()
         if code.isdigit() or (code and any(ch.isdigit() for ch in code)):
             searchable += 2
         if work.family == ContentFamily.WESTERN.value:
-            searchable += 1
+            searchable += 2
+        if resolve_tpdb_sites(work):
+            searchable += 2
         if work.studio and work.studio not in {"探花", "91探花"}:
             searchable += 1
         return (-searchable, -high, len(gaps), 0)
@@ -458,7 +658,7 @@ async def _run(arguments: argparse.Namespace) -> int:
         return 3
 
     database = Database(settings.database_url)
-    database.initialize()
+    database.initialize()  # already sets sqlite busy_timeout=30000
     stats = EnrichStats()
 
     client = httpx.AsyncClient(
@@ -488,9 +688,21 @@ async def _run(arguments: argparse.Namespace) -> int:
     )
 
     try:
-        with database.session() as session:
-            targets = list_incomplete_non_jav(Repository(session), limit=arguments.limit)
-        print(f"==> non-JAV incomplete targets: {len(targets)}")
+        def _load_targets():
+            with database.session() as session:
+                return list_incomplete_non_jav(
+                    Repository(session),
+                    limit=arguments.limit,
+                    family=arguments.family,
+                    studio_contains=arguments.studio_contains,
+                )
+
+        targets = with_sqlite_retry(_load_targets)
+        print(
+            f"==> non-JAV incomplete targets: {len(targets)}"
+            + (f" family={arguments.family}" if arguments.family else "")
+            + (f" studio~={arguments.studio_contains}" if arguments.studio_contains else "")
+        )
 
         for work_stub in targets:
             stats.scanned += 1
@@ -606,6 +818,15 @@ async def _run(arguments: argparse.Namespace) -> int:
                     )
                     await asyncio.sleep(float(arguments.delay))
             except Exception as exc:  # noqa: BLE001
+                message = str(exc).casefold()
+                if any(marker in message for marker in _SQLITE_LOCK_MARKERS):
+                    print(f"[retry-lock] {work_stub.id} {exc}", flush=True)
+                    try:
+                        await asyncio.sleep(1.2)
+                        # Re-queue by continuing; count as scanned already.
+                        continue
+                    except Exception:
+                        pass
                 stats.failed += 1
                 stats.failures.append({"id": work_stub.id, "error": f"{type(exc).__name__}: {exc}"})
                 print(f"[fail] {work_stub.id} {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
@@ -649,6 +870,16 @@ def main() -> None:
     parser.add_argument("--no-posters", action="store_true")
     parser.add_argument("--sync-nas", action="store_true")
     parser.add_argument("--delay", type=float, default=0.35, help="seconds between TPDB lookups")
+    parser.add_argument(
+        "--family",
+        default=None,
+        help="only this content family (chinese/western/korean/unknown)",
+    )
+    parser.add_argument(
+        "--studio-contains",
+        default=None,
+        help="substring filter on works.studio (e.g. 'Model Media', 'SWAG')",
+    )
     arguments = parser.parse_args()
     if arguments.limit is not None and arguments.limit < 1:
         raise SystemExit("--limit must be >= 1")
