@@ -660,9 +660,19 @@ async def _run(arguments: argparse.Namespace) -> int:
     database = Database(settings.database_url)
 
     def _init_db() -> None:
+        # Full migrate can block behind parallel JAV enrich writers; prefer light path.
+        if os.environ.get("SHADOW_MDC_ENRICH_LIGHT_INIT", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            with database.engine.begin() as connection:
+                if database.engine.dialect.name == "sqlite":
+                    connection.exec_driver_sql("PRAGMA busy_timeout=30000")
+            return
         database.initialize()  # already sets sqlite busy_timeout=30000
 
-    with_sqlite_retry(_init_db, attempts=12, base_delay=0.8)
+    with_sqlite_retry(_init_db, attempts=16, base_delay=0.6)
     stats = EnrichStats()
 
     client = httpx.AsyncClient(
