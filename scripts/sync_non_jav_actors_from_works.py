@@ -97,7 +97,17 @@ def main() -> int:
             known.add(match.casefold())
 
     database = Database(settings.database_url)
-    database.initialize()
+    import time
+    for _attempt in range(12):
+        try:
+            database.initialize()
+            break
+        except Exception as exc:  # noqa: BLE001
+            if "locked" not in str(exc).casefold() and "busy" not in str(exc).casefold():
+                raise
+            time.sleep(0.8 * (1.5 ** _attempt))
+    else:
+        database.initialize()
 
     # name -> (family, studio) first-seen
     candidates: dict[str, tuple[str | None, str | None]] = {}

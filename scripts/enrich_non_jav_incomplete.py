@@ -658,7 +658,11 @@ async def _run(arguments: argparse.Namespace) -> int:
         return 3
 
     database = Database(settings.database_url)
-    database.initialize()  # already sets sqlite busy_timeout=30000
+
+    def _init_db() -> None:
+        database.initialize()  # already sets sqlite busy_timeout=30000
+
+    with_sqlite_retry(_init_db, attempts=12, base_delay=0.8)
     stats = EnrichStats()
 
     client = httpx.AsyncClient(
