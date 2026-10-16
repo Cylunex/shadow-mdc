@@ -20,6 +20,7 @@ from sqlalchemy import select, text
 from ..db.models import SourceSnapshot, WorkMagnet
 from ..db.repository import Database, Repository
 from .discover import DiscoverService
+from .library_prefs import LibraryPrefsStore
 from .pan import PanService
 from .pan_offline_enqueue import (
     OfflineEnqueueError,
@@ -38,6 +39,7 @@ class SeedOfflineStats:
     submitted: int = 0
     reused: int = 0
     hunting: int = 0
+    want_list_added: int = 0
     skipped_pan: int = 0
     skipped_existing: int = 0
     errors: list[str] = field(default_factory=list)
@@ -53,6 +55,7 @@ class SeedOfflineStats:
             "submitted": self.submitted,
             "reused": self.reused,
             "hunting": self.hunting,
+            "want_list_added": self.want_list_added,
             "skipped_pan": self.skipped_pan,
             "skipped_existing": self.skipped_existing,
             "errors": list(self.errors[-20:]),
@@ -176,6 +179,54 @@ def resolve_work_ids_by_codes(repo: Repository, codes: Sequence[str]) -> list[st
     return ids
 
 
+def _resolve_library_prefs(
+    library_prefs_store: LibraryPrefsStore | None,
+    *,
+    data_dir: Path | None,
+) -> LibraryPrefsStore | None:
+    if library_prefs_store is not None:
+        return library_prefs_store
+    if data_dir is not None:
+        return LibraryPrefsStore(Path(data_dir) / "library-prefs.json")
+    return None
+
+
+def promote_hunting_to_want_list(
+    library_prefs_store: LibraryPrefsStore | None,
+    stats: SeedOfflineStats,
+) -> int:
+    """Auto-add works that finished intake as hunting (no usable magnet) to want_list.
+
+    SubscriptionWatchService already watches want_list, so this keeps retrying
+    magnet refresh → offline without a separate queue.
+    """
+
+    if library_prefs_store is None:
+        return 0
+    hunting_ids: list[str] = []
+    seen: set[str] = set()
+    for row in stats.results:
+        if row.get("outcome") != "hunting":
+            continue
+        work_id = row.get("work_id")
+        if not isinstance(work_id, str) or not work_id or work_id in seen:
+            continue
+        seen.add(work_id)
+        hunting_ids.append(work_id)
+    if not hunting_ids:
+        return 0
+    before = set(library_prefs_store.load().want_list)
+    library_prefs_store.add_wants(hunting_ids)
+    added = [work_id for work_id in hunting_ids if work_id not in before]
+    if added:
+        stats.want_list_added = len(added)
+        logger.info(
+            "seed auto-offline: added %s hunting work(s) to want_list",
+            len(added),
+        )
+    return len(added)
+
+
 async def enqueue_seeded_offline(
     *,
     database: Database,
@@ -183,10 +234,17 @@ async def enqueue_seeded_offline(
     discover: DiscoverService,
     work_ids: Sequence[str],
     pace_seconds: float = DEFAULT_PACE_SECONDS,
+    library_prefs_store: LibraryPrefsStore | None = None,
+    data_dir: Path | None = None,
 ) -> SeedOfflineStats:
-    """Fetch magnets if needed, pick best (code-match preference), submit OpenList offline."""
+    """Fetch magnets if needed, pick best (code-match preference), submit OpenList offline.
+
+    When intake ends in hunting (no magnet / no suitable magnet), those work_ids
+    are auto-added to want_list so SubscriptionWatchService keeps hunting.
+    """
 
     stats = SeedOfflineStats(considered=len(work_ids))
+    prefs = _resolve_library_prefs(library_prefs_store, data_dir=data_dir)
     if not work_ids:
         return stats
 
@@ -218,6 +276,7 @@ async def enqueue_seeded_offline(
             stats.errors.append(message)
             stats.record(work_id, None, "error", message)
             logger.warning("seed auto-offline failed: %s", message)
+    promote_hunting_to_want_list(prefs, stats)
     return stats
 
 
@@ -420,10 +479,16 @@ async def auto_offline_new_works(
     ids = [item for item in work_ids if item and item != "dry-run"]
     if not ids:
         return None
+    data_dir = getattr(settings, "data_dir")
     pan = PanService(
-        data_dir=getattr(settings, "data_dir"),
+        data_dir=data_dir,
         proxy_url=getattr(settings, "proxy_url", None),
     )
     return await enqueue_seeded_offline(
-        database=database, pan=pan, discover=discover, work_ids=ids, pace_seconds=pace_seconds
+        database=database,
+        pan=pan,
+        discover=discover,
+        work_ids=ids,
+        pace_seconds=pace_seconds,
+        data_dir=Path(data_dir) if data_dir is not None else None,
     )

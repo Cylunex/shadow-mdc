@@ -131,3 +131,87 @@ async def test_enqueue_seeded_offline_skips_when_pan_not_ready(tmp_path: Path, m
     )
     assert stats.skipped_pan == 1
     assert stats.submitted == 0
+
+
+@pytest.mark.asyncio
+async def test_enqueue_seeded_offline_hunting_adds_want_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No magnet → hunting → auto-add work_id to want_list for SubscriptionWatch."""
+
+    database = Database(f"sqlite:///{tmp_path / 't.db'}")
+    database.initialize()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    pan = PanService(data_dir=data_dir)
+    monkeypatch.setattr(pan, "status", lambda: {"connected": True, "offline_ready": True})
+
+    with database.session() as session:
+        repo = Repository(session)
+        work = repo.upsert_provider_record(
+            ProviderRecord(
+                provider="javdb",
+                external_id="hunt1",
+                title="Hunting Title",
+                code="PRWF-17",
+                family=ContentFamily.JAV,
+                category=MediaCategory.JAPAN,
+                source_url="https://javdb.com/v/hunt1",
+                actors=["A"],
+                release_date=date(2026, 1, 1),
+            ),
+            overwrite=True,
+        )
+        work_id = work.id
+
+    discover = SimpleNamespace(
+        sukebei_available=False,
+        list_magnets=AsyncMock(return_value=()),
+    )
+    stats = await enqueue_seeded_offline(
+        database=database,
+        pan=pan,
+        discover=discover,  # type: ignore[arg-type]
+        work_ids=[work_id],
+        pace_seconds=0,
+        data_dir=data_dir,
+    )
+    assert stats.hunting == 1
+    assert stats.want_list_added == 1
+    assert stats.submitted == 0
+    from shadow_mdc.services.library_prefs import LibraryPrefsStore
+
+    prefs = LibraryPrefsStore(data_dir / "library-prefs.json").load()
+    assert work_id in prefs.want_list
+
+    # Idempotent: second pass of same hunting work does not double-count adds.
+    stats2 = await enqueue_seeded_offline(
+        database=database,
+        pan=pan,
+        discover=discover,  # type: ignore[arg-type]
+        work_ids=[work_id],
+        pace_seconds=0,
+        data_dir=data_dir,
+    )
+    assert stats2.hunting == 1
+    assert stats2.want_list_added == 0
+    prefs2 = LibraryPrefsStore(data_dir / "library-prefs.json").load()
+    assert prefs2.want_list.count(work_id) == 1
+
+
+def test_promote_hunting_to_want_list_ignores_skipped(tmp_path: Path) -> None:
+    from shadow_mdc.services.library_prefs import LibraryPrefsStore
+    from shadow_mdc.services.seed_auto_offline import (
+        SeedOfflineStats,
+        promote_hunting_to_want_list,
+    )
+
+    store = LibraryPrefsStore(tmp_path / "library-prefs.json")
+    stats = SeedOfflineStats()
+    stats.record("a", "A-1", "hunting", "no magnets")
+    stats.record("b", "B-1", "skipped", "pan not ready")
+    stats.record("c", "C-1", "submitted", "hash")
+    added = promote_hunting_to_want_list(store, stats)
+    assert added == 1
+    assert store.load().want_list == ["a"]
+    assert stats.want_list_added == 1

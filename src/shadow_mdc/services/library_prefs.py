@@ -54,6 +54,22 @@ class LibraryPrefsStore:
             ids.append(work_id)
         return self.save(prefs.model_copy(update={"want_list": ids}))
 
+    def add_wants(self, work_ids: list[str]) -> LibraryPrefs:
+        """Append work ids to want_list (idempotent; preserves order)."""
+        prefs = self.load()
+        ids = list(prefs.want_list)
+        seen = set(ids)
+        changed = False
+        for work_id in work_ids:
+            if not work_id or work_id in seen:
+                continue
+            ids.append(work_id)
+            seen.add(work_id)
+            changed = True
+        if not changed:
+            return prefs
+        return self.save(prefs.model_copy(update={"want_list": ids}))
+
     def set_actor_tags(self, actor_key: str, tags: ActorTagState) -> LibraryPrefs:
         prefs = self.load()
         actor_tags = dict(prefs.actor_tags)

@@ -181,6 +181,7 @@ async def _run(arguments: argparse.Namespace) -> int:
                     pan=pan,
                     discover=discover,
                     work_ids=new_ids,
+                    data_dir=settings.data_dir,
                 )
             else:
                 offline_stats = None

@@ -1731,6 +1731,7 @@ async def _discover_seed_auto_offline(app_runtime: Runtime, work_id: str) -> Non
             discover=app_runtime.discover,
             work_ids=[work_id],
             pace_seconds=0,
+            library_prefs_store=app_runtime.library_prefs_store,
         )
         logger.info("discover seed auto-offline work=%s %s", work_id, stats.as_dict())
         if app_runtime.task_events is not None:

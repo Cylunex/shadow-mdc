@@ -143,6 +143,7 @@ async def _run(arguments: argparse.Namespace) -> int:
             discover=discover,
             work_ids=work_ids,
             pace_seconds=arguments.pace,
+            data_dir=settings.data_dir,
         )
     finally:
         discover.close()
