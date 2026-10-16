@@ -9,7 +9,7 @@ from __future__ import annotations
 import gzip
 import re
 import sqlite3
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -259,8 +259,17 @@ def import_dump_to_sqlite(
     sqlite_path: Path,
     *,
     progress_every: int = 50_000,
+    cancel_check: Callable[[], None] | None = None,
+    on_import_start: Callable[[], None] | None = None,
+    on_import_done: Callable[[], None] | None = None,
 ) -> ImportStats:
-    """Stream a gzipped pg_dump into a replacement SQLite lookup DB."""
+    """Stream a gzipped pg_dump into a replacement SQLite lookup DB.
+
+    Writes into ``sqlite_path.tmp`` first. On success the temp file replaces the
+    live DB; on cancel/error the connection is rolled back synchronously and the
+    temp DB is deleted so a retry can reopen cleanly. ``on_import_*`` lets a
+    network-stall watchdog pause during local parse/import CPU time.
+    """
 
     dump_path = Path(dump_path)
     sqlite_path = Path(sqlite_path)
@@ -269,6 +278,8 @@ def import_dump_to_sqlite(
     if temporary.exists():
         temporary.unlink()
 
+    if on_import_start is not None:
+        on_import_start()
     connection = sqlite3.connect(temporary)
     counts = {name: 0 for name in _TABLE_MAP}
     batch: dict[str, list[tuple[Any, ...]]] = {name: [] for name in _TABLE_MAP.values()}
@@ -285,6 +296,7 @@ def import_dump_to_sqlite(
         )
         rows.clear()
 
+    committed = False
     try:
         connection.executescript(_SCHEMA_SQL)
         for pg_table, columns, values in iter_copy_rows(dump_path, set(_TABLE_MAP)):
@@ -399,6 +411,8 @@ def import_dump_to_sqlite(
                 flush(sqlite_table)
             if progress_every and counts[pg_table] % progress_every == 0:
                 print(f"  … {pg_table}: {counts[pg_table]:,}", flush=True)
+            if cancel_check is not None:
+                cancel_check()
 
         for table_name in batch:
             flush(table_name)
@@ -411,9 +425,25 @@ def import_dump_to_sqlite(
             ("video_count", str(counts.get("derived_video", 0))),
         )
         connection.commit()
+        committed = True
+    except BaseException:
+        committed = False
+        try:
+            connection.rollback()
+        except sqlite3.Error:
+            pass
+        raise
     finally:
-        connection.close()
+        try:
+            connection.close()
+        finally:
+            if on_import_done is not None:
+                on_import_done()
+            if not committed:
+                temporary.unlink(missing_ok=True)
 
+    if not committed:
+        raise RuntimeError("r18 dump import aborted before commit")
     temporary.replace(sqlite_path)
     return ImportStats(
         source=str(dump_path),

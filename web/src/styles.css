@@ -1893,3 +1893,18 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 @media (max-width: 640px) {
   .works-filter-secondary { grid-template-columns: 1fr; }
 }
+
+
+.queue-card--fading {
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 160ms ease, transform 160ms ease;
+  pointer-events: none;
+}
+
+.works-status-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.35rem 0 0.15rem;
+}

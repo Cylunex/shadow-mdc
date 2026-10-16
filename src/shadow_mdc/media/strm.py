@@ -33,7 +33,13 @@ def read_strm_locator(path: str | Path) -> str:
 
 
 def write_strm(path: str | Path, locator: str) -> Path:
-    """Write a single-line UTF-8 .strm file (no BOM). Creates parent dirs."""
+    """Write a single-line UTF-8 .strm file (no BOM). Creates parent dirs.
+
+    Uses same-directory temp + rename so a failed write never truncates an
+    existing Emby sidecar (follow symlinks; keep prior mode bits).
+    """
+
+    from .atomicfile import write_bytes as atomic_write_bytes
 
     text = locator.strip()
     if not text:
@@ -48,15 +54,10 @@ def write_strm(path: str | Path, locator: str) -> Path:
     if parsed.scheme and parsed.scheme.casefold() in _BLOCKED_SCHEMES:
         raise ValueError(f"STRM URI scheme is not allowed: {parsed.scheme}")
 
-    strm_path = Path(path)
-    strm_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = strm_path.with_suffix(strm_path.suffix + ".tmp")
     payload = (text + "\n").encode("utf-8")
     if len(payload) > MAX_STRM_BYTES:
         raise ValueError(f"STRM file exceeds {MAX_STRM_BYTES} bytes")
-    temporary.write_bytes(payload)
-    temporary.replace(strm_path)
-    return strm_path
+    return atomic_write_bytes(Path(path), payload)
 
 
 def redact_media_locator(locator: str) -> str:

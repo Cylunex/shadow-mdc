@@ -17,11 +17,25 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
   const [maxCast, setMaxCast] = useState(3);
   const [localBusy, setLocalBusy] = useState<string | null>(null);
   const [watchStatus, setWatchStatus] = useState<SubscriptionWatchStatus | null>(null);
+  const [fadingIds, setFadingIds] = useState<Record<string, true>>({});
+  const [localQueue, setLocalQueue] = useState(prefs.queue);
   const blocked = Boolean(busy || localBusy);
 
   useEffect(() => {
     void api.subscriptionWatchStatus().then(setWatchStatus).catch(() => setWatchStatus(null));
   }, [prefs]);
+
+  useEffect(() => {
+    // Keep scroll position: merge server queue under any in-flight fade removals.
+    setLocalQueue((current) => {
+      const fading = new Set(Object.keys(fadingIds));
+      if (fading.size === 0) return prefs.queue;
+      const serverIds = new Set(prefs.queue.map((item) => item.id));
+      const kept = current.filter((item) => fading.has(item.id) || serverIds.has(item.id));
+      const extras = prefs.queue.filter((item) => !kept.some((row) => row.id === item.id));
+      return [...kept.filter((item) => serverIds.has(item.id) || fading.has(item.id)), ...extras];
+    });
+  }, [prefs.queue, fadingIds]);
 
   async function runLocal(key: string, action: () => Promise<void>) {
     setLocalBusy(key);
@@ -39,9 +53,33 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
     [prefs.subscriptions]
   );
   const pendingQueue = useMemo(
-    () => prefs.queue.filter((item) => item.status === "pending"),
-    [prefs.queue]
+    () => localQueue.filter((item) => item.status === "pending"),
+    [localQueue]
   );
+
+  async function dismissQueueItem(itemId: string, status: "accepted" | "dismissed") {
+    const scrollY = window.scrollY;
+    setFadingIds((current) => ({ ...current, [itemId]: true }));
+    // Optimistic remove after a short fade; refill keeps remaining rows in place.
+    window.setTimeout(() => {
+      setLocalQueue((current) => current.filter((item) => item.id !== itemId));
+      setFadingIds((current) => {
+        const next = { ...current };
+        delete next[itemId];
+        return next;
+      });
+      window.requestAnimationFrame(() => window.scrollTo({ top: scrollY }));
+    }, 180);
+    try {
+      const next = await api.patchQueueItem(itemId, status);
+      onChanged(next);
+      window.requestAnimationFrame(() => window.scrollTo({ top: scrollY }));
+    } catch (error) {
+      setFadingIds({});
+      setLocalQueue(prefs.queue);
+      report(error instanceof Error ? error.message : String(error));
+    }
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -185,12 +223,15 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
       )}
 
       {tab === "queue" && (
-        prefs.queue.length === 0 ? (
+        localQueue.length === 0 ? (
           <div className="empty"><div>▤</div><h2>影片队列为空</h2><p>扫描订阅后，符合条件的作品会出现在这里供复核。手动下载类任务不会写入订阅。</p></div>
         ) : (
           <div className="queue-list">
-            {prefs.queue.map((item) => (
-              <article key={item.id} className="queue-card">
+            {localQueue.map((item) => (
+              <article
+                key={item.id}
+                className={fadingIds[item.id] ? "queue-card queue-card--fading" : "queue-card"}
+              >
                 <div>
                   <span className="pill">{item.status}</span>
                   <h2>{item.title}</h2>
@@ -199,8 +240,8 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
                 <div className="subscription-actions">
                   {item.status === "pending" && (
                     <>
-                      <button type="button" className="secondary" disabled={blocked} onClick={() => void runLocal(`accept-${item.id}`, async () => onChanged(await api.patchQueueItem(item.id, "accepted")))}>接受</button>
-                      <button type="button" className="ghost" disabled={blocked} onClick={() => void runLocal(`dismiss-${item.id}`, async () => onChanged(await api.patchQueueItem(item.id, "dismissed")))}>忽略</button>
+                      <button type="button" className="secondary" disabled={blocked || Boolean(fadingIds[item.id])} onClick={() => void dismissQueueItem(item.id, "accepted")}>接受</button>
+                      <button type="button" className="ghost" disabled={blocked || Boolean(fadingIds[item.id])} onClick={() => void dismissQueueItem(item.id, "dismissed")}>忽略</button>
                     </>
                   )}
                 </div>

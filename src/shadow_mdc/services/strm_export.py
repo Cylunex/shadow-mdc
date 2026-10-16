@@ -8,8 +8,11 @@ no code; openStrm MIT patterns for the 302 gateway):
   and ``.shadow-strm.json``. Studio segment reuses the same sanitization as the
   organize templates (``Unknown Studio`` when missing). Configurable via
   ``strm_layout_template`` (default ``{studio}/{code}``).
-* Export order per title: poster/fanart → NFO → ``.strm`` last, each written to a
-  temp file and renamed, so Emby realtime monitors never see a half-built folder.
+* Export order per title: poster/fanart → NFO → ``.strm`` last, each written via
+  same-directory temp + rename (never unlink first; failed write keeps prior file).
+* Code-correction / obsolete cleanup deletes only generated names
+  (``movie.nfo`` / ``{stem}.nfo`` / ``{stem}.strm`` / ``{stem}-cdN.strm`` /
+  poster/fanart / ``.shadow-strm.json``); user custom files stay.
 * ``.strm`` body is either our relay URL ``{public}/api/strm/play/{file_id}[?token=]``
   (302 → 115 direct link) or the legacy OpenList ``{prefix}/{remote path}`` form.
 * A small sidecar (``.shadow-strm.json``) records file ids so token / public URL
@@ -33,7 +36,6 @@ import json
 import os
 import re
 import shutil
-import tempfile
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -366,17 +368,9 @@ def plan_strm_entries(code: str, videos: Sequence[RemoteVideo]) -> list[StrmEntr
 
 
 def _atomic_copy(source: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{destination.name}", suffix=".tmp", dir=destination.parent
-    )
-    os.close(descriptor)
-    try:
-        shutil.copyfile(source, temporary)
-        os.replace(temporary, destination)
-    except Exception:
-        Path(temporary).unlink(missing_ok=True)
-        raise
+    from ..media.atomicfile import copy_file
+
+    copy_file(source, destination)
 
 
 def _same_bytes(path: Path, payload: bytes) -> bool:
@@ -411,17 +405,9 @@ def strm_payload(locator: str) -> bytes:
 
 
 def _atomic_write_text(destination: Path, text: str) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{destination.name}", suffix=".tmp", dir=destination.parent
-    )
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(text)
-        os.replace(temporary, destination)
-    except Exception:
-        Path(temporary).unlink(missing_ok=True)
-        raise
+    from ..media.atomicfile import write_text as atomic_write_text
+
+    atomic_write_text(destination, text)
 
 
 def _artwork_sources(work: Work) -> dict[str, Path]:
@@ -895,20 +881,112 @@ def find_export_dirs_for_code(root: Path, code: str) -> list[Path]:
     return found
 
 
-def remove_export_dirs_for_code(root: Path, code: str) -> list[Path]:
-    """Delete managed export folders for ``code``; prune empty parents under root."""
+_CD_STREAM_RE = re.compile(r"^(?P<stem>.+)-cd(?P<n>[1-9]\d*)\.strm$", re.IGNORECASE)
+_ART_NAMES = frozenset(
+    {
+        "poster.jpg",
+        "poster.jpeg",
+        "poster.png",
+        "poster.webp",
+        "fanart.jpg",
+        "fanart.jpeg",
+        "fanart.png",
+        "fanart.webp",
+    }
+)
 
-    removed: list[Path] = []
+
+def generated_export_names(code: str) -> frozenset[str]:
+    """Writer-known basenames for one export folder stem (ideas-only, no GPL copy).
+
+    Exact generated set: ``movie.nfo``, ``{stem}.nfo``, ``{stem}.strm``,
+    ``{stem}-cdN.strm`` (N = positive int, no leading zero), poster/fanart image
+    names the exporter writes, and the managed ``.shadow-strm.json`` sidecar.
+    """
+
+    stem = safe_stem(code)
+    names = {
+        "movie.nfo",
+        f"{stem}.nfo",
+        f"{stem}.strm",
+        SIDECAR_NAME,
+        *{name.casefold() for name in _ART_NAMES},
+    }
+    # cd parts are matched dynamically in cleanup; stem.strm / movie.nfo covered above.
+    return frozenset(names)
+
+
+def is_generated_export_name(filename: str, code: str) -> bool:
+    """True when ``filename`` is a writer-known generated sidecar for ``code``."""
+
+    name = Path(filename).name
+    stem = safe_stem(code)
+    folded = name.casefold()
+    if folded in {n.casefold() for n in generated_export_names(code)}:
+        return True
+    if folded in _ART_NAMES:
+        return True
+    match = _CD_STREAM_RE.match(name)
+    if match and safe_stem(match.group("stem")) == stem:
+        return True
+    return False
+
+
+def cleanup_generated_export_files(directory: Path, code: str) -> list[Path]:
+    """Delete only generated NFO/STRM/cdN/poster/fanart/sidecar; keep user files.
+
+    Used on code correction / obsolete drain so custom attachments (custom.nfo,
+    bonus.strm, notes.txt, …) in the old Emby export folder survive.
+    """
+
+    if not directory.is_dir():
+        return []
+    deleted: list[Path] = []
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.is_file() and not entry.is_symlink():
+            continue
+        if not is_generated_export_name(entry.name, code):
+            continue
+        try:
+            entry.unlink(missing_ok=True)
+            deleted.append(entry)
+        except OSError:
+            continue
+    return deleted
+
+
+def remove_export_dirs_for_code(root: Path, code: str) -> list[Path]:
+    """Remove generated sidecars for ``code``; drop empty export dirs under root.
+
+    Narrow cleanup (generated names only) so user custom files in the old folder
+    are preserved. Directories that still hold custom files stay on disk; empty
+    parents under the export root are pruned.
+    """
+
+    touched: list[Path] = []
     for directory in find_export_dirs_for_code(root, code):
         if not _is_within(directory, root):
             continue
-        shutil.rmtree(directory, ignore_errors=True)
-        removed.append(directory)
-        with contextlib.suppress(OSError):
-            parent = directory.parent
-            if parent != root and _is_within(parent, root) and parent.is_dir() and not any(parent.iterdir()):
-                parent.rmdir()
-    return removed
+        deleted = cleanup_generated_export_files(directory, code)
+        touched.extend(deleted)
+        # Remove the folder only when nothing user-owned remains.
+        try:
+            remaining = [p for p in directory.iterdir()]
+        except OSError:
+            remaining = ["?"]
+        if not remaining:
+            with contextlib.suppress(OSError):
+                directory.rmdir()
+                touched.append(directory)
+            with contextlib.suppress(OSError):
+                parent = directory.parent
+                if parent != root and _is_within(parent, root) and parent.is_dir() and not any(parent.iterdir()):
+                    parent.rmdir()
+    return touched
 
 
 def map_to_emby_path(local: Path, settings: PanSettings) -> str:

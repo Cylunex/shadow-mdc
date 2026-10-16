@@ -2,9 +2,13 @@
 
 export type WorksCategory = "all" | "Japan" | "China" | "Korea" | "Europe" | "Other";
 
+/** Quick status chips (JHS-inspired 「全部未下载」). */
+export type WorksStatusFilter = "all" | "undownloaded" | "want" | "downloaded";
+
 export type WorksFilterState = {
   q: string;
   category: WorksCategory;
+  status: WorksStatusFilter;
   tags: string[];
   studio: string;
   cast: string;
@@ -16,6 +20,7 @@ export type WorksFilterState = {
 export const EMPTY_WORKS_FILTERS: WorksFilterState = {
   q: "",
   category: "all",
+  status: "all",
   tags: [],
   studio: "",
   cast: "",
@@ -31,6 +36,13 @@ function parseCategory(value: string | null): WorksCategory {
   return "all";
 }
 
+const STATUS_FILTERS = new Set<string>(["all", "undownloaded", "want", "downloaded"]);
+
+function parseStatus(value: string | null): WorksStatusFilter {
+  if (value && STATUS_FILTERS.has(value)) return value as WorksStatusFilter;
+  return "all";
+}
+
 export function readWorksFiltersFromSearch(search: string = typeof window !== "undefined" ? window.location.search : ""): WorksFilterState {
   try {
     const params = new URLSearchParams(search);
@@ -39,6 +51,7 @@ export function readWorksFiltersFromSearch(search: string = typeof window !== "u
     return {
       q: (params.get("q") ?? "").trim(),
       category: parseCategory(params.get("cat")),
+      status: parseStatus(params.get("status")),
       tags,
       studio: (params.get("studio") ?? "").trim(),
       cast: (params.get("cast") ?? "").trim(),
@@ -55,6 +68,7 @@ export function worksFiltersActive(state: WorksFilterState): boolean {
   return Boolean(
     state.q
     || state.category !== "all"
+    || state.status !== "all"
     || state.tags.length > 0
     || state.studio
     || state.cast
@@ -67,6 +81,7 @@ export function worksFiltersEqual(a: WorksFilterState, b: WorksFilterState): boo
   return (
     a.q === b.q
     && a.category === b.category
+    && a.status === b.status
     && a.studio === b.studio
     && a.cast === b.cast
     && a.year === b.year
@@ -83,7 +98,7 @@ export function applyWorksFiltersToUrl(
   state: WorksFilterState,
   options: { clearDetail?: boolean } = {}
 ): void {
-  for (const key of ["q", "cat", "tag", "studio", "cast", "year", "col", "page"] as const) {
+  for (const key of ["q", "cat", "status", "tag", "studio", "cast", "year", "col", "page"] as const) {
     url.searchParams.delete(key);
   }
   if (options.clearDetail) {
@@ -92,6 +107,7 @@ export function applyWorksFiltersToUrl(
   }
   if (state.q) url.searchParams.set("q", state.q);
   if (state.category !== "all") url.searchParams.set("cat", state.category);
+  if (state.status !== "all") url.searchParams.set("status", state.status);
   for (const tag of state.tags) {
     if (tag.trim()) url.searchParams.append("tag", tag.trim());
   }
@@ -132,6 +148,7 @@ export function patchWorksFilters(
   const next: WorksFilterState = {
     q: patch.q !== undefined ? patch.q : base.q,
     category: patch.category !== undefined ? patch.category : base.category,
+    status: patch.status !== undefined ? patch.status : base.status,
     tags: patch.tags !== undefined ? [...patch.tags] : [...base.tags],
     studio: patch.studio !== undefined ? patch.studio : base.studio,
     cast: patch.cast !== undefined ? patch.cast : base.cast,

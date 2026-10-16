@@ -201,16 +201,22 @@ export function WorkDetailView(props: {
   const [plot, setPlot] = useState("");
   const [locks, setLocks] = useState<string[]>([]);
 
+  // Seed edit drafts from the loaded work. While the editor is open, keep
+  // unsaved actress/title drafts across metadata refresh so a late reload
+  // cannot wipe in-progress credits (javinizer-go idea; original UI).
   useEffect(() => {
     if (!work) return;
+    setLocks(work.field_locks ?? []);
+    if (editOpen) {
+      return;
+    }
     setTitle(work.title);
     setActors(work.actors.join(", "));
     setStudio(work.studio ?? "");
     setSeries(work.series ?? "");
     setTags(work.tags.join(", "));
     setPlot(work.plot ?? "");
-    setLocks(work.field_locks ?? []);
-  }, [work]);
+  }, [work, editOpen]);
 
   const posterUrl = useMemo(() => {
     if (!work) return null;

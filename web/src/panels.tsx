@@ -15,7 +15,8 @@ import {
   worksFiltersEqual,
   writeWorksFiltersToUrl,
   type WorksCategory,
-  type WorksFilterState
+  type WorksFilterState,
+  type WorksStatusFilter
 } from "./lib/worksFilters";
 import { javActorRef, nonJavActorRef } from "./views/ActorDetailView";
 
@@ -1127,6 +1128,7 @@ export function Works(props: {
       const next: WorksFilterState = {
         ...current,
         ...patch,
+        status: patch.status !== undefined ? patch.status : current.status,
         tags: patch.tags !== undefined ? [...patch.tags] : [...current.tags],
         page: patch.page !== undefined ? patch.page : touchesNonPage ? 1 : current.page
       };
@@ -1146,7 +1148,7 @@ export function Works(props: {
     props.onFiltersChange?.({ ...EMPTY_WORKS_FILTERS });
   }
 
-  const { category, collection: collectionFilter, tags: selectedTags, studio, cast, year } = filters;
+  const { category, status: statusFilter, collection: collectionFilter, tags: selectedTags, studio, cast, year } = filters;
   const normalizedQuery = filters.q.trim().toLocaleLowerCase();
 
   const genreFacets = useMemo(() => {
@@ -1227,6 +1229,9 @@ export function Works(props: {
     const rows: Array<{ work: Work; score: number }> = [];
     for (const work of works) {
       if (category !== "all" && work.category !== category) continue;
+      if (statusFilter === "undownloaded" && work.has_local_media) continue;
+      if (statusFilter === "downloaded" && !work.has_local_media) continue;
+      if (statusFilter === "want" && !work.want_list) continue;
       if (collectionFilter && collectionFilter !== "all") {
         if (!(work.collections ?? []).some((item) => `${item.kind}:${item.name}` === collectionFilter)) continue;
       }
@@ -1258,7 +1263,7 @@ export function Works(props: {
       return (right.work.primary_code ?? "").localeCompare(left.work.primary_code ?? "", "en");
     });
     return rows;
-  }, [works, category, collectionFilter, selectedTags, studio, cast, year, normalizedQuery, filters.q]);
+  }, [works, category, statusFilter, collectionFilter, selectedTags, studio, cast, year, normalizedQuery, filters.q]);
 
   const visibleWorks = scoredWorks.map((row) => row.work);
   const scoreById = useMemo(() => {
@@ -1288,6 +1293,14 @@ export function Works(props: {
   if (filters.category !== "all") {
     const label = displayCategoryOptions.find((item) => item.value === filters.category)?.label ?? filters.category;
     activeChips.push({ key: "cat", label: `分类：${label}`, clear: () => commitFilters({ category: "all" }) });
+  }
+  if (filters.status !== "all") {
+    const statusLabel =
+      filters.status === "undownloaded" ? "全部未下载"
+      : filters.status === "downloaded" ? "已下载"
+      : filters.status === "want" ? "想看"
+      : filters.status;
+    activeChips.push({ key: "status", label: `状态：${statusLabel}`, clear: () => commitFilters({ status: "all" }) });
   }
   if (filters.studio) activeChips.push({ key: "studio", label: `片商：${filters.studio}`, clear: () => commitFilters({ studio: "" }) });
   if (filters.cast) activeChips.push({ key: "cast", label: `演员：${filters.cast}`, clear: () => commitFilters({ cast: "" }) });
@@ -1328,6 +1341,21 @@ export function Works(props: {
           hasExtraFilters={active && (Boolean(studio || cast || year || collectionFilter) || selectedTags.length > 0)}
           onResetAll={resetFilters}
         />
+        <div className="state-filters works-status-filters" aria-label="下载状态筛选">
+          {([
+            ["all", "全部状态"],
+            ["undownloaded", "全部未下载"],
+            ["want", "想看"],
+            ["downloaded", "已下载"]
+          ] as Array<[WorksStatusFilter, string]>).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              className={statusFilter === value ? "secondary" : "ghost"}
+              onClick={() => commitFilters({ status: value })}
+            >{label}</button>
+          ))}
+        </div>
         <div className="works-filter-secondary" aria-label="组合筛选">
           <select
             value={collectionFilter || "all"}

@@ -70,3 +70,12 @@ Shadow MDC remains MIT-licensed; see LICENSE.
   via `strm_export.detect_part_number`.
 - Obsolete Emby-export cleanup on reassignment (durable pending code list, delete export
   dir + Media/Updated, retry-safe) → `services/obsolete_exports.py` + pan_poller drain.
+
+## 2026-10-16 reference sync (ideas only / MIT where noted)
+- ppxb/miyabi (GPL-3.0, **ideas only, no code copy**): same-directory temp→rename
+  sidecar writes that never unlink first; on code-correction / obsolete export cleanup,
+  delete only generated names (nfo/strm/cdN/poster/fanart/sidecar), keep user custom files.
+- javinizer/javinizer-go (MIT): r18 dump EOF Range-probe header timeout; stall watchdog
+  excludes local SQLite import; cancel → rollback then delete temp dump DB.
+- Teamper/JHS (MIT): works-list 「全部未下载」 quick filter; subscription queue dismiss
+  fades and refills in place without scrolling to top.

@@ -26,6 +26,7 @@ import httpx  # noqa: E402
 
 from shadow_mdc.services.r18_dump_download import (  # noqa: E402
     LATEST_DUMP_URL,
+    NetworkStallWatch,
     R18DumpDownloadError,
     download_latest_dump,
 )
@@ -41,12 +42,14 @@ def _dump_dir(settings: Settings) -> Path:
     return path
 
 
-def _download_latest(target_dir: Path, *, proxy: str | None) -> Path:
+def _download_latest(target_dir: Path, *, proxy: str | None, stall: NetworkStallWatch | None = None) -> Path:
     """Resumable download (Range + If-Range); a killed run continues from ``.part``."""
 
     last_report = [0]
 
     def report(done: int, total: int | None) -> None:
+        if stall is not None:
+            stall.beat()
         if done - last_report[0] >= 20 * 1024 * 1024 or (total is not None and done >= total):
             last_report[0] = done
             suffix = f" / {total / (1024 * 1024):.1f}" if total else ""
@@ -56,7 +59,14 @@ def _download_latest(target_dir: Path, *, proxy: str | None) -> Path:
     timeout = httpx.Timeout(60.0, read=600.0)
     with httpx.Client(proxy=proxy, timeout=timeout) as client:
         try:
-            result = download_latest_dump(target_dir, client=client, progress=report)
+            result = download_latest_dump(
+                target_dir,
+                client=client,
+                progress=report,
+                on_eof_probe_start=(stall.pause if stall is not None else None),
+                on_eof_probe_done=(stall.resume if stall is not None else None),
+                on_network_byte=(stall.beat if stall is not None else None),
+            )
         except R18DumpDownloadError as exc:
             raise SystemExit(f"r18 dump download failed: {exc}") from exc
     if result.unchanged:
@@ -98,8 +108,9 @@ def main() -> int:
                 print(f"Using existing dump {dump_path}")
             else:
                 arguments.refresh = True
-        if arguments.refresh:
-            dump_path = _download_latest(dump_dir, proxy=arguments.proxy)
+        stall = NetworkStallWatch(limit_seconds=300.0)
+    if arguments.refresh:
+            dump_path = _download_latest(dump_dir, proxy=arguments.proxy, stall=stall)
     assert dump_path is not None
     if not dump_path.is_file():
         print(f"dump not found: {dump_path}", file=sys.stderr)
@@ -107,7 +118,14 @@ def main() -> int:
 
     sqlite_path = arguments.sqlite or (dump_dir / "r18_dump.db")
     print(f"Importing {dump_path} → {sqlite_path} (provider={PROVIDER_ID})")
-    stats = import_dump_to_sqlite(dump_path, sqlite_path, progress_every=arguments.progress_every)
+    # Pause network-stall budget for local SQLite parse/import (CPU/IO only).
+    stats = import_dump_to_sqlite(
+        dump_path,
+        sqlite_path,
+        progress_every=arguments.progress_every,
+        on_import_start=stall.pause,
+        on_import_done=stall.resume,
+    )
     print(f"Done: videos={stats.videos} actresses={stats.actresses} tables={stats.tables}")
     with R18DumpStore(sqlite_path) as store:
         print(f"Meta: {store.meta()}")

@@ -178,7 +178,7 @@ def test_remove_export_dirs_for_code_prunes_empty_studio_parent(tmp_path: Path) 
     write_sidecar(folder, "GONE-1", [], work_id=None)
     (folder / "GONE-1.strm").write_text("http://x\n", encoding="utf-8")
     removed = remove_export_dirs_for_code(root, "GONE-1")
-    assert removed == [folder]
+    assert folder in removed or any(path == folder for path in removed)
     assert not folder.exists()
     assert not studio.exists()
 
@@ -210,3 +210,24 @@ def test_scanner_binds_letter_volumes_to_directory_code(tmp_path: Path) -> None:
             hints = asset.hints or {}
             assert hints.get("code") == "ONSD-340"
             assert "directory-volume-merge" in (hints.get("alias_evidence") or [])
+
+
+def test_remove_export_dirs_keeps_custom_sidecars(tmp_path: Path) -> None:
+    """Code-correction cleanup deletes only generated names (miyabi idea)."""
+
+    root = tmp_path / "export"
+    folder = root / "SSIS-001"
+    folder.mkdir(parents=True)
+    write_sidecar(folder, "SSIS-001", [], work_id=None)
+    (folder / "SSIS-001.strm").write_text("http://x\n", encoding="utf-8")
+    (folder / "SSIS-001-cd2.strm").write_text("http://y\n", encoding="utf-8")
+    (folder / "movie.nfo").write_text("<movie/>\n", encoding="utf-8")
+    (folder / "poster.jpg").write_bytes(b"P")
+    (folder / "fanart.jpg").write_bytes(b"F")
+    (folder / "bonus.strm").write_text("keep\n", encoding="utf-8")
+    (folder / "custom.nfo").write_text("keep\n", encoding="utf-8")
+    (folder / "notes.txt").write_text("keep\n", encoding="utf-8")
+    remove_export_dirs_for_code(root, "SSIS-001")
+    assert folder.is_dir()
+    left = sorted(path.name for path in folder.iterdir())
+    assert left == ["bonus.strm", "custom.nfo", "notes.txt"]

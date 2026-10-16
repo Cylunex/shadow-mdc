@@ -1,5 +1,3 @@
-import os
-import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from xml.etree.ElementTree import Element, SubElement, fromstring, indent, tostring
@@ -214,18 +212,11 @@ def _nfo_tags(work: Work) -> tuple[str, ...]:
 
 
 def write_nfo(path: str | Path, content: str) -> None:
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=destination.name, suffix=".tmp", dir=destination.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, destination)
-    except Exception:
-        Path(temporary).unlink(missing_ok=True)
-        raise
+    """Atomically publish NFO (same-dir temp + rename; preserve prior file)."""
+
+    from .atomicfile import write_text as atomic_write_text
+
+    atomic_write_text(Path(path), content)
 
 
 def parse_nfo(path: str | Path) -> dict[str, object]:

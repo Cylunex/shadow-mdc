@@ -15,7 +15,7 @@ import json
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
@@ -26,6 +26,9 @@ LATEST_DUMP_URL = "https://r18.dev/dumps/latest"
 # r18.dev sits behind Cloudflare, which 403s library default User-Agents.
 DOWNLOAD_USER_AGENT = "Mozilla/5.0 (compatible; shadow-mdc/1.0; +https://github.com/Cylunex/shadow-mdc)"
 MAX_RESUME_ATTEMPTS = 8
+# Unknown-length streams may already be complete when we probe EOF. Bound only
+# the optional probe's header wait so a dead Range endpoint cannot stall import.
+EOF_PROBE_HEADER_TIMEOUT = 10.0
 _GZIP_MAGIC = b"\x1f\x8b"
 _DUMP_DATE = re.compile(r"_dump_(\d{4}-\d{2}-\d{2})\.")
 
@@ -131,8 +134,18 @@ def download_latest_dump(
     progress: Callable[[int, int | None], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     max_resume_attempts: int = MAX_RESUME_ATTEMPTS,
+    eof_probe_timeout: float = EOF_PROBE_HEADER_TIMEOUT,
+    on_eof_probe_start: Callable[[], None] | None = None,
+    on_eof_probe_done: Callable[[], None] | None = None,
+    on_network_byte: Callable[[], None] | None = None,
 ) -> R18DumpDownloadResult:
-    """Download (or resume) the latest dump into ``target_dir``; skip when already complete."""
+    """Download (or resume) the latest dump into ``target_dir``; skip when already complete.
+
+    After a clean EOF on an unknown-length stream, optionally probe with
+    ``Range: bytes=<offset>-`` under a short header timeout. Stall watchdogs
+    should pause around that probe (``on_eof_probe_*``) and only count
+    ``on_network_byte`` ticks — never local SQLite import time.
+    """
 
     target_dir.mkdir(parents=True, exist_ok=True)
     # identity + iter_raw: byte offsets must match the object on S3 exactly, and raw
@@ -187,11 +200,32 @@ def download_latest_dump(
                         downloaded += len(chunk)
                         if progress is not None:
                             progress(offset, total)
+                        if on_network_byte is not None and chunk:
+                            on_network_byte()
                     clean_eof = True
                 except httpx.HTTPError:
                     pass  # truncated stream: resumed below
         else:
             resumed = True
+
+    # Unknown Content-Length + clean EOF: confirm completeness with a bounded Range probe.
+    if total is None and clean_eof and validator and offset > 0:
+        probe_done = _probe_unknown_eof(
+            client,
+            final_url,
+            headers=headers,
+            offset=offset,
+            validator=validator,
+            timeout=eof_probe_timeout,
+            on_start=on_eof_probe_start,
+            on_done=on_eof_probe_done,
+        )
+        if probe_done is True:
+            total = offset
+        elif isinstance(probe_done, int):
+            # Server still has more bytes — fall through to resume loop.
+            total = probe_done
+            clean_eof = False
 
     failures = 0
     while (total is None and not clean_eof) or (total is not None and offset < total):
@@ -246,6 +280,8 @@ def download_latest_dump(
                             progressed = progressed or bool(chunk)
                             if progress is not None:
                                 progress(offset, total)
+                            if on_network_byte is not None and chunk:
+                                on_network_byte()
                         clean_eof = True
                     except httpx.HTTPError:
                         clean_eof = False
@@ -267,3 +303,87 @@ def download_latest_dump(
         resumed=resumed,
         unchanged=False,
     )
+
+
+def _probe_unknown_eof(
+    client: httpx.Client,
+    url: str,
+    *,
+    headers: dict[str, str],
+    offset: int,
+    validator: str,
+    timeout: float,
+    on_start: Callable[[], None] | None,
+    on_done: Callable[[], None] | None,
+) -> bool | int:
+    """Bounded EOF Range probe for unknown-length streams.
+
+    Returns:
+      True  — 416 with total==offset (genuine EOF)
+      int   — remote total when more bytes remain (caller should resume)
+      False — inconclusive (treat clean EOF as done; gzip layer validates)
+    """
+
+    range_headers = {**headers, "Range": f"bytes={offset}-", "If-Range": validator}
+    if on_start is not None:
+        on_start()
+    try:
+        with client.stream(
+            "GET",
+            url,
+            headers=range_headers,
+            follow_redirects=True,
+            timeout=httpx.Timeout(timeout, connect=timeout, read=timeout, write=timeout),
+        ) as response:
+            if response.status_code == 416:
+                content_range = response.headers.get("content-range", "")
+                if content_range.startswith("bytes */") and content_range[8:].isdigit():
+                    size = int(content_range[8:])
+                    if size == offset:
+                        return True
+                    if size > offset:
+                        return size
+                return False
+            if response.status_code == 206:
+                try:
+                    start, remote_total = parse_content_range(response.headers.get("content-range"))
+                except R18DumpDownloadError:
+                    return False
+                if start != offset:
+                    return False
+                if remote_total is not None and remote_total > offset:
+                    return remote_total
+                return False
+            return False
+    except (httpx.HTTPError, httpx.TimeoutException):
+        return False
+    finally:
+        if on_done is not None:
+            on_done()
+
+
+@dataclass
+class NetworkStallWatch:
+    """Wall-clock stall detector that ignores paused intervals (import / EOF probe)."""
+
+    limit_seconds: float
+    _last_beat: float = field(default_factory=time.monotonic)
+    _paused: int = 0
+
+    def beat(self) -> None:
+        if self._paused == 0:
+            self._last_beat = time.monotonic()
+
+    def pause(self) -> None:
+        self._paused += 1
+
+    def resume(self) -> None:
+        if self._paused > 0:
+            self._paused -= 1
+        if self._paused == 0:
+            self._last_beat = time.monotonic()
+
+    def stalled(self) -> bool:
+        if self._paused > 0:
+            return False
+        return (time.monotonic() - self._last_beat) >= self.limit_seconds
