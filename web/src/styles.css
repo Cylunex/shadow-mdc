@@ -1908,3 +1908,271 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   gap: 0.4rem;
   margin: 0.35rem 0 0.15rem;
 }
+
+/* —— JavRanking-inspired library polish: sort bar, genre sheet, cover badges —— */
+.works-sort-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.works-sort-bar > span {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: .04em;
+}
+.works-sort-bar button {
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 650;
+  border: 1px solid rgba(45, 212, 191, 0.18);
+  background: #162024;
+  color: #b9c4c8;
+}
+.works-sort-bar button:hover {
+  border-color: rgba(45, 212, 191, 0.5);
+  color: #e7fffb;
+}
+.works-sort-bar button.active {
+  border-color: #2dd4bf;
+  background: color-mix(in srgb, #2dd4bf 24%, #152025);
+  color: #e7fffb;
+}
+
+.genre-sheet-trigger {
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 12px;
+  border: 1px dashed rgba(45, 212, 191, 0.45) !important;
+  color: #9ff0e4 !important;
+}
+
+.genre-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(4, 8, 10, 0.72);
+  backdrop-filter: blur(3px);
+}
+.genre-sheet {
+  width: min(720px, 100%);
+  max-height: min(78vh, 720px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(45, 212, 191, 0.24);
+  background: linear-gradient(180deg, #12191d, #0d1315);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+}
+.genre-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.genre-sheet-head h2 {
+  font-size: 17px;
+  margin: 0;
+}
+.genre-sheet-close {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.genre-sheet-close:hover {
+  color: #e7fffb;
+  border-color: rgba(45, 212, 191, 0.5);
+}
+.genre-sheet-search {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #0b1113;
+  padding: 9px 12px;
+  color: inherit;
+}
+.genre-sheet-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.genre-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: #162024;
+  color: #cfd9dd;
+  font-size: 13px;
+  padding: 8px 10px;
+  cursor: pointer;
+  text-align: left;
+}
+.genre-option em {
+  font-style: normal;
+  color: var(--muted);
+  font-size: 11px;
+}
+.genre-option:hover {
+  border-color: rgba(45, 212, 191, 0.45);
+  color: #e7fffb;
+}
+.genre-option.active {
+  border-color: #2dd4bf;
+  background: color-mix(in srgb, #2dd4bf 26%, #162024);
+  color: #e7fffb;
+}
+.genre-option.active em { color: #bafff4; }
+.genre-sheet-empty {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 12px 0;
+}
+.genre-sheet-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 12px;
+}
+.genre-sheet-foot span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.genre-sheet-foot > div {
+  display: flex;
+  gap: 8px;
+}
+
+/* Cover overlays: status chips top-left, JavRanking rank top-right. */
+.poster-badges {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: calc(100% - 20px);
+}
+.poster-badges .status-badge {
+  background: rgba(8, 14, 16, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+.poster-badges .status-想看 { color: #fbbf24; border-color: rgba(251, 191, 36, 0.45); }
+.poster-badges .status-已入库 { color: #5eead4; border-color: rgba(94, 234, 212, 0.4); }
+.poster-badges .status-有本地或Emby { color: #93c5fd; border-color: rgba(147, 197, 253, 0.4); }
+.cover-rank-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  min-width: 0 !important;
+  padding: 3px 8px !important;
+  height: auto !important;
+  font-size: 11px !important;
+  font-weight: 800;
+  letter-spacing: .02em;
+}
+.work-score em {
+  font-style: normal;
+  opacity: .6;
+  font-weight: 600;
+}
+.work-score--ranking {
+  color: #7dd3fc;
+}
+
+@media (max-width: 640px) {
+  .genre-sheet-backdrop { align-items: end; padding: 0; }
+  .genre-sheet {
+    width: 100%;
+    max-height: 82vh;
+    border-radius: 18px 18px 0 0;
+    border-bottom: 0;
+  }
+}
+
+/* Card density + badge placement after the JavRanking-style refresh. */
+.work .original-title {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  overflow: hidden;
+}
+.work .poster .match-rank-badge {
+  top: auto;
+  bottom: 8px;
+  left: 8px;
+}
+.work .work-body { gap: 5px; }
+.work .tags { margin-top: 8px; }
+.work .work-code-row { min-height: 18px; }
+.genre-sheet-body::-webkit-scrollbar { width: 8px; }
+.genre-sheet-body::-webkit-scrollbar-thumb { background: rgba(45, 212, 191, 0.25); border-radius: 999px; }
+
+/* Narrow screens: keep the command bar and filter rows from forcing horizontal scroll. */
+@media (max-width: 760px) {
+  .command-bar-row { grid-template-columns: minmax(0, 1fr) !important; }
+  .command-bar-row button { width: 100%; }
+  .works-sort-bar { gap: 6px; }
+  .works-sort-bar button { padding: 6px 10px; font-size: 11.5px; }
+  .genre-sheet-trigger { width: 100%; justify-content: center; }
+}
+
+/* Narrow screens: brand row + horizontally scrollable nav chips (no page overflow). */
+@media (max-width: 760px) {
+  .top-nav {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 10px 14px;
+  }
+  .top-nav-items {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    gap: 6px;
+    padding-bottom: 2px;
+  }
+  .top-nav-items::-webkit-scrollbar { display: none; }
+  .top-nav-item { flex: 0 0 auto; padding: 8px 12px; min-height: 0; gap: 6px; }
+  .top-nav-item .top-nav-label small { display: none; }
+  .top-nav-item .top-nav-label b { font-size: 12px; }
+}
+
+@media (max-width: 760px) {
+  .display-filter {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 8px;
+  }
+  .display-filter > span { white-space: normal; }
+  .display-filter button { width: 100%; }
+  .library-form { grid-template-columns: minmax(0, 1fr) !important; }
+  .works-filter-stack { padding: 10px; }
+  .pagination { flex-wrap: wrap; }
+}

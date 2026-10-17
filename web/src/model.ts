@@ -239,6 +239,8 @@ export const workSchema = z.object({
   rating_max: z.number().nullable().optional().default(null),
   rating_count: z.number().nullable().optional().default(null),
   rating_source: z.string().nullable().optional().default(null),
+  javranking_rank: z.number().nullable().optional().default(null),
+  javranking_score: z.number().nullable().optional().default(null),
   reviews: z.array(z.record(z.string(), z.unknown())).optional().default([]),
   display_tags: z.array(z.string()).optional().default([]),
   field_sources: z.record(z.string(), z.string()).default({}),

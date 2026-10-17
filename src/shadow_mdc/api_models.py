@@ -214,6 +214,9 @@ class WorkOut(BaseModel):
     rating_max: float | None = None
     rating_count: int | None = None
     rating_source: str | None = None
+    # JavRanking static index (rank / score) — shown as a cover badge on list cards.
+    javranking_rank: int | None = None
+    javranking_score: float | None = None
     reviews: list[dict[str, object]] = Field(default_factory=list)
     display_tags: list[str] = Field(default_factory=list)
     field_sources: dict[str, str] = Field(default_factory=dict)

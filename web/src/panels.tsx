@@ -10,12 +10,15 @@ import type { ActorProfile, Asset, BatchPlan, Candidate, IdentityAliases, Librar
 import { WorkCard } from "./components/WorkCard";
 import {
   EMPTY_WORKS_FILTERS,
+  WORKS_SORT_OPTIONS,
   readWorksFiltersFromSearch,
+  sortWorkRows,
   worksFiltersActive,
   worksFiltersEqual,
   writeWorksFiltersToUrl,
   type WorksCategory,
   type WorksFilterState,
+  type WorksSort,
   type WorksStatusFilter
 } from "./lib/worksFilters";
 import { javActorRef, nonJavActorRef } from "./views/ActorDetailView";
@@ -30,6 +33,7 @@ const DIRECTORY_FILE_PAGE_SIZE = 10;
 const ACTOR_PAGE_SIZE = 24;
 const NON_JAV_ACTOR_PAGE_SIZE = 30;
 const WORK_PAGE_SIZE = 48;
+const QUICK_GENRE_TAG_COUNT = 10;
 const COMMON_GENRE_FILTER_TAGS = [
   "黑丝", "丝袜", "高跟鞋", "巨乳", "美腿", "制服", "眼镜", "口交", "中出",
   "痴女", "人妻", "OL", "护士", "学生", "女仆", "老师", "熟女", "贫乳", "美尻",
@@ -1083,6 +1087,9 @@ export function Works(props: {
   });
   const [queryInput, setQueryInput] = useState(filters.q);
   const [castInput, setCastInput] = useState(filters.cast);
+  const [randomSeed, setRandomSeed] = useState(() => Math.floor(Math.random() * 1_000_000));
+  const [genreSheetOpen, setGenreSheetOpen] = useState(false);
+  const [genreQuery, setGenreQuery] = useState("");
   const deferredQuery = useDeferredValue(queryInput);
   const deferredCast = useDeferredValue(castInput);
 
@@ -1149,6 +1156,7 @@ export function Works(props: {
   }
 
   const { category, status: statusFilter, collection: collectionFilter, tags: selectedTags, studio, cast, year } = filters;
+  const sortMode: WorksSort = filters.sort;
   const normalizedQuery = filters.q.trim().toLocaleLowerCase();
 
   const genreFacets = useMemo(() => {
@@ -1188,6 +1196,20 @@ export function Works(props: {
     return top;
   }, [works]);
 
+  /** One-click chips: the selected tags stay visible, then the most common ones. */
+  const quickGenreTags = useMemo(() => {
+    const selected = genreFacets.filter(([name]) => selectedTags.includes(name));
+    const rest = genreFacets.filter(([name]) => !selectedTags.includes(name));
+    const budget = Math.max(QUICK_GENRE_TAG_COUNT, selected.length);
+    return [...selected, ...rest].slice(0, budget);
+  }, [genreFacets, selectedTags]);
+
+  const filteredGenreFacets = useMemo(() => {
+    const needle = genreQuery.trim().toLocaleLowerCase();
+    if (!needle) return genreFacets;
+    return genreFacets.filter(([name]) => name.toLocaleLowerCase().includes(needle));
+  }, [genreFacets, genreQuery]);
+
   const collectionOptions = useMemo(() => {
     const counts = new Map<string, number>();
     for (const work of works) {
@@ -1226,8 +1248,7 @@ export function Works(props: {
   const scoredWorks = useMemo(() => {
     const castNeedle = cast.trim().toLocaleLowerCase();
     const studioNeedle = studio.trim().toLocaleLowerCase();
-    const rows: Array<{ work: Work; score: number }> = [];
-    for (const work of works) {
+    const rows: Array<{ work: Work; score: number }> = [];    for (const work of works) {
       if (category !== "all" && work.category !== category) continue;
       if (statusFilter === "undownloaded" && work.has_local_media) continue;
       if (statusFilter === "downloaded" && !work.has_local_media) continue;
@@ -1257,13 +1278,15 @@ export function Works(props: {
       if (normalizedQuery && score <= 0) continue;
       rows.push({ work, score });
     }
-    if (!normalizedQuery) return rows;
-    rows.sort((left, right) => {
-      if (right.score !== left.score) return right.score - left.score;
-      return (right.work.primary_code ?? "").localeCompare(left.work.primary_code ?? "", "en");
-    });
-    return rows;
-  }, [works, category, statusFilter, collectionFilter, selectedTags, studio, cast, year, normalizedQuery, filters.q]);
+    if (normalizedQuery) {
+      rows.sort((left, right) => {
+        if (right.score !== left.score) return right.score - left.score;
+        return (right.work.primary_code ?? "").localeCompare(left.work.primary_code ?? "", "en");
+      });
+      return rows;
+    }
+    return sortWorkRows(rows, sortMode, randomSeed);
+  }, [works, category, statusFilter, collectionFilter, selectedTags, studio, cast, year, normalizedQuery, filters.q, sortMode, randomSeed]);
 
   const visibleWorks = scoredWorks.map((row) => row.work);
   const scoreById = useMemo(() => {
@@ -1335,7 +1358,7 @@ export function Works(props: {
           category={category as DisplayCategory}
           visible={visibleWorks.length}
           total={works.length}
-          placeholder="搜索番号 / 标题 / 演员 / 片商 / 标签（自动排序）"
+          placeholder="搜索番号 / 标题 / 演员 / 片商 / 标签（输入时按相关度排序）"
           setQuery={setQueryInput}
           setCategory={(value) => commitFilters({ category: value as WorksCategory })}
           hasExtraFilters={active && (Boolean(studio || cast || year || collectionFilter) || selectedTags.length > 0)}
@@ -1405,6 +1428,22 @@ export function Works(props: {
             <button type="button" className="ghost" onClick={resetFilters}>全部重置</button>
           </div>
         )}
+        <div className="works-sort-bar" aria-label="排序方式">
+          <span>排序</span>
+          {WORKS_SORT_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className={sortMode === option.value ? "active" : "ghost"}
+              title={option.hint}
+              aria-pressed={sortMode === option.value}
+              onClick={() => {
+                if (option.value === "random") setRandomSeed(Math.floor(Math.random() * 1_000_000));
+                commitFilters({ sort: option.value });
+              }}
+            >{option.label}</button>
+          ))}
+        </div>
         <div className="tag-capsules genre-tag-capsules" aria-label="类型标签筛选">
           <span>类型筛选:</span>
           <button
@@ -1412,7 +1451,7 @@ export function Works(props: {
             className={selectedTags.length === 0 ? "active" : "ghost"}
             onClick={() => commitFilters({ tags: [] })}
           >全部</button>
-          {genreFacets.map(([name, count]) => (
+          {quickGenreTags.map(([name, count]) => (
             <button
               key={name}
               type="button"
@@ -1421,6 +1460,62 @@ export function Works(props: {
               title={`筛选含「${name}」的作品（多选为 AND）`}
             >{name} · {count}</button>
           ))}
+          {genreFacets.length > quickGenreTags.length || selectedTags.length > 0 ? (
+            <button
+              type="button"
+              className="ghost genre-sheet-trigger"
+              onClick={() => setGenreSheetOpen(true)}
+              aria-haspopup="dialog"
+            >
+              全部题材 · {genreFacets.length}
+              {selectedTags.length > 0 ? `（已选 ${selectedTags.length}）` : ""}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    )}
+    {genreSheetOpen && (
+      <div className="genre-sheet-backdrop" role="presentation" onClick={() => setGenreSheetOpen(false)}>
+        <div
+          className="genre-sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-label="选择题材分类"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <header className="genre-sheet-head">
+            <h2>选择题材分类</h2>
+            <button type="button" className="genre-sheet-close" aria-label="关闭" onClick={() => setGenreSheetOpen(false)}>×</button>
+          </header>
+          <input
+            className="genre-sheet-search"
+            value={genreQuery}
+            onChange={(event) => setGenreQuery(event.target.value)}
+            placeholder="搜索题材…"
+            autoFocus
+          />
+          <div className="genre-sheet-body">
+            {filteredGenreFacets.map(([name, count]) => (
+              <button
+                key={name}
+                type="button"
+                className={selectedTags.includes(name) ? "genre-option active" : "genre-option"}
+                onClick={() => toggleGenreTag(name)}
+                aria-pressed={selectedTags.includes(name)}
+              >
+                <span>{name}</span>
+                <em>{count}</em>
+              </button>
+            ))}
+            {filteredGenreFacets.length === 0 && <p className="genre-sheet-empty">没有匹配的题材</p>}
+          </div>
+          <footer className="genre-sheet-foot">
+            <span>多选为 AND：同时命中所有已选题材</span>
+            <div>
+              <button type="button" className="ghost" disabled={selectedTags.length === 0} onClick={() => commitFilters({ tags: [] })}>清空</button>
+              <button type="button" className="secondary" onClick={() => setGenreSheetOpen(false)}>完成</button>
+            </div>
+          </footer>
         </div>
       </div>
     )}

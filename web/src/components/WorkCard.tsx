@@ -54,6 +54,24 @@ export const WorkCard = memo(function WorkCard({
         ) : (
           <div className="poster-fallback" aria-hidden />
         )}
+        <div className="poster-badges">
+          <StatusBadges
+            wantList={work.want_list}
+            hasLocalMedia={work.has_local_media}
+          />
+        </div>
+        {work.javranking_rank != null && (
+          <span
+            className="rank-badge cover-rank-badge"
+            title={
+              work.javranking_score != null
+                ? `JavRanking 第 ${work.javranking_rank} 名 · ${work.javranking_score} 分`
+                : `JavRanking 第 ${work.javranking_rank} 名`
+            }
+          >
+            #{work.javranking_rank}
+          </span>
+        )}
         {showRank && (
           <span className="match-rank-badge" title={`匹配分 ${matchScore}`}>
             {matchRankLabel(matchScore)} · {matchScore}
@@ -83,14 +101,15 @@ export const WorkCard = memo(function WorkCard({
             {work.rating_value != null && (
               <span className="work-score" title={work.rating_source ?? undefined}>
                 ★ {work.rating_value}
+                {work.rating_max != null ? <em>/{work.rating_max}</em> : null}
+              </span>
+            )}
+            {work.javranking_score != null && (
+              <span className="work-score work-score--ranking" title="JavRanking 热度分">
+                {Math.round(work.javranking_score).toLocaleString("en-US")} 分
               </span>
             )}
         </div>
-        <span className="pill">{work.category}</span>
-        <StatusBadges
-          wantList={work.want_list}
-          hasLocalMedia={work.has_local_media}
-        />
         <h2>{work.title}</h2>
         {work.original_title && work.original_title !== work.title && (
           <p className="original-title">原文：{work.original_title}</p>

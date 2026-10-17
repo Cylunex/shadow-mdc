@@ -248,6 +248,7 @@ from .services.javranking_client import (
     CURATED_LIST_SLUGS,
     CURATED_LIST_TITLES,
     JavRankingIndexCache,
+    WorkJavRankingInfo,
     normalize_actor_key,
     top250_year_slugs,
 )
@@ -3550,6 +3551,7 @@ def list_works(
     ]
     collections_map = repo.collections_by_work_ids([work.id for work in works])
     data_dir = app_runtime.settings.data_dir
+    ranking_cache = JavRankingIndexCache(data_dir / "javranking")
     results = [
         _work_list_out(
             work,
@@ -3557,6 +3559,7 @@ def list_works(
             want_list=False,
             has_local_media=work.id in local_ids,
             data_dir=data_dir,
+            ranking=ranking_cache.lookup_honors(work.primary_code),
         )
         for work in works
     ]
@@ -4682,11 +4685,14 @@ def _work_list_out(
     want_list: bool = False,
     has_local_media: bool = False,
     data_dir: Path | None = None,
+    ranking: WorkJavRankingInfo | None = None,
 ) -> WorkOut:
     """Card-oriented WorkOut: no plot/reviews/identities/artwork blobs, no per-work DB hits.
 
     Passing ``data_dir`` also skips per-work artwork-list probing: the cover is
-    resolved straight against ``data/artwork/<work_id>``.
+    resolved straight against ``data/artwork/<work_id>``. ``ranking`` is the
+    JavRanking index entry for this code (rank / score badge) when the caller
+    already looked it up.
     """
 
     actors = [name for name in (work.actors or [])[:6] if isinstance(name, str) and name.strip()]
@@ -4737,6 +4743,8 @@ def _work_list_out(
         rating_max=getattr(work, "rating_max", None),
         rating_count=getattr(work, "rating_count", None),
         rating_source=getattr(work, "rating_source", None),
+        javranking_rank=None if ranking is None else ranking.rank,
+        javranking_score=None if ranking is None else ranking.score,
         reviews=[],
         display_tags=_display_tags(work)[:24],
         field_sources={},
@@ -4761,6 +4769,8 @@ _NULLABLE_CARD_OMIT = frozenset(
         "rating_max",
         "rating_count",
         "rating_source",
+        "javranking_rank",
+        "javranking_score",
     }
 )
 
