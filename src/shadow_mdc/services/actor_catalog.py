@@ -88,11 +88,14 @@ class _ActorAccumulator:
     aliases: set[str] = field(default_factory=set)
     categories: set[str] = field(default_factory=set)
     works: list[ActorWorkReference] = field(default_factory=list)
+    work_ids: set[str] = field(default_factory=set)
 
 
 def build_actor_catalog(
     works: list[Work],
     rules: IdentityAliasRules,
+    *,
+    data_dir: Path | None = None,
 ) -> tuple[ActorProfile, ...]:
     alias_to_canonical = {
         _normalize(alias): canonical.strip()
@@ -109,14 +112,15 @@ def build_actor_catalog(
             key = _normalize(canonical)
             accumulator = accumulators.setdefault(key, _ActorAccumulator(name=canonical))
             accumulator.categories.add(work.category)
-            if all(reference.id != work.id for reference in accumulator.works):
+            if work.id not in accumulator.work_ids:
+                accumulator.work_ids.add(work.id)
                 accumulator.works.append(
                     ActorWorkReference(
                         id=work.id,
                         title=work.title,
                         code=work.primary_code,
                         category=work.category,
-                        image_url=_work_image_url(work),
+                        image_url=_work_image_url(work, data_dir),
                     )
                 )
     for alias, canonical in rules.actors.items():
@@ -129,6 +133,8 @@ def build_actor_catalog(
 def build_actor_catalog_from_relations(
     relations: list[tuple[Actor, Work]],
     rules: IdentityAliasRules,
+    *,
+    data_dir: Path | None = None,
 ) -> tuple[ActorProfile, ...]:
     alias_to_canonical = {
         _normalize(alias): canonical.strip()
@@ -152,14 +158,15 @@ def build_actor_catalog_from_relations(
         if _normalize(actor.name) != key:
             accumulator.aliases.add(actor.name)
         accumulator.categories.add(work.category)
-        if all(reference.id != work.id for reference in accumulator.works):
+        if work.id not in accumulator.work_ids:
+            accumulator.work_ids.add(work.id)
             accumulator.works.append(
                 ActorWorkReference(
                     id=work.id,
                     title=work.title,
                     code=work.primary_code,
                     category=work.category,
-                    image_url=_work_image_url(work),
+                    image_url=_work_image_url(work, data_dir),
                 )
             )
     for alias, canonical in rules.actors.items():
@@ -245,8 +252,12 @@ def sync_actor_catalog(
     store: ActorCatalogStore,
     works: list[Work],
     rules: IdentityAliasRules,
+    *,
+    data_dir: Path | None = None,
 ) -> tuple[ActorProfile, ...]:
-    merged = merge_actor_catalogs(store.load(), build_actor_catalog(works, rules), rules)
+    merged = merge_actor_catalogs(
+        store.load(), build_actor_catalog(works, rules, data_dir=data_dir), rules
+    )
     return store.save(filter_jav_actor_catalog(merged))
 
 
@@ -254,8 +265,10 @@ def sync_actor_catalog_from_relations(
     store: ActorCatalogStore,
     relations: list[tuple[Actor, Work]],
     rules: IdentityAliasRules,
+    *,
+    data_dir: Path | None = None,
 ) -> tuple[ActorProfile, ...]:
-    current = build_actor_catalog_from_relations(relations, rules)
+    current = build_actor_catalog_from_relations(relations, rules, data_dir=data_dir)
     merged = merge_actor_catalogs(store.load(), current, rules)
     return store.save(filter_jav_actor_catalog(merged))
 
@@ -313,8 +326,8 @@ def _profiles_from_accumulators(
     return tuple(sorted(profiles, key=lambda item: (-item.work_count, item.name.casefold())))
 
 
-def _work_image_url(work: Work) -> str | None:
-    return resolve_work_display_image(work, "poster")
+def _work_image_url(work: Work, data_dir: Path | None = None) -> str | None:
+    return resolve_work_display_image(work, "poster", data_dir=data_dir)
 
 
 

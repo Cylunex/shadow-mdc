@@ -5,8 +5,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import Engine, create_engine, exists, func, or_, select
+from sqlalchemy import Engine, create_engine, event, exists, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..actress_aliases import merge_actor_names
@@ -71,11 +72,44 @@ _JAV_ACTOR_PROVIDER_PRIORITY = {
 }
 
 
+_SQLITE_CONNECTION_PRAGMAS: tuple[str, ...] = (
+    # Sort / DISTINCT / temp B-trees stay in RAM. A failed temp-file open surfaces as
+    # the misleading "unable to open database file", which used to break list queries
+    # that join + ORDER BY over a full work id set.
+    "PRAGMA temp_store=MEMORY",
+    # 16 MiB page cache per pooled connection (default is 2 MiB).
+    "PRAGMA cache_size=-16384",
+    # 256 MiB read-only mmap window; cheap on Linux and Windows.
+    "PRAGMA mmap_size=268435456",
+    # WAL + NORMAL: one fsync per checkpoint instead of one per commit.
+    "PRAGMA synchronous=NORMAL",
+)
+
+
+def _apply_sqlite_pragmas(dbapi_connection: Any, _connection_record: Any) -> None:
+    """Apply connection-scoped SQLite tuning on every pooled connection.
+
+    ``journal_mode`` is stored in the database file, but ``temp_store``,
+    ``cache_size``, ``mmap_size`` and ``synchronous`` are per connection — setting
+    them once on the migration connection (as before) left every serving connection
+    on defaults.
+    """
+
+    cursor = dbapi_connection.cursor()
+    try:
+        for statement in _SQLITE_CONNECTION_PRAGMAS:
+            cursor.execute(statement)
+    finally:
+        cursor.close()
+
+
 class Database:
     def __init__(self, url: str):
         connect_args = {"check_same_thread": False, "timeout": 30.0} if url.startswith("sqlite") else {}
         self.engine: Engine = create_engine(url, connect_args=connect_args)
         self._sessions = sessionmaker(self.engine, expire_on_commit=False)
+        if self.engine.dialect.name == "sqlite":
+            event.listen(self.engine, "connect", _apply_sqlite_pragmas)
 
     def initialize(self) -> None:
         Base.metadata.create_all(self.engine)
@@ -748,25 +782,53 @@ class Repository:
             statement = statement.distinct()
         return list(self._session.scalars(statement.order_by(Work.created_at.desc())))
 
+    def work_tags(self) -> list[list[str] | tuple[str, ...] | None]:
+        """Every work's tag list — one column instead of full lean rows."""
+
+        return list(self._session.scalars(select(Work.tags)))
+
     def sync_all_work_actors(self) -> None:
-        for work in self.list_works():
-            self._sync_work_actors(work)
+        """Reconcile ``work_actors`` for every work in two batched passes.
+
+        Used to issue one ``work_actors`` query plus one ``actors`` lookup per work
+        (~18k statements on the production catalog). Existing links and the actor
+        name index are now loaded once and reused.
+        """
+
+        works = self.list_works()
+        if not works:
+            return
+        links_by_work: dict[str, dict[str, WorkActor]] = {}
+        for link in self._session.scalars(select(WorkActor)):
+            links_by_work.setdefault(link.work_id, {})[link.actor_id] = link
+        actor_index = {
+            actor.normalized_name: actor for actor in self._session.scalars(select(Actor))
+        }
+        for work in works:
+            self._sync_work_actors(
+                work,
+                existing_links=links_by_work.get(work.id, {}),
+                actor_index=actor_index,
+            )
         self._session.flush()
 
     def repair_jav_actor_sources(self) -> int:
         """Rebuild JAV actor lists from the most trustworthy stored source snapshot."""
 
         repaired = 0
+        jav_snapshots: dict[str, list[ProviderRecord]] = {}
+        prioritized = tuple(_JAV_ACTOR_PROVIDER_PRIORITY)
+        for snapshot in self._session.scalars(
+            select(SourceSnapshot).where(SourceSnapshot.provider.in_(prioritized))
+        ):
+            record = ProviderRecord.model_validate(snapshot.payload)
+            if not record.actors:
+                continue
+            jav_snapshots.setdefault(snapshot.work_id, []).append(record)
+        if not jav_snapshots:
+            return 0
         for work in self.list_works():
-            snapshots = self._session.scalars(
-                select(SourceSnapshot).where(SourceSnapshot.work_id == work.id)
-            )
-            records = [
-                ProviderRecord.model_validate(snapshot.payload)
-                for snapshot in snapshots
-                if snapshot.provider in _JAV_ACTOR_PROVIDER_PRIORITY
-            ]
-            records = [record for record in records if record.actors]
+            records = jav_snapshots.get(work.id)
             if not records:
                 continue
             best = min(records, key=lambda record: _JAV_ACTOR_PROVIDER_PRIORITY[record.provider])
@@ -785,13 +847,26 @@ class Repository:
         self._session.flush()
         return repaired
 
-    def list_actor_work_relations(self) -> list[tuple[Actor, Work]]:
+    def list_actor_work_relations(self, *, lean: bool = False) -> list[tuple[Actor, Work]]:
+        """Actor↔work relations for catalog building.
+
+        ``lean=True`` loads only the columns the actor cards read — the heavy JSON
+        blobs (plot/reviews/field_sources) dominate the 10k-row load otherwise.
+        """
+
         statement = (
             select(Actor, Work)
             .join(WorkActor, WorkActor.actor_id == Actor.id)
             .join(Work, Work.id == WorkActor.work_id)
             .order_by(Actor.name, WorkActor.position, Work.release_date, Work.title)
         )
+        if lean:
+            from sqlalchemy.orm import load_only
+
+            statement = statement.options(
+                load_only(Work.id, Work.title, Work.primary_code, Work.category, Work.artwork),
+                load_only(Actor.id, Actor.name, Actor.aliases, Actor.image_url, Actor.x_handle),
+            )
         return [(actor, work) for actor, work in self._session.execute(statement)]
 
     def release_dates_for_actor(self, *, name: str, actor_id: str | None = None) -> list[date | None]:
@@ -1611,22 +1686,43 @@ class Repository:
         work.field_sources = sources
         self._sync_work_actors(work)
 
-    def _sync_work_actors(self, work: Work) -> None:
-        existing_links = {
-            link.actor_id: link
-            for link in self._session.scalars(select(WorkActor).where(WorkActor.work_id == work.id))
-        }
+    def _sync_work_actors(
+        self,
+        work: Work,
+        *,
+        existing_links: dict[str, WorkActor] | None = None,
+        actor_index: dict[str, Actor] | None = None,
+    ) -> None:
+        """Reconcile one work's actor links.
+
+        ``existing_links`` / ``actor_index`` let bulk callers pass pre-loaded maps so
+        this stays query-free inside full-catalog loops.
+        """
+
+        if existing_links is None:
+            existing_links = {
+                link.actor_id: link
+                for link in self._session.scalars(select(WorkActor).where(WorkActor.work_id == work.id))
+            }
         desired_ids: set[str] = set()
         for position, raw_name in enumerate(work.actors):
             name = raw_name.strip()
             normalized = _normalize_actor_name(name)
             if not normalized:
                 continue
-            actor = self._session.scalar(select(Actor).where(Actor.normalized_name == normalized))
-            if actor is None:
-                actor = Actor(name=name, normalized_name=normalized)
-                self._session.add(actor)
-                self._session.flush()
+            if actor_index is not None:
+                actor = actor_index.get(normalized)
+                if actor is None:
+                    actor = Actor(name=name, normalized_name=normalized)
+                    self._session.add(actor)
+                    self._session.flush()
+                    actor_index[normalized] = actor
+            else:
+                actor = self._session.scalar(select(Actor).where(Actor.normalized_name == normalized))
+                if actor is None:
+                    actor = Actor(name=name, normalized_name=normalized)
+                    self._session.add(actor)
+                    self._session.flush()
             desired_ids.add(actor.id)
             link = existing_links.get(actor.id)
             if link is None:
@@ -1754,6 +1850,30 @@ class Repository:
         for work_id, collection in self._session.execute(statement):
             result.setdefault(str(work_id), []).append(collection)
         return result
+
+    def work_counts_by_collection(self) -> dict[str, int]:
+        """Linked-work count per collection in one grouped query.
+
+        The collections list used to run a full ``list_works`` (DISTINCT + ORDER BY)
+        per collection — 2.2k statements for a 2.2k-collection catalog.
+        """
+
+        statement = (
+            select(WorkCollection.collection_id, func.count())
+            .select_from(WorkCollection)
+            .join(Work, Work.id == WorkCollection.work_id)
+            .group_by(WorkCollection.collection_id)
+        )
+        return {str(collection_id): int(total) for collection_id, total in self._session.execute(statement)}
+
+    def work_count_for_collection(self, collection_id: str) -> int:
+        statement = (
+            select(func.count())
+            .select_from(WorkCollection)
+            .join(Work, Work.id == WorkCollection.work_id)
+            .where(WorkCollection.collection_id == collection_id)
+        )
+        return int(self._session.scalar(statement) or 0)
 
     def upsert_collection(
         self,

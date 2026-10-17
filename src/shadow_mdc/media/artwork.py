@@ -15,6 +15,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict
 
 from ..db.models import Work
+from . import directory_index
 
 _CONTENT_EXTENSIONS = {
     "image/jpeg": ".jpg",
@@ -22,6 +23,12 @@ _CONTENT_EXTENSIONS = {
     "image/webp": ".webp",
     "image/gif": ".gif",
 }
+
+
+def _path_is_file(path: Path) -> bool:
+    """``path.is_file()`` answered from the cached directory listing."""
+
+    return directory_index.has_file(path.parent, path.name)
 
 
 class ArtworkDownloadResult(BaseModel):
@@ -146,14 +153,18 @@ class ArtworkStore:
                 cached = samples_root / f"sample_{digest}{_safe_extension(existing.suffix)}"
                 if existing.resolve() != cached.resolve():
                     shutil.copy2(existing, cached)
+                    directory_index.invalidate(samples_root)
                 adopted[url] = str(cached)
                 continue
-            cached = next(work_root.glob(f"{kind}.*"), None)
-            if cached is None:
+            sampled = directory_index.file_with_stem(work_root, kind)
+            if sampled is None:
                 work_root.mkdir(parents=True, exist_ok=True)
                 cached = work_root / f"{kind}{_safe_extension(existing.suffix)}"
                 if existing.resolve() != cached.resolve():
                     shutil.copy2(existing, cached)
+                    directory_index.invalidate(work_root)
+            else:
+                cached = sampled
             adopted[url] = str(cached)
         return adopted
 
@@ -193,14 +204,15 @@ class ArtworkStore:
         existing: Path | None,
     ) -> tuple[Path, bool]:
 
-        cached = next(work_root.glob(f"{kind}.*"), None)
-        if cached is not None and cached.is_file():
+        cached = directory_index.file_with_stem(work_root, kind)
+        if cached is not None:
             return cached, True
         if existing is not None and existing.is_file():
             extension = _safe_extension(existing.suffix)
             destination = work_root / f"{kind}{extension}"
             if existing.resolve() != destination.resolve():
                 shutil.copy2(existing, destination)
+                directory_index.invalidate(work_root)
             return destination, True
 
         if self._client is None:
@@ -244,6 +256,7 @@ class ArtworkStore:
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.replace(temporary, destination)
+                directory_index.invalidate(work_root)
             except Exception:
                 Path(temporary).unlink(missing_ok=True)
                 raise
@@ -259,14 +272,15 @@ class ArtworkStore:
         samples_root = work_root / "samples"
         samples_root.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(url.encode()).hexdigest()[:12]
-        cached = next(samples_root.glob(f"sample_{digest}.*"), None)
-        if cached is not None and cached.is_file():
+        cached = directory_index.file_with_stem(samples_root, f"sample_{digest}")
+        if cached is not None:
             return cached, True
         if existing is not None and existing.is_file():
             extension = _safe_extension(existing.suffix)
             destination = samples_root / f"sample_{digest}{extension}"
             if existing.resolve() != destination.resolve():
                 shutil.copy2(existing, destination)
+                directory_index.invalidate(samples_root)
             return destination, True
 
         if self._client is None:
@@ -298,6 +312,7 @@ class ArtworkStore:
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.replace(temporary, destination)
+                directory_index.invalidate(samples_root)
             except Exception:
                 Path(temporary).unlink(missing_ok=True)
                 raise
@@ -369,8 +384,8 @@ def ensure_list_thumbnail(work_root: Path, source: Path, *, max_width: int = LIS
 
     if not source.is_file():
         return None
-    existing = next(work_root.glob("thumb.*"), None)
-    if existing is not None and existing.is_file():
+    existing = directory_index.file_with_stem(work_root, "thumb")
+    if existing is not None:
         return existing
     try:
         with Image.open(source) as image:
@@ -383,6 +398,7 @@ def ensure_list_thumbnail(work_root: Path, source: Path, *, max_width: int = LIS
             temporary = work_root / "thumb.jpg.tmp"
             image.save(temporary, format="JPEG", quality=85, optimize=True)
             temporary.replace(destination)
+            directory_index.invalidate(work_root)
             return destination
     except OSError:
         return None
@@ -402,7 +418,7 @@ def artwork_dir_for_work(work: Work, data_dir: Path | None = None) -> Path | Non
         if not isinstance(local, str) or not local:
             continue
         path = Path(local)
-        if not path.is_file():
+        if not directory_index.has_file(path.parent, path.name):
             continue
         candidate = path.parent.parent if path.parent.name == "samples" else path.parent
         if candidate.name == work.id:
@@ -411,7 +427,7 @@ def artwork_dir_for_work(work: Work, data_dir: Path | None = None) -> Path | Non
 
 
 def _stem_exists(root: Path, stem: str) -> bool:
-    return any(path.is_file() for path in root.glob(f"{stem}.*"))
+    return _existing_stem(root, (stem,)) is not None
 
 
 def _remote_cover_urls(work: Work, *, fanart_only: bool) -> list[str]:
@@ -431,6 +447,55 @@ def _remote_cover_urls(work: Work, *, fanart_only: bool) -> list[str]:
     return urls
 
 
+def _resolve_artwork_root(work: Work, data_dir: Path | None) -> Path | None:
+    """``data/artwork/<work_id>`` only when it actually exists.
+
+    The existence check is a single ``is_dir`` — cheap everywhere, and it keeps a
+    freshly written cover visible on the very next request.
+    """
+
+    if data_dir is not None:
+        candidate = data_dir / "artwork" / work.id
+        return candidate if candidate.is_dir() else None
+    return artwork_dir_for_work(work)
+
+
+def _stem_candidate(
+    snapshot: directory_index.DirectoryListing, order: tuple[str, ...]
+) -> tuple[str, str] | None:
+    for stem in order:
+        if stem not in snapshot.stems:
+            continue
+        name = directory_index.name_with_stem(snapshot.files, stem)
+        if name is not None:
+            return stem, name
+    return None
+
+
+def _existing_stem(root: Path, order: tuple[str, ...]) -> str | None:
+    """First ``order`` stem that exists in ``root``; the listing narrows the search.
+
+    The listing answers "which stems exist" and the winner is confirmed with one
+    ``is_file``. A snapshot that disagrees (file created or removed behind the
+    cache) is refreshed once — that keeps a just-downloaded cover visible on the
+    next request without paying a rescan for every work.
+    """
+
+    generation = directory_index.generation()
+    snapshot = directory_index.listing(root)
+    # A snapshot scanned inside this very call is authoritative; anything older
+    # still gets one ``is_file`` confirmation so a deleted cover stops being served.
+    just_scanned = snapshot.generation > generation
+    candidate = _stem_candidate(snapshot, order)
+    if candidate is not None and (just_scanned or (root / candidate[1]).is_file()):
+        return candidate[0]
+    snapshot = directory_index.refresh(root)
+    candidate = _stem_candidate(snapshot, order)
+    if candidate is not None and (root / candidate[1]).is_file():
+        return candidate[0]
+    return None
+
+
 def resolve_work_display_image(
     work: Work,
     kind: str = "poster",
@@ -444,19 +509,16 @@ def resolve_work_display_image(
     ``/api/works/.../artwork/poster`` (404) when only samples/fanart/thumb existed.
     """
 
-    root = artwork_dir_for_work(work, data_dir)
+    root = _resolve_artwork_root(work, data_dir)
     if kind == "fanart":
-        if root is not None and _stem_exists(root, "fanart"):
+        if root is not None and _existing_stem(root, ("fanart",)):
             return f"/api/works/{work.id}/artwork/fanart"
         return next(iter(_remote_cover_urls(work, fanart_only=True)), None)
 
     if root is not None:
-        if _stem_exists(root, "thumb"):
-            return f"/api/works/{work.id}/artwork/thumb"
-        if _stem_exists(root, "poster"):
-            return f"/api/works/{work.id}/artwork/poster"
-        if _stem_exists(root, "fanart"):
-            return f"/api/works/{work.id}/artwork/fanart"
+        stem = _existing_stem(root, ("thumb", "poster", "fanart"))
+        if stem is not None:
+            return f"/api/works/{work.id}/artwork/{stem}"
 
     preferred = [
         item
@@ -464,7 +526,7 @@ def resolve_work_display_image(
         if item.get("preferred") is True
         and str(item.get("kind", "thumb")).casefold() not in _FANART_KINDS | _SAMPLE_KINDS
         and isinstance(item.get("local_path"), str)
-        and Path(str(item["local_path"])).is_file()
+        and _path_is_file(Path(str(item["local_path"])))
     ]
     if preferred:
         parent = Path(str(preferred[0]["local_path"])).parent
@@ -483,7 +545,7 @@ def resolve_work_display_image(
         if not isinstance(local, str):
             continue
         path = Path(local)
-        if not path.is_file():
+        if not _path_is_file(path):
             continue
         parent = path.parent.parent if path.parent.name == "samples" else path.parent
         if _stem_exists(parent, "thumb"):

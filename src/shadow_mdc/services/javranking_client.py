@@ -9,6 +9,7 @@ import re
 import time
 import unicodedata
 from collections.abc import Mapping, Sequence
+from functools import lru_cache
 from pathlib import Path
 
 import httpx
@@ -667,6 +668,78 @@ def parse_search_index(payload: Mapping[str, object] | str | bytes) -> SearchInd
     return index
 
 
+def _file_signature(path: Path) -> tuple[str, int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return str(path), stat.st_mtime_ns, stat.st_size
+
+
+@lru_cache(maxsize=8)
+def _read_honors_map_cached(
+    path_str: str, mtime_ns: int, size: int
+) -> dict[str, WorkJavRankingInfo]:
+    del mtime_ns, size  # cache key only
+    try:
+        payload = json.loads(Path(path_str).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    raw = payload.get("by_key") if isinstance(payload, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    try:
+        return {
+            str(key): WorkJavRankingInfo.model_validate(value)
+            for key, value in raw.items()
+            if isinstance(value, dict)
+        }
+    except ValueError:
+        return {}
+
+
+@lru_cache(maxsize=8)
+def _read_actor_honors_map_cached(
+    path_str: str, mtime_ns: int, size: int
+) -> dict[str, ActorJavRankingInfo]:
+    del mtime_ns, size  # cache key only
+    try:
+        payload = json.loads(Path(path_str).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    raw = payload.get("by_key") if isinstance(payload, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    try:
+        return {
+            str(key): ActorJavRankingInfo.model_validate(value)
+            for key, value in raw.items()
+            if isinstance(value, dict)
+        }
+    except ValueError:
+        return {}
+
+
+def _read_honors_map(path: Path) -> dict[str, WorkJavRankingInfo]:
+    """Parsed honors map memoized on (path, mtime, size).
+
+    The map is read-only for callers; re-parsing it per work/profile (the actors
+    list used to parse it 1600+ times per request) dominated the endpoint.
+    """
+
+    signature = _file_signature(path)
+    if signature is None:
+        return {}
+    return _read_honors_map_cached(*signature)
+
+
+def _read_actor_honors_map(path: Path) -> dict[str, ActorJavRankingInfo]:
+    signature = _file_signature(path)
+    if signature is None:
+        return {}
+    return _read_actor_honors_map_cached(*signature)
+
+
 class JavRankingIndexCache:
     """Filesystem cache under ``data/javranking/`` with soft revalidation."""
 
@@ -735,20 +808,7 @@ class JavRankingIndexCache:
             return None
 
     def read_honors_map(self) -> dict[str, WorkJavRankingInfo]:
-        if not self.honors_path.is_file():
-            return {}
-        try:
-            payload = json.loads(self.honors_path.read_text(encoding="utf-8"))
-            raw = payload.get("by_key") if isinstance(payload, dict) else None
-            if not isinstance(raw, dict):
-                return {}
-            return {
-                str(key): WorkJavRankingInfo.model_validate(value)
-                for key, value in raw.items()
-                if isinstance(value, dict)
-            }
-        except Exception:
-            return {}
+        return _read_honors_map(self.honors_path)
 
     def lookup_honors(self, code: str | None) -> WorkJavRankingInfo | None:
         if not code:
@@ -759,20 +819,7 @@ class JavRankingIndexCache:
         return self.read_honors_map().get(key)
 
     def read_actor_honors_map(self) -> dict[str, ActorJavRankingInfo]:
-        if not self.actor_honors_path.is_file():
-            return {}
-        try:
-            payload = json.loads(self.actor_honors_path.read_text(encoding="utf-8"))
-            raw = payload.get("by_key") if isinstance(payload, dict) else None
-            if not isinstance(raw, dict):
-                return {}
-            return {
-                str(key): ActorJavRankingInfo.model_validate(value)
-                for key, value in raw.items()
-                if isinstance(value, dict)
-            }
-        except Exception:
-            return {}
+        return _read_actor_honors_map(self.actor_honors_path)
 
     def lookup_actor_honors(
         self, name: str | None, *, aliases: Sequence[str] = ()

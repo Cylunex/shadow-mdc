@@ -28,6 +28,7 @@ from pathlib import Path
 
 import httpx
 
+from ..media import directory_index
 from .gfriends_fill import _MIN_IMAGE_BYTES, _detect_image_ext
 
 logger = logging.getLogger(__name__)
@@ -76,10 +77,7 @@ class ActorImageCache:
     def local_file(self, key: str) -> Path | None:
         if self._dir is None or not valid_key(key) or not self._dir.is_dir():
             return None
-        for candidate in self._dir.glob(f"{REMOTE_PREFIX}{key}.*"):
-            if candidate.suffix in {".jpg", ".png", ".webp", ".gif"} and candidate.is_file():
-                return candidate
-        return None
+        return directory_index.file_with_stem(self._dir, f"{REMOTE_PREFIX}{key}")
 
     def display_url(self, url: str | None) -> str | None:
         """UI-safe URL for an actor image (local path, or the lazy-localize route)."""
@@ -173,6 +171,7 @@ class ActorImageCache:
         except Exception:
             Path(temporary).unlink(missing_ok=True)
             raise
+        directory_index.invalidate(self._dir)
         return target
 
 

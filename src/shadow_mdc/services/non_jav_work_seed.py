@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import sys
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from io import BytesIO
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ..db.models import ExternalIdentity, Work
 from ..db.repository import Repository
@@ -77,6 +79,94 @@ class NonJavWorkSeedResult:
     updated: int
     posters: int
     actors_added: int
+
+
+SEED_STATE_VERSION = 1
+
+
+def seed_state_path_for(seed_path: Path) -> Path:
+    return seed_path.parent / "cache" / f"{seed_path.stem}-seed-state.json"
+
+
+def seed_non_jav_works_if_changed(
+    repo: Repository,
+    *,
+    seed_path: Path,
+    actor_store: NonJavActorCatalogStore,
+    actor_images_dir: Path,
+    artwork_dir: Path,
+    state_path: Path | None = None,
+    seed_fn: Callable[..., NonJavWorkSeedResult] | None = None,
+) -> NonJavWorkSeedResult | None:
+    """Seed only when the seed file (or the seeded row count) changed.
+
+    The startup pass used to re-upsert every curated work on each boot — ~2.8k
+    provider records and ~37k statements, ≈12 s on the production catalog — while
+    the JSON had not changed at all. Returns ``None`` when the pass was skipped.
+    """
+
+    if not seed_path.is_file():
+        return None
+    try:
+        digest = hashlib.sha256(seed_path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+    state_file = state_path or seed_state_path_for(seed_path)
+    prior = _read_seed_state(state_file)
+    if prior is not None and prior.get("version") == SEED_STATE_VERSION and prior.get("sha256") == digest:
+        seeded = _count_seeded_works(repo)
+        if seeded is not None and seeded == prior.get("works"):
+            return None
+    runner = seed_fn or seed_non_jav_works
+    result = runner(
+        repo,
+        seed_path=seed_path,
+        actor_store=actor_store,
+        actor_images_dir=actor_images_dir,
+        artwork_dir=artwork_dir,
+    )
+    _write_seed_state(
+        state_file,
+        {
+            "version": SEED_STATE_VERSION,
+            "sha256": digest,
+            "works": _count_seeded_works(repo) or 0,
+        },
+    )
+    return result
+
+
+def _read_seed_state(state_file: Path) -> dict[str, object] | None:
+    try:
+        payload = json.loads(state_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_seed_state(state_file: Path, payload: dict[str, object]) -> None:
+    try:
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = state_file.with_suffix(f"{state_file.suffix}.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(state_file)
+    except OSError:
+        return
+
+
+def _count_seeded_works(repo: Repository) -> int | None:
+    try:
+        total = repo._session.scalar(
+            select(func.count())
+            .select_from(ExternalIdentity)
+            .where(
+                ExternalIdentity.provider == PROVIDER,
+                ExternalIdentity.kind == IdentityKind.PROVIDER_ID.value,
+            )
+        )
+    except Exception:
+        return None
+    return int(total or 0)
 
 
 PROVIDER = "non-jav-seed"

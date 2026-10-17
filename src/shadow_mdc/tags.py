@@ -10,6 +10,7 @@ from __future__ import annotations
 import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Sequence
+from functools import lru_cache
 
 # Costume / preference tags the filter bar should keep visible when count > 0.
 COMMON_FILTER_TAGS: tuple[str, ...] = (
@@ -1137,11 +1138,14 @@ def synonyms_for(canonical: str) -> tuple[str, ...]:
     return tuple(item for item in values if item != canonical)
 
 
+@lru_cache(maxsize=16_384)
 def canonicalize_tag(raw: str | None) -> str | None:
     """Map one raw tag to a canonical display label, or None if noise / empty.
 
     Unknown non-noise tags are returned unchanged (trimmed NFKC) so provider
-    genres without a synonym still appear.
+    genres without a synonym still appear. Pure in the raw value, so the result
+    is memoized: list payloads rebuild chips for thousands of works that share
+    the same provider genres.
     """
 
     if raw is None:
@@ -1229,8 +1233,37 @@ def display_chips(
     max_genres: int = 12,
     max_total: int = 16,
 ) -> list[str]:
-    """Build UI chips: normalized genres first, then light metadata."""
+    """Build UI chips: normalized genres first, then light metadata.
 
+    Memoized on the chip inputs — a works-grid render rebuilds chips for every
+    card, and studio/series/tag combinations repeat heavily.
+    """
+
+    return list(
+        _display_chips_cached(
+            category,
+            family,
+            studio,
+            label,
+            series,
+            tuple(tags) if tags else (),
+            max_genres,
+            max_total,
+        )
+    )
+
+
+@lru_cache(maxsize=8_192)
+def _display_chips_cached(
+    category: str | None,
+    family: str | None,
+    studio: str | None,
+    label: str | None,
+    series: str | None,
+    tags: tuple[str, ...],
+    max_genres: int,
+    max_total: int,
+) -> tuple[str, ...]:
     values: list[str] = []
     seen: set[str] = set()
 
@@ -1255,5 +1288,5 @@ def display_chips(
     add(studio)
     add(label)
     add(series)
-    return values[:max_total]
+    return tuple(values[:max_total])
 

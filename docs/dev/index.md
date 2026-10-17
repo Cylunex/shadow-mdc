@@ -8,3 +8,4 @@
 
 代码点级约束保留在对应注释或 docstring；本目录只导航跨文件边界、顺序和取舍。
 - [Emby 302 / OpenList `/d` 播放硬化](emby-302-openlist.md)
+- [冷启动与列表性能预算](performance.md)

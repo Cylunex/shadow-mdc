@@ -248,6 +248,7 @@ from .services.javranking_client import (
     CURATED_LIST_SLUGS,
     CURATED_LIST_TITLES,
     JavRankingIndexCache,
+    normalize_actor_key,
     top250_year_slugs,
 )
 from .services.javranking_seed import seed_javranking
@@ -271,7 +272,8 @@ from .services.non_jav_actor_catalog import (
     build_non_jav_actor_profile,
     enrich_non_jav_actor_aliases,
 )
-from .services.non_jav_work_seed import seed_non_jav_works
+from .services.non_jav_work_seed import seed_non_jav_works as seed_non_jav_works
+from .services.non_jav_work_seed import seed_non_jav_works_if_changed
 from .services.offline_control import OfflineControlError
 from .services.offline_recovery import project_offline
 from .services.openlist import (
@@ -419,12 +421,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             _works_seed = settings.data_dir / "non-jav-works.json"
             if not _works_seed.is_file():
                 _works_seed = Path(__file__).resolve().parents[2] / "seeds" / "non-jav-works.json"
-            seed_non_jav_works(
+            seed_non_jav_works_if_changed(
                 repo,
                 seed_path=_works_seed,
                 actor_store=non_jav_actor_store,
                 actor_images_dir=settings.data_dir / "actor-images",
                 artwork_dir=settings.data_dir / "artwork",
+                seed_fn=seed_non_jav_works,
             )
     client = _http_client(settings, max_connections=settings.translation_concurrency + 4)
     provider_clients = tuple(
@@ -2073,8 +2076,9 @@ def list_actor_catalog(request: Request, repo: Repo) -> Response:
         return Response(content=cached_raw, media_type="application/json")
     profiles = sync_actor_catalog_from_relations(
         app_runtime.actor_store,
-        repo.list_actor_work_relations(),
+        repo.list_actor_work_relations(lean=True),
         app_runtime.alias_store.load(),
+        data_dir=app_runtime.settings.data_dir,
     )
     enriched = _local_actor_images(
         _attach_actor_javranking(profiles, app_runtime.settings.data_dir)
@@ -3441,8 +3445,9 @@ def list_collections(
         repo.seed_collections_from_works()
         cache.invalidate_prefix("collections:")
     output: list[CollectionOut] = []
+    counts = repo.work_counts_by_collection()
     for item in repo.list_collections(kind=kind, q=q):
-        work_count = len(repo.list_works(collection_id=item.id))
+        work_count = counts.get(item.id, 0)
         output.append(
             CollectionOut(
                 id=item.id,
@@ -3494,7 +3499,7 @@ def get_collection(collection_id: str, request: Request, repo: Repo) -> Collecti
         kind=CollectionKind(item.kind),
         aliases=list(item.aliases or []),
         description=item.description,
-        work_count=len(repo.list_works(collection_id=item.id)),
+        work_count=repo.work_count_for_collection(item.id),
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
@@ -3544,12 +3549,14 @@ def list_works(
         if not selected_tags or work_matches_tags(work.tags, list(selected_tags))
     ]
     collections_map = repo.collections_by_work_ids([work.id for work in works])
+    data_dir = app_runtime.settings.data_dir
     results = [
         _work_list_out(
             work,
             collections=collections_map.get(work.id, []),
             want_list=False,
             has_local_media=work.id in local_ids,
+            data_dir=data_dir,
         )
         for work in works
     ]
@@ -3612,7 +3619,7 @@ def list_work_tag_facets(
     cached = cache.get_json(cache_key)
     if cached is not None:
         return WorkTagFacetsOut.model_validate(cached)
-    facets = facet_tags((work.tags for work in repo.list_works(lean=True)), limit=limit)
+    facets = facet_tags(repo.work_tags(), limit=limit)
     output = WorkTagFacetsOut(
         tags=[WorkTagFacetOut(name=name, count=count) for name, count in facets]
     )
@@ -3634,7 +3641,7 @@ def list_categories(
     cached = cache.get_json(cache_key)
     if cached is not None:
         return CategoriesOut.model_validate(cached)
-    counts = facet_count_map([work.tags for work in repo.list_works(lean=True)])
+    counts = facet_count_map(repo.work_tags())
     rows = build_category_list(
         app_runtime.settings.data_dir,
         facet_counts=counts,
@@ -4674,8 +4681,13 @@ def _work_list_out(
     collections: list[Collection] | None = None,
     want_list: bool = False,
     has_local_media: bool = False,
+    data_dir: Path | None = None,
 ) -> WorkOut:
-    """Card-oriented WorkOut: no plot/reviews/identities/artwork blobs, no per-work DB hits."""
+    """Card-oriented WorkOut: no plot/reviews/identities/artwork blobs, no per-work DB hits.
+
+    Passing ``data_dir`` also skips per-work artwork-list probing: the cover is
+    resolved straight against ``data/artwork/<work_id>``.
+    """
 
     actors = [name for name in (work.actors or [])[:6] if isinstance(name, str) and name.strip()]
     actor_entities = [
@@ -4718,7 +4730,7 @@ def _work_list_out(
         directors=[],
         tags=tags,
         artwork=[],
-        image_url=_work_display_artwork(work, "poster"),
+        image_url=_work_display_artwork(work, "poster", data_dir=data_dir),
         fanart_url=None,
         sample_urls=[],
         rating_value=getattr(work, "rating_value", None),
@@ -4880,10 +4892,21 @@ def _attach_actor_javranking(
     profiles: tuple[ActorProfile, ...],
     data_dir: Path,
 ) -> tuple[ActorProfile, ...]:
+    """Attach ranking honors from one shared map read (not one read per profile)."""
+
     cache = JavRankingIndexCache(data_dir / "javranking")
+    honors = cache.read_actor_honors_map()
+    if not honors:
+        return profiles
     enriched: list[ActorProfile] = []
     for profile in profiles:
-        info = cache.lookup_actor_honors(profile.name, aliases=profile.aliases)
+        info = None
+        for candidate in (profile.name, *profile.aliases):
+            if not candidate:
+                continue
+            info = honors.get(normalize_actor_key(candidate))
+            if info is not None:
+                break
         if info is None:
             enriched.append(profile)
             continue

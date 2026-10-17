@@ -93,6 +93,9 @@ class StrmMaintenanceStatus:
     last_migrate: dict[str, object] = field(default_factory=dict)
     last_rematerialize_at: str | None = None
     last_rematerialize: dict[str, object] = field(default_factory=dict)
+    # Obsolete-export drain bookkeeping (queued codes whose Emby dirs were removed).
+    last_obsolete_export_at: str | None = None
+    last_obsolete_export: dict[str, object] = field(default_factory=dict)
     running: str | None = None
     # Last refusal because STRM settings were incomplete (shown in the UI).
     last_config_error: str | None = None
@@ -159,6 +162,8 @@ class PanOfflinePoller:
             self.maintenance.last_migrate = payload.get("last_migrate") or {}
             self.maintenance.last_rematerialize_at = payload.get("last_rematerialize_at")
             self.maintenance.last_rematerialize = payload.get("last_rematerialize") or {}
+            self.maintenance.last_obsolete_export_at = payload.get("last_obsolete_export_at")
+            self.maintenance.last_obsolete_export = payload.get("last_obsolete_export") or {}
 
     def _save_state(self) -> None:
         if self._state_path is None:
