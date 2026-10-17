@@ -2122,7 +2122,9 @@ def list_actor_works(actor_ref: str, request: Request, repo: Repo) -> ActorWorks
                 title=work.title,
                 code=work.primary_code,
                 category=str(work.category),
-                image_url=_work_display_artwork(work, "poster"),
+                image_url=_work_display_artwork(work, "poster", data_dir=app_runtime.settings.data_dir),
+                release_date=work.release_date,
+                studio=work.studio,
             )
         )
     return ActorWorksOut(

@@ -1138,6 +1138,8 @@ class ActorWorkRefOut(BaseModel):
     code: str | None = None
     category: str
     image_url: str | None = None
+    release_date: date | None = None
+    studio: str | None = None
 
 
 class ActorWorksOut(BaseModel):

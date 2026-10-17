@@ -864,7 +864,15 @@ class Repository:
             from sqlalchemy.orm import load_only
 
             statement = statement.options(
-                load_only(Work.id, Work.title, Work.primary_code, Work.category, Work.artwork),
+                load_only(
+                    Work.id,
+                    Work.title,
+                    Work.primary_code,
+                    Work.category,
+                    Work.artwork,
+                    Work.release_date,
+                    Work.studio,
+                ),
                 load_only(Actor.id, Actor.name, Actor.aliases, Actor.image_url, Actor.x_handle),
             )
         return [(actor, work) for actor, work in self._session.execute(statement)]

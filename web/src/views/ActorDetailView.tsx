@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, appUrl } from "../api";
 import { hideBrokenImage, mediaUrl } from "../lib/mediaUrl";
 import { XHandleLink } from "../components/XHandleLink";
+import { ActorWorkSummary } from "../components/ActorWorkStrip";
 import type { ActorJavRankingInfo, ActorProfile, NonJavActor } from "../model";
 
 export type ActorDetailSource = "jav" | "non-jav";
@@ -16,6 +17,7 @@ export type ActorWorkRef = {
   studio?: string | null;
   series?: string | null;
   category?: string;
+  release_date?: string | null;
 };
 
 export type ActorDetailModel = {
@@ -73,7 +75,9 @@ export function resolveActorDetail(
         id: work.id,
         title: work.title,
         code: work.code,
-        image_url: work.image_url
+        image_url: work.image_url,
+        release_date: work.release_date ?? null,
+        studio: work.studio ?? null
       })),
       image_url: actor.image_url ?? null,
       x_handle: actor.x_handle,
@@ -162,7 +166,9 @@ export function ActorDetailView(props: {
         title: work.title,
         code: work.code ?? null,
         image_url: work.image_url ?? null,
-        category: work.category
+        category: work.category,
+        release_date: work.release_date ?? null,
+        studio: work.studio ?? null
       })));
     }).catch(() => {
       if (!cancelled) setExtraWorks(null);
@@ -176,6 +182,31 @@ export function ActorDetailView(props: {
     if (!props.model?.image_url) return null;
     return mediaUrl(props.model.image_url);
   }, [props.model?.image_url]);
+
+  /** Year span / newest release / dominant studios — the context line under the name. */
+  const stats = useMemo(() => {
+    const works = props.model?.works ?? [];
+    let oldest: string | null = null;
+    let newest: string | null = null;
+    const studios = new Map<string, number>();
+    for (const work of works) {
+      const date = work.release_date ?? null;
+      if (date) {
+        if (!oldest || date < oldest) oldest = date;
+        if (!newest || date > newest) newest = date;
+      }
+      const studio = (work.studio ?? "").trim();
+      if (studio) studios.set(studio, (studios.get(studio) ?? 0) + 1);
+    }
+    const top = [...studios.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 2)
+      .map(([name]) => name);
+    const span = oldest && newest && oldest !== newest
+      ? `${oldest.slice(0, 4)}–${newest.slice(0, 4)}`
+      : newest?.slice(0, 4) ?? null;
+    return { span, newest: newest?.slice(0, 7) ?? null, studios: top };
+  }, [props.model?.works]);
 
   if (props.loading && !props.model) {
     return (
@@ -241,6 +272,12 @@ export function ActorDetailView(props: {
             {actor.aliases.length > 0 && (
               <p className="actor-page-aliases">别名：{actor.aliases.join("、")}</p>
             )}
+            <div className="actor-page-stats">
+              <span><b>{actor.work_count}</b> 部作品</span>
+              {stats.span && <span>活跃 <b>{stats.span}</b></span>}
+              {stats.newest && <span>最近发行 <b>{stats.newest}</b></span>}
+              {stats.studios.length > 0 && <span>常驻 <b>{stats.studios.join(" / ")}</b></span>}
+            </div>
             {actor.groups && actor.groups.length > 0 && (
               <p className="muted">分组：{actor.groups.join(" / ")}</p>
             )}
@@ -282,17 +319,19 @@ export function ActorDetailView(props: {
                     >{actor.javranking.compact_badge}</a>
                   )}
                 </div>
-                <div className="tags javranking-badges">
-                  {(actor.javranking.honors ?? []).map((honor) => (
-                    <a
-                      key={`${honor.list_slug}-${honor.position}`}
-                      className="javranking-badge"
-                      href={honor.url || "#"}
-                      target="_blank"
-                      rel="noreferrer"
-                    >{honor.label}</a>
-                  ))}
-                </div>
+                {(actor.javranking.honors ?? []).length > 1 && (
+                  <div className="tags javranking-badges">
+                    {(actor.javranking.honors ?? []).map((honor) => (
+                      <a
+                        key={`${honor.list_slug}-${honor.position}`}
+                        className="javranking-badge"
+                        href={honor.url || "#"}
+                        target="_blank"
+                        rel="noreferrer"
+                      >{honor.label}</a>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -306,6 +345,7 @@ export function ActorDetailView(props: {
             <h2>作品</h2>
             <span className="muted">{works.length}{worksLoading ? " · 加载中" : ""}</span>
           </div>
+          <ActorWorkSummary works={works} workCount={actor.work_count} />
           {works.length === 0 ? (
             <p className="muted">{worksLoading ? "正在加载作品列表…" : "暂无关联作品"}</p>
           ) : (

@@ -2176,3 +2176,139 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   .works-filter-stack { padding: 10px; }
   .pagination { flex-wrap: wrap; }
 }
+
+/* —— Actor cards: wide cover strip + one-line context (no tall slivers) —— */
+.actor-card { gap: 10px; }
+.actor-work-summary {
+  margin: 0;
+  color: #9fb2b9;
+  font-size: 12px;
+  letter-spacing: .01em;
+}
+.actor-work-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 8px;
+  margin-top: 2px;
+}
+.actor-work-tile {
+  display: grid;
+  gap: 5px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .15s ease, transform .15s ease;
+}
+.actor-work-tile:hover,
+.actor-work-tile:focus-visible {
+  border-color: rgba(45, 212, 191, 0.45);
+  transform: translateY(-1px);
+  outline: none;
+}
+.actor-work-tile-cover {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 9px;
+  overflow: hidden;
+  background: #0c1214;
+  border: 1px solid #243035;
+}
+.actor-work-tile-cover .cover-main,
+.actor-work-tile-cover img,
+.actor-work-tile-cover .poster-fallback {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.actor-work-tile-code {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  max-width: calc(100% - 12px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(6, 12, 14, 0.82);
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  color: #7ff0e0;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+.actor-work-tile-title {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: #c5d2d7;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.actor-work-tile-meta {
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.actor-work-tile--more .actor-work-tile-cover {
+  display: grid;
+  place-content: center;
+  gap: 2px;
+  justify-items: center;
+  background: linear-gradient(145deg, #16262a, #0d1417);
+  border-style: dashed;
+  border-color: rgba(45, 212, 191, 0.3);
+  color: #9ff0e4;
+}
+.actor-work-tile--more strong { font-size: 15px; }
+.actor-work-tile--more small { font-size: 10px; color: var(--muted); }
+.actor-work-strip-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 640px) {
+  .actor-work-strip { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
+}
+
+/* Actor detail: tighter hero so the portrait stops eating the viewport. */
+@media (min-width: 901px) {
+  .actor-page-hero.work-page-hero { grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); }
+}
+.actor-page-portrait-wrap { min-height: 0; }
+.actor-page-portrait { max-height: min(52vh, 420px); }
+.actor-page-works .actor-work-summary { margin: -6px 0 2px; }
+
+/* Actor detail hero stats: small chips with counts / span / studios. */
+.actor-page-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 6px;
+}
+.actor-page-stats span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(45, 212, 191, 0.18);
+  background: #131c20;
+  color: #9fb2b9;
+  font-size: 12px;
+}
+.actor-page-stats b {
+  color: #e7fffb;
+  font-weight: 700;
+  font-size: 12.5px;
+}

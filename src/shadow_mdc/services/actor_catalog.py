@@ -1,5 +1,6 @@
 import re
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -26,6 +27,9 @@ class ActorWorkReference(BaseModel):
     code: str | None
     category: str
     image_url: str | None = None
+    # Card context: newest release / main studio make the actor list informative.
+    release_date: str | None = None
+    studio: str | None = None
 
 
 class ActorProfile(BaseModel):
@@ -121,6 +125,8 @@ def build_actor_catalog(
                         code=work.primary_code,
                         category=work.category,
                         image_url=_work_image_url(work, data_dir),
+                        release_date=work.release_date.isoformat() if work.release_date else None,
+                        studio=work.studio,
                     )
                 )
     for alias, canonical in rules.actors.items():
@@ -167,6 +173,8 @@ def build_actor_catalog_from_relations(
                     code=work.primary_code,
                     category=work.category,
                     image_url=_work_image_url(work, data_dir),
+                    release_date=work.release_date.isoformat() if work.release_date else None,
+                    studio=work.studio,
                 )
             )
     for alias, canonical in rules.actors.items():
@@ -174,6 +182,28 @@ def build_actor_catalog_from_relations(
         if matched is not None and _normalize(alias) != _normalize(canonical):
             matched.aliases.add(alias.strip())
     return _profiles_from_accumulators(accumulators)
+
+
+
+def _sorted_works(works: Iterable[ActorWorkReference]) -> tuple[ActorWorkReference, ...]:
+    """Newest release first (missing dates last) — list cards preview the top few."""
+
+    def key(work: ActorWorkReference) -> tuple[int, str, str, str]:
+        released = work.release_date or ""
+        if released:
+            return (0, _reverse_date(released), work.code or "", work.title)
+        return (1, "", work.code or "", work.title)
+
+    return tuple(sorted(works, key=key))
+
+
+def _reverse_date(value: str) -> str:
+    """Sort descending on ISO dates without negating strings."""
+
+    digits = "".join(ch for ch in value if ch.isdigit())[:8]
+    if not digits:
+        return ""
+    return "".join(str(9 - int(ch)) for ch in digits)
 
 
 def enrich_actor_aliases(
@@ -238,7 +268,7 @@ def merge_actor_catalogs(
             ),
             categories=tuple(sorted(item.categories)),
             work_count=len(item.works),
-            works=tuple(sorted(item.works, key=lambda work: (work.category, work.code or "", work.title))),
+            works=_sorted_works(item.works),
             image_url=item.image_url
             or next((work.image_url for work in item.works if work.image_url), None),
             x_handle=getattr(item, "x_handle", None),
@@ -316,7 +346,7 @@ def _profiles_from_accumulators(
             aliases=tuple(sorted(item.aliases, key=str.casefold)),
             categories=tuple(sorted(item.categories)),
             work_count=len(item.works),
-            works=tuple(sorted(item.works, key=lambda work: (work.category, work.code or "", work.title))),
+            works=_sorted_works(item.works),
             image_url=item.image_url
             or next((work.image_url for work in item.works if work.image_url), None),
             x_handle=getattr(item, "x_handle", None),

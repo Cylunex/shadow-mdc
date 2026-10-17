@@ -8,6 +8,7 @@ import type { NonJavActorEditPayload, OrganizePayload } from "./api";
 import { identityAliasesSchema } from "./model";
 import type { ActorProfile, Asset, BatchPlan, Candidate, IdentityAliases, Library, LibraryPrefs, NonJavActor, TaskRun, Work } from "./model";
 import { WorkCard } from "./components/WorkCard";
+import { ActorWorkStrip, ActorWorkSummary } from "./components/ActorWorkStrip";
 import {
   EMPTY_WORKS_FILTERS,
   WORKS_SORT_OPTIONS,
@@ -344,17 +345,19 @@ function JavActors({ actors, prefs, onActorTags, busy, onOpenWork, onOpenActor }
               >{actor.javranking.compact_badge}</a>
             )}
           </div>
-          <div className="tags javranking-badges">
-            {(actor.javranking.honors ?? []).map((honor) => (
-              <a
-                key={`${honor.list_slug}-${honor.position}`}
-                className="javranking-badge"
-                href={honor.url || "#"}
-                target="_blank"
-                rel="noreferrer"
-              >{honor.label}</a>
-            ))}
-          </div>
+          {(actor.javranking.honors ?? []).length > 1 && (
+            <div className="tags javranking-badges">
+              {(actor.javranking.honors ?? []).map((honor) => (
+                <a
+                  key={`${honor.list_slug}-${honor.position}`}
+                  className="javranking-badge"
+                  href={honor.url || "#"}
+                  target="_blank"
+                  rel="noreferrer"
+                >{honor.label}</a>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {onActorTags && (() => {
@@ -371,46 +374,20 @@ function JavActors({ actors, prefs, onActorTags, busy, onOpenWork, onOpenActor }
           </div>
         );
       })()}
-      <div className="actor-works">{actor.works.slice(0, 8).map((work) => (
-        <div
-          className="actor-work actor-work--clickable"
-          key={work.id}
-          role="button"
-          tabIndex={0}
-          title="查看作品详情"
-          onClick={() => onOpenWork(work.id)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              onOpenWork(work.id);
-            }
-          }}
-        >
-          <div className="actor-work-poster">
-            {work.image_url
-              ? <CoverImage src={mediaUrl(work.image_url) ?? work.image_url} />
-              : null}
-          </div>
-          <div>
-            <strong
-              className={work.code ? "code-chip-copyable" : undefined}
-              title={work.code ? "点击复制番号" : undefined}
-              onClick={work.code ? (event) => {
-                event.stopPropagation();
-                void navigator.clipboard.writeText(work.code!).catch(() => undefined);
-              } : undefined}
-              onKeyDown={work.code ? (event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  void navigator.clipboard.writeText(work.code!).catch(() => undefined);
-                }
-              } : undefined}
-            >{work.code ?? "无番号"}</strong>
-            <span>{work.title}</span>
-          </div>
-        </div>
-      ))}</div>
+      <ActorWorkSummary works={actor.works} workCount={actor.work_count} />
+      <ActorWorkStrip
+        works={actor.works}
+        limit={6}
+        total={actor.work_count}
+        onOpenWork={onOpenWork}
+        onOpenAll={() => onOpenActor(javActorRef(actor))}
+        onCopyCode={(code) => {
+          void navigator.clipboard.writeText(code).then(
+            () => undefined,
+            () => undefined
+          );
+        }}
+      />
     </article>
   ))}</div><Pagination page={currentPage} total={visibleActors.length} pageSize={ACTOR_PAGE_SIZE} setPage={setPage} /></>}
   </>;
@@ -625,45 +602,19 @@ function NonJavActorsManager(props: {
           {actor.biography && <p className="actor-biography">{actor.biography}</p>}
           {actor.notes && <p className="actor-notes">备注：{actor.notes}</p>}
           {actor.works.length > 0
-            ? <div className="actor-works">{actor.works.slice(0, 6).map((work) => (
-              <div
-                className="actor-work actor-work--clickable"
-                key={work.id}
-                role="button"
-                tabIndex={0}
-                title="查看作品详情"
-                onClick={() => props.onOpenWork(work.id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    props.onOpenWork(work.id);
-                  }
-                }}
-              >
-                <div
-                  className="actor-work-poster"
-                  style={work.image_url ? { backgroundImage: `url("${mediaUrl(work.image_url)}")` } : actor.image_url ? { backgroundImage: `url("${mediaUrl(actor.image_url)}")` } : undefined}
+            ? <>
+                <ActorWorkSummary works={actor.works} workCount={actor.work_count} />
+                <ActorWorkStrip
+                  works={actor.works}
+                  limit={6}
+                  total={actor.work_count}
+                  onOpenWork={props.onOpenWork}
+                  onOpenAll={() => props.onOpenActor(nonJavActorRef(actor))}
+                  onCopyCode={(code) => {
+                    void navigator.clipboard.writeText(code).catch(() => undefined);
+                  }}
                 />
-                <div>
-                  <strong
-                    className={work.code ? "code-chip-copyable" : undefined}
-                    title={work.code ? "点击复制番号" : undefined}
-                    onClick={work.code ? (event) => {
-                      event.stopPropagation();
-                      void navigator.clipboard.writeText(work.code!).catch(() => undefined);
-                    } : undefined}
-                    onKeyDown={work.code ? (event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void navigator.clipboard.writeText(work.code!).catch(() => undefined);
-                      }
-                    } : undefined}
-                  >{work.code ?? work.studio ?? work.series ?? "无番号"}</strong>
-                  <span>{work.title}</span>
-                </div>
-              </div>
-            ))}</div>
+              </>
             : <p className="actor-works-empty">暂无作品资料 · 扫描媒体并识别后会自动关联</p>}
           <div className="actor-actions" onClick={(event) => event.stopPropagation()}>
             <button className="secondary" onClick={() => edit(actor)}>编辑</button>

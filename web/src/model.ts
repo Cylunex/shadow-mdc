@@ -272,7 +272,9 @@ export const actorWorksSchema = z.object({
     title: z.string(),
     code: z.string().nullable().optional().default(null),
     category: z.string(),
-    image_url: z.string().nullable().optional().default(null)
+    image_url: z.string().nullable().optional().default(null),
+    release_date: z.string().nullable().optional().default(null),
+    studio: z.string().nullable().optional().default(null)
   }))
 });
 export type ActorWorks = z.infer<typeof actorWorksSchema>;
@@ -377,7 +379,9 @@ export const actorProfileSchema = z.object({
     title: z.string(),
     code: z.string().nullable(),
     category: z.string(),
-    image_url: z.string().nullable()
+    image_url: z.string().nullable(),
+    release_date: z.string().nullable().optional(),
+    studio: z.string().nullable().optional()
   })),
   work_codes: z.array(z.string()).optional().default([]),
   image_url: z.string().nullable().optional(),

@@ -40,6 +40,35 @@ function readActorRefFromUrl(): string | null {
   }
 }
 
+const APP_VIEWS: ReadonlySet<string> = new Set([
+  "actors",
+  "works",
+  "categories",
+  "rankings",
+  "subscriptions",
+  "tasks",
+  "settings"
+]);
+
+/** Deep link for a top-nav tab (`?view=actors`); detail params win over it. */
+function readViewFromUrl(): AppView | null {
+  try {
+    const value = new URLSearchParams(window.location.search).get("view");
+    return value && APP_VIEWS.has(value) ? (value as AppView) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeViewToUrl(view: AppView): void {
+  const url = new URL(window.location.href);
+  if (APP_VIEWS.has(view) && view !== "works") url.searchParams.set("view", view);
+  else url.searchParams.delete("view");
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (next !== current) window.history.replaceState({ view }, "", next);
+}
+
 function writeDetailToUrl(opts: { workId?: string | null; actorRef?: string | null }): void {
   const url = new URL(window.location.href);
   const workId = opts.workId ?? null;
@@ -74,8 +103,9 @@ function applyWorksFilterPatch(
 export function App() {
   const initialWorkId = typeof window !== "undefined" ? readWorkIdFromUrl() : null;
   const initialActorRef = typeof window !== "undefined" ? readActorRefFromUrl() : null;
+  const initialView = typeof window !== "undefined" ? readViewFromUrl() : null;
   const [view, setView] = useState<AppView>(
-    initialWorkId ? "work-detail" : initialActorRef ? "actor-detail" : "works"
+    initialWorkId ? "work-detail" : initialActorRef ? "actor-detail" : initialView ?? "works"
   );
   const [selectedWorkId, setSelectedWorkId] = useState<string | null>(initialWorkId);
   const [selectedActorRef, setSelectedActorRef] = useState<string | null>(initialActorRef);
@@ -366,6 +396,7 @@ export function App() {
             writeDetailToUrl({});
           }
           setView(next);
+          if (next !== "work-detail" && next !== "actor-detail") writeViewToUrl(next);
           if (next === "tasks" && inbox.length > 0) setTaskTab("inbox");
         }}
         badges={badges}
