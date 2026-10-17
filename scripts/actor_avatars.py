@@ -156,10 +156,21 @@ def notes_indicate_placeholder(notes: str | None) -> bool:
     )
 
 
+TOKEN_ENV_KEYS: tuple[str, ...] = ("SHADOW_MDC_THEPORNDB_TOKEN", "TPDB_TOKEN")
+
+
 def theporndb_token_from_env(env_file: Path | None = None) -> str | None:
-    token = (os.environ.get("SHADOW_MDC_THEPORNDB_TOKEN") or "").strip()
-    if token:
-        return token
+    """Read the ThePornDB token from the environment or an env file.
+
+    ``TPDB_TOKEN`` is accepted as well: the NAS supervisor env file stores it under
+    that short name, and only looking for ``SHADOW_MDC_*`` silently disabled every
+    TPDB-backed importer there.
+    """
+
+    for key in TOKEN_ENV_KEYS:
+        token = (os.environ.get(key) or "").strip()
+        if token:
+            return token
     path = env_file
     if path is None:
         path = Path(__file__).resolve().parents[1] / ".env"
@@ -171,10 +182,11 @@ def theporndb_token_from_env(env_file: Path | None = None) -> str | None:
             if not stripped or stripped.startswith("#") or "=" not in stripped:
                 continue
             key, _, value = stripped.partition("=")
-            if key.strip() != "SHADOW_MDC_THEPORNDB_TOKEN":
+            if key.strip().lstrip("export ").strip() not in TOKEN_ENV_KEYS:
                 continue
             cleaned = value.strip().strip("'").strip('"')
-            return cleaned or None
+            if cleaned:
+                return cleaned
     except OSError:
         return None
     return None

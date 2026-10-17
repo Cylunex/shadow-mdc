@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,7 +29,11 @@ class Settings(BaseSettings):
     avsox_base_url: str = "https://avsox.click"
     freejavbt_base_url: str = "https://freejavbt.com"
     theporndb_graphql_url: str = "https://theporndb.net/graphql"
-    theporndb_token: str | None = None
+    # ``TPDB_TOKEN`` is the short name used in the NAS supervisor env file.
+    theporndb_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SHADOW_MDC_THEPORNDB_TOKEN", "TPDB_TOKEN"),
+    )
     request_timeout_seconds: float = Field(default=20, ge=1, le=120)
     request_retries: int = Field(default=1, ge=0, le=5)
     identify_concurrency: int = Field(default=4, ge=1, le=24)
