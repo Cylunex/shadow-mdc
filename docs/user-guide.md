@@ -479,3 +479,38 @@ OpenList API：`POST /api/pan/openlist/credentials`、`DELETE /api/pan/openlist/
 - `/api/discover/seed` 在建档后同样触发翻译，避免仅种下原文标题/简介
 - 神作 TOP100 可用 `scripts/enrich_shenzuo_top100.py` 对缺失字段做幂等补全，再 `scripts/sync_catalog_to_nas.sh` 同步到 NAS
 
+## NAS：每周 r18.dev dump 刷新
+
+把原先 Shadow Grok Bot 的周三例程迁到 **仓库内脚本 + NAS crontab**（服务停写 SQLite 单写者）。
+
+### 路径与代理
+
+| 项 | 值 |
+| --- | --- |
+| release | `/data/project/shadow-mdc/current` |
+| data | `/data/project/shadow-mdc/shared/data` |
+| 主库 | `sqlite:////data/project/shadow-mdc/shared/data/shadow-mdc.db` |
+| dump SQLite | `.../shared/data/r18-dumps/r18_dump.db` |
+| 代理 | `SHADOW_MDC_PROXY_URL=http://192.168.0.110:7893` |
+| health | `http://127.0.0.1:8700/api/health` |
+
+### 启用
+
+1. 先手动跑通（不改 crontab）::
+
+       /data/project/shadow-mdc/current/scripts/nas/r18_dump_weekly.sh --force
+
+2. 在 supervisor / 环境中设置 `SHADOW_MDC_R18_DUMP_REFRESH_ENABLED=true`。
+3. crontab（root，与 supervisor 同用户）::
+
+       CRON_TZ=Asia/Shanghai
+       1 10 * * 3 /data/project/shadow-mdc/current/scripts/nas/r18_dump_weekly.sh >>/var/log/shadow-mdc-r18-dump.log 2>&1
+
+Settings / 环境变量：`SHADOW_MDC_R18_DUMP_REFRESH_ENABLED`（默认 `false`）、
+`SHADOW_MDC_R18_DUMP_REFRESH_CRON`（默认 `1 10 * * 3`，供文档/对照）、
+`SHADOW_MDC_R18_DUMP_REFRESH_TIMEZONE`、`SHADOW_MDC_R18_DUMP_REFRESH_SERVICE`、
+`SHADOW_MDC_R18_DUMP_REFRESH_HEALTH_URL`、`SHADOW_MDC_PROXY_URL`、`SHADOW_MDC_DATA_DIR`。
+
+实现：`scripts/run_r18_dump_weekly.py`、`src/shadow_mdc/services/r18_dump_refresh.py`。
+dump 未变时可跳过 enrich；enrich 后若 `jav_total` 增加则失败。勿把 `r18-dumps/` 推进 git。
+
