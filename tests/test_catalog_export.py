@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path, PurePosixPath
 
 from shadow_mdc.db.repository import Database, Repository
@@ -168,3 +169,71 @@ def test_full_then_incremental_exports_only_changes(tmp_path: Path) -> None:
     current = compute_export_state(data_dir=data_dir, database=database_path)
     assert state.works == current.works
     assert state.actor_images == current.actor_images
+
+
+def test_full_export_drops_pre_existing_orphan_child_rows(tmp_path: Path) -> None:
+    """Legacy orphan rows must not fail PRAGMA foreign_key_check in the portable copy."""
+
+    data_dir = tmp_path / "data"
+    database_path = _seed_catalog(data_dir)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO work_actors (work_id, actor_id, position) "
+            "VALUES ('missing-work', 'missing-actor', 0)"
+        )
+
+    out = tmp_path / "orphan-bundle"
+    manifest = export_catalog_bundle(
+        source_data_dir=data_dir,
+        source_database=database_path,
+        output=out,
+        target_data_dir=PurePosixPath("/data"),
+    )
+    assert manifest.catalog_counts.get("works", 0) == 1
+
+    with sqlite3.connect(out / "data" / "shadow-mdc.db") as connection:
+        orphans = connection.execute(
+            "SELECT COUNT(*) FROM work_actors WHERE work_id NOT IN (SELECT id FROM works)"
+        ).fetchone()[0]
+        assert orphans == 0
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_incremental_export_with_no_kept_works_prunes_every_child_table(tmp_path: Path) -> None:
+    """After a full export, deleting the works must leave an empty, FK-clean portable DB."""
+
+    data_dir = tmp_path / "data"
+    database_path = _seed_catalog(data_dir)
+    export_catalog_bundle(
+        source_data_dir=data_dir,
+        source_database=database_path,
+        output=tmp_path / "full-bundle",
+        target_data_dir=PurePosixPath("/data"),
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DELETE FROM works")
+        connection.commit()
+
+    out = tmp_path / "empty-bundle"
+    manifest = export_catalog_bundle(
+        source_data_dir=data_dir,
+        source_database=database_path,
+        output=out,
+        target_data_dir=PurePosixPath("/data"),
+        incremental=True,
+    )
+    assert manifest.catalog_counts.get("works", 0) == 0
+    with sqlite3.connect(out / "data" / "shadow-mdc.db") as connection:
+        for table in (
+            "works",
+            "work_actors",
+            "work_collections",
+            "external_identities",
+            "source_snapshots",
+        ):
+            assert connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] == 0, table
+        # Actors and collections lose their only work link, so they go too.
+        for table in ("actors", "collections"):
+            assert connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] == 0, table
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

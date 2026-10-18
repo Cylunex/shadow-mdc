@@ -30,6 +30,8 @@ _CATALOG_TABLES = (
     "work_collections",
 )
 _RUNTIME_TABLES = ("libraries", "media_assets", "match_candidates", "task_runs")
+# Tables that carry a work_id FK; a partial export must prune the ones whose work is dropped.
+_CHILD_WORK_TABLES = ("work_actors", "work_collections", "external_identities", "source_snapshots")
 _STATE_VERSION = 1
 DEFAULT_STATE_NAME = "export-manifest.json"
 
@@ -348,7 +350,7 @@ def _work_fingerprints(database: Path, *, artwork_root: Path) -> dict[str, str]:
 
 def _artwork_local_hashes(encoded: object, *, artwork_root: Path) -> list[str]:
     try:
-        artwork = json.loads(encoded or "[]")
+        artwork = json.loads(encoded if isinstance(encoded, (str, bytes, bytearray)) else "[]")
     except (TypeError, json.JSONDecodeError):
         return []
     if not isinstance(artwork, list):
@@ -622,6 +624,28 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
+def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')}
+
+
+def _prune_work_children(connection: sqlite3.Connection) -> None:
+    """Delete rows whose work_id no longer exists.
+
+    Partial (incremental) exports keep only the changed works, so every child table has
+    to lose the rows pointing at dropped works, including orphans that already existed in
+    the source database. Without this the portable copy fails ``PRAGMA foreign_key_check``.
+    """
+
+    if not _table_exists(connection, "works"):
+        return
+    for table in _CHILD_WORK_TABLES:
+        if not _table_exists(connection, table):
+            continue
+        if "work_id" not in _table_columns(connection, table):
+            continue
+        connection.execute(f'DELETE FROM "{table}" WHERE work_id NOT IN (SELECT id FROM works)')
+
+
 def _table_counts(connection: sqlite3.Connection, tables: tuple[str, ...]) -> dict[str, int]:
     return {
         table: int(connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
@@ -703,7 +727,8 @@ def _clean_database(
         for table in ("match_candidates", "media_assets", "libraries", "task_runs"):
             if _table_exists(connection, table):
                 connection.execute(f'DELETE FROM "{table}"')
-        if keep_work_ids is not None and _table_exists(connection, "works"):
+        partial = keep_work_ids is not None and _table_exists(connection, "works")
+        if partial:
             if keep_work_ids:
                 placeholders = ",".join("?" for _ in keep_work_ids)
                 connection.execute(
@@ -712,6 +737,11 @@ def _clean_database(
                 )
             else:
                 connection.execute("DELETE FROM works")
+        # Must run after the works delete and before the orphan sweeps: child rows of the
+        # dropped works would otherwise keep their actors/collections alive. It also covers
+        # full exports, where the source database may already carry orphan rows.
+        _prune_work_children(connection)
+        if partial:
             # Drop orphan actors not referenced by remaining work_actors.
             if _table_exists(connection, "actors") and _table_exists(connection, "work_actors"):
                 connection.execute(
@@ -740,6 +770,9 @@ def _clean_database(
         if any(runtime_after.values()):
             raise RuntimeError(f"runtime tables were not emptied: {runtime_after}")
         catalog_counts = _table_counts(connection, _CATALOG_TABLES)
+        # VACUUM builds a temporary copy of the database; on Windows the default on-disk
+        # temp file can fail with "unable to open database file".
+        connection.execute("PRAGMA temp_store = MEMORY")
         connection.execute("VACUUM")
         connection.execute("PRAGMA journal_mode = DELETE")
     return catalog_counts, omitted_counts

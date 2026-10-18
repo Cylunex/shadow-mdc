@@ -194,8 +194,8 @@ def import_catalog_bundle(
         )
         if catalog_touched == 0 and (images_copied or artwork_copied):
             notes.append(
-                "media-only pack: extracted images/artwork only; "
-                "merge all split .tar.gz parts into one folder (or one archive) before import for a full catalog"
+                "media-only pack: extracted images/artwork only; merge all split .tar.gz "
+                "parts into one folder (or one archive) before import for a full catalog"
             )
         elif catalog_touched == 0 and images_copied == 0 and artwork_copied == 0:
             notes.append(
@@ -223,18 +223,41 @@ def import_catalog_bundle(
         )
 
 
+_PLACEHOLDER_BIOGRAPHY_MARKERS = (
+    "seeded non-jav performer",
+    "designed identicon avatar",
+    "placeholder",
+)
+
+
+def _is_placeholder_biography(value: str | None) -> bool:
+    text = (value or "").casefold()
+    return any(marker in text for marker in _PLACEHOLDER_BIOGRAPHY_MARKERS)
+
+
 def merge_non_jav_actor_profiles(
     existing: NonJavActorProfile,
     incoming: NonJavActorProfile,
 ) -> NonJavActorProfile:
-    """Keep local fields, enrich with incoming aliases/groups/categories/image when richer."""
+    """Merge an imported profile into the local one.
+
+    Aliases and groups are additive (synonyms accumulate). Work-derived categories and the
+    provenance ``notes`` follow the incoming bundle — unioning them produced nonsense such
+    as ``['China', 'Other', 'Europe']`` and hid freshly linked performers. Free-text
+    ``biography`` keeps local edits unless the local value is still a seeding placeholder,
+    and the portrait is only adopted when the local profile has none.
+    """
 
     aliases = _unique_casefold((*existing.aliases, *incoming.aliases))
     groups = _unique_casefold((*existing.groups, *incoming.groups))
-    categories = tuple(dict.fromkeys((*existing.categories, *incoming.categories)))
+    categories = tuple(dict.fromkeys(incoming.categories)) or existing.categories
     image_file = existing.image_file or incoming.image_file
-    biography = existing.biography if existing.biography else incoming.biography
-    notes = existing.notes if existing.notes else incoming.notes
+    biography: str | None
+    if incoming.biography and _is_placeholder_biography(existing.biography):
+        biography = incoming.biography
+    else:
+        biography = existing.biography or incoming.biography
+    notes = incoming.notes or existing.notes
     return build_non_jav_actor_profile(
         name=existing.name,
         aliases=aliases,

@@ -45,6 +45,33 @@ def test_merge_non_jav_actor_profiles_keeps_existing_and_enriches() -> None:
     assert merged.notes == "keep me"
 
 
+def test_merge_replaces_derived_categories_notes_and_placeholder_bio() -> None:
+    """Work-derived fields follow the bundle; a seeded placeholder bio is replaced."""
+
+    existing = build_non_jav_actor_profile(
+        name="Alex Coal",
+        aliases=(),
+        groups=("swag", "twitter"),
+        categories=(MediaCategory.CHINA, MediaCategory.OTHER),
+        biography="Seeded non-JAV performer (China, Other).",
+        notes="imported from creator list",
+    )
+    incoming = build_non_jav_actor_profile(
+        name="Alex Coal",
+        aliases=(),
+        groups=("swag",),
+        categories=(MediaCategory.EUROPE,),
+        biography="Born in 1991 in Sin City, Alex Coal …",
+        notes="ThePornDB performer 0bc13db2 · linked via 4 scenes",
+    )
+    merged = merge_non_jav_actor_profiles(existing, incoming)
+    assert merged.categories == (MediaCategory.EUROPE,)
+    assert merged.notes.startswith("ThePornDB performer")
+    assert merged.biography.startswith("Born in 1991")
+    # Aliases/groups stay additive.
+    assert set(merged.groups) == {"swag", "twitter"}
+
+
 def test_import_catalog_bundle_merges_actors_and_seeds_works_without_wiping_libraries(
     tmp_path: Path,
 ) -> None:
