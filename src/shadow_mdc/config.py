@@ -18,6 +18,13 @@ class Settings(BaseSettings):
     jav321_base_url: str = "https://www.jav321.com"
     r18dev_base_url: str = "https://r18.dev"
     r18_dump_db: Path | None = None  # offline dump SQLite; default data_dir/r18-dumps/r18_dump.db
+    # Weekly NAS job (scripts/nas/r18_dump_weekly.sh): stop API → refresh dump → enrich → start.
+    # Keep disabled until a manual run succeeds; cron expression is documentary for CRON_TZ crontab.
+    r18_dump_refresh_enabled: bool = False
+    r18_dump_refresh_cron: str = "1 10 * * 3"  # Wed 10:01 — pair with CRON_TZ=Asia/Shanghai
+    r18_dump_refresh_timezone: str = "Asia/Shanghai"
+    r18_dump_refresh_service: str = "shadow-mdc"
+    r18_dump_refresh_health_url: str = "http://127.0.0.1:8700/api/health"
     fanza_base_url: str = "https://www.dmm.co.jp"
     javlibrary_base_url: str = "https://www.javlibrary.com"
     mgstage_base_url: str = "https://www.mgstage.com"
@@ -64,7 +71,6 @@ class Settings(BaseSettings):
     gfriends_filetree_url: str = "https://cdn.jsdelivr.net/gh/gfriends/gfriends@master/Filetree.json"
     gfriends_cdn_base_url: str = "https://cdn.jsdelivr.net/gh/gfriends/gfriends@master"
     gfriends_cache_ttl_hours: int = Field(default=24 * 7, ge=1, le=24 * 30)
-
 
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)

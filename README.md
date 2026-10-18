@@ -38,6 +38,20 @@ just dev
 
 API 默认监听 `http://127.0.0.1:8000`，Web 开发服务器监听 `http://127.0.0.1:5173`。
 
+
+## NAS：每周 r18.dev dump
+
+上游 dump 多在周二更新。NAS 上用 in-repo 任务（**不是** Grok Bot）在周三 10:01（`Asia/Shanghai`）执行：
+
+1. 记录 JAV 缺口统计 → `supervisorctl stop shadow-mdc`
+2. `import_r18_dump.py --refresh`（`SHADOW_MDC_PROXY_URL`，默认 `http://192.168.0.110:7893`）
+3. dump 有更新时 `enrich_from_r18_dump.py`（**只更新已有作品，绝不新建**）
+4. `supervisorctl start` → `/api/health`（冷启动最多约 90s）→ 复核统计（`jav_total` 不得增加）
+
+数据在 `shared/data/r18-dumps/`（deploy 会保留，勿提交 git）。默认关闭：设
+`SHADOW_MDC_R18_DUMP_REFRESH_ENABLED=true` 后再加 crontab。详见
+[docs/user-guide.md](docs/user-guide.md#nas-每周-r18dev-dump-刷新)。
+
 ## 项目状态
 
 架构和验收范围见 [docs/architecture.md](docs/architecture.md)，安装、Docker 与媒体库使用见

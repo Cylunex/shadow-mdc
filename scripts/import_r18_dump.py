@@ -21,25 +21,21 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-from shadow_mdc.config import Settings  # noqa: E402
 import httpx  # noqa: E402
 
+from shadow_mdc.config import Settings  # noqa: E402
+from shadow_mdc.services.r18_dump import (  # noqa: E402
+    PROVIDER_ID,
+    R18DumpStore,
+    import_dump_to_sqlite,
+)
 from shadow_mdc.services.r18_dump_download import (  # noqa: E402
     LATEST_DUMP_URL,
     NetworkStallWatch,
     R18DumpDownloadError,
     download_latest_dump,
 )
-from shadow_mdc.services.r18_dump import (  # noqa: E402
-    PROVIDER_ID,
-    R18DumpStore,
-    import_dump_to_sqlite,
-)
-
-def _dump_dir(settings: Settings) -> Path:
-    path = settings.data_dir / "r18-dumps"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+from shadow_mdc.services.r18_dump_refresh import dump_dir, resolve_proxy  # noqa: E402
 
 
 def _download_latest(target_dir: Path, *, proxy: str | None, stall: NetworkStallWatch | None = None) -> Path:
@@ -86,7 +82,12 @@ def main() -> int:
     parser.add_argument("--dump", type=Path, default=None, help="Existing .sql.gz dump path")
     parser.add_argument("--sqlite", type=Path, default=None, help="Output SQLite path")
     parser.add_argument("--refresh", action="store_true", help="Download latest dump before import")
-    parser.add_argument("--proxy", default=os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY"))
+    parser.add_argument(
+        "--proxy",
+        default=os.environ.get("https_proxy")
+        or os.environ.get("HTTPS_PROXY")
+        or os.environ.get("SHADOW_MDC_PROXY_URL"),
+    )
     parser.add_argument("--progress-every", type=int, default=50_000)
     arguments = parser.parse_args()
 
@@ -98,33 +99,37 @@ def main() -> int:
         settings = settings.model_copy(update=updates)
     settings.ensure_directories()
 
-    dump_dir = _dump_dir(settings)
     dump_path = arguments.dump
+    stall: NetworkStallWatch | None = None
     if arguments.refresh or dump_path is None:
         if dump_path is None and not arguments.refresh:
-            existing = sorted(dump_dir.glob("*.sql.gz"))
+            existing = sorted(dump_dir(settings).glob("*.sql.gz"))
             if existing:
                 dump_path = existing[-1]
                 print(f"Using existing dump {dump_path}")
             else:
                 arguments.refresh = True
-        stall = NetworkStallWatch(limit_seconds=300.0)
-    if arguments.refresh:
-            dump_path = _download_latest(dump_dir, proxy=arguments.proxy, stall=stall)
+        if arguments.refresh:
+            stall = NetworkStallWatch(limit_seconds=300.0)
+            dump_path = _download_latest(
+                dump_dir(settings),
+                proxy=resolve_proxy(settings, arguments.proxy),
+                stall=stall,
+            )
     assert dump_path is not None
     if not dump_path.is_file():
         print(f"dump not found: {dump_path}", file=sys.stderr)
         return 2
 
-    sqlite_path = arguments.sqlite or (dump_dir / "r18_dump.db")
+    sqlite_path = arguments.sqlite or settings.resolved_r18_dump_db()
     print(f"Importing {dump_path} → {sqlite_path} (provider={PROVIDER_ID})")
-    # Pause network-stall budget for local SQLite parse/import (CPU/IO only).
+    # Pause network-stall budget for local SQLite parse/import (CPU/IO only) when refreshing.
     stats = import_dump_to_sqlite(
         dump_path,
         sqlite_path,
         progress_every=arguments.progress_every,
-        on_import_start=stall.pause,
-        on_import_done=stall.resume,
+        on_import_start=(stall.pause if stall is not None else None),
+        on_import_done=(stall.resume if stall is not None else None),
     )
     print(f"Done: videos={stats.videos} actresses={stats.actresses} tables={stats.tables}")
     with R18DumpStore(sqlite_path) as store:
