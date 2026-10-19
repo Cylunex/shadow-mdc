@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .classification import classify_media
 from .domain import IdentityHints
 from .enums import ContentFamily, MediaCategory, QueryMode
+from .remaster import parse_remaster_identity
 
 _NOISE = re.compile(
     r"(?ix)(?:^|[._\-\s])("
@@ -265,6 +266,11 @@ def extract_code(
     category: MediaCategory = MediaCategory.OTHER,
 ) -> tuple[str | None, ContentFamily]:
     normalized = unicodedata.normalize("NFKC", text)
+
+    # Remaster / remake tails (HD/AI/H, optional E/Z): look up by base 番号.
+    remaster = parse_remaster_identity(normalized)
+    if remaster is not None:
+        return remaster.base, ContentFamily.JAV
 
     if match := _FC2.search(normalized):
         return f"FC2-{match.group(1)}", ContentFamily.JAV

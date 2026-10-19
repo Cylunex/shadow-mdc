@@ -20,6 +20,7 @@ from ..domain import Artwork, ProviderRecord
 from ..enums import ContentFamily
 from ..identity import extract_code
 from ..normalize_code import normalize_code, to_comparison_key
+from ..remaster import strip_remaster_marker
 
 PROVIDER_ID = "r18dump"
 DMM_PICS_BASE = "https://pics.dmm.co.jp/"
@@ -503,22 +504,27 @@ class R18DumpStore:
         return {str(row["key"]): str(row["value"]) for row in rows}
 
     def find_video_row(self, code: str) -> sqlite3.Row | None:
-        key = to_comparison_key(code)
-        norm = normalize_code(code)
-        if key:
-            row = self._connection.execute(
-                "SELECT * FROM videos WHERE dvd_id_key = ? LIMIT 1",
-                (key,),
-            ).fetchone()
-            if row is not None:
-                return row
-        if norm:
-            row = self._connection.execute(
-                "SELECT * FROM videos WHERE dvd_id_norm = ? LIMIT 1",
-                (norm,),
-            ).fetchone()
-            if row is not None:
-                return row
+        # Remaster markers (HD/AI/H): probe base 番号 for dvd_id rows, then
+        # marker-aware content_id candidates (re-appended folded marker).
+        base = strip_remaster_marker(code)
+        lookup_codes = (code,) if base == code else (base, code)
+        for probe in lookup_codes:
+            key = to_comparison_key(probe)
+            norm = normalize_code(probe)
+            if key:
+                row = self._connection.execute(
+                    "SELECT * FROM videos WHERE dvd_id_key = ? LIMIT 1",
+                    (key,),
+                ).fetchone()
+                if row is not None:
+                    return row
+            if norm:
+                row = self._connection.execute(
+                    "SELECT * FROM videos WHERE dvd_id_norm = ? LIMIT 1",
+                    (norm,),
+                ).fetchone()
+                if row is not None:
+                    return row
         for candidate in content_id_candidates(code):
             row = self._connection.execute(
                 "SELECT * FROM videos WHERE content_id = ? LIMIT 1",
