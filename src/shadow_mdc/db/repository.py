@@ -981,6 +981,9 @@ class Repository:
                 locks.append("title")
         if actors is not None:
             cleaned = [item.strip() for item in actors if item.strip()]
+            current_named = _named_actor_list(work.actors)
+            if _reject_actor_wipe(current_named, cleaned):
+                raise ValueError("refusing to clear named actors to an empty cast")
             work.actors = cleaned
             sources["actors"] = "manual"
             if lock_edited and "actors" not in locks:
@@ -1573,9 +1576,15 @@ class Repository:
                 overwrite=True,
             )
         if not _field_locked(work, "actors"):
-            work.actors = list(record.actors)
-            if record.actors:
-                sources["actors"] = incoming.get("actors", record.provider)
+            current_named = _named_actor_list(work.actors)
+            incoming_named = _named_actor_list(record.actors)
+            if _reject_actor_wipe(current_named, incoming_named):
+                # Forced replace with absent/empty cast must not wipe curation.
+                pass
+            else:
+                work.actors = list(incoming_named)
+                if incoming_named:
+                    sources["actors"] = incoming.get("actors", record.provider)
         work.directors = list(record.directors)
         if not _field_locked(work, "tags"):
             work.tags = list(record.tags)
@@ -1648,21 +1657,29 @@ class Repository:
                 overwrite=overwrite,
             )
 
-        if record.actors and not _field_locked(work, "actors"):
+        if not _field_locked(work, "actors"):
+            current_named = _named_actor_list(work.actors)
+            incoming_named = _named_actor_list(record.actors)
             actor_source = str(sources.get("actors", ""))
-            incoming_priority = _JAV_ACTOR_PROVIDER_PRIORITY.get(record.provider)
-            current_priority = _JAV_ACTOR_PROVIDER_PRIORITY.get(actor_source)
-            if incoming_priority is None:
-                # Alias-aware (javinizer-go actress_merger): "Mio Ishikawa" and
-                # "石川澪" from different sources are one performer.
-                work.actors = merge_actor_names(work.actors, record.actors, replace=overwrite)
-                if overwrite or sources.get("actors") in {None, "", "local-path", "local-manual"}:
+            # Absent / blank cast is not evidence — never wipe named or manual credits.
+            if _reject_actor_wipe(current_named, incoming_named):
+                pass
+            elif incoming_named:
+                incoming_priority = _JAV_ACTOR_PROVIDER_PRIORITY.get(record.provider)
+                current_priority = _JAV_ACTOR_PROVIDER_PRIORITY.get(actor_source)
+                if actor_source == "manual" and not overwrite:
+                    work.actors = merge_actor_names(work.actors, incoming_named, replace=False)
+                elif incoming_priority is None:
+                    # Alias-aware (javinizer-go actress_merger): "Mio Ishikawa" and
+                    # "石川澪" from different sources are one performer.
+                    work.actors = merge_actor_names(work.actors, incoming_named, replace=overwrite)
+                    if overwrite or sources.get("actors") in {None, "", "local-path", "local-manual"}:
+                        sources["actors"] = record.provider
+                elif current_priority is None or incoming_priority < current_priority:
+                    work.actors = merge_actor_names([], incoming_named, replace=True)
                     sources["actors"] = record.provider
-            elif current_priority is None or incoming_priority < current_priority:
-                work.actors = merge_actor_names([], record.actors, replace=True)
-                sources["actors"] = record.provider
-            elif incoming_priority == current_priority:
-                work.actors = merge_actor_names([], record.actors, replace=True)
+                elif incoming_priority == current_priority:
+                    work.actors = merge_actor_names([], incoming_named, replace=True)
         if record.directors:
             work.directors = _merge_unique(work.directors, record.directors, replace=overwrite)
         if record.tags and not _field_locked(work, "tags"):
@@ -2017,6 +2034,21 @@ class Repository:
             **{f"kind_{key}": value for key, value in by_kind.items()},
         }
 
+
+
+
+def _named_actor_list(actors: list[str] | tuple[str, ...] | None) -> list[str]:
+    """Non-blank performer names (absent cast stays empty; blanks are ignored)."""
+
+    if not actors:
+        return []
+    return [item.strip() for item in actors if isinstance(item, str) and item.strip()]
+
+
+def _reject_actor_wipe(current: list[str], incoming: list[str]) -> bool:
+    """True when applying ``incoming`` would wipe curated/named cast to empty."""
+
+    return bool(current) and not incoming
 
 
 def _field_locked(work: Work, field: str) -> bool:

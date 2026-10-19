@@ -3865,16 +3865,19 @@ def update_work(work_id: str, payload: WorkUpdateRequest, request: Request, repo
         and payload.plot is None
     ):
         raise HTTPException(status_code=422, detail="no editable fields provided")
-    repo.update_work_fields(
-        work,
-        title=payload.title,
-        actors=list(payload.actors) if payload.actors is not None else None,
-        studio=payload.studio,
-        series=payload.series,
-        tags=list(payload.tags) if payload.tags is not None else None,
-        plot=payload.plot,
-        lock_edited=payload.lock_edited,
-    )
+    try:
+        repo.update_work_fields(
+            work,
+            title=payload.title,
+            actors=list(payload.actors) if payload.actors is not None else None,
+            studio=payload.studio,
+            series=payload.series,
+            tags=list(payload.tags) if payload.tags is not None else None,
+            plot=payload.plot,
+            lock_edited=payload.lock_edited,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     app_runtime = runtime(request)
     _invalidate_library_caches(app_runtime.response_cache)
     return _work_detail_out(repo, work, data_dir=app_runtime.settings.data_dir)
