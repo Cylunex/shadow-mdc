@@ -479,6 +479,21 @@ OpenList API：`POST /api/pan/openlist/credentials`、`DELETE /api/pan/openlist/
 - `/api/discover/seed` 在建档后同样触发翻译，避免仅种下原文标题/简介
 - 神作 TOP100 可用 `scripts/enrich_shenzuo_top100.py` 对缺失字段做幂等补全，再 `scripts/sync_catalog_to_nas.sh` 同步到 NAS
 
+## NAS：deploy 与 ops 备份保留
+
+生产部署脚本：`scripts/nas/deploy-mdc.sh`（须 root；**本仓库不自动部署**，由运维在 NAS 上执行）。
+
+部署成功并写出新备份后，会清理历史 ops 备份，**最多保留 2 个**（按目录 mtime 取最新；可用环境变量 `SHADOW_MDC_BACKUP_KEEP` 覆盖，默认 `2`）。
+
+| 项 | 值 |
+| --- | --- |
+| 备份根目录 | `/data/project/.ops-backups/shadow-mdc/`（`SHADOW_MDC_BACKUP_ROOT`） |
+| 单次备份目录 | `pre-<commit12>-<UTC stamp>/` |
+| 保留数量 | 默认 2；超出则删除更旧的 `pre-*` 目录 |
+| 仅 prune | `SHADOW_MDC_BACKUP_ROOT=... scripts/nas/deploy-mdc.sh --prune-backups [--dry-run]` |
+
+不会删除备份根目录以外的路径，也不会动名称不符合 `pre-<12hex>-<YYYYMMDDTHHMMSSZ>` 的兄弟目录。已在最新 commit 且健康检查通过时的早退路径不创建备份，也不做 prune。
+
 ## NAS：每周 r18.dev dump 刷新
 
 把原先 Shadow Grok Bot 的周三例程迁到 **仓库内脚本 + NAS crontab**（服务停写 SQLite 单写者）。

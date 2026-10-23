@@ -39,6 +39,10 @@ just dev
 API 默认监听 `http://127.0.0.1:8000`，Web 开发服务器监听 `http://127.0.0.1:5173`。
 
 
+## NAS：deploy ops 备份
+
+`scripts/nas/deploy-mdc.sh` 成功部署后，在 `/data/project/.ops-backups/shadow-mdc/` 下**最多保留 2 个**历史 `pre-<commit>-<stamp>/` 备份（`SHADOW_MDC_BACKUP_KEEP`，默认 2），多余的立即清理。详见 [docs/user-guide.md](docs/user-guide.md#nasdeploy-与-ops-备份保留)。
+
 ## NAS：每周 r18.dev dump
 
 上游 dump 多在周二更新。NAS 上用 in-repo 任务（**不是** Grok Bot）在周三 10:01（`Asia/Shanghai`）执行：

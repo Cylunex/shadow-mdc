@@ -6,6 +6,8 @@ umask 077
 project_root="${SHADOW_MDC_ROOT:-/data/project/shadow-mdc}"
 script_root="${SHADOW_MDC_SCRIPT_ROOT:-/data/project/script}"
 backup_root="${SHADOW_MDC_BACKUP_ROOT:-/data/project/.ops-backups/shadow-mdc}"
+# Keep at most this many historical pre-<commit>-<stamp> dirs under backup_root.
+backup_keep="${SHADOW_MDC_BACKUP_KEEP:-2}"
 cache_root="${SHADOW_MDC_CACHE_ROOT:-/data/project/.deploy-cache/shadow-mdc.git}"
 repo_url="${SHADOW_MDC_REPO_URL:-https://github.com/Cylunex/shadow-mdc.git}"
 branch="${SHADOW_MDC_BRANCH:-main}"
@@ -18,6 +20,84 @@ shared_root="$project_root/shared"
 data_dir="$shared_root/data"
 current_link="$project_root/current"
 lock_file="$script_root/.deploy-mdc.lock"
+
+
+# Keep only the newest N ops-backup directories (pre-<commit12>-<UTC stamp>).
+# Never touches paths outside backup_root; ignores unrelated siblings.
+prune_ops_backups() {
+  local root="$1"
+  local keep="$2"
+  local dry_run="${3:-0}"
+  local abs_root entry name total idx
+  local -a entries=()
+
+  if [[ ! "$keep" =~ ^[1-9][0-9]*$ ]]; then
+    echo "invalid SHADOW_MDC_BACKUP_KEEP: $keep" >&2
+    return 1
+  fi
+  if [[ ! -d "$root" ]]; then
+    echo "ops backup root missing (nothing to prune): $root"
+    return 0
+  fi
+  abs_root="$(cd "$root" && pwd -P)"
+  if [[ -z "$abs_root" || "$abs_root" == "/" ]]; then
+    echo "refusing to prune unsafe backup root: $root" >&2
+    return 1
+  fi
+
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    name="$(basename -- "$entry")"
+    # Only retain/count dirs that match the deploy naming scheme.
+    if [[ ! "$name" =~ ^pre-[0-9a-f]{12}-[0-9]{8}T[0-9]{6}Z$ ]]; then
+      continue
+    fi
+    entries+=("$entry")
+  done < <(
+    find "$abs_root" -mindepth 1 -maxdepth 1 -type d -name 'pre-*' -printf '%T@\t%p\n' \
+      | sort -nr \
+      | cut -f2-
+  )
+
+  total="${#entries[@]}"
+  if (( total <= keep )); then
+    echo "Ops backups: $total under $abs_root (keep <= $keep); nothing to prune"
+    return 0
+  fi
+
+  echo "Ops backups: $total under $abs_root; keeping newest $keep"
+  for (( idx = keep; idx < total; idx++ )); do
+    entry="${entries[$idx]}"
+    name="$(basename -- "$entry")"
+    if [[ "$(dirname -- "$entry")" != "$abs_root" ]]; then
+      echo "skip path outside backup root: $entry" >&2
+      continue
+    fi
+    if [[ ! "$name" =~ ^pre-[0-9a-f]{12}-[0-9]{8}T[0-9]{6}Z$ ]]; then
+      echo "skip unexpected backup dir name: $entry" >&2
+      continue
+    fi
+    if [[ "$dry_run" == "1" ]]; then
+      echo "would remove old ops backup: $entry"
+    else
+      echo "Removing old ops backup: $entry"
+      rm -rf -- "$entry"
+    fi
+  done
+}
+
+if [[ "${1:-}" == "--prune-backups" ]]; then
+  dry_run=0
+  if [[ "${2:-}" == "--dry-run" ]]; then
+    dry_run=1
+  elif [[ -n "${2:-}" ]]; then
+    echo "usage: $0 --prune-backups [--dry-run]" >&2
+    exit 2
+  fi
+  mkdir -p "$backup_root"
+  prune_ops_backups "$backup_root" "$backup_keep" "$dry_run"
+  exit 0
+fi
 
 for command_name in curl flock git mktemp pnpm python3 supervisorctl tar uv; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
@@ -280,3 +360,4 @@ trap - ERR INT TERM
 echo "Deployed Shadow MDC commit $commit"
 echo "Release: $release_dir"
 echo "Backup: $backup_dir"
+prune_ops_backups "$backup_root" "$backup_keep" 0
