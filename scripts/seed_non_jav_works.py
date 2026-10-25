@@ -10,6 +10,7 @@ from shadow_mdc.config import Settings
 from shadow_mdc.db.repository import Database, Repository
 from shadow_mdc.services.non_jav_actor_catalog import NonJavActorCatalogStore
 from shadow_mdc.services.non_jav_work_seed import seed_non_jav_works
+from shadow_mdc.services.post_ingest import run_script_with_post_ingest  # noqa: E402
 
 
 def main() -> None:
@@ -46,4 +47,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_script_with_post_ingest(main)

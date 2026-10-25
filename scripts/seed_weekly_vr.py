@@ -37,6 +37,7 @@ from shadow_mdc.providers.javdb import JavDBProvider
 from shadow_mdc.providers.javdb_api import build_javdb_app_api  # noqa: E402
 from shadow_mdc.services.discover import DiscoverService
 from shadow_mdc.services.weekly_vr_seed import seed_weekly_vr
+from shadow_mdc.services.post_ingest import run_script_with_post_ingest  # noqa: E402
 
 _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -238,4 +239,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_script_with_post_ingest(main)

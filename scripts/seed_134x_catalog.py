@@ -40,6 +40,7 @@ from shadow_mdc.services.x134_catalog import (
     LIST_PATHS,
     build_catalog_snapshot,
 )
+from shadow_mdc.services.post_ingest import run_script_with_post_ingest  # noqa: E402
 
 _TAG = "134x-catalog"
 
@@ -198,4 +199,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_script_with_post_ingest(main)

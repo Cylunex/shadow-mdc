@@ -36,6 +36,7 @@ from shadow_mdc.providers.javdb_api import build_javdb_app_api  # noqa: E402
 from shadow_mdc.services.discover import DiscoverService  # noqa: E402
 from shadow_mdc.services.javranking_client import BROWSER_UA  # noqa: E402
 from shadow_mdc.services.javranking_seed import seed_javranking  # noqa: E402
+from shadow_mdc.services.post_ingest import run_script_with_post_ingest  # noqa: E402
 
 
 def _http_client(settings: Settings, *, max_connections: int) -> httpx.AsyncClient:
@@ -217,4 +218,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_script_with_post_ingest(main)

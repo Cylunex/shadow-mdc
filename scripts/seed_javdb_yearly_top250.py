@@ -40,6 +40,7 @@ from shadow_mdc.services.javdb_yearly_top250_seed import (  # noqa: E402
     list_available_years,
     seed_javdb_yearly_top250,
 )
+from shadow_mdc.services.post_ingest import run_script_with_post_ingest  # noqa: E402
 
 
 def _parse_years(raw: str | None) -> list[int] | None:
@@ -166,4 +167,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_script_with_post_ingest(main))

@@ -13,6 +13,7 @@ from shadow_mdc.services.alias_store import IdentityAliasStore
 from shadow_mdc.services.catalog_import import CatalogImportRequest, import_catalog_bundle
 from shadow_mdc.services.non_jav_actor_catalog import NonJavActorCatalogStore
 from shadow_mdc.services.path_filter import FilterWordsStore
+from shadow_mdc.services.post_ingest import run_script_with_post_ingest
 
 
 def main() -> None:
@@ -96,4 +97,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_script_with_post_ingest(main)

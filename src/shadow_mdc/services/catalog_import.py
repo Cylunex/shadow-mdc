@@ -16,6 +16,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from ..db.models import Work
 from ..db.repository import Repository
 from ..domain import ProviderRecord
 from ..identity import IdentityAliasRules
@@ -526,9 +527,15 @@ def _import_formal_works_from_portable_db(
         }
         if "source_snapshots" not in tables:
             return 0
+        snapshot_cols = {
+            row["name"] for row in connection.execute("PRAGMA table_info(source_snapshots)")
+        }
+        work_id_col = "work_id" if "work_id" in snapshot_cols else "NULL AS work_id"
         rows = connection.execute(
-            "SELECT provider, external_id, payload FROM source_snapshots ORDER BY fetched_at"
+            f"SELECT provider, external_id, payload, {work_id_col} FROM source_snapshots "
+            "ORDER BY fetched_at"
         ).fetchall()
+        source_works = _load_portable_works(connection) if "works" in tables else {}
         for row in rows:
             try:
                 record = ProviderRecord.model_validate(json.loads(row["payload"]))
@@ -541,6 +548,12 @@ def _import_formal_works_from_portable_db(
             if dry_run:
                 continue
             work = repo.upsert_provider_record(record, overwrite=False)
+            source_work = source_works.get(str(row["work_id"])) if row["work_id"] else None
+            if source_work is None and work.primary_code:
+                source_work = source_works.get(f"code:{work.primary_code}")
+            if source_work is not None:
+                merge_portable_work_fields(work, source_work)
+                repo._session.flush()
             _attach_copied_artwork(
                 repo,
                 work_id=work.id,
@@ -549,6 +562,111 @@ def _import_formal_works_from_portable_db(
                 seed_hint=record.external_id,
             )
     return imported
+
+
+_USER_SOURCES = {"manual", "local-manual", "local-path"}
+
+
+def _json_value(value: object, default: object) -> object:
+    if value is None:
+        return default
+    if isinstance(value, (list, dict)):
+        return value
+    try:
+        return json.loads(str(value))
+    except (TypeError, json.JSONDecodeError):
+        return default
+
+
+def _load_portable_works(connection: sqlite3.Connection) -> dict[str, dict[str, object]]:
+    """Index exported ``works`` rows by id and ``code:<primary_code>``."""
+
+    cols = {row["name"] for row in connection.execute("PRAGMA table_info(works)")}
+    wanted = [
+        c
+        for c in (
+            "id", "primary_code", "title", "original_title", "plot", "original_plot",
+            "tags", "field_sources", "field_locks",
+        )
+        if c in cols
+    ]
+    if "id" not in wanted:
+        return {}
+    out: dict[str, dict[str, object]] = {}
+    for row in connection.execute(f"SELECT {', '.join(wanted)} FROM works"):
+        item = {key: row[key] for key in wanted}
+        item["tags"] = _json_value(item.get("tags"), [])
+        item["field_sources"] = _json_value(item.get("field_sources"), {})
+        item["field_locks"] = _json_value(item.get("field_locks"), [])
+        out[str(item["id"])] = item
+        code = item.get("primary_code")
+        if code:
+            out.setdefault(f"code:{code}", item)
+    return out
+
+
+def merge_portable_work_fields(work: Work, source: dict[str, object]) -> bool:
+    """Carry custom tags + translations from an exported work row (idempotent).
+
+    * tags: append-only, deduped; never removes; skipped when target locks ``tags``.
+    * title/plot: copy the exported translation only when the target is empty or still
+      untranslated, and never over a locked or user-edited (manual/local) field.
+    * original_title/original_plot: fill only when empty and unlocked.
+    """
+
+    locks = set(work.field_locks or [])
+    sources = dict(work.field_sources or {})
+    src_sources = source.get("field_sources") if isinstance(source.get("field_sources"), dict) else {}
+    changed = False
+
+    incoming_tags = source.get("tags") if isinstance(source.get("tags"), list) else []
+    if incoming_tags and "tags" not in locks:
+        current = list(work.tags or [])
+        seen = {str(t) for t in current}
+        added = [str(t) for t in incoming_tags if isinstance(t, str) and t and t not in seen and not seen.add(t)]
+        if added:
+            work.tags = [*current, *added]
+            changed = True
+
+    for name in ("title", "plot"):
+        original_name = f"original_{name}"
+        value = source.get(name)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        src_kind = str(src_sources.get(name, ""))
+        if not src_kind.startswith("translation:"):
+            continue
+        if name in locks or str(sources.get(name, "")) in _USER_SOURCES:
+            continue
+        current = getattr(work, name)
+        target_translated = str(sources.get(name, "")).startswith("translation:")
+        if current and target_translated:
+            continue
+        if current == value:
+            continue
+        if getattr(work, original_name) is None and original_name not in locks:
+            src_original = source.get(original_name)
+            setattr(work, original_name, src_original or current or None)
+            sources[original_name] = str(src_sources.get(original_name) or sources.get(name, "catalog-import"))
+        setattr(work, name, value)
+        sources[name] = src_kind
+        changed = True
+
+    for original_name in ("original_title", "original_plot"):
+        value = source.get(original_name)
+        if (
+            isinstance(value, str)
+            and value
+            and getattr(work, original_name) is None
+            and original_name not in locks
+        ):
+            setattr(work, original_name, value)
+            sources.setdefault(original_name, str(src_sources.get(original_name) or "catalog-import"))
+            changed = True
+
+    if changed:
+        work.field_sources = sources
+    return changed
 
 
 def _attach_copied_artwork(

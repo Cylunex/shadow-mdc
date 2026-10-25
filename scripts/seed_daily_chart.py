@@ -44,6 +44,7 @@ from shadow_mdc.services.seed_auto_offline import (
     collect_new_seed_work_ids,
     enqueue_seeded_offline,
 )
+from shadow_mdc.services.post_ingest import run_script_with_post_ingest  # noqa: E402
 
 _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -318,4 +319,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_script_with_post_ingest(main)
