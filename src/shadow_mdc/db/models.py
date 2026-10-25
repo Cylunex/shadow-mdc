@@ -224,6 +224,35 @@ class TaskRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+class JobCheckpoint(Base):
+    """Resumable cursor for long-running background jobs (one row per job key)."""
+
+    __tablename__ = "job_checkpoints"
+
+    key: Mapped[str] = mapped_column(String(300), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(50), index=True)
+    status: Mapped[str] = mapped_column(String(30), index=True, default="running")
+    cursor: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    stats: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    task_id: Mapped[str | None] = mapped_column(String(36))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class OrganizeJournalRecord(Base):
+    """Reverse-operation log of one organize run, used for one-click undo."""
+
+    __tablename__ = "organize_journals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    task_id: Mapped[str] = mapped_column(String(36), index=True)
+    library_id: Mapped[str | None] = mapped_column(String(36))
+    mode: Mapped[str] = mapped_column(String(30))
+    entries: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    undo_summary: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+
+
 
 class Collection(Base):
     """Collection entity (series/studio/platform/label) many-to-many with Work."""

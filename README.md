@@ -79,3 +79,26 @@ API 默认监听 `http://127.0.0.1:8000`，Web 开发服务器监听 `http://127
 
 本机参考项目的逐项功能审计与吸收状态见
 [docs/reference-audit.md](docs/reference-audit.md)。
+
+## Resumable jobs, subtitle backfill and organize undo
+
+- **Interrupted tasks**: on startup, any `task_runs` row left unfinished is closed as `interrupted`
+  (`summary.resumable` tells whether it can continue). `POST /api/tasks/{id}/resume` re-runs a
+  `scan` (with `only_new`), `identify:library` (`skip_identified` + `continue_failed`) or
+  `subtitles:backfill` from its checkpoint.
+- **Subtitle backfill** (needs `SHADOW_MDC_SUBTITLECAT_ENABLED=true`): walks every directory
+  holding `.strm` files under the STRM root, skips directories that already have any subtitle, and
+  fetches `<stem>.zh.srt` from SubtitleCat at the fetcher's rate limit
+  (`SHADOW_MDC_SUBTITLECAT_MIN_INTERVAL_SECONDS`, default 3s per request).
+  - `POST /api/subtitles/backfill` `{"root"?, "limit"?, "dry_run"?, "restart"?}` start/resume
+    (`limit` caps remote lookups per run).
+  - `GET /api/subtitles/backfill` progress; `POST /api/subtitles/backfill/stop` pause.
+  - Progress is checkpointed after every directory (`job_checkpoints` table); a backfill that
+    was running at shutdown resumes automatically on startup. Ten consecutive errors pause it.
+- **Organize undo**: `organize/apply` records a reverse-operation journal (moves, created
+  files/links, overwritten NFO text, removed dirs; filtered files go to
+  `data/organize-trash/<task>` instead of being deleted).
+  - `GET /api/organize/runs/{task_id}/journal` shows it; `POST /api/organize/runs/{task_id}/undo`
+    with `{"dry_run": true}` (default) previews, `{"dry_run": false}` rolls back.
+  - Undo never overwrites: steps whose files changed or whose original slot is occupied are
+    skipped and reported.

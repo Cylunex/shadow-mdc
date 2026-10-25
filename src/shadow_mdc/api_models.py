@@ -11,6 +11,7 @@ from .domain import (
     ProviderRecord,
 )
 from .enums import CollectionKind, MediaCategory, NfoPolicy, OutputMode, RecognitionScope
+from .media.organize_journal import JournalEntry
 from .providers.base import ProviderFailure
 
 
@@ -1157,3 +1158,36 @@ class SubtitleLookupOut(BaseModel):
     detail_url: str | None = None
     name: str | None = None
     error: str | None = None
+
+
+class TaskResumeRequest(BaseModel):
+    limit: int = Field(default=20, ge=1, le=500)
+
+
+class TaskResumeOut(BaseModel):
+    resumed_from: str
+    kind: str
+    result: dict[str, object]
+
+
+class SubtitleBackfillRequest(BaseModel):
+    root: str | None = None
+    limit: int | None = Field(default=None, ge=1, le=100000)
+    dry_run: bool = False
+    restart: bool = False
+
+
+class OrganizeUndoRequest(BaseModel):
+    dry_run: bool = True
+
+
+class OrganizeJournalOut(BaseModel):
+    id: str
+    task_id: str
+    library_id: str | None
+    mode: str
+    created_at: datetime
+    undone_at: datetime | None
+    entry_count: int
+    entries: list[JournalEntry]
+    undo_summary: dict[str, object]

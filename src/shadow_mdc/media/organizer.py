@@ -14,6 +14,7 @@ from ..domain import FileOperation, OperationPlan
 from ..enums import NfoPolicy, OperationKind, OutputMode
 from ..services.path_filter import MediaPathFilter
 from .nfo import build_nfo, write_nfo
+from .organize_journal import OrganizeJournal
 from .parts import detect_media_part, find_subtitles, subtitle_destination
 
 _INVALID_SEGMENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -121,6 +122,7 @@ class Organizer:
         nfo_policy: NfoPolicy = NfoPolicy.ERROR,
         media_suffix: str | None = None,
         extra_operations: tuple[FileOperation, ...] = (),
+        journal: OrganizeJournal | None = None,
     ) -> OperationPlan:
         plan = self.plan(
             asset=asset,
@@ -148,11 +150,14 @@ class Organizer:
             destination = Path(operation.destination)
             if operation.kind is OperationKind.DELETE_FILTERED_FILE:
                 if destination.is_file() and not destination.is_symlink():
-                    destination.unlink()
+                    if journal is None or not journal.trash(destination):
+                        destination.unlink()
                 continue
             if operation.kind is OperationKind.REMOVE_DIRECTORY:
                 try:
                     destination.rmdir()
+                    if journal is not None:
+                        journal.removed_directory(destination)
                 except FileNotFoundError:
                     pass
                 except OSError:
@@ -164,6 +169,9 @@ class Organizer:
             if operation.kind is OperationKind.WRITE_NFO:
                 if operation.conflict and nfo_policy is NfoPolicy.SKIP:
                     continue
+                existed = destination.exists()
+                if journal is not None and existed:
+                    journal.before_overwrite(destination, detail="nfo")
                 write_nfo(
                     destination,
                     build_nfo(
@@ -173,24 +181,36 @@ class Organizer:
                         local_artwork=_nfo_artwork_names_for_dir(destination.parent, work),
                     ),
                 )
+                if journal is not None and not existed:
+                    journal.created(destination, detail="nfo")
                 continue
             if operation.source is None:
                 raise ValueError("media operation has no source")
             source = Path(operation.source)
             destination.parent.mkdir(parents=True, exist_ok=True)
             if (operation.detail or "").startswith("artwork:"):
+                existed = destination.exists()
                 _write_artwork(source, destination, operation.detail or "artwork:fanart")
+                if journal is not None and not existed and destination.exists():
+                    journal.created(destination, detail=operation.detail)
                 continue
             if operation.kind is OperationKind.MOVE:
                 shutil.move(str(source), str(destination))
+                if journal is not None:
+                    journal.moved(source, destination, asset_id=asset.id, detail=operation.detail)
                 if operation.detail == "media":
                     self._repository.update_asset_path(asset, str(destination))
-            elif operation.kind is OperationKind.COPY:
+                continue
+            if operation.kind is OperationKind.COPY:
                 shutil.copy2(source, destination)
             elif operation.kind is OperationKind.HARDLINK:
                 os.link(source, destination)
             elif operation.kind is OperationKind.SYMLINK:
                 os.symlink(source, destination)
+            else:
+                continue
+            if journal is not None:
+                journal.created(destination, detail=operation.detail)
         return plan
 
 

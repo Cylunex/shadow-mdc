@@ -28,9 +28,11 @@ from .models import (
     Base,
     Collection,
     ExternalIdentity,
+    JobCheckpoint,
     Library,
     MatchCandidateRow,
     MediaAsset,
+    OrganizeJournalRecord,
     PanOfflineTask,
     SourceSnapshot,
     TaskRun,
@@ -362,6 +364,66 @@ class Repository:
 
     def get_task_run(self, task_id: str) -> TaskRun | None:
         return self._session.get(TaskRun, task_id)
+
+    def list_unfinished_task_runs(self) -> list[TaskRun]:
+        return list(self._session.scalars(select(TaskRun).where(TaskRun.finished_at.is_(None))))
+
+    def get_checkpoint(self, key: str) -> JobCheckpoint | None:
+        return self._session.get(JobCheckpoint, key)
+
+    def list_checkpoints(self, kind: str | None = None) -> list[JobCheckpoint]:
+        statement = select(JobCheckpoint)
+        if kind is not None:
+            statement = statement.where(JobCheckpoint.kind == kind)
+        return list(self._session.scalars(statement.order_by(JobCheckpoint.updated_at.desc())))
+
+    def save_checkpoint(
+        self,
+        key: str,
+        *,
+        kind: str,
+        status: str,
+        cursor: dict[str, object] | None = None,
+        stats: dict[str, object] | None = None,
+        task_id: str | None = None,
+    ) -> JobCheckpoint:
+        checkpoint = self._session.get(JobCheckpoint, key)
+        if checkpoint is None:
+            checkpoint = JobCheckpoint(key=key, kind=kind, cursor={}, stats={})
+            self._session.add(checkpoint)
+        checkpoint.status = status
+        if cursor is not None:
+            checkpoint.cursor = dict(cursor)
+        if stats is not None:
+            checkpoint.stats = dict(stats)
+        if task_id is not None:
+            checkpoint.task_id = task_id
+        checkpoint.updated_at = utc_now()
+        self._session.flush()
+        return checkpoint
+
+    def add_organize_journal(
+        self, *, task_id: str, library_id: str | None, mode: str, entries: list[dict[str, object]]
+    ) -> OrganizeJournalRecord:
+        record = OrganizeJournalRecord(task_id=task_id, library_id=library_id, mode=mode, entries=entries)
+        self._session.add(record)
+        self._session.flush()
+        return record
+
+    def get_organize_journal(self, journal_id: str) -> OrganizeJournalRecord | None:
+        return self._session.get(OrganizeJournalRecord, journal_id)
+
+    def get_organize_journal_for_task(self, task_id: str) -> OrganizeJournalRecord | None:
+        return self._session.scalars(
+            select(OrganizeJournalRecord).where(OrganizeJournalRecord.task_id == task_id)
+        ).first()
+
+    def list_organize_journals(self, limit: int = 50) -> list[OrganizeJournalRecord]:
+        return list(
+            self._session.scalars(
+                select(OrganizeJournalRecord).order_by(OrganizeJournalRecord.created_at.desc()).limit(limit)
+            )
+        )
 
     def update_task_progress(self, task: TaskRun, summary: dict[str, object]) -> None:
         """Persist live progress without finishing the task."""

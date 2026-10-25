@@ -27,6 +27,11 @@ from .api_models import (
     ActorSubscriptionEdit,
     ActorSummaryOut,
     SubtitleLookupOut,
+    OrganizeJournalOut,
+    OrganizeUndoRequest,
+    SubtitleBackfillRequest,
+    TaskResumeOut,
+    TaskResumeRequest,
     ActorTagsEdit,
     ActorWorkRefOut,
     ActorWorksOut,
@@ -144,7 +149,19 @@ from .api_models import (
     WorkUpdateRequest,
 )
 from .config import Settings
-from .db.models import Actor, Collection, Library, MatchCandidateRow, MediaAsset, Work, utc_now
+from .db.models import (
+    Actor,
+    Collection,
+    Library,
+    MatchCandidateRow,
+    MediaAsset,
+    OrganizeJournalRecord,
+    Work,
+    utc_now,
+)
+from .media.organize_journal import JournalEntry, OrganizeJournal, UndoReport, undo_entries
+from .services.resumable_jobs import is_resumable_kind, mark_interrupted_task_runs
+from .services.subtitle_backfill import BackfillStatus, SubtitleBackfillJob
 from .db.repository import LOCKABLE_WORK_FIELDS, Database, Repository
 from .domain import (
     FileOperation,
@@ -367,6 +384,7 @@ class Runtime:
     discover: DiscoverService
     response_cache: ResponseCache
     strm_relay: StrmRelay
+    subtitle_backfill: SubtitleBackfillJob
 
 
 @dataclass
@@ -405,6 +423,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     set_default_proxy(settings.proxy_url)
     database = Database(settings.database_url)
     database.initialize()
+    mark_interrupted_task_runs(database)
     alias_store = IdentityAliasStore(settings.data_dir / "identity-aliases.json")
     actor_store = ActorCatalogStore(settings.data_dir / "actor-catalog.json")
     non_jav_actor_store = NonJavActorCatalogStore(settings.data_dir / "non-jav-actors.json")
@@ -579,12 +598,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         discover=discover_service,
         response_cache=response_cache,
         strm_relay=StrmRelay(pan_service),
+        subtitle_backfill=SubtitleBackfillJob(
+            database=database,
+            fetcher_factory=settings.subtitlecat_fetcher,
+        ),
     )
     pan_poller.start()
+    if settings.subtitlecat_enabled:
+        # Only continues a backfill the user started that was still running at shutdown.
+        app.state.runtime.subtitle_backfill.resume_if_running()
     subscription_watch_poller.start()
     try:
         yield
     finally:
+        await app.state.runtime.subtitle_backfill.shutdown()
         await subscription_watch_poller.stop()
         await pan_poller.stop()
         await pan_service.aclose()
@@ -1579,6 +1606,142 @@ def retry_task_run(task_id: str, request: Request, repo: Repo) -> TaskRunOut:
     )
     runtime(request).task_events.notify()
     return TaskRunOut.model_validate(retry)
+
+
+@app.post("/api/tasks/{task_id}/resume", response_model=TaskResumeOut)
+async def resume_task_run(
+    task_id: str,
+    request: Request,
+    repo: Repo,
+    payload: TaskResumeRequest | None = None,
+) -> TaskResumeOut:
+    """Continue an interrupted scan / identify / subtitle backfill from where it stopped."""
+
+    task = repo.get_task_run(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    if task.finished_at is None:
+        raise HTTPException(status_code=409, detail="task is still running")
+    if not is_resumable_kind(task.kind):
+        raise HTTPException(status_code=422, detail=f"task kind {task.kind} cannot be resumed")
+    options = payload or TaskResumeRequest()
+    if task.kind == "subtitles:backfill":
+        backfill = runtime(request).subtitle_backfill
+        status = backfill.status()
+        try:
+            backfill.start(
+                Path(status.root or task.scope), limit=status.limit, dry_run=status.dry_run, restart=False
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return TaskResumeOut(resumed_from=task.id, kind=task.kind, result=backfill.status().model_dump(mode="json"))
+    library = next(
+        (item for item in repo.list_libraries() if item.root_path == task.scope),
+        None,
+    )
+    if library is None:
+        raise HTTPException(status_code=404, detail="library for this task no longer exists")
+    if task.kind == "scan":
+        scan_result = scan_library(library.id, request, repo, ScanRequest(only_new=True))
+        return TaskResumeOut(resumed_from=task.id, kind=task.kind, result=scan_result.model_dump(mode="json"))
+    identify_result = await identify_library(
+        library.id,
+        BulkIdentifyRequest(limit=options.limit, continue_failed=True, skip_identified=True),
+        request,
+        repo,
+    )
+    return TaskResumeOut(resumed_from=task.id, kind=task.kind, result=identify_result.model_dump(mode="json"))
+
+
+def _backfill_job(request: Request) -> SubtitleBackfillJob:
+    app_runtime = runtime(request)
+    if not app_runtime.settings.subtitlecat_enabled:
+        raise HTTPException(status_code=409, detail="SubtitleCat is disabled (SHADOW_MDC_SUBTITLECAT_ENABLED)")
+    return app_runtime.subtitle_backfill
+
+
+@app.get("/api/subtitles/backfill", response_model=BackfillStatus)
+def subtitle_backfill_status(request: Request) -> BackfillStatus:
+    return runtime(request).subtitle_backfill.status()
+
+
+@app.post("/api/subtitles/backfill", response_model=BackfillStatus)
+async def subtitle_backfill_start(payload: SubtitleBackfillRequest, request: Request) -> BackfillStatus:
+    """Start or resume the rate-limited subtitle backfill over the STRM library."""
+
+    job = _backfill_job(request)
+    root_text = payload.root or runtime(request).pan_service.config_store.load().strm_output_root
+    if not root_text:
+        raise HTTPException(status_code=422, detail="no STRM root configured; pass root")
+    try:
+        return job.start(Path(root_text), limit=payload.limit, dry_run=payload.dry_run, restart=payload.restart)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/subtitles/backfill/stop", response_model=BackfillStatus)
+async def subtitle_backfill_stop(request: Request) -> BackfillStatus:
+    return await runtime(request).subtitle_backfill.stop()
+
+
+def _journal_out(record: OrganizeJournalRecord) -> OrganizeJournalOut:
+    entries = [JournalEntry.model_validate(item) for item in record.entries or []]
+    return OrganizeJournalOut(
+        id=record.id,
+        task_id=record.task_id,
+        library_id=record.library_id,
+        mode=record.mode,
+        created_at=record.created_at,
+        undone_at=record.undone_at,
+        entry_count=len(entries),
+        entries=entries,
+        undo_summary=dict(record.undo_summary or {}),
+    )
+
+
+@app.get("/api/organize/journals", response_model=list[OrganizeJournalOut])
+def list_organize_journals(repo: Repo, limit: int = Query(default=20, ge=1, le=200)) -> list[OrganizeJournalOut]:
+    return [_journal_out(record) for record in repo.list_organize_journals(limit)]
+
+
+@app.get("/api/organize/runs/{task_id}/journal", response_model=OrganizeJournalOut)
+def get_organize_journal(task_id: str, repo: Repo) -> OrganizeJournalOut:
+    record = repo.get_organize_journal_for_task(task_id) or repo.get_organize_journal(task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="no undo journal for this organize run")
+    return _journal_out(record)
+
+
+@app.post("/api/organize/runs/{task_id}/undo", response_model=UndoReport)
+def undo_organize_run(task_id: str, repo: Repo, payload: OrganizeUndoRequest | None = None) -> UndoReport:
+    """Reverse an organize run. ``dry_run`` (default true) only previews the steps."""
+
+    options = payload or OrganizeUndoRequest()
+    record = repo.get_organize_journal_for_task(task_id) or repo.get_organize_journal(task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="no undo journal for this organize run")
+    if record.undone_at is not None and not options.dry_run:
+        raise HTTPException(status_code=409, detail="organize run was already undone")
+    entries = [JournalEntry.model_validate(item) for item in record.entries or []]
+    report = undo_entries(entries, dry_run=options.dry_run)
+    if not options.dry_run:
+        for asset_id, original in report.restored_assets.items():
+            asset = repo.get_asset(asset_id)
+            if asset is not None and original:
+                repo.update_asset_path(asset, original)
+        record.undone_at = utc_now()
+        record.undo_summary = {"done": report.done, "skipped": report.skipped, "errors": report.errors}
+        undo_task = repo.create_task_run(kind="organize:undo", scope=record.task_id)
+        repo.finish_task_run(
+            undo_task,
+            status="succeeded" if report.errors == 0 and report.skipped == 0 else "partial",
+            summary={"journal_id": record.id, **record.undo_summary},
+        )
+    return report
 
 
 @app.post("/api/tasks/{task_id}/cancel", response_model=TaskRunOut)
@@ -4501,6 +4664,7 @@ async def organize_library_apply(
         raise HTTPException(status_code=409, detail="batch plan changed; request a new preview")
 
     organizer = Organizer(repo)
+    journal = OrganizeJournal(trash_dir=runtime(request).settings.data_dir / "organize-trash" / task.id)
     succeeded = 0
     errors: list[str] = []
     completed_work_ids: set[str] = set()
@@ -4523,6 +4687,7 @@ async def organize_library_apply(
                 nfo_policy=nfo_policy,
                 media_suffix=item.media_suffix,
                 extra_operations=item.extra_operations,
+                journal=journal,
             )
             succeeded += 1
             completed_work_ids.add(item.work.id)
@@ -4545,10 +4710,17 @@ async def organize_library_apply(
                 refreshed_paths.append(key)
         app_runtime.pan_poller.notifier.enqueue(refreshed_paths, "Modified")
         refresh_ok = len(refreshed_paths)
+    journal_id: str | None = None
+    if journal.entries:
+        journal_id = repo.add_organize_journal(
+            task_id=task.id, library_id=library.id, mode=payload.mode.value, entries=journal.dump()
+        ).id
     repo.finish_task_run(
         task,
         status="partial" if attempted != succeeded else "succeeded",
         summary={
+            "undo_journal_id": journal_id,
+            "undo_entries": len(journal.entries),
             "attempted": attempted,
             "succeeded": succeeded,
             "failed": attempted - succeeded,
