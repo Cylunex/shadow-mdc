@@ -547,6 +547,55 @@ class VideoMatch:
     ambiguous: tuple[str, ...] = ()  # "content_id/service_code" candidates on >1 hit
 
 
+_SERVICE_RANK = {"digital": 0, "mono": 1}
+
+
+def _row_norm(row: Any) -> str | None:
+    norm = row["dvd_id_norm"] if "dvd_id_norm" in row.keys() else None
+    if not norm and row["dvd_id"]:
+        norm = _dvd_keys(str(row["dvd_id"]))[0]
+    return str(norm) if norm else None
+
+
+def _same_work(left: Any, right: Any) -> bool:
+    left_norm, right_norm = _row_norm(left), _row_norm(right)
+    if left_norm and right_norm:
+        return left_norm == right_norm
+    keys = set(left.keys()) & set(right.keys())
+    for column in ("title_ja", "title_en", "release_date"):
+        if column in keys and left[column] and left[column] == right[column]:
+            return True
+    return False
+
+
+def resolve_service_duplicates(rows: Sequence[Any]) -> VideoMatch:
+    """Prefer digital > mono > others; merge empty fields from consistent rows.
+
+    Ambiguous (miss) only when the chosen service has >1 rows or any row
+    looks like a different work (different normalized dvd_id / no shared facts).
+    """
+
+    labels = tuple(f"{row['content_id']}/{row['service_code'] or ''}" for row in rows)
+    ranked = sorted(
+        rows,
+        key=lambda row: (_SERVICE_RANK.get(str(row["service_code"] or ""), 2), str(row["service_code"] or "")),
+    )
+    chosen = ranked[0]
+    service = chosen["service_code"] or ""
+    if sum(1 for row in rows if (row["service_code"] or "") == service) > 1:
+        return VideoMatch(None, labels)
+    others = ranked[1:]
+    if not all(_same_work(chosen, other) for other in others):
+        return VideoMatch(None, labels)
+    merged = {key: chosen[key] for key in chosen.keys()}
+    for other in others:
+        for key in other.keys():
+            if merged.get(key) in (None, "") and other[key] not in (None, ""):
+                merged[key] = other[key]
+    merged["_alt_content_ids"] = tuple(str(other["content_id"]) for other in others)
+    return VideoMatch(merged)
+
+
 @dataclass(slots=True)
 class ActressRow:
     id: int
@@ -609,20 +658,17 @@ class R18DumpStore:
                 logger.info("r18 dump %s is schema v1; rebuild on next import", self.path)
         return self._fold
 
-    def _unique(self, where: str, value: str) -> VideoMatch | None:
-        """LIMIT 2: one row = hit, two rows = ambiguous (treated as a miss)."""
+    def _unique(self, where: str, value: str, *, bound: int = 10) -> VideoMatch | None:
+        """Bounded lookup; same work across services resolves, true conflicts miss."""
 
         rows = self._connection.execute(
-            f"SELECT * FROM videos WHERE {where} = ? LIMIT 2", (value,)
+            f"SELECT * FROM videos WHERE {where} = ? LIMIT ?", (value, bound)
         ).fetchall()
         if not rows:
             return None
         if len(rows) == 1:
             return VideoMatch(rows[0])
-        candidates = tuple(
-            f"{row['content_id']}/{row['service_code'] or ''}" for row in rows
-        )
-        return VideoMatch(None, candidates)
+        return resolve_service_duplicates(rows)
 
     def match_video(self, code: str) -> VideoMatch:
         code = nfkc(code)
@@ -793,7 +839,14 @@ class R18DumpStore:
         if not title:
             return None
         content_id = str(row["content_id"])
-        actresses = self.actresses_for(content_id)
+        related = (content_id, *(row["_alt_content_ids"] if "_alt_content_ids" in row.keys() else ()))
+        actresses: list[ActressRow] = []
+        directors: list[str] = []
+        tags: list[str] = []
+        for cid in related:  # merged duplicates: fill empty relations from sibling rows
+            actresses = actresses or self.actresses_for(cid)
+            directors = directors or self.directors_for(cid)
+            tags = tags or self.categories_for(cid)
         actor_names = tuple(
             name for actress in actresses if (name := actress.display_name) is not None
         )
@@ -835,8 +888,8 @@ class R18DumpStore:
             series=self._named("series", row["series_id"]),
             plot=str(plot) if plot else None,
             actors=actor_names,
-            directors=tuple(self.directors_for(content_id)),
-            tags=tuple(self.categories_for(content_id)),
+            directors=tuple(directors),
+            tags=tuple(tags),
             artwork=tuple(artwork_items),
             language="ja" if title_ja else "en",
         )

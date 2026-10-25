@@ -39,20 +39,56 @@ def _dump(path: Path, rows: list[str]) -> Path:
     return path
 
 
-def test_same_content_id_two_services_is_ambiguous_miss(tmp_path: Path) -> None:
+def test_digital_and_mono_same_work_resolves_to_digital(tmp_path: Path) -> None:
+    mono = _video("ssis123", "SSIS-123", "B", "mono").split("\t")
+    mono[7] = "2021-05-01"  # release_date only on mono -> merged into digital
     dump = _dump(
         tmp_path / "d.sql.gz",
-        [_video("ssis00123", "SSIS-123", "A", "digital"), _video("ssis00123", "SSIS-123", "B", "mono")],
+        ["\t".join(mono), _video("ssis00123", "SSIS-123", "A", "digital")],
     )
     db = tmp_path / "r18.db"
     import_dump_to_sqlite(dump, db, progress_every=0)
-    with sqlite3.connect(db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 2  # both kept
     with R18DumpStore(db) as store:
         match = store.match_video("SSIS-123")
-        assert match.row is None
-        assert set(match.ambiguous) == {"ssis00123/digital", "ssis00123/mono"}
-        assert store.build_record("SSIS-123") is None
+        assert match.row is not None and not match.ambiguous
+        assert match.row["content_id"] == "ssis00123"
+        assert match.row["release_date"] == "2021-05-01"
+        record = store.build_record("SSIS-123")
+        assert record is not None and record.title == "A"
+
+
+def test_true_conflicts_stay_ambiguous(tmp_path: Path) -> None:
+    dump = _dump(
+        tmp_path / "d.sql.gz",
+        [
+            _video("abc00001", "ABC-001", "X", "digital"),
+            _video("1abc00001", "ABC-001", "Y", "digital"),  # 2 rows in chosen service
+            _video("xyz00009", "XYZ-009", "P", "digital"),
+            _video("xyz00009", "XYZ-900", "Q", "mono"),  # different normalized dvd_id
+        ],
+    )
+    db = tmp_path / "r18.db"
+    import_dump_to_sqlite(dump, db, progress_every=0)
+    with R18DumpStore(db) as store:
+        assert store.match_video("ABC-001").row is None
+        assert len(store.match_video("ABC-001").ambiguous) == 2
+        assert store._unique("content_id", "xyz00009").row is None
+
+
+def test_legacy_db_digital_mono_hits(tmp_path: Path) -> None:
+    db = tmp_path / "old.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            "CREATE TABLE videos(content_id TEXT PRIMARY KEY, dvd_id TEXT, dvd_id_norm TEXT,"
+            " dvd_id_key TEXT, title_ja TEXT, release_date TEXT, service_code TEXT);"
+            "INSERT INTO videos VALUES('ssis00123','SSIS-123','SSIS-123','SSIS123','T',NULL,'digital');"
+            "INSERT INTO videos VALUES('ssis123','SSIS-123','SSIS-123','SSIS123','T','2021-05-01','mono');"
+        )
+    with R18DumpStore(db) as store:
+        assert store._has_fold_column() is False
+        row = store.match_video("SSIS-123").row
+        assert row is not None and row["content_id"] == "ssis00123"
+        assert row["release_date"] == "2021-05-01"
 
 
 def test_unique_hit_and_case_preserved_with_fold_alias(tmp_path: Path) -> None:
