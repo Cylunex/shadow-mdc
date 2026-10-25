@@ -7,8 +7,10 @@ files or the SQLite DB to git.
 from __future__ import annotations
 
 import gzip
+import logging
 import re
 import sqlite3
+import unicodedata
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import date
@@ -23,6 +25,8 @@ from ..normalize_code import normalize_code, to_comparison_key
 from ..remaster import strip_remaster_marker
 
 PROVIDER_ID = "r18dump"
+SCHEMA_VERSION = "2"
+logger = logging.getLogger(__name__)
 DMM_PICS_BASE = "https://pics.dmm.co.jp/"
 
 _TABLE_MAP: dict[str, str] = {
@@ -48,7 +52,7 @@ CREATE TABLE IF NOT EXISTS meta (
   value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS videos (
-  content_id TEXT PRIMARY KEY,
+  content_id TEXT NOT NULL,
   dvd_id TEXT,
   dvd_id_norm TEXT,
   dvd_id_key TEXT,
@@ -69,7 +73,9 @@ CREATE TABLE IF NOT EXISTS videos (
   gallery_thumb_first TEXT,
   gallery_thumb_last TEXT,
   site_id INTEGER,
-  service_code TEXT
+  service_code TEXT NOT NULL DEFAULT '',
+  content_id_fold TEXT,
+  PRIMARY KEY (content_id, service_code)
 );
 CREATE TABLE IF NOT EXISTS actresses (
   id INTEGER PRIMARY KEY,
@@ -133,6 +139,7 @@ CREATE TABLE IF NOT EXISTS video_categories (
 );
 CREATE INDEX IF NOT EXISTS ix_videos_dvd_id_key ON videos(dvd_id_key);
 CREATE INDEX IF NOT EXISTS ix_videos_dvd_id_norm ON videos(dvd_id_norm);
+CREATE INDEX IF NOT EXISTS ix_videos_content_id_fold ON videos(content_id_fold);
 CREATE INDEX IF NOT EXISTS ix_actresses_romaji ON actresses(name_romaji);
 CREATE INDEX IF NOT EXISTS ix_actresses_kanji ON actresses(name_kanji);
 """
@@ -228,9 +235,22 @@ def _row_dict(columns: Sequence[str], values: Sequence[str | None]) -> dict[str,
     return {column: values[index] for index, column in enumerate(columns)}
 
 
+def nfkc(value: str) -> str:
+    """Unicode NFKC (full-width ＳＳＩＳ－１２３ → SSIS-123) before code parsing."""
+
+    return unicodedata.normalize("NFKC", value)
+
+
+def fold_content_id(content_id: str | None) -> str | None:
+    if not content_id:
+        return None
+    return nfkc(content_id).casefold()
+
+
 def _dvd_keys(dvd_id: str | None) -> tuple[str | None, str | None]:
     if not dvd_id:
         return None, None
+    dvd_id = nfkc(dvd_id)
     code, _family = extract_code(dvd_id)
     seed = code or dvd_id
     normalized = normalize_code(seed) or None
@@ -263,6 +283,8 @@ def import_dump_to_sqlite(
     cancel_check: Callable[[], None] | None = None,
     on_import_start: Callable[[], None] | None = None,
     on_import_done: Callable[[], None] | None = None,
+    min_videos: int = 1,
+    min_ratio: float = 0.5,
 ) -> ImportStats:
     """Stream a gzipped pg_dump into a replacement SQLite lookup DB.
 
@@ -332,7 +354,8 @@ def import_dump_to_sqlite(
                         row.get("gallery_thumb_first"),
                         row.get("gallery_thumb_last"),
                         _as_int(row.get("site_id")),
-                        row.get("service_code"),
+                        row.get("service_code") or "",
+                        fold_content_id(content_id),
                     )
                 )
             elif sqlite_table == "actresses":
@@ -425,7 +448,19 @@ def import_dump_to_sqlite(
             "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
             ("video_count", str(counts.get("derived_video", 0))),
         )
+        connection.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            ("schema_version", SCHEMA_VERSION),
+        )
         connection.commit()
+        # Validate the fresh DB before it may replace the live one; a failed
+        # check keeps the previous dump untouched (temp file is discarded).
+        validate_dump_db(
+            connection,
+            previous=sqlite_path if sqlite_path.is_file() else None,
+            min_videos=min_videos,
+            min_ratio=min_ratio,
+        )
         committed = True
     except BaseException:
         committed = False
@@ -452,6 +487,64 @@ def import_dump_to_sqlite(
         videos=counts.get("derived_video", 0),
         actresses=counts.get("derived_actress", 0),
     )
+
+
+class R18DumpValidationError(RuntimeError):
+    """Fresh dump failed row-count/schema checks; the live dump was kept."""
+
+
+_REQUIRED_VIDEO_COLUMNS = frozenset(
+    {"content_id", "service_code", "content_id_fold", "dvd_id", "dvd_id_norm", "dvd_id_key", "title_ja"}
+)
+
+
+def _video_count(connection: sqlite3.Connection) -> int:
+    return int(connection.execute("SELECT COUNT(*) FROM videos").fetchone()[0])
+
+
+def validate_dump_db(
+    connection: sqlite3.Connection,
+    *,
+    previous: Path | None = None,
+    min_videos: int = 1,
+    min_ratio: float = 0.5,
+) -> int:
+    """Schema + row-count gate. Returns the new video count or raises."""
+
+    tables = {
+        str(row[0])
+        for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    missing_tables = set(_TABLE_MAP.values()) - tables
+    if missing_tables:
+        raise R18DumpValidationError(f"missing tables: {sorted(missing_tables)}")
+    columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(videos)")}
+    missing_columns = _REQUIRED_VIDEO_COLUMNS - columns
+    if missing_columns:
+        raise R18DumpValidationError(f"videos missing columns: {sorted(missing_columns)}")
+    count = _video_count(connection)
+    if count < min_videos:
+        raise R18DumpValidationError(f"videos={count} < min_videos={min_videos}")
+    if previous is not None and min_ratio > 0:
+        try:
+            old = sqlite3.connect(f"file:{previous}?mode=ro", uri=True)
+            try:
+                old_count = _video_count(old)
+            finally:
+                old.close()
+        except sqlite3.Error:
+            old_count = 0  # unreadable/corrupt old DB: never block replacing it
+        if old_count and count < old_count * min_ratio:
+            raise R18DumpValidationError(
+                f"videos={count} < {min_ratio:.0%} of previous {old_count}; keeping old dump"
+            )
+    return count
+
+
+@dataclass(slots=True)
+class VideoMatch:
+    row: sqlite3.Row | None
+    ambiguous: tuple[str, ...] = ()  # "content_id/service_code" candidates on >1 hit
 
 
 @dataclass(slots=True)
@@ -489,6 +582,8 @@ class R18DumpStore:
             check_same_thread=False,
         )
         self._connection.row_factory = sqlite3.Row
+        self._fold: bool | None = None
+        self.last_ambiguous: tuple[str, ...] = ()
 
     def close(self) -> None:
         self._connection.close()
@@ -503,43 +598,74 @@ class R18DumpStore:
         rows = self._connection.execute("SELECT key, value FROM meta").fetchall()
         return {str(row["key"]): str(row["value"]) for row in rows}
 
-    def find_video_row(self, code: str) -> sqlite3.Row | None:
+    def _has_fold_column(self) -> bool:
+        if self._fold is None:
+            columns = {
+                str(row[1]) for row in self._connection.execute("PRAGMA table_info(videos)")
+            }
+            self._fold = "content_id_fold" in columns
+            if not self._fold:
+                # Legacy (schema v1) dump: still readable; next import rebuilds v2.
+                logger.info("r18 dump %s is schema v1; rebuild on next import", self.path)
+        return self._fold
+
+    def _unique(self, where: str, value: str) -> VideoMatch | None:
+        """LIMIT 2: one row = hit, two rows = ambiguous (treated as a miss)."""
+
+        rows = self._connection.execute(
+            f"SELECT * FROM videos WHERE {where} = ? LIMIT 2", (value,)
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) == 1:
+            return VideoMatch(rows[0])
+        candidates = tuple(
+            f"{row['content_id']}/{row['service_code'] or ''}" for row in rows
+        )
+        return VideoMatch(None, candidates)
+
+    def match_video(self, code: str) -> VideoMatch:
+        code = nfkc(code)
         # Remaster markers (HD/AI/H): probe base 番号 for dvd_id rows, then
         # marker-aware content_id candidates (re-appended folded marker).
         base = strip_remaster_marker(code)
         lookup_codes = (code,) if base == code else (base, code)
+        probes: list[tuple[str, str]] = []
         for probe in lookup_codes:
             key = to_comparison_key(probe)
             norm = normalize_code(probe)
             if key:
-                row = self._connection.execute(
-                    "SELECT * FROM videos WHERE dvd_id_key = ? LIMIT 1",
-                    (key,),
-                ).fetchone()
-                if row is not None:
-                    return row
+                probes.append(("dvd_id_key", key))
             if norm:
-                row = self._connection.execute(
-                    "SELECT * FROM videos WHERE dvd_id_norm = ? LIMIT 1",
-                    (norm,),
-                ).fetchone()
-                if row is not None:
-                    return row
-        for candidate in content_id_candidates(code):
-            row = self._connection.execute(
-                "SELECT * FROM videos WHERE content_id = ? LIMIT 1",
-                (candidate,),
-            ).fetchone()
-            if row is not None:
-                return row
-        for candidate in self._sibling_content_id_candidates(code):
-            row = self._connection.execute(
-                "SELECT * FROM videos WHERE content_id = ? LIMIT 1",
-                (candidate,),
-            ).fetchone()
-            if row is not None:
-                return row
-        return None
+                probes.append(("dvd_id_norm", norm))
+        fold = self._has_fold_column()
+        content_ids = list(
+            dict.fromkeys([*content_id_candidates(code), *self._sibling_content_id_candidates(code)])
+        )
+        for candidate in content_ids:
+            # Exact (original case) first, then the folded alias column.
+            probes.append(("content_id", candidate))
+            folded = fold_content_id(candidate)
+            if folded:
+                probes.append(("content_id_fold" if fold else "lower(content_id)", folded))
+        for where, value in probes:
+            match = self._unique(where, value)
+            if match is None:
+                continue
+            if match.ambiguous:
+                logger.warning(
+                    "r18 dump ambiguous for %s (%s=%s): %s",
+                    code, where, value, ", ".join(match.ambiguous),
+                )
+                self.last_ambiguous = match.ambiguous
+            else:
+                self.last_ambiguous = ()
+            return match
+        self.last_ambiguous = ()
+        return VideoMatch(None)
+
+    def find_video_row(self, code: str) -> sqlite3.Row | None:
+        return self.match_video(code).row
 
     def _sibling_content_id_candidates(self, code: str, *, sample: int = 200) -> list[str]:
         """Infer maker-prefixed content_ids (e.g. ``118abf387``) from sibling rows.
