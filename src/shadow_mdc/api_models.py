@@ -1147,3 +1147,13 @@ class ActorWorksOut(BaseModel):
     name: str
     work_count: int = 0
     works: list[ActorWorkRefOut] = Field(default_factory=list)
+
+
+class SubtitleLookupOut(BaseModel):
+    code: str
+    found: bool
+    lang: str | None = None
+    url: str | None = None
+    detail_url: str | None = None
+    name: str | None = None
+    error: str | None = None

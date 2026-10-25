@@ -56,6 +56,21 @@ API 默认监听 `http://127.0.0.1:8000`，Web 开发服务器监听 `http://127
 `SHADOW_MDC_R18_DUMP_REFRESH_ENABLED=true` 后再加 crontab。详见
 [docs/user-guide.md](docs/user-guide.md#nas-每周-r18dev-dump-刷新)。
 
+## NFO 手动字段锁
+
+扫描时读取作品目录/STRM 旁的 `movie.nfo` 与 poster/fanart。NFO 中带
+`<shadowmdc_locks>title,plot</shadowmdc_locks>`、Emby `<lockedfields>Name|Overview|Cast</lockedfields>`
+或 `<lockdata>true</lockdata>` 的字段视为手动编辑：值写回作品并加锁，之后多源/强制重刮只补空字段或未锁字段。
+应用内编辑的锁优先于 NFO；空值永不覆盖（演员防清空栅栏不变）。导出 NFO 时会写回这两个锁标记。
+
+## SubtitleCat 中文字幕（可选）
+
+`SHADOW_MDC_SUBTITLECAT_ENABLED=true` 后，115/OpenList STRM 导出完成时按番号从 subtitlecat.com
+取简中（无则繁中）字幕，写为 `<名称>.zh.srt`（Emby 识别）。已有字幕跳过；失败只记日志，不影响刮削/导出。
+可调：`SHADOW_MDC_SUBTITLECAT_BASE_URL`、`SHADOW_MDC_SUBTITLECAT_MIN_INTERVAL_SECONDS`（默认 3）、
+`SHADOW_MDC_SUBTITLECAT_MISS_TTL_HOURS`（未命中缓存，默认 72，存 `data/subtitlecat-misses.json`）；走 `SHADOW_MDC_PROXY_URL`。
+只读查询：`GET /api/subtitles/subtitlecat?code=SSIS-001`（不写文件）。
+
 ## 项目状态
 
 架构和验收范围见 [docs/architecture.md](docs/architecture.md)，安装、Docker 与媒体库使用见

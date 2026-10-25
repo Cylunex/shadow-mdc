@@ -4,6 +4,7 @@ from xml.etree.ElementTree import Element, SubElement, fromstring, indent, tostr
 
 from ..db.models import ExternalIdentity, MediaAsset, Work
 from ..domain import MediaTechnicalInfo
+from .nfo_import import WORK_TO_EMBY_LOCK
 
 
 def build_nfo(
@@ -63,6 +64,13 @@ def build_nfo(
             continue
         unique = SubElement(movie, "uniqueid", {"type": identity.provider})
         unique.text = identity.value
+    locks = sorted(set(getattr(work, "field_locks", None) or []))
+    if locks:
+        # Round-trip manual markers: ours for re-import, Emby's so its own refresh keeps them too.
+        SubElement(movie, "shadowmdc_locks").text = ",".join(locks)
+        emby = [WORK_TO_EMBY_LOCK[name] for name in locks if name in WORK_TO_EMBY_LOCK]
+        if emby:
+            SubElement(movie, "lockedfields").text = "|".join(emby)
     poster_ref, fanart_ref = _nfo_local_artwork_refs(work, local_artwork)
     if poster_ref:
         SubElement(movie, "thumb", {"aspect": "poster"}).text = poster_ref

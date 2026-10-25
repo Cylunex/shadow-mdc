@@ -1,7 +1,11 @@
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+if TYPE_CHECKING:
+    from .services.subtitlecat import SubtitleCatFetcher
 
 
 class Settings(BaseSettings):
@@ -59,6 +63,11 @@ class Settings(BaseSettings):
     translation_plot: bool = True
     artwork_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     auto_seed_non_jav_works: bool = True
+    # SubtitleCat zh subtitles (no key): after STRM export write <name>.zh.srt by code. Opt-in.
+    subtitlecat_enabled: bool = False
+    subtitlecat_base_url: str = "https://www.subtitlecat.com"
+    subtitlecat_min_interval_seconds: float = Field(default=3.0, ge=0, le=60)
+    subtitlecat_miss_ttl_hours: float = Field(default=72, ge=0, le=24 * 90)
     # Redis for API response cache. Empty / unset → in-process TTL dict.
     # Production NAS: redis://192.168.0.21:6379/0
     # Local/dev fallback: redis://127.0.0.1:6379/0 when reachable.
@@ -71,6 +80,18 @@ class Settings(BaseSettings):
     gfriends_filetree_url: str = "https://cdn.jsdelivr.net/gh/gfriends/gfriends@master/Filetree.json"
     gfriends_cdn_base_url: str = "https://cdn.jsdelivr.net/gh/gfriends/gfriends@master"
     gfriends_cache_ttl_hours: int = Field(default=24 * 7, ge=1, le=24 * 30)
+
+    def subtitlecat_fetcher(self) -> "SubtitleCatFetcher":
+        from .services.subtitlecat import SubtitleCatFetcher
+
+        return SubtitleCatFetcher(
+            base_url=self.subtitlecat_base_url,
+            timeout_seconds=self.request_timeout_seconds,
+            min_interval_seconds=self.subtitlecat_min_interval_seconds,
+            miss_ttl_hours=self.subtitlecat_miss_ttl_hours,
+            cache_path=self.data_dir / "subtitlecat-misses.json",
+            proxy_url=self.proxy_url,
+        )
 
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)

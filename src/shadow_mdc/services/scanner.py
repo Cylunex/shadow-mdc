@@ -2,6 +2,7 @@ import os
 import shutil
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from xml.etree import ElementTree
 
 from pydantic import BaseModel, ConfigDict
 
@@ -11,7 +12,14 @@ from ..domain import MediaTechnicalInfo
 from ..enums import ContentFamily, MediaCategory, QueryMode, RecognitionScope
 from ..identity import IdentityAliasRules, build_identity_hints
 from ..media.artwork import ensure_list_thumbnail
-from ..media.nfo_import import NfoImporter, NfoImportPolicy, resolve_sidecar_nfo, sibling_artwork_paths
+from ..media.nfo_import import (
+    NfoImporter,
+    NfoImportPolicy,
+    apply_nfo_locked_fields,
+    parse_movie_nfo,
+    resolve_sidecar_nfo,
+    sibling_artwork_paths,
+)
 from ..media.oshash import compute_oshash
 from ..media.parts import (
     directory_volume_merge_code,
@@ -302,6 +310,8 @@ class Scanner:
             ).import_library_assets([asset])
             if result.trusted:
                 asset = self._repository.get_asset(asset.id) or asset
+        elif asset.work_id is not None and (nfo_path := resolve_sidecar_nfo(path)) is not None:
+            _adopt_nfo_manual_fields(self._repository, asset.work_id, nfo_path)
         if asset.work_id is not None and self._artwork_dir is not None:
             work = self._repository.get_work(asset.work_id)
             if work is not None:
@@ -429,6 +439,24 @@ def _walk_files(root: Path, *, recursive: bool, errors: list[str]) -> Iterator[P
                     pending.append(Path(entry.path))
             except OSError as exc:
                 errors.append(f"{entry.path}: cannot inspect entry: {exc}")
+
+
+def _adopt_nfo_manual_fields(repository: Repository, work_id: str, nfo_path: Path) -> None:
+    """Re-scan: NFO fields the user marked manual become locked Work values (best-effort)."""
+
+    work = repository.get_work(work_id)
+    if work is None:
+        return
+    try:
+        parsed = parse_movie_nfo(nfo_path)
+    except (OSError, ElementTree.ParseError, ValueError):
+        return
+    if not parsed.locked_fields:
+        return
+    try:
+        apply_nfo_locked_fields(repository, work, parsed)
+    except ValueError:
+        return
 
 
 def _adopt_sibling_artwork(repository: Repository, work, media_path: Path, artwork_dir: Path) -> None:

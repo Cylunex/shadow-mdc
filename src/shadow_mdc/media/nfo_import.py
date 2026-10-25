@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -14,8 +15,44 @@ from ..db.repository import Repository
 from ..domain import ProviderRecord
 from ..enums import ContentFamily, MediaCategory
 from ..identity import extract_code, normalize_identity_value
+from ..remaster import parse_remaster_identity
 
 _CODE_TAG = re.compile(r"(?i)^(?:num|id|code|jav)$")
+
+SHADOW_LOCKS_TAG = "shadowmdc_locks"
+# Emby <lockedfields> names → Work field names.
+EMBY_LOCK_FIELDS: dict[str, str] = {
+    "name": "title",
+    "originaltitle": "original_title",
+    "overview": "plot",
+    "cast": "actors",
+    "studios": "studio",
+    "genres": "tags",
+    "tags": "tags",
+    "premieredate": "release_date",
+    "productionyear": "release_date",
+    "runtime": "runtime_seconds",
+}
+WORK_TO_EMBY_LOCK: dict[str, str] = {
+    "title": "Name",
+    "original_title": "OriginalTitle",
+    "plot": "Overview",
+    "actors": "Cast",
+    "studio": "Studios",
+    "tags": "Genres|Tags",
+    "release_date": "PremiereDate|ProductionYear",
+    "runtime_seconds": "Runtime",
+}
+NFO_LOCKABLE_FIELDS: tuple[str, ...] = (
+    "title",
+    "original_title",
+    "plot",
+    "actors",
+    "studio",
+    "series",
+    "tags",
+    "release_date",
+)
 
 
 class ParsedNfo(BaseModel):
@@ -31,6 +68,9 @@ class ParsedNfo(BaseModel):
     actors: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     unique_ids: dict[str, str] = Field(default_factory=dict)
+    # Work fields the user marked manual in the NFO (``<shadowmdc_locks>``,
+    # Emby ``<lockedfields>``, or ``<lockdata>true`` = every field present).
+    locked_fields: tuple[str, ...] = ()
     source_path: str
 
 
@@ -75,6 +115,7 @@ class NfoImporter:
             if self.policy.mode == "trust":
                 work = self.repository.upsert_provider_record(record, overwrite=False)
                 self.repository.attach_asset_to_work(asset, work)
+                apply_nfo_locked_fields(self.repository, work, parsed)
                 trusted += 1
             else:
                 from ..domain import MatchEvidence, ScoredCandidate
@@ -95,8 +136,6 @@ class NfoImporter:
             ignored=ignored,
             errors=tuple(errors[:50]),
         )
-
-
 
 
 def resolve_sidecar_nfo(media_path: Path) -> Path | None:
@@ -133,6 +172,7 @@ def sibling_artwork_paths(media_path: Path) -> dict[str, Path]:
                 break
     return found
 
+
 def parse_movie_nfo(path: Path) -> ParsedNfo:
     tree = ElementTree.parse(path)
     root = tree.getroot()
@@ -146,9 +186,7 @@ def parse_movie_nfo(path: Path) -> ParsedNfo:
     premiered = _text(root, "premiered") or _text(root, "releasedate")
     code = _text(root, "num") or _text(root, "id")
     actors = tuple(
-        name
-        for actor in root.findall("actor")
-        if (name := (actor.findtext("name") or "").strip())
+        name for actor in root.findall("actor") if (name := (actor.findtext("name") or "").strip())
     )
     tags = tuple(
         dict.fromkeys(
@@ -166,10 +204,23 @@ def parse_movie_nfo(path: Path) -> ParsedNfo:
             if _CODE_TAG.match(kind) and not code:
                 code = value
     if code:
-        extracted = extract_code(code)
-        code = extracted or code.strip().upper()
+        # extract_code returns (code, family); keep remaster tails (HD/AI/H) verbatim.
+        extracted, _family = extract_code(code)
+        literal = code.strip().upper()
+        code = literal if parse_remaster_identity(literal) is not None else (extracted or literal)
     if not title and not code:
         raise ValueError("nfo missing title and id")
+    present = {
+        "title": title,
+        "original_title": original,
+        "plot": plot,
+        "actors": actors,
+        "studio": studio,
+        "series": series,
+        "tags": tags,
+        "release_date": premiered,
+    }
+    locked = _parse_locked_fields(root, present)
     return ParsedNfo(
         title=title,
         original_title=original,
@@ -181,6 +232,7 @@ def parse_movie_nfo(path: Path) -> ParsedNfo:
         actors=actors,
         tags=tags,
         unique_ids=unique_ids,
+        locked_fields=locked,
         source_path=str(path.resolve()),
     )
 
@@ -221,3 +273,80 @@ def _text(root: ElementTree.Element, tag: str) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def _parse_locked_fields(root: ElementTree.Element, present: dict[str, object]) -> tuple[str, ...]:
+    locked: list[str] = []
+    own = _text(root, SHADOW_LOCKS_TAG)
+    if own:
+        locked.extend(item.strip() for item in re.split(r"[,|\s]+", own) if item.strip())
+    emby = _text(root, "lockedfields")
+    if emby:
+        for item in emby.split("|"):
+            mapped = EMBY_LOCK_FIELDS.get(item.strip().casefold())
+            if mapped:
+                locked.append(mapped)
+    if (_text(root, "lockdata") or "").casefold() == "true":
+        locked.extend(name for name, value in present.items() if value)
+    return tuple(name for name in dict.fromkeys(locked) if name in NFO_LOCKABLE_FIELDS and present.get(name))
+
+
+def apply_nfo_locked_fields(repository: Repository, work: Work, parsed: ParsedNfo) -> list[str]:
+    """Adopt NFO values the user marked manual, then lock them against re-scrapes.
+
+    In-app manual edits win: a field already locked in the DB is left as-is (the
+    next export rewrites the NFO from the DB). Empty NFO values never apply, so
+    the actor wipe fence in ``update_work_fields`` is never weakened.
+    """
+
+    db_locks = set(work.field_locks or [])
+    todo = [name for name in parsed.locked_fields if name not in db_locks]
+    if not todo:
+        return []
+    applied: list[str] = []
+    edits: dict[str, object] = {}
+    for name in todo:
+        if name == "actors" and parsed.actors:
+            if list(parsed.actors) != list(work.actors or []):
+                edits["actors"] = list(parsed.actors)
+            applied.append(name)
+        elif name == "tags" and parsed.tags:
+            if list(parsed.tags) != list(work.tags or []):
+                edits["tags"] = list(parsed.tags)
+            applied.append(name)
+        elif name in {"title", "plot", "studio", "series"}:
+            value = getattr(parsed, name)
+            if value:
+                current = work.title if name == "title" else getattr(work, name)
+                if value != current and not (name == "title" and _same_display_title(value, work)):
+                    edits[name] = value
+                applied.append(name)
+        elif name == "original_title" and parsed.original_title:
+            work.original_title = parsed.original_title
+            applied.append(name)
+        elif name == "release_date" and parsed.premiered:
+            try:
+                work.release_date = date.fromisoformat(parsed.premiered[:10])
+            except ValueError:
+                continue
+            applied.append(name)
+    if edits:
+        repository.update_work_fields(work, lock_edited=False, **edits)  # type: ignore[arg-type]
+    sources = dict(work.field_sources or {})
+    for name in applied:
+        if name not in edits:
+            sources[name] = sources.get(name) or "nfo-manual"
+        else:
+            sources[name] = "nfo-manual"
+    work.field_sources = sources
+    repository.set_field_locks(work, sorted(db_locks | set(applied)))
+    return applied
+
+
+def _same_display_title(value: str, work: Work) -> bool:
+    """NFO titles carry a ``CODE `` prefix added on export; treat those as unchanged."""
+
+    code = work.primary_code
+    if code and value.upper().startswith(code.upper()):
+        return value[len(code) :].strip() == (work.title or "").strip()
+    return False

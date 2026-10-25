@@ -53,6 +53,7 @@ from .strm_export import (
     rewrite_strm_tree,
     strm_config_problems,
 )
+from .subtitlecat import SubtitleCatFetcher
 from .task_events import TaskEventHub
 
 if TYPE_CHECKING:
@@ -113,6 +114,7 @@ class PanOfflinePoller:
         notifier: EmbyNotifier | None = None,
         data_dir: Path | None = None,
         artwork_max_bytes: int = 25 * 1024 * 1024,
+        subtitles: SubtitleCatFetcher | None = None,
     ):
         self._database = database
         self._pan = pan
@@ -126,6 +128,7 @@ class PanOfflinePoller:
         )
         self._owns_notifier = notifier is None
         self._data_dir = data_dir
+        self._subtitles = subtitles
         self._artwork_max_bytes = artwork_max_bytes
         self._task: asyncio.Task[None] | None = None
         # Delete reconcile walks every export folder; it runs on its own task so a
@@ -254,6 +257,18 @@ class PanOfflinePoller:
             return bool(self._media_server_store.load().enabled)
         except Exception:
             return False
+
+    async def _fetch_subtitle(self, code: str, export_result: ExportResult) -> None:
+        """Best-effort SubtitleCat zh subtitle beside the first .strm; never raises."""
+
+        if self._subtitles is None or not export_result.strm_paths:
+            return
+        first = export_result.strm_paths[0]
+        try:
+            result = await asyncio.to_thread(self._subtitles.fetch, code, first.parent, first.stem)
+            logger.info("subtitlecat %s: %s", code, result.status)
+        except Exception as exc:  # pragma: no cover - fetch already swallows errors
+            logger.warning("subtitlecat %s crashed: %s", code, type(exc).__name__)
 
     def config_problems(self, cfg: PanSettings | None = None) -> list[str]:
         settings = cfg or self._pan.config_store.load()
@@ -445,6 +460,7 @@ class PanOfflinePoller:
                         )
                     export_dir = export_result.directory
                     strm_path = str(export_result.strm_paths[0]) if export_result.strm_paths else None
+                    await self._fetch_subtitle(code, export_result)
                 except Exception as exc:
                     logger.warning("STRM export failed: %s: %s", type(exc).__name__, exc)
                     error = f"STRM export failed: {exc}"[:500]
@@ -673,6 +689,7 @@ class PanOfflinePoller:
                             identities=identities,
                         )
                     strm_path = str(export_result.strm_paths[0]) if export_result.strm_paths else None
+                    await self._fetch_subtitle(code, export_result)
                 except Exception as exc:
                     logger.warning("STRM export failed: %s: %s", type(exc).__name__, exc)
                     error = f"STRM export failed: {exc}"[:500]

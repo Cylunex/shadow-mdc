@@ -26,6 +26,7 @@ from .api_models import (
     ActorMergeRequest,
     ActorSubscriptionEdit,
     ActorSummaryOut,
+    SubtitleLookupOut,
     ActorTagsEdit,
     ActorWorkRefOut,
     ActorWorksOut,
@@ -525,6 +526,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task_events=task_events,
         data_dir=settings.data_dir,
         artwork_max_bytes=settings.artwork_max_bytes,
+        subtitles=settings.subtitlecat_fetcher() if settings.subtitlecat_enabled else None,
     )
     subscription_watch_service = SubscriptionWatchService(
         database=database,
@@ -4008,6 +4010,26 @@ def work_nfo(work_id: str, repo: Repo) -> Response:
     if work is None:
         raise HTTPException(status_code=404, detail="work not found")
     return PlainTextResponse(build_nfo(work, repo.identities_for_work(work.id)), media_type="application/xml")
+
+
+@app.get("/api/subtitles/subtitlecat", response_model=SubtitleLookupOut)
+def subtitlecat_lookup(code: str) -> SubtitleLookupOut:
+    """Read-only dry run: best SubtitleCat zh subtitle for a 番号 (nothing is written)."""
+
+    cleaned = code.strip()
+    if not cleaned or len(cleaned) > 64:
+        raise HTTPException(status_code=422, detail="code required")
+    fetcher = Settings().subtitlecat_fetcher()
+    fetcher.min_interval_seconds = 0
+    try:
+        pick = fetcher.lookup(cleaned)
+    except httpx.HTTPError as exc:
+        return SubtitleLookupOut(code=cleaned, found=False, error=f"{type(exc).__name__}: {exc}"[:300])
+    if pick is None:
+        return SubtitleLookupOut(code=cleaned, found=False)
+    return SubtitleLookupOut(
+        code=cleaned, found=True, lang=pick.lang, url=pick.url, detail_url=pick.detail_url, name=pick.name
+    )
 
 
 @app.get("/api/works/{work_id}/artwork/{kind}", response_class=FileResponse)
