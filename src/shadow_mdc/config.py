@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     # Weekly NAS job (scripts/nas/r18_dump_weekly.sh): stop API → refresh dump → enrich → start.
     # Keep disabled until a manual run succeeds; cron expression is documentary for CRON_TZ crontab.
     r18_dump_refresh_enabled: bool = False
+    # Forced rescrape (POST /api/works/{id}/refresh) budget per provider per local day.
+    rescrape_daily_quota: int = Field(default=300, ge=0, le=100_000)
+    # Seconds to wait for the r18 dump worker thread on shutdown.
+    r18_dump_worker_join_seconds: float = Field(default=5.0, ge=0, le=60)
     r18_dump_refresh_cron: str = "1 10 * * 3"  # Wed 10:01 — pair with CRON_TZ=Asia/Shanghai
     r18_dump_refresh_timezone: str = "Asia/Shanghai"
     r18_dump_refresh_service: str = "shadow-mdc"

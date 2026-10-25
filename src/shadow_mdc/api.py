@@ -161,6 +161,7 @@ from .db.models import (
 )
 from .media.organize_journal import JournalEntry, OrganizeJournal, UndoReport, undo_entries
 from .services.resumable_jobs import is_resumable_kind, mark_interrupted_task_runs
+from .services.rescrape_quota import RescrapeQuota
 from .services.subtitle_backfill import BackfillStatus, SubtitleBackfillJob
 from .db.repository import LOCKABLE_WORK_FIELDS, Database, Repository
 from .domain import (
@@ -385,6 +386,11 @@ class Runtime:
     response_cache: ResponseCache
     strm_relay: StrmRelay
     subtitle_backfill: SubtitleBackfillJob
+    rescrape_quota: RescrapeQuota | None = None
+
+
+# Local/offline providers cost nothing upstream; never charge them.
+_RESCRAPE_QUOTA_EXEMPT = frozenset({"r18dump"})
 
 
 @dataclass
@@ -602,6 +608,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             database=database,
             fetcher_factory=settings.subtitlecat_fetcher,
         ),
+        rescrape_quota=RescrapeQuota(
+            settings.rescrape_daily_quota,
+            path=settings.data_dir / "rescrape-quota.json",
+        ),
     )
     pan_poller.start()
     if settings.subtitlecat_enabled:
@@ -612,6 +622,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await app.state.runtime.subtitle_backfill.shutdown()
+        # Signal + join the r18 dump worker thread (bounded) before closing stores.
+        for dump_provider in providers._providers.values():
+            if isinstance(dump_provider, R18DumpProvider):
+                await asyncio.to_thread(
+                    dump_provider.shutdown, settings.r18_dump_worker_join_seconds
+                )
+        discover_service.close()
         await subscription_watch_poller.stop()
         await pan_poller.stop()
         await pan_service.aclose()
@@ -4077,6 +4094,18 @@ def prefer_work_poster(
     return _work_detail_out(repo, work, data_dir=runtime(request).settings.data_dir)
 
 
+_FALLBACK_QUOTA: dict[int, RescrapeQuota] = {}
+
+
+def _fallback_rescrape_quota(settings: Settings) -> RescrapeQuota:
+    key = id(settings)
+    if key not in _FALLBACK_QUOTA:
+        _FALLBACK_QUOTA[key] = RescrapeQuota(
+            settings.rescrape_daily_quota, path=settings.data_dir / "rescrape-quota.json"
+        )
+    return _FALLBACK_QUOTA[key]
+
+
 @app.post("/api/works/{work_id}/refresh", response_model=IdentifyOut)
 async def refresh_work_metadata(work_id: str, request: Request, repo: Repo) -> IdentifyOut:
     work = repo.get_work(work_id)
@@ -4099,7 +4128,21 @@ async def refresh_work_metadata(work_id: str, request: Request, repo: Repo) -> I
         )
     else:
         raise HTTPException(status_code=409, detail="work has no media asset or code")
-    batch = await app_runtime.providers.search(hints)
+    locks = set(work.field_locks or [])
+    if LOCKABLE_WORK_FIELDS <= locks:
+        # Nothing a rescrape could change; do not spend provider budget.
+        raise HTTPException(status_code=409, detail="all metadata fields are locked")
+    quota = app_runtime.rescrape_quota or _fallback_rescrape_quota(app_runtime.settings)
+    eligible = app_runtime.providers.eligible_ids(hints)
+    exempt = [item for item in eligible if item in _RESCRAPE_QUOTA_EXEMPT]
+    allowed, exhausted = quota.consume(item for item in eligible if item not in _RESCRAPE_QUOTA_EXEMPT)
+    if exhausted and not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"forced rescrape daily quota exceeded: {', '.join(sorted(exhausted))}",
+            headers={"Retry-After": str(quota.seconds_until_reset())},
+        )
+    batch = await app_runtime.providers.search(hints, provider_ids=tuple(allowed + exempt))
     ranked = rank_candidates(hints, list(batch.records))
     accepted_ids: list[str] = []
     accepted_work: Work | None = None

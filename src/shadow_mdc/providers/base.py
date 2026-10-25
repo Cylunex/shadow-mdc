@@ -234,8 +234,20 @@ class ProviderRegistry:
         *,
         provider_ids: tuple[str, ...] | None = None,
     ) -> SearchBatch:
+        eligible = self._eligible(hints, provider_ids)
+        now = time.monotonic()
+        return await self._search_eligible(hints, eligible, now)
+
+    def eligible_ids(
+        self, hints: IdentityHints, provider_ids: tuple[str, ...] | None = None
+    ) -> tuple[str, ...]:
+        return tuple(provider.descriptor.id for provider in self._eligible(hints, provider_ids))
+
+    def _eligible(
+        self, hints: IdentityHints, provider_ids: tuple[str, ...] | None
+    ) -> list[Provider]:
         allowed = set(provider_ids) if provider_ids is not None else None
-        eligible = [
+        return [
             provider
             for provider in self._providers.values()
             if provider.descriptor.configured
@@ -247,7 +259,10 @@ class ProviderRegistry:
                 or hints.family.value == "unknown"
             )
         ]
-        now = time.monotonic()
+
+    async def _search_eligible(
+        self, hints: IdentityHints, eligible: list[Provider], now: float
+    ) -> SearchBatch:
         active: list[Provider] = []
         failures: list[ProviderFailure] = []
         for provider in eligible:
