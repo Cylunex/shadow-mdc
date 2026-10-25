@@ -211,6 +211,11 @@ class DiscoverService:
     def r18_fallback_available(self) -> bool:
         return self._r18_dump_path is not None and self._r18_dump_path.is_file()
 
+    def r18_record(self, code: str | None) -> ProviderRecord | None:
+        """Public read-only r18 dump lookup (None when dump missing / no match)."""
+
+        return self._r18_fallback_record(code)
+
     def _r18_fallback_record(self, code: str | None) -> ProviderRecord | None:
         """Build a record from the offline r18 dump (intake create path only)."""
 

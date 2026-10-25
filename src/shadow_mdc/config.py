@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     javdb_api_enabled: bool = True
     javdb_api_hosts: str = "https://jdforrepam.com,https://javdb.com"
     javdb_api_token: str | None = None  # bearer token; only needed for TOP250
+    # Machine-to-machine bearer token for /api/mcp/v1 (MCP server). Unset → MCP API disabled (503).
+    mcp_token: str | None = Field(default=None, repr=False)
     javbus_base_url: str = "https://www.javbus.com"
     jav321_base_url: str = "https://www.jav321.com"
     r18dev_base_url: str = "https://r18.dev"

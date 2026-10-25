@@ -5647,6 +5647,10 @@ def _batch_plan_out(plans: list[OperationPlan]) -> BatchPlanOut:
     )
 
 
+from .mcp_api import router as _mcp_router  # noqa: E402 - needs route helpers above
+
+app.include_router(_mcp_router)
+
 source_web_dist = Path(__file__).resolve().parents[2] / "web" / "dist"
 packaged_web_dist = Path(__file__).resolve().parent / "static"
 web_dist = source_web_dist if source_web_dist.is_dir() else packaged_web_dist
