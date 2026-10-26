@@ -13,6 +13,8 @@ Two layers:
 | GET | `/api/mcp/v1/library/{code}` | catalog/library entry, STRM, subtitles, running job |
 | GET | `/api/mcp/v1/metadata/{code}?providers=javdb,javbus` | r18 dump + providers |
 | POST | `/api/mcp/v1/offline` `{code, magnet?, dry_run?}` | 番号 → 115 offline. action = exists / running / planned / submitted / hunting / error |
+| POST | `/api/mcp/v1/offline/magnet` `{magnet, title?, code?, dry_run?}` | magnet-first. dry_run defaults true. Dedup by info_hash. JAV code from dn/title → code flow; else non-JAV Work + enqueue. dry_run includes `inspect` |
+| POST | `/api/mcp/v1/magnet/inspect` `{magnet, title?, code?}` | parse/analyze only (no offline). info_hash, dn, code or non-jav, quality, library state, metadata, preview_url (may be absent), trackers |
 | GET | `/api/mcp/v1/jobs?status=&limit=` | offline jobs |
 | GET | `/api/mcp/v1/jobs/{job_id}` | stage downloading → organizing → in_library |
 | POST | `/api/mcp/v1/subscribe` `{code}` or `{actor}` | want list / actor 盯磁 |
@@ -27,9 +29,23 @@ How offline works:
 - If no magnet is found, the code goes to the want list (`hunting`).
 - `dry_run=true` returns only the plan and writes nothing.
 
+Magnet-first (`POST /offline/magnet` / tool `offline_add_magnet`):
+
+- `magnet` is required; optional `title`, optional `code`, `dry_run` defaults to true.
+- Dedup by btih `info_hash`: same hash with a running/done offline task or library work → `running` / `exists`.
+- Display name (`dn=`) + `title` are NFKC-scanned for a JAV code. If found (or `code` is passed) → same code-based flow with this magnet as override.
+- If no code: create/reuse a non-JAV Work (`family=unknown`, `category=Other`, tags `magnet-ingest` / `non-jav-magnet`, identity `magnet-ingest` + info_hash). Title from `title` / `dn` / truncated hash. Enqueue offline with the magnet URL; poller organizes + STRM. No fake JAV provider scrape. Translation via post-ingest when a real title is present.
+- `dry_run` reuses the same inspect internals and returns `inspect` on the response.
+
+Magnet inspect (`POST /magnet/inspect` / tool `magnet_inspect`):
+
+- Required `magnet`; optional `title` / `code` override. Never submits offline.
+- Returns: `info_hash`, `display_name` (dn), parsed `title`, extracted `code` (NFKC) or `likely_non_jav=true`, `quality` hints (中字/字幕, HD/4K/VR, size from `xl=` or name), `library_state` (`absent` / `in_catalog` / `in_library` / `running` / `done`), brief `metadata` when code matches catalog or r18 dump (title, actors, date, cover), `trackers` summary, and `preview_url` when a known poster exists.
+- `preview_url` / cover may be absent — never invents a poster. Prefer catalog/r18 artwork; for non-JAV, an existing work title match may supply a poster.
+
 ## MCP tools
 
-`library_lookup`, `metadata_lookup`, `offline_add` (defaults to `dry_run=true`), `job_status`, `list_jobs`, `subscribe`, `rescrape`.
+`library_lookup`, `metadata_lookup`, `magnet_inspect` (parse only; preview may be absent), `offline_add` (defaults to `dry_run=true`), `offline_add_magnet` (magnet-first; defaults to `dry_run=true`; dry_run includes `inspect`), `job_status`, `list_jobs`, `subscribe`, `rescrape`.
 
 ## Run
 

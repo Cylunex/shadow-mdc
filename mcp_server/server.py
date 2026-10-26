@@ -41,9 +41,10 @@ API = f"{BASE_URL}/api/mcp/v1"
 mcp = FastMCP(
     "shadow-mdc",
     instructions=(
-        "Shadow MDC media library. Use offline_add with a JAV code (番号) to put it into the 115 "
-        "library via offline download; ALWAYS call it with dry_run=true first and confirm with the "
-        "user before a real submit. Use job_status to follow progress."
+        "Shadow MDC media library. Use magnet_inspect to parse/analyze a magnet (no submit). "
+        "Use offline_add with a JAV code (番号), or offline_add_magnet with a magnet URI "
+        "(works without a standard 番号 / for non-JAV). ALWAYS call with dry_run=true first "
+        "and confirm with the user before a real submit. Use job_status to follow progress."
     ),
 )
 _client: httpx.AsyncClient | None = None
@@ -97,6 +98,46 @@ async def offline_add(code: str, magnet: str | None = None, dry_run: bool = True
     if magnet:
         payload["magnet"] = magnet
     return await _call("POST", "/offline", json=payload)
+
+
+@mcp.tool()
+async def offline_add_magnet(
+    magnet: str, title: str | None = None, code: str | None = None, dry_run: bool = True
+) -> Any:
+    """Add by magnet URI (magnet-first). Works when there is no standard 番号 / for non-JAV.
+
+    Parses dn= + optional title for a JAV code (NFKC); if found, reuses the code-based scrape/
+    organize flow with this magnet. If not, creates/reuses a non-JAV Work (family unknown,
+    tags magnet-ingest/non-jav-magnet) and enqueues offline — poller still organizes + STRM.
+    Dedupes by info_hash (exists/running). dry_run=true (default) only returns the plan
+    (includes the same structured inspect payload). NEVER submit with dry_run=false unless
+    the user confirmed the plan.
+    """
+    payload: dict[str, Any] = {"magnet": magnet, "dry_run": dry_run}
+    if title:
+        payload["title"] = title
+    if code:
+        payload["code"] = code
+    return await _call("POST", "/offline/magnet", json=payload)
+
+
+@mcp.tool()
+async def magnet_inspect(
+    magnet: str, title: str | None = None, code: str | None = None
+) -> Any:
+    """Parse/analyze a magnet URI without submitting offline.
+
+    Returns info_hash, dn, parsed title, extracted JAV code (or likely_non_jav), quality hints
+    (中字/字幕, HD/4K/VR, size), library/running state, brief metadata when the code matches
+    catalog or r18 dump, tracker summary, and preview_url when a known poster exists.
+    preview_url may be absent — never invents a poster. Prefer this before offline_add_magnet.
+    """
+    payload: dict[str, Any] = {"magnet": magnet}
+    if title:
+        payload["title"] = title
+    if code:
+        payload["code"] = code
+    return await _call("POST", "/magnet/inspect", json=payload)
 
 
 @mcp.tool()

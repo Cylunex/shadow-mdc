@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from shadow_mdc.api import app
 from shadow_mdc.db.models import WorkMagnet
 from shadow_mdc.db.repository import Repository
-from shadow_mdc.domain import ProviderRecord
+from shadow_mdc.domain import Artwork, ProviderRecord
 from shadow_mdc.enums import ContentFamily, MediaCategory
 from shadow_mdc.media.magnets import MagnetLink
 from shadow_mdc.providers.base import SearchBatch
@@ -23,7 +23,10 @@ HASH_GOOD = "B" * 40
 HASH_BAD = "A" * 40
 
 
-def _record(code: str = "SSIS-123") -> ProviderRecord:
+def _record(code: str = "SSIS-123", *, with_cover: bool = False) -> ProviderRecord:
+    artwork = ()
+    if with_cover:
+        artwork = (Artwork(kind="cover", url=f"https://cdn.example/{code}/cover.jpg"),)
     return ProviderRecord(
         provider="javdb",
         external_id="x123",
@@ -34,6 +37,7 @@ def _record(code: str = "SSIS-123") -> ProviderRecord:
         source_url="https://javdb.com/v/x123",
         actors=("Actress A",),
         release_date=date(2021, 1, 1),
+        artwork=artwork,
     )
 
 
@@ -219,3 +223,211 @@ def test_subscribe_code_and_actor(client: TestClient) -> None:
 
 def test_rescrape_requires_catalog(client: TestClient) -> None:
     assert client.post("/api/mcp/v1/rescrape", json={"code": "SSIS-123"}, headers=AUTH).status_code == 404
+
+
+HASH_MAG = "C" * 40
+
+
+def _magnet_uri(info_hash: str, *, dn: str | None = None) -> str:
+    uri = f"magnet:?xt=urn:btih:{info_hash}"
+    if dn:
+        from urllib.parse import quote
+
+        uri = f"{uri}&dn={quote(dn)}"
+    return uri
+
+
+def test_offline_magnet_dry_run_jav_dn(client: TestClient) -> None:
+    """dn with a clear 番号 reuses the code-based plan (scrape path), no writes."""
+
+    magnet = _magnet_uri(HASH_MAG, dn="SSIS-123-C.mp4")
+    out = client.post(
+        "/api/mcp/v1/offline/magnet",
+        json={"magnet": magnet, "dry_run": True},
+        headers=AUTH,
+    ).json()
+    assert out["action"] == "planned"
+    assert out["code"] == "SSIS-123"
+    assert out["magnet"]["info_hash"] == HASH_MAG
+    assert out["dry_run"] is True
+    assert client.submitted == []  # type: ignore[attr-defined]
+    rt = client.app.state.runtime
+    with rt.database.session() as session:
+        assert Repository(session).find_work_by_code("SSIS-123") is None
+
+
+def test_offline_magnet_dry_run_non_jav(client: TestClient) -> None:
+    magnet = _magnet_uri(HASH_MAG, dn="My Homemade Clip Vol.3")
+    out = client.post(
+        "/api/mcp/v1/offline/magnet",
+        json={"magnet": magnet, "title": "Homemade Clip Special", "dry_run": True},
+        headers=AUTH,
+    ).json()
+    assert out["action"] == "planned"
+    assert out["code"] is None
+    assert out["dry_run"] is True
+    assert out["magnet"]["info_hash"] == HASH_MAG
+    assert "non-JAV" in out["message"] or "magnet-ingest" in out["message"]
+    assert out["metadata"]["title"] == "Homemade Clip Special"
+    assert out["inspect"] is not None
+    assert out["inspect"]["likely_non_jav"] is True
+    assert out["inspect"]["info_hash"] == HASH_MAG
+    assert client.submitted == []  # type: ignore[attr-defined]
+    rt = client.app.state.runtime
+    with rt.database.session() as session:
+        assert Repository(session).find_work_by_provider_identity("magnet-ingest", HASH_MAG) is None
+
+
+def test_offline_magnet_submit_non_jav_and_dedup(client: TestClient) -> None:
+    magnet = _magnet_uri(HASH_MAG, dn="Western Scene NoCode")
+    rt = client.app.state.runtime
+
+    async def fake_submit(url: str, **kwargs: object) -> dict[str, object]:
+        client.submitted.append(url)  # type: ignore[attr-defined]
+        return {"info_hash": HASH_MAG, "remote_task_id": "tm1"}
+
+    monkey_pan = rt.pan_service
+    monkey_pan.submit_offline_url = AsyncMock(side_effect=fake_submit)  # type: ignore[method-assign]
+
+    first = client.post(
+        "/api/mcp/v1/offline/magnet",
+        json={"magnet": magnet, "title": "Western Scene NoCode", "dry_run": False},
+        headers=AUTH,
+    )
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["action"] == "submitted"
+    assert body["code"] is None
+    assert body["work_id"] and body["job_id"]
+    assert body["metadata"]["title"] == "Western Scene NoCode"
+    assert "magnet-ingest" in (body["metadata"]["tags"] or [])
+    assert client.submitted and HASH_MAG in client.submitted[0]  # type: ignore[attr-defined]
+
+    with rt.database.session() as session:
+        work = Repository(session).find_work_by_provider_identity("magnet-ingest", HASH_MAG)
+        assert work is not None
+        assert work.family == "unknown"
+        assert work.primary_code is None
+
+    again = client.post(
+        "/api/mcp/v1/offline/magnet",
+        json={"magnet": magnet, "dry_run": False},
+        headers=AUTH,
+    ).json()
+    assert again["action"] == "running"
+    assert again["job_id"] == body["job_id"]
+    assert len(client.submitted) == 1  # type: ignore[attr-defined]
+
+
+def test_offline_magnet_code_override(client: TestClient) -> None:
+    magnet = _magnet_uri(HASH_MAG, dn="totally-unrelated-name")
+    out = client.post(
+        "/api/mcp/v1/offline/magnet",
+        json={"magnet": magnet, "code": "ｓｓｉｓ１２３", "dry_run": True},  # noqa: RUF001
+        headers=AUTH,
+    ).json()
+    assert out["action"] == "planned"
+    assert out["code"] == "SSIS-123"
+
+
+def test_offline_magnet_rejects_bad_uri(client: TestClient) -> None:
+    bad = client.post(
+        "/api/mcp/v1/offline/magnet",
+        json={"magnet": "https://example.com/not-a-magnet-link", "dry_run": True},
+        headers=AUTH,
+    )
+    assert bad.status_code == 422
+
+def test_magnet_inspect_jav_dn(client: TestClient) -> None:
+    magnet = _magnet_uri(
+        HASH_MAG,
+        dn="SSIS-123-C.1080p.中字",
+    ) + "&tr=udp%3A%2F%2Ftracker.example%3A80&xl=6442450944"
+    out = client.post(
+        "/api/mcp/v1/magnet/inspect",
+        json={"magnet": magnet},
+        headers=AUTH,
+    ).json()
+    assert out["info_hash"] == HASH_MAG
+    assert out["code"] == "SSIS-123"
+    assert out["likely_non_jav"] is False
+    assert out["display_name"] and "SSIS-123" in out["display_name"]
+    assert out["quality"]["has_subtitle"] is True
+    assert out["quality"]["hd"] is True
+    assert out["quality"]["size_bytes"] == 6442450944
+    assert out["library_state"] == "absent"
+    assert any("tracker.example" in t for t in out["trackers"])
+    assert client.submitted == []  # type: ignore[attr-defined]
+
+
+def test_magnet_inspect_non_jav_dn(client: TestClient) -> None:
+    magnet = _magnet_uri(HASH_MAG, dn="My Homemade Clip Vol.3 VR")
+    out = client.post(
+        "/api/mcp/v1/magnet/inspect",
+        json={"magnet": magnet, "title": "Homemade Clip Special"},
+        headers=AUTH,
+    ).json()
+    assert out["code"] is None
+    assert out["likely_non_jav"] is True
+    assert out["title"] == "Homemade Clip Special"
+    assert out["quality"]["vr"] is True
+    assert out["library_state"] == "absent"
+    assert out["preview_url"] is None  # no invent
+    assert client.submitted == []  # type: ignore[attr-defined]
+
+
+def test_magnet_inspect_known_code_with_poster(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    rt = client.app.state.runtime
+    poster = "https://cdn.example/SSIS-123/cover.jpg"
+    monkeypatch.setattr(
+        rt.discover,
+        "r18_record",
+        lambda code: _record(code, with_cover=True) if code == "SSIS-123" else None,
+    )
+    magnet = _magnet_uri(HASH_MAG, dn="ssis123-4k-C")
+    out = client.post(
+        "/api/mcp/v1/magnet/inspect",
+        json={"magnet": magnet},
+        headers=AUTH,
+    ).json()
+    assert out["code"] == "SSIS-123"
+    assert out["metadata"] is not None
+    assert out["metadata"]["title"] == "Fixture title"
+    assert out["metadata"]["actors"] == ["Actress A"]
+    assert out["preview_url"] == poster
+    assert out["quality"]["uhd_4k"] is True
+    assert out["quality"]["has_subtitle"] is True
+    assert client.submitted == []  # type: ignore[attr-defined]
+
+
+def test_magnet_inspect_already_in_library(client: TestClient) -> None:
+    rt = client.app.state.runtime
+    magnet = _magnet_uri(HASH_MAG, dn="SSIS-123-C")
+    # Seed catalog + running offline task for this hash
+    with rt.database.session() as session:
+        repo = Repository(session)
+        work = repo.upsert_provider_record(_record(with_cover=True), overwrite=False)
+        repo.create_pan_offline_task(
+            work_id=work.id,
+            url=magnet,
+            info_hash=HASH_MAG,
+            directory_id="dir-inspect",
+            remote_task_id="tm-inspect",
+            status="running",
+            backend="openlist",
+        )
+        session.commit()
+        work_id = work.id
+
+    out = client.post(
+        "/api/mcp/v1/magnet/inspect",
+        json={"magnet": magnet},
+        headers=AUTH,
+    ).json()
+    assert out["code"] == "SSIS-123"
+    assert out["library_state"] == "running"
+    assert out["work_id"] == work_id
+    assert out["job_id"]
+    assert out["preview_url"] == "https://cdn.example/SSIS-123/cover.jpg"
+    assert client.submitted == []  # type: ignore[attr-defined]
+

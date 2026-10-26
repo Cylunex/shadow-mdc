@@ -18,14 +18,18 @@ All heavy lifting reuses existing services:
 
 from __future__ import annotations
 
+import re
+
 import hmac
 import logging
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import parse_qs, unquote, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from .api_models import ActorSubscriptionEdit, DiscoverSeedRequest
 from .db.models import PanOfflineTask, Work
@@ -33,9 +37,18 @@ from .db.repository import Repository
 from .domain import IdentityHints, ProviderRecord
 from .enums import ContentFamily, MediaCategory, QueryMode
 from .identity import extract_code
-from .media.magnets import MagnetLink, format_size_bytes, info_hash_from_uri, rank_magnets
+from .media.magnets import (
+    MagnetLink,
+    format_size_bytes,
+    info_hash_from_uri,
+    magnet_quality_flags,
+    parse_size_label_to_bytes,
+    rank_magnets,
+)
 from .services.offline_recovery import project_offline
+from .services.openlist import magnet_display_name
 from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
+from .services.post_ingest import translate_after_ingest
 from .services.seed_auto_offline import enqueue_seeded_offline
 
 logger = logging.getLogger(__name__)
@@ -141,8 +154,44 @@ class OfflineAddRequest(BaseModel):
     dry_run: bool = False
 
 
+class MagnetQualityHints(BaseModel):
+    has_subtitle: bool = False
+    hd: bool = False
+    uhd_4k: bool = False
+    vr: bool = False
+    size: str | None = None
+    size_bytes: int | None = None
+    labels: list[str] = Field(default_factory=list)
+
+
+class MagnetInspectRequest(BaseModel):
+    magnet: str = Field(min_length=20, max_length=4000)
+    title: str | None = Field(default=None, max_length=500)
+    code: str | None = Field(default=None, max_length=100)
+
+
+class MagnetInspectOut(BaseModel):
+    magnet: str
+    info_hash: str | None = None
+    display_name: str | None = None
+    title: str | None = None
+    code: str | None = None
+    likely_non_jav: bool = False
+    family: str | None = None
+    quality: MagnetQualityHints = Field(default_factory=MagnetQualityHints)
+    library_state: Literal["absent", "in_catalog", "in_library", "running", "done"] = "absent"
+    work_id: str | None = None
+    job_id: str | None = None
+    metadata: MetadataBrief | None = None
+    preview_url: str | None = Field(
+        default=None, description="poster/cover URL when known; may be absent"
+    )
+    trackers: list[str] = Field(default_factory=list)
+    message: str = ""
+
+
 class OfflineAddOut(BaseModel):
-    code: str
+    code: str | None = None
     action: Literal["exists", "running", "submitted", "planned", "hunting", "error"]
     dry_run: bool
     work_id: str | None = None
@@ -151,7 +200,256 @@ class OfflineAddOut(BaseModel):
     metadata: MetadataBrief | None = None
     magnet: MagnetBrief | None = None
     candidates: list[MagnetBrief] = Field(default_factory=list)
+    inspect: MagnetInspectOut | None = None
     message: str = ""
+
+
+class OfflineMagnetAddRequest(BaseModel):
+    magnet: str = Field(min_length=20, max_length=4000, description="magnet:? URI (required)")
+    title: str | None = Field(default=None, max_length=500, description="display title override")
+    code: str | None = Field(default=None, max_length=100, description="optional 番号 override")
+    dry_run: bool = True
+
+
+
+MAGNET_INGEST_PROVIDER = "magnet-ingest"
+MAGNET_INGEST_TAGS = ("magnet-ingest", "non-jav-magnet")
+
+
+def _try_extract_code(*texts: str | None) -> str | None:
+    for text in texts:
+        if not text or not text.strip():
+            continue
+        code, _family = extract_code(text.strip())
+        if code:
+            return code
+    return None
+
+
+def _magnet_title(*, title: str | None, dn: str | None, info_hash: str) -> str:
+    for candidate in (title, dn):
+        if candidate and candidate.strip():
+            return candidate.strip()[:500]
+    return f"magnet-{info_hash[:12].lower()}"
+
+
+def _hash_dedup_out(
+    repo: Repository,
+    *,
+    info_hash: str,
+    magnet: str,
+    dry_run: bool,
+    dn: str | None,
+) -> OfflineAddOut | None:
+    """Return exists/running when this info_hash already has a task or library work."""
+
+    task = repo.find_pan_offline_task_by_info_hash(info_hash)
+    if task is not None:
+        work = repo.get_work(task.work_id)
+        job = job_out(task, work)
+        brief = MagnetBrief(
+            uri=magnet if dry_run else None,
+            info_hash=info_hash,
+            name=dn or task.remote_name,
+            provider=MAGNET_INGEST_PROVIDER,
+        )
+        if task.status == "running":
+            return OfflineAddOut(
+                code=work.primary_code if work is not None else None,
+                action="running",
+                dry_run=dry_run,
+                work_id=task.work_id,
+                job_id=job.job_id,
+                job=job,
+                metadata=brief_from_work(work) if work is not None else None,
+                magnet=brief,
+                message="offline download already running for this info_hash",
+            )
+        if task.status in {"done", "completed"}:
+            return OfflineAddOut(
+                code=work.primary_code if work is not None else None,
+                action="exists",
+                dry_run=dry_run,
+                work_id=task.work_id,
+                job_id=job.job_id,
+                job=job,
+                metadata=brief_from_work(work) if work is not None else None,
+                magnet=brief,
+                message="already offline-done for this info_hash",
+            )
+
+    magnet_row = repo.find_work_magnet_by_info_hash(info_hash)
+    if magnet_row is not None:
+        work = repo.get_work(magnet_row.work_id)
+        if work is not None:
+            jobs = _jobs_for(repo, work)
+            done = next((item for item in jobs if item.stage == "in_library"), None)
+            asset = repo.first_asset_for_work(work.id)
+            if done is not None or asset is not None:
+                return OfflineAddOut(
+                    code=work.primary_code,
+                    action="exists",
+                    dry_run=dry_run,
+                    work_id=work.id,
+                    job_id=done.job_id if done else (jobs[0].job_id if jobs else None),
+                    job=done or (jobs[0] if jobs else None),
+                    metadata=brief_from_work(work),
+                    magnet=MagnetBrief(
+                        uri=magnet if dry_run else None,
+                        info_hash=info_hash,
+                        name=dn or magnet_row.name,
+                        provider=magnet_row.provider,
+                    ),
+                    message="work already in library for this info_hash",
+                )
+            running = next((item for item in jobs if item.status == "running"), None)
+            if running is not None:
+                return OfflineAddOut(
+                    code=work.primary_code,
+                    action="running",
+                    dry_run=dry_run,
+                    work_id=work.id,
+                    job_id=running.job_id,
+                    job=running,
+                    metadata=brief_from_work(work),
+                    magnet=MagnetBrief(
+                        uri=magnet if dry_run else None,
+                        info_hash=info_hash,
+                        name=dn or magnet_row.name,
+                        provider=magnet_row.provider,
+                    ),
+                    message="offline download already running for this info_hash",
+                )
+    return None
+
+
+def _ensure_magnet_ingest_work(
+    repo: Repository, *, info_hash: str, title: str, dn: str | None, magnet: str
+) -> Work:
+    existing = repo.find_work_by_provider_identity(MAGNET_INGEST_PROVIDER, info_hash)
+    if existing is not None:
+        work = existing
+    else:
+        work = repo.upsert_provider_record(
+            ProviderRecord(
+                provider=MAGNET_INGEST_PROVIDER,
+                external_id=info_hash,
+                title=title,
+                family=ContentFamily.UNKNOWN,
+                category=MediaCategory.OTHER,
+                tags=MAGNET_INGEST_TAGS,
+                fingerprints={"btih": info_hash},
+            ),
+            overwrite=False,
+        )
+    repo.save_work_magnets(
+        work,
+        [
+            {
+                "uri": magnet,
+                "info_hash": info_hash,
+                "name": dn,
+            }
+        ],
+        provider=MAGNET_INGEST_PROVIDER,
+    )
+    return work
+
+
+
+_VR_NAME = re.compile(r"(?i)(?:\bvr\b|virtual[\s._-]?reality)")
+_RES_4K_HINT = re.compile(r"(?i)(?:\b4k\b|2160p|\buhd\b)")
+_SIZE_IN_NAME = re.compile(
+    r"(?i)(?<![A-Z0-9])(\d+(?:\.\d+)?)\s*(GiB|MiB|GB|MB|G|M)(?![A-Z0-9])"
+)
+
+
+def _magnet_trackers(magnet: str) -> list[str]:
+    try:
+        query = parse_qs(urlparse(magnet).query)
+    except Exception:
+        return []
+    out: list[str] = []
+    for key in ("tr", "tracker"):
+        for value in query.get(key) or []:
+            item = unquote(value).strip()
+            if item and item not in out:
+                out.append(item)
+    return out[:12]
+
+
+def _magnet_xl_bytes(magnet: str) -> int | None:
+    try:
+        query = parse_qs(urlparse(magnet).query)
+    except Exception:
+        return None
+    for value in query.get("xl") or []:
+        try:
+            size = int(value)
+        except ValueError:
+            continue
+        if size > 0:
+            return size
+    return None
+
+
+def _size_hint_from_name(name: str | None) -> int | None:
+    text = (name or "").strip()
+    if not text:
+        return None
+    match = _SIZE_IN_NAME.search(text)
+    if match is None:
+        return None
+    return parse_size_label_to_bytes(match.group(0))
+
+
+def _quality_hints(*, magnet: str, dn: str | None, title: str | None) -> MagnetQualityHints:
+    text = " ".join(part for part in (dn, title) if part)
+    subtitle, hd = magnet_quality_flags(text)
+    uhd = bool(_RES_4K_HINT.search(text))
+    vr = bool(_VR_NAME.search(text))
+    size_bytes = _magnet_xl_bytes(magnet) or _size_hint_from_name(dn) or _size_hint_from_name(title)
+    labels: list[str] = []
+    if subtitle:
+        labels.append("中字/字幕")
+    if uhd:
+        labels.append("4K")
+    elif hd:
+        labels.append("HD")
+    if vr:
+        labels.append("VR")
+    if size_bytes:
+        labels.append(format_size_bytes(size_bytes))
+    return MagnetQualityHints(
+        has_subtitle=subtitle,
+        hd=hd or uhd,
+        uhd_4k=uhd,
+        vr=vr,
+        size=format_size_bytes(size_bytes) if size_bytes else None,
+        size_bytes=size_bytes,
+        labels=labels,
+    )
+
+
+def _preview_url_for_work(work: Work | None) -> str | None:
+    if work is None:
+        return None
+    return _cover(work.artwork)
+
+
+def _find_work_by_title_ci(repo: Repository, title: str | None) -> Work | None:
+    cleaned = (title or "").strip()
+    if not cleaned or cleaned.startswith("magnet-"):
+        return None
+    # Prefer exact, then case-insensitive via Python (catalog is small for tests).
+    exact = repo._session.scalar(select(Work).where(Work.title == cleaned).limit(1))
+    if exact is not None:
+        return exact
+    needle = cleaned.casefold()
+    for work in repo._session.scalars(select(Work).where(Work.title.is_not(None)).limit(500)).all():
+        if (work.title or "").casefold() == needle:
+            return work
+    return None
 
 
 class MetadataOut(BaseModel):
@@ -598,6 +896,284 @@ async def mcp_offline_add(payload: OfflineAddRequest, request: Request, repo: Mc
         job=job if action != "hunting" else None,
         metadata=brief_from_work(work),
         message=reason,
+    )
+
+
+def analyze_magnet(
+    repo: Repository,
+    *,
+    magnet: str,
+    title: str | None = None,
+    code: str | None = None,
+    r18_lookup: Any | None = None,
+) -> MagnetInspectOut:
+    """Structured magnet analysis without submitting offline (shared by inspect + dry_run).
+
+    ``r18_lookup`` is an optional ``(code) -> ProviderRecord | None`` (e.g. discover.r18_record)
+    used for brief metadata / poster when the code is known but not yet in the catalog.
+    Preview may be absent — never invents a poster.
+    """
+
+    raw = magnet.strip()
+    if not raw.lower().startswith("magnet:?"):
+        raise HTTPException(status_code=422, detail="magnet must be a magnet:? URI")
+    info_hash = info_hash_from_uri(raw)
+    if not info_hash:
+        raise HTTPException(status_code=422, detail="magnet URI missing btih info_hash")
+
+    dn = magnet_display_name(raw)
+    resolved_code: str | None = None
+    if code and code.strip():
+        resolved_code = normalize_code_or_422(code)
+    if resolved_code is None:
+        resolved_code = _try_extract_code(title, dn)
+
+    display_title = _magnet_title(title=title, dn=dn, info_hash=info_hash)
+    quality = _quality_hints(magnet=raw, dn=dn, title=title or display_title)
+    trackers = _magnet_trackers(raw)
+
+    library_state: Literal["absent", "in_catalog", "in_library", "running", "done"] = "absent"
+    work: Work | None = None
+    job_id: str | None = None
+    family: str | None = None
+    preview: str | None = None
+    meta: MetadataBrief | None = None
+    notes: list[str] = []
+
+    offline = repo.find_pan_offline_task_by_info_hash(info_hash)
+    if offline is not None:
+        job_id = offline.id
+        work = repo.get_work(offline.work_id)
+        if offline.status == "running":
+            library_state = "running"
+        elif offline.status == "done":
+            library_state = "done"
+        else:
+            library_state = "in_catalog"
+        notes.append(f"offline task {offline.status}")
+
+    wm = repo.find_work_magnet_by_info_hash(info_hash)
+    if work is None and wm is not None:
+        work = repo.get_work(wm.work_id)
+        if library_state == "absent":
+            library_state = "in_catalog"
+        notes.append("info_hash already in work_magnets")
+
+    ingest = repo.find_work_by_provider_identity(MAGNET_INGEST_PROVIDER, info_hash)
+    if work is None and ingest is not None:
+        work = ingest
+        if library_state == "absent":
+            library_state = "in_catalog"
+
+    if resolved_code is not None:
+        by_code = repo.find_work_by_code(resolved_code)
+        if by_code is not None:
+            if work is None:
+                work = by_code
+            if library_state == "absent":
+                library_state = "in_library" if repo.list_assets_for_work(by_code.id) else "in_catalog"
+            family = by_code.family
+            notes.append(f"code {resolved_code} matched catalog")
+        else:
+            family = "jav"
+            notes.append(f"code {resolved_code} not yet in catalog")
+    else:
+        notes.append("likely non-jav (no 番号 in dn/title)")
+        if work is None:
+            work = _find_work_by_title_ci(repo, title or dn)
+            if work is not None and library_state == "absent":
+                library_state = "in_library" if repo.list_assets_for_work(work.id) else "in_catalog"
+                notes.append("title matched existing work")
+
+    if work is not None:
+        family = family or work.family
+        if library_state == "absent":
+            library_state = "in_library" if repo.list_assets_for_work(work.id) else "in_catalog"
+        meta = brief_from_work(work)
+        preview = _preview_url_for_work(work)
+
+    if meta is None and resolved_code is not None and callable(r18_lookup):
+        record = r18_lookup(resolved_code)
+        if record is not None:
+            meta = brief_from_record(record)
+            preview = preview or meta.cover
+            notes.append("metadata from r18 dump")
+            if display_title.startswith("magnet-") and meta.title:
+                display_title = meta.title
+
+    if meta is None and resolved_code is None:
+        meta = MetadataBrief(
+            title=display_title,
+            tags=list(MAGNET_INGEST_TAGS),
+            source=MAGNET_INGEST_PROVIDER,
+        )
+
+    return MagnetInspectOut(
+        magnet=raw,
+        info_hash=info_hash,
+        display_name=dn,
+        title=display_title,
+        code=resolved_code,
+        likely_non_jav=resolved_code is None,
+        family=family,
+        quality=quality,
+        library_state=library_state,
+        work_id=work.id if work is not None else None,
+        job_id=job_id,
+        metadata=meta,
+        preview_url=preview,
+        trackers=trackers,
+        message="; ".join(notes) if notes else "parsed",
+    )
+
+
+@router.post("/magnet/inspect", response_model=MagnetInspectOut)
+def mcp_magnet_inspect(
+    payload: MagnetInspectRequest, request: Request, repo: McpRepo
+) -> MagnetInspectOut:
+    """Parse/analyze a magnet URI without submitting offline. Preview may be absent."""
+
+    discover = _core().runtime(request).discover
+    return analyze_magnet(
+        repo,
+        magnet=payload.magnet,
+        title=payload.title,
+        code=payload.code,
+        r18_lookup=discover.r18_record,
+    )
+
+
+@router.post("/offline/magnet", response_model=OfflineAddOut)
+async def mcp_offline_add_magnet(
+    payload: OfflineMagnetAddRequest, request: Request, repo: McpRepo
+) -> OfflineAddOut:
+    """Magnet-first offline: parse dn/title for 番号; else create non-JAV Work and enqueue.
+
+    Dedupes by info_hash. dry_run defaults to true. Never invents JAV provider scrapes for
+    code-less magnets — PanOfflinePoller still organizes + writes STRM on completion.
+    """
+
+    core = _core()
+    app_runtime = core.runtime(request)
+    magnet = payload.magnet.strip()
+    if not magnet.lower().startswith("magnet:?"):
+        raise HTTPException(status_code=422, detail="magnet must be a magnet:? URI")
+    info_hash = info_hash_from_uri(magnet)
+    if not info_hash:
+        raise HTTPException(status_code=422, detail="magnet URI missing btih info_hash")
+
+    dn = magnet_display_name(magnet)
+    inspected = analyze_magnet(
+        repo,
+        magnet=magnet,
+        title=payload.title,
+        code=payload.code,
+        r18_lookup=app_runtime.discover.r18_record,
+    )
+    dedup = _hash_dedup_out(repo, info_hash=info_hash, magnet=magnet, dry_run=payload.dry_run, dn=dn)
+    if dedup is not None:
+        if payload.dry_run:
+            dedup.inspect = inspected
+        return dedup
+
+    code: str | None = None
+    if payload.code and payload.code.strip():
+        code = normalize_code_or_422(payload.code)
+    if code is None:
+        code = _try_extract_code(payload.title, dn)
+
+    if code is not None:
+        # Reuse the existing code-based offline path with magnet override.
+        return await mcp_offline_add(
+            OfflineAddRequest(code=code, magnet=magnet, dry_run=payload.dry_run), request, repo
+        )
+
+    title = _magnet_title(title=payload.title, dn=dn, info_hash=info_hash)
+    existing = repo.find_work_by_provider_identity(MAGNET_INGEST_PROVIDER, info_hash)
+    pan_status = app_runtime.pan_service.status()
+    pan_ready = bool(pan_status.get("connected")) and bool(app_runtime.pan_service.offline_target())
+    magnet_brief = MagnetBrief(
+        uri=magnet,
+        info_hash=info_hash,
+        name=dn,
+        provider=MAGNET_INGEST_PROVIDER,
+    )
+
+    if payload.dry_run:
+        steps: list[str] = []
+        if existing is None:
+            steps.append(
+                "create non-JAV Work (family=unknown, category=Other, tags=magnet-ingest/non-jav-magnet)"
+            )
+        else:
+            steps.append("reuse existing magnet-ingest Work")
+        steps.append(f"title={title!r}")
+        if inspected.quality.labels:
+            steps.append("quality=" + ",".join(inspected.quality.labels))
+        steps.append("submit pan offline with magnet URL")
+        steps.append("poller on completion: organize + STRM (no fake JAV scrape)")
+        if title and not title.startswith("magnet-"):
+            steps.append("post-ingest translation when title present")
+        if not pan_ready:
+            steps.append("WARNING: pan/offline target not ready")
+        return OfflineAddOut(
+            code=None,
+            action="planned",
+            dry_run=True,
+            work_id=existing.id if existing is not None else None,
+            metadata=(
+                brief_from_work(existing)
+                if existing is not None
+                else MetadataBrief(
+                    title=title,
+                    tags=list(MAGNET_INGEST_TAGS),
+                    source=MAGNET_INGEST_PROVIDER,
+                )
+            ),
+            magnet=magnet_brief,
+            inspect=inspected,
+            message="; ".join(steps),
+        )
+
+    if not pan_ready:
+        raise HTTPException(
+            status_code=400, detail="pan/OpenList offline not ready (login or offline target missing)"
+        )
+
+    work = _ensure_magnet_ingest_work(
+        repo, info_hash=info_hash, title=title, dn=dn, magnet=magnet
+    )
+    work_id = work.id
+    repo._session.commit()
+
+    try:
+        result = await enqueue_work_offline(repo, app_runtime.pan_service, work_id, url=magnet)
+    except OfflineEnqueueError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    repo._session.commit()
+    app_runtime.task_events.notify()
+
+    if title and not title.startswith("magnet-"):
+        await translate_after_ingest(repo, work, getattr(app_runtime, "translator", None))
+        repo._session.commit()
+        work = repo.get_work(work_id) or work
+
+    job = job_out(result.task, work)
+    return OfflineAddOut(
+        code=None,
+        action="running" if result.reused_running else "submitted",
+        dry_run=False,
+        work_id=work_id,
+        job_id=job.job_id,
+        job=job,
+        metadata=brief_from_work(work),
+        magnet=MagnetBrief(
+            info_hash=result.task.info_hash or info_hash,
+            name=dn,
+            provider=MAGNET_INGEST_PROVIDER,
+            uri=magnet,
+        ),
+        message="non-JAV magnet enqueued",
     )
 
 

@@ -1283,6 +1283,35 @@ class Repository:
             )
         )
 
+    def find_pan_offline_task_by_info_hash(self, info_hash: str) -> PanOfflineTask | None:
+        """Any work's offline task for this btih (prefer running, then done/completed)."""
+
+        digest = info_hash.strip().upper()
+        rows = list(
+            self._session.scalars(
+                select(PanOfflineTask)
+                .where(PanOfflineTask.info_hash == digest)
+                .order_by(PanOfflineTask.updated_at.desc())
+                .limit(20)
+            )
+        )
+        if not rows:
+            return None
+        for status in ("running", "done", "completed"):
+            for row in rows:
+                if row.status == status:
+                    return row
+        return rows[0]
+
+    def find_work_magnet_by_info_hash(self, info_hash: str) -> WorkMagnet | None:
+        digest = info_hash.strip().upper()
+        return self._session.scalar(
+            select(WorkMagnet)
+            .where(WorkMagnet.info_hash == digest)
+            .order_by(WorkMagnet.created_at.desc())
+            .limit(1)
+        )
+
     def update_pan_offline_task(
         self,
         task: PanOfflineTask,
