@@ -294,21 +294,32 @@ async def search_vod_provider(
     if not provider.enabled:
         return []
     base = provider.base_url.rstrip("/")
-    try:
-        response = await client.get(
-            base,
-            params={"ac": "detail", "wd": code.strip()},
-            timeout=provider.timeout_seconds,
-        )
-        if response.status_code >= 400:
-            return []
-        payload = response.json()
-    except (httpx.HTTPError, ValueError, TypeError):
-        return []
-    if not isinstance(payload, dict):
-        return []
-    rows = payload.get("list")
-    if not isinstance(rows, list):
+    raw = code.strip()
+    # Some Apple-CMS adult indexes match "SSIS001" but not "SSIS-001".
+    queries: list[str] = []
+    for q in (raw, raw.replace("-", ""), raw.upper(), raw.upper().replace("-", "")):
+        if q and q not in queries:
+            queries.append(q)
+    rows: list[Any] = []
+    for wd in queries:
+        try:
+            response = await client.get(
+                base,
+                params={"ac": "detail", "wd": wd},
+                timeout=provider.timeout_seconds,
+            )
+            if response.status_code >= 400:
+                continue
+            payload = response.json()
+        except (httpx.HTTPError, ValueError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        candidate = payload.get("list")
+        if isinstance(candidate, list) and candidate:
+            rows = candidate
+            break
+    if not rows:
         return []
     whitelist = set(provider.whitelist_type_ids)
     sources: list[PlaySource] = []
