@@ -117,26 +117,17 @@ async def test_resolve_play_external_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_play_skips_banned_vod_type() -> None:
-    sites = PlaybackSitesFile.model_validate(
-        {
-            "external_sites": [],
-            "vod_providers": [
-                {
-                    "name": "ExCMS",
-                    "base_url": "https://cms.example.invalid/api.php/provide/vod",
-                    "whitelist_type_ids": [1, 99],
-                    "enabled": True,
-                }
-            ],
-            "vod_max_providers": 1,
-            "vod_max_sources": 5,
-        }
+async def test_search_vod_skips_banned_and_non_whitelist() -> None:
+    from shadow_mdc.services.playback import VodProviderConfig, search_vod_provider
+
+    provider = VodProviderConfig(
+        name="ExCMS",
+        base_url="https://cms.example.invalid/api.php/provide/vod",
+        whitelist_type_ids=[1, 99],
+        enabled=True,
     )
-    media = MediaServerSettings(enabled=False)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert "wd=SSIS-001" in str(request.url) or "wd=SSIS-001" in request.url.query.decode()
         return httpx.Response(
             200,
             json={
@@ -165,17 +156,10 @@ async def test_resolve_play_skips_banned_vod_type() -> None:
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        result = await resolve_play(
-            work_id="w1",
-            code="SSIS-001",
-            title=None,
-            media=media,
-            sites=sites,
-            client=client,
-        )
-    assert len(result.sources) == 1
-    assert result.sources[0].url.endswith("/ok.m3u8")
-    assert result.sources[0].playable_in_app is True
+        sources = await search_vod_provider(provider, client, code="SSIS-001")
+    assert len(sources) == 1
+    assert sources[0].url.endswith("/ok.m3u8")
+    assert sources[0].playable_in_app is True
 
 
 def test_play_api_with_local_sites(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -414,12 +414,23 @@ async def resolve_play(
 
     providers = [p for p in sites.vod_providers if p.enabled]
     if sites.vod_max_providers > 0 and sites.vod_max_sources > 0 and code:
+        # VOD collect APIs are usually reachable direct from NAS; the app proxy
+        # (for JavDB etc.) often slows or empties them — use a short-lived direct client.
         vod_hits: list[PlaySource] = []
-        for provider in providers[: sites.vod_max_providers]:
-            try:
-                vod_hits.extend(await search_vod_provider(provider, client, code=code))
-            except Exception:  # noqa: BLE001 — isolate flaky upstreams
-                logger.info("playback: vod provider %s failed", provider.name)
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=httpx.Timeout(12.0),
+            headers={"User-Agent": "ShadowMDC/0.1"},
+            proxy=None,
+            trust_env=False,
+        ) as vod_client:
+            for provider in providers[: sites.vod_max_providers]:
+                try:
+                    vod_hits.extend(
+                        await search_vod_provider(provider, vod_client, code=code)
+                    )
+                except Exception:  # noqa: BLE001 — isolate flaky upstreams
+                    logger.info("playback: vod provider %s failed", provider.name)
         seen_urls: set[str] = set()
         for src in vod_hits:
             if src.url in seen_urls:
