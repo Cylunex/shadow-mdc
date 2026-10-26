@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from .api_models import ActorSubscriptionEdit, DiscoverSeedRequest
+from .api_models import ActorSubscriptionEdit, DiscoverSeedRequest, PlayResolveOut, PlaySourceOut
 from .db.models import PanOfflineTask, Work
 from .db.repository import Repository
 from .domain import IdentityHints, ProviderRecord
@@ -720,6 +720,47 @@ def mcp_library(code: str, request: Request, repo: McpRepo) -> LibraryOut:
     want = set(_core().runtime(request).library_prefs_store.load().want_list)
     return library_state(repo, normalized, want_list=want)
 
+
+
+
+@router.get("/play/{code}", response_model=PlayResolveOut)
+async def mcp_play_resolve(code: str, request: Request, repo: McpRepo) -> PlayResolveOut:
+    """Resolve Emby deep link + local play-sites / VOD m3u8 for a 番号 (no media byte proxy)."""
+
+    from .services.playback import (
+        PlaybackSettings,
+        load_sites_from_settings,
+        resolve_play,
+    )
+
+    normalized = normalize_code_or_422(code)
+    app_runtime = _core().runtime(request)
+    work = repo.find_work_by_code(normalized)
+    work_id = work.id if work is not None else f"code:{normalized}"
+    media = app_runtime.media_server_store.load()
+    path = app_runtime.settings.playback_sites_path
+    sites = load_sites_from_settings(
+        PlaybackSettings(sites_path=str(path) if path else None),
+        data_dir=app_runtime.settings.data_dir,
+    )
+    result = await resolve_play(
+        work_id=work_id,
+        code=normalized,
+        title=work.title if work is not None else None,
+        media=media,
+        sites=sites,
+        client=app_runtime.http,
+    )
+    return PlayResolveOut(
+        work_id=result.work_id,
+        code=result.code,
+        preferred=PlaySourceOut.model_validate(result.preferred.model_dump()) if result.preferred else None,
+        sources=[PlaySourceOut.model_validate(s.model_dump()) for s in result.sources],
+        emby_in_library=result.emby_in_library,
+        sites_loaded=bool(sites.external_sites or sites.vod_providers),
+        external_site_count=sum(1 for s in sites.external_sites if s.enabled),
+        vod_provider_count=sum(1 for p in sites.vod_providers if p.enabled),
+    )
 
 @router.get("/metadata/{code}", response_model=MetadataOut)
 async def mcp_metadata(

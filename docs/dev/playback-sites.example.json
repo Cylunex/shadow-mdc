@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "external_sites": [
+    {
+      "label": "ExampleTube",
+      "url_template": "https://example.invalid/v/{code_lower}",
+      "enabled": false
+    }
+  ],
+  "vod_providers": [
+    {
+      "name": "ExampleCMS",
+      "base_url": "https://example.invalid/api.php/provide/vod",
+      "whitelist_type_ids": [
+        1,
+        2
+      ],
+      "enabled": false,
+      "timeout_seconds": 8.0
+    }
+  ],
+  "vod_max_providers": 4,
+  "vod_max_sources": 8
+}

@@ -630,6 +630,33 @@ export function WorkDetailView(props: {
                   })();
                 }}
               >打开 Emby</button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  void (async () => {
+                    try {
+                      const resolved = await api.workPlayResolve(work.id);
+                      const preferred = resolved.preferred;
+                      if (preferred?.playable_in_app) {
+                        window.open(api.workPlayerUrl(work.id), "_blank", "noopener,noreferrer");
+                        return;
+                      }
+                      if (preferred?.url) {
+                        window.open(preferred.url, "_blank", "noopener,noreferrer");
+                        return;
+                      }
+                      if ((resolved.sources ?? []).length > 0) {
+                        window.open(api.workPlayerUrl(work.id), "_blank", "noopener,noreferrer");
+                        return;
+                      }
+                      window.alert("暂无可用片源（需配置 Emby 或本地 playback-sites）");
+                    } catch (err) {
+                      window.alert(err instanceof Error ? err.message : String(err));
+                    }
+                  })();
+                }}
+              >在线播放</button>
             </div>
             <p className="muted">一对多保存在本地；可复制，或「推到 115 离线」（需在设置中完成 115 登录并选择目录）。可在「榜单 → 多源搜索」勾选后保存到作品。</p>
             {(work.magnets ?? []).length === 0

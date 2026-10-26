@@ -732,6 +732,29 @@ class MediaServerSettingsPayload(BaseModel):
     notify_debounce_seconds: float = Field(default=5.0, ge=0.0, le=600.0)
 
 
+
+class PlaySourceOut(BaseModel):
+    kind: str
+    label: str
+    url: str
+    playable_in_app: bool = False
+    app_scheme: str | None = None
+    item_id: str | None = None
+    provider: str | None = None
+    note: str | None = None
+
+
+class PlayResolveOut(BaseModel):
+    work_id: str
+    code: str | None = None
+    preferred: PlaySourceOut | None = None
+    sources: list[PlaySourceOut] = Field(default_factory=list)
+    emby_in_library: bool = False
+    sites_loaded: bool = False
+    external_site_count: int = 0
+    vod_provider_count: int = 0
+
+
 class GfriendsFillRequest(BaseModel):
     dry_run: bool = False
     download: bool = True

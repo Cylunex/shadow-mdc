@@ -89,3 +89,8 @@ In HTTP mode the MCP endpoint also requires `Authorization: Bearer <token>`. Tha
   }
 }
 ```
+
+## play_resolve
+
+`GET /api/mcp/v1/play/{code}`（MCP tool `play_resolve`）：按番号解析 Emby 深链与本地片源/VOD m3u8。不代传媒体。片源主机名仅存在于服务端本地 `playback-sites` 文件。
+

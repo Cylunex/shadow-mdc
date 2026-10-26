@@ -15,7 +15,7 @@ from typing import Annotated
 import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -93,6 +93,8 @@ from .api_models import (
     MagnetLinkOut,
     ManualCandidateRequest,
     MediaServerSettingsPayload,
+    PlayResolveOut,
+    PlaySourceOut,
     MultiSiteSearchOut,
     NfoImportRequest,
     NfoImportResultOut,
@@ -285,6 +287,12 @@ from .services.media_server import (
     MediaServerStore,
     build_media_server_deep_link,
     refresh_media_server,
+)
+from .services.playback import (
+    PlaybackSettings,
+    load_sites_from_settings,
+    render_player_page,
+    resolve_play,
 )
 from .services.non_jav_actor_catalog import (
     NonJavActorCatalogStore,
@@ -1532,6 +1540,16 @@ def scan_actor_subscriptions(request: Request, repo: Repo) -> SubscriptionScanOu
     )
 
 
+
+def _playback_sites(app_runtime: Runtime):
+    """Load local (gitignored) play sites; never hardcode remote hosts in code."""
+    path = app_runtime.settings.playback_sites_path
+    return load_sites_from_settings(
+        PlaybackSettings(sites_path=str(path) if path else None),
+        data_dir=app_runtime.settings.data_dir,
+    )
+
+
 @app.get("/api/works/{work_id}/emby-link")
 def work_emby_link(work_id: str, request: Request, repo: Repo) -> dict[str, str | None]:
     work = repo.get_work(work_id)
@@ -1540,6 +1558,61 @@ def work_emby_link(work_id: str, request: Request, repo: Repo) -> dict[str, str 
     settings = runtime(request).media_server_store.load()
     query = work.primary_code or work.title
     return {"url": build_media_server_deep_link(settings, query)}
+
+
+
+@app.get("/api/works/{work_id}/play", response_model=PlayResolveOut)
+async def work_play_resolve(work_id: str, request: Request, repo: Repo) -> PlayResolveOut:
+    """Resolve Emby deep link + local-configured external / VOD m3u8 sources for a work."""
+
+    work = repo.get_work(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    app_runtime = runtime(request)
+    media = app_runtime.media_server_store.load()
+    sites = _playback_sites(app_runtime)
+    result = await resolve_play(
+        work_id=work.id,
+        code=work.primary_code,
+        title=work.title,
+        media=media,
+        sites=sites,
+        client=app_runtime.http,
+    )
+    return PlayResolveOut(
+        work_id=result.work_id,
+        code=result.code,
+        preferred=PlaySourceOut.model_validate(result.preferred.model_dump()) if result.preferred else None,
+        sources=[PlaySourceOut.model_validate(s.model_dump()) for s in result.sources],
+        emby_in_library=result.emby_in_library,
+        sites_loaded=bool(sites.external_sites or sites.vod_providers),
+        external_site_count=sum(1 for s in sites.external_sites if s.enabled),
+        vod_provider_count=sum(1 for p in sites.vod_providers if p.enabled),
+    )
+
+
+@app.get("/api/works/{work_id}/player", response_class=HTMLResponse)
+async def work_player_page(work_id: str, request: Request, repo: Repo) -> HTMLResponse:
+    """In-app HLS player page for VOD m3u8 sources (external sites open in new tab)."""
+
+    work = repo.get_work(work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    app_runtime = runtime(request)
+    media = app_runtime.media_server_store.load()
+    sites = _playback_sites(app_runtime)
+    result = await resolve_play(
+        work_id=work.id,
+        code=work.primary_code,
+        title=work.title,
+        media=media,
+        sites=sites,
+        client=app_runtime.http,
+    )
+    title = work.primary_code or work.title or work.id
+    back = f"/#/works/{work.id}"
+    html = render_player_page(title=title, back_href=back, sources=list(result.sources))
+    return HTMLResponse(content=html)
 
 
 @app.get("/api/providers", response_model=ProviderListOut)

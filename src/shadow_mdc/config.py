@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     gfriends_cdn_base_url: str = "https://cdn.jsdelivr.net/gh/gfriends/gfriends@master"
     gfriends_cache_ttl_hours: int = Field(default=24 * 7, ge=1, le=24 * 30)
 
+    # Local (gitignored) JSON of external play sites + Apple-CMS VOD providers.
+    # Default: {data_dir}/playback-sites.local.json — never commit real entries.
+    playback_sites_path: Path | None = None
+
     def subtitlecat_fetcher(self) -> "SubtitleCatFetcher":
         from .services.subtitlecat import SubtitleCatFetcher
 

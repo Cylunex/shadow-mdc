@@ -354,6 +354,12 @@ SHADOW_MDC_TRANSLATION_TARGET_LANGUAGE=zh-CN
 
 启用后，待翻译标题会发送到配置的翻译服务；不希望发送时应关闭该开关。
 
+
+
+## 在线播放
+
+作品详情可「打开 Emby」或「在线播放」。Emby/Jellyfin 深链用设置页媒体库配置；外站与 VOD m3u8 片源来自本机/NAS 的 `playback-sites.local.json`（不进 Git）。详见 [playback.md](playback.md)。
+
 ## 在线来源与代理
 
 “在线来源诊断”会用一个已知番号实际请求各个已配置来源，区分成功、无结果、连接超时、HTTP 拦截和未配置。

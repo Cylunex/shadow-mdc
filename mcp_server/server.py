@@ -77,6 +77,15 @@ async def library_lookup(code: str) -> Any:
 
 
 @mcp.tool()
+async def play_resolve(code: str) -> Any:
+    """Resolve playback sources for a 番号: Emby deep link (if configured) plus local play-sites / VOD m3u8.
+
+    Does not proxy media bytes. Site hosts come from the server's local playback-sites file (not from this tool).
+    """
+    return await _call("GET", f"/play/{code}")
+
+
+@mcp.tool()
 async def metadata_lookup(code: str, providers: str | None = None) -> Any:
     """Look up metadata for a 番号 (title, actors, date, cover) from r18 dump / providers.
 

@@ -19,3 +19,9 @@ web/package-lock.json
 web/bun.lock
 # Offline r18.dev dumps (NAS only)
 data/r18-dumps/
+
+# Online play site lists / API bases (local + NAS only — never push)
+playback-sites.local.json
+playback-sites.json
+**/playback-sites.local.json
+data/playback-sites*.json

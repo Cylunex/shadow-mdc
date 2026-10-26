@@ -625,5 +625,43 @@ export const api = {
     if (!response.ok) throw new Error(await response.text());
     const payload = z.object({ url: z.string().nullable() }).parse(await response.json());
     return payload.url;
-  }
+  },
+  workPlayResolve: (workId: string) =>
+    request(
+      z.object({
+        work_id: z.string(),
+        code: z.string().nullable().optional(),
+        preferred: z
+          .object({
+            kind: z.string(),
+            label: z.string(),
+            url: z.string(),
+            playable_in_app: z.boolean().optional(),
+            app_scheme: z.string().nullable().optional(),
+            item_id: z.string().nullable().optional(),
+            provider: z.string().nullable().optional(),
+            note: z.string().nullable().optional(),
+          })
+          .nullable()
+          .optional(),
+        sources: z.array(
+          z.object({
+            kind: z.string(),
+            label: z.string(),
+            url: z.string(),
+            playable_in_app: z.boolean().optional(),
+            app_scheme: z.string().nullable().optional(),
+            item_id: z.string().nullable().optional(),
+            provider: z.string().nullable().optional(),
+            note: z.string().nullable().optional(),
+          }),
+        ),
+        emby_in_library: z.boolean(),
+        sites_loaded: z.boolean().optional(),
+        external_site_count: z.number().optional(),
+        vod_provider_count: z.number().optional(),
+      }),
+      `/api/works/${workId}/play`,
+    ),
+  workPlayerUrl: (workId: string) => appUrl(`/api/works/${workId}/player`) ?? `/api/works/${workId}/player`,
 };
