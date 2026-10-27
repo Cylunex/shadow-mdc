@@ -85,3 +85,13 @@ SHADOW_MDC_DATA_DIR=/tmp/mdc SHADOW_MDC_DATABASE_URL=sqlite:////tmp/mdc/shadow-m
 
 `SHADOW_MDC_REDIS_URL` 留空即可用进程内 TTL 缓存。第一次启动会写种子状态文件，之后启动只剩
 DB 迁移与演职员同步，秒级完成。
+
+## 6. 响应缓存的资源边界与故障回退
+
+- 进程内缓存最多保存 256 条、32 MiB 的 UTF-8 键和响应正文；超大响应直接跳过缓存。
+  写入时先清理过期项，再淘汰最久未读取的条目；替换、删除和清空均释放对应额度。
+- Redis 连接与读写超时均为 0.5 秒。启动时不可达或运行中发生 Redis 错误时，当前进程切换到
+  内存缓存并重试当前缓存操作；不会持续探测 Redis，重启进程后才重新选择后端。
+- 故障日志只记录异常类型，避免连接异常正文泄漏凭据；数据库查询和业务写入仍按原流程执行。
+
+回归测试：`uv run python -m pytest tests/test_response_cache.py`。

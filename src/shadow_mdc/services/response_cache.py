@@ -1,8 +1,8 @@
 """Lightweight API response cache with Redis backend and in-process TTL fallback.
 
-When ``SHADOW_MDC_REDIS_URL`` / settings.redis_url is set and the ``redis`` package
-is available, values are stored in Redis. Otherwise an in-process dict with TTL is
-used so tests and local dev never hard-depend on Redis.
+When ``settings.redis_url`` is set, values are stored in Redis. Connection failures
+at startup or runtime switch to a bounded in-process TTL cache, so Redis remains
+optional for tests and local development.
 """
 
 from __future__ import annotations
@@ -11,9 +11,13 @@ import json
 import logging
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
+from urllib.parse import urlparse
+
+import redis
 
 logger = logging.getLogger(__name__)
 
@@ -38,51 +42,72 @@ class CacheStats:
 
 
 class _MemoryBackend:
-    def __init__(self) -> None:
-        self._store: dict[str, tuple[float | None, str]] = {}
+    def __init__(self, *, max_entries: int = 256, max_bytes: int = 32 * 1024 * 1024) -> None:
+        self._store: OrderedDict[str, tuple[float | None, str, int]] = OrderedDict()
+        self._max_entries = max_entries
+        self._max_bytes = max_bytes
+        self._size_bytes = 0
         self._lock = threading.RLock()
+
+    def _remove(self, key: str) -> None:
+        entry = self._store.pop(key, None)
+        if entry is not None:
+            self._size_bytes -= entry[2]
 
     def get(self, key: str) -> str | None:
         with self._lock:
             entry = self._store.get(key)
             if entry is None:
                 return None
-            expires_at, payload = entry
+            expires_at, payload, _ = entry
             if expires_at is not None and expires_at <= time.monotonic():
-                self._store.pop(key, None)
+                self._remove(key)
                 return None
+            self._store.move_to_end(key)
             return payload
 
     def set(self, key: str, value: str, ttl_seconds: int | None) -> None:
-        expires_at: float | None
-        if ttl_seconds is None or ttl_seconds <= 0:
-            expires_at = None
-        else:
-            expires_at = time.monotonic() + ttl_seconds
+        expires_at = None if ttl_seconds is None or ttl_seconds <= 0 else time.monotonic() + ttl_seconds
+        size_bytes = len(key.encode("utf-8")) + len(value.encode("utf-8"))
         with self._lock:
-            self._store[key] = (expires_at, value)
+            self._remove(key)
+            if size_bytes > self._max_bytes or self._max_entries <= 0:
+                return
+            now = time.monotonic()
+            expired = [
+                key for key, (expiry, _, _) in self._store.items() if expiry is not None and expiry <= now
+            ]
+            for expired_key in expired:
+                self._remove(expired_key)
+            while self._store and (
+                len(self._store) >= self._max_entries or self._size_bytes + size_bytes > self._max_bytes
+            ):
+                self._remove(next(iter(self._store)))
+            self._store[key] = (expires_at, value, size_bytes)
+            self._size_bytes += size_bytes
 
     def delete(self, key: str) -> None:
         with self._lock:
-            self._store.pop(key, None)
+            self._remove(key)
 
     def delete_prefix(self, prefix: str) -> int:
         with self._lock:
             victims = [key for key in self._store if key.startswith(prefix)]
             for key in victims:
-                self._store.pop(key, None)
+                self._remove(key)
             return len(victims)
 
     def clear(self) -> None:
         with self._lock:
             self._store.clear()
+            self._size_bytes = 0
 
 
 class _RedisBackend:
     def __init__(self, url: str) -> None:
-        import redis  # type: ignore[import-untyped]
-
-        self._client = redis.Redis.from_url(url, decode_responses=True)
+        self._client = redis.Redis.from_url(
+            url, decode_responses=True, socket_connect_timeout=0.5, socket_timeout=0.5
+        )
         # Fail fast if unreachable so we can fall back to memory.
         self._client.ping()
 
@@ -104,9 +129,11 @@ class _RedisBackend:
         cursor = 0
         pattern = f"{prefix}*"
         while True:
-            cursor, keys = self._client.scan(cursor=cursor, match=pattern, count=200)
+            cursor, keys = cast(
+                tuple[int, list[str]], self._client.scan(cursor=cursor, match=pattern, count=200)
+            )
             if keys:
-                deleted += int(self._client.delete(*keys))
+                deleted += cast(int, self._client.delete(*keys))
             if cursor == 0:
                 break
         return deleted
@@ -130,13 +157,28 @@ class ResponseCache:
                 self._backend = _RedisBackend(url)
                 self._backend_name = "redis"
                 logger.info("response cache using Redis at %s", _safe_redis_host(url))
-            except Exception as exc:  # noqa: BLE001 — soft fallback
-                logger.warning("Redis unavailable (%s); using in-process cache", exc)
+            except (redis.RedisError, ValueError, OSError) as exc:
+                logger.warning("Redis unavailable (%s); using in-process cache", type(exc).__name__)
                 self._backend = _MemoryBackend()
                 self._backend_name = "memory"
         else:
             self._backend = _MemoryBackend()
             self._backend_name = "memory"
+
+    def _run(self, operation: Callable[[_MemoryBackend | _RedisBackend], T]) -> T:
+        backend = self._backend
+        try:
+            return operation(backend)
+        except redis.RedisError as exc:
+            if not isinstance(backend, _RedisBackend):
+                raise
+            with self._lock:
+                if self._backend is backend:
+                    self._backend = _MemoryBackend()
+                    self._backend_name = "memory"
+                    logger.warning("Redis connection lost (%s); using in-process cache", type(exc).__name__)
+                fallback = self._backend
+            return operation(fallback)
 
     @property
     def backend(self) -> str:
@@ -153,14 +195,14 @@ class ResponseCache:
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            self._backend.delete(self._full_key(key))
+            self.invalidate(key)
             return None
 
     def get_raw(self, key: str) -> str | None:
         """Return the cached JSON string without decoding (fast Response path)."""
 
         full = self._full_key(key)
-        raw = self._backend.get(full)
+        raw = self._run(lambda backend: backend.get(full))
         if raw is None:
             with self._lock:
                 self._misses += 1
@@ -176,17 +218,20 @@ class ResponseCache:
     def set_raw(self, key: str, value: str, *, ttl_seconds: int | None = TTL_STATIC) -> None:
         """Store a pre-serialized JSON string."""
 
-        self._backend.set(self._full_key(key), value, ttl_seconds)
+        self._run(lambda backend: backend.set(self._full_key(key), value, ttl_seconds))
 
     def invalidate(self, *keys: str) -> None:
-        for key in keys:
-            self._backend.delete(self._full_key(key))
+        def delete(backend: _MemoryBackend | _RedisBackend) -> None:
+            for key in keys:
+                backend.delete(self._full_key(key))
+
+        self._run(delete)
 
     def invalidate_prefix(self, prefix: str) -> int:
-        return self._backend.delete_prefix(self._full_key(prefix))
+        return self._run(lambda backend: backend.delete_prefix(self._full_key(prefix)))
 
     def clear(self) -> None:
-        self._backend.clear()
+        self._run(lambda backend: backend.clear())
         with self._lock:
             self._hits = 0
             self._misses = 0
@@ -207,7 +252,7 @@ class ResponseCache:
         """
         cached = self.get_json(key)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            return cast(T, cached)
         value = factory()
         to_store = serialize(value) if serialize is not None else value
         self.set_json(key, to_store, ttl_seconds=ttl_seconds)
@@ -222,13 +267,11 @@ class ResponseCache:
 
 def _safe_redis_host(url: str) -> str:
     try:
-        from urllib.parse import urlparse
-
         parsed = urlparse(url)
         host = parsed.hostname or "?"
         port = parsed.port or 6379
         return f"{host}:{port}"
-    except Exception:  # noqa: BLE001
+    except ValueError:
         return "<redis>"
 
 

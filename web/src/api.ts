@@ -626,7 +626,7 @@ export const api = {
     const payload = z.object({ url: z.string().nullable() }).parse(await response.json());
     return payload.url;
   },
-  workPlayResolve: (workId: string) =>
+  workPlayResolve: (workId: string, signal?: AbortSignal) =>
     request(
       z.object({
         work_id: z.string(),
@@ -691,6 +691,7 @@ export const api = {
         resolve_ms: z.number().optional(),
       }),
       `/api/works/${workId}/play`,
+      { signal },
     ),
   workPlayerUrl: (workId: string) => appUrl(`/api/works/${workId}/player`) ?? `/api/works/${workId}/player`,
 
@@ -712,7 +713,7 @@ export const api = {
       `/api/swipe/feed${qs ? `?${qs}` : ""}`,
     );
   },
-  swipeResolve: (payload: { site: string; id: string; pageUrl?: string }) =>
+  swipeResolve: (payload: { site: string; id: string; pageUrl?: string }, signal?: AbortSignal) =>
     request(
       z
         .object({
@@ -724,7 +725,7 @@ export const api = {
         })
         .passthrough(),
       "/api/swipe/resolve",
-      { method: "POST", body: JSON.stringify(payload) },
+      { method: "POST", body: JSON.stringify(payload), signal },
     ),
   swipeSites: () =>
     request(z.array(z.record(z.string(), z.unknown())).or(z.record(z.string(), z.unknown())), "/api/swipe/sites"),

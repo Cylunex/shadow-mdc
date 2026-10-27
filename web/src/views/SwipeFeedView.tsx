@@ -15,6 +15,8 @@ type Props = {
 
 type Mode = "tube" | "library";
 type LibraryFilter = "all" | "local" | "want";
+const MAX_RESOLVE_CACHE = 48;
+const RESOLVE_TTL_MS = 5 * 60 * 1000;
 
 type TubeItem = {
   site: string;
@@ -113,9 +115,10 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report }: Props) {
   const [tubeReady, setTubeReady] = useState(false);
   const [tubeError, setTubeError] = useState<string | null>(null);
   const [activeTubeKey, setActiveTubeKey] = useState<string | null>(null);
-  const [tubeSources, setTubeSources] = useState<PlayerSource[]>([]);
+  const [tubePlayback, setTubePlayback] = useState<{ key: string; sources: PlayerSource[] } | null>(null);
   const [tubeResolving, setTubeResolving] = useState(false);
-  const resolveCache = useRef<Map<string, PlayerSource[]>>(new Map());
+  const resolveCache = useRef<Map<string, { sources: PlayerSource[]; expiresAt: number }>>(new Map());
+  const libraryRequest = useRef<{ workId: string; controller: AbortController } | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const loadingMoreRef = useRef(false);
 
@@ -126,6 +129,24 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report }: Props) {
   }, [works, filter]);
 
   const libraryFeed = useMemo(() => rankWorks(filtered), [filtered, orderKey]);
+  const activeTubeItem = useMemo(
+    () => tubeItems.find((item) => tubeKey(item) === activeTubeKey),
+    [tubeItems, activeTubeKey],
+  );
+  const tubeSources = tubePlayback?.key === activeTubeKey ? tubePlayback.sources : [];
+
+  const stopLibraryPlay = useCallback(() => {
+    libraryRequest.current?.controller.abort();
+    libraryRequest.current = null;
+    setActiveLibId(null);
+    setLibSources([]);
+    setLibResolving(false);
+  }, []);
+
+  useEffect(() => {
+    stopLibraryPlay();
+    return () => libraryRequest.current?.controller.abort();
+  }, [mode, filter, orderKey, stopLibraryPlay]);
 
   const loadTube = useCallback(
     async (opts: { reset?: boolean } = {}) => {
@@ -151,14 +172,18 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report }: Props) {
               pageUrl: typeof r.pageUrl === "string" ? r.pageUrl : typeof r.url === "string" ? r.url : undefined,
               duration: (r.duration as string | number | undefined) ?? undefined,
               views: (r.views as string | number | undefined) ?? undefined,
-              ...r,
             } as TubeItem;
           })
           .filter(Boolean) as TubeItem[];
         setTubeItems((prev) => {
-          if (opts.reset) return mapped;
-          const seen = new Set(prev.map(tubeKey));
-          return [...prev, ...mapped.filter((m) => !seen.has(tubeKey(m)))];
+          const next = opts.reset ? [] : prev;
+          const seen = new Set(next.map(tubeKey));
+          return [...next, ...mapped.filter((item) => {
+            const key = tubeKey(item);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })];
         });
         setTubeCursor(res.nextCursor ?? null);
         setTubeHasMore(Boolean(res.hasMore ?? res.nextCursor));
@@ -222,66 +247,76 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report }: Props) {
         if (mode === "tube") {
           setActiveTubeKey(key);
           const idx = cards.findIndex((c) => c.dataset.swipeKey === key);
-          if (idx >= cards.length - 3 && tubeHasMore && !tubeLoading) {
+          if (idx >= cards.length - 3 && tubeHasMore && !tubeLoading && !tubeError) {
             void loadTube();
           }
         } else {
-          // library: only track; play is explicit
+          if (libraryRequest.current && libraryRequest.current.workId !== key) stopLibraryPlay();
         }
       },
       { root, threshold: [0.55, 0.75] },
     );
     cards.forEach((c) => io.observe(c));
     return () => io.disconnect();
-  }, [mode, tubeItems, libraryFeed, tubeHasMore, tubeLoading, loadTube, orderKey]);
+  }, [mode, tubeItems, libraryFeed, tubeHasMore, tubeLoading, tubeError, loadTube, orderKey, stopLibraryPlay]);
 
   // Resolve active tube item
   useEffect(() => {
-    if (mode !== "tube" || !activeTubeKey) return;
-    const item = tubeItems.find((t) => tubeKey(t) === activeTubeKey);
-    if (!item) return;
+    if (mode !== "tube" || !activeTubeKey || !activeTubeItem) return;
+    const item = activeTubeItem;
     const cached = resolveCache.current.get(activeTubeKey);
-    if (cached) {
-      setTubeSources(cached);
+    if (cached && cached.expiresAt > Date.now()) {
+      setTubePlayback({ key: activeTubeKey, sources: cached.sources });
+      setTubeResolving(false);
       return;
     }
-    let cancelled = false;
+    resolveCache.current.delete(activeTubeKey);
+    const controller = new AbortController();
     setTubeResolving(true);
-    setTubeSources([]);
+    setTubePlayback(null);
     void (async () => {
       try {
         const res = await api.swipeResolve({
           site: item.site,
           id: item.id,
           pageUrl: item.pageUrl,
-        });
-        if (cancelled) return;
+        }, controller.signal);
+        if (controller.signal.aborted) return;
         if (res.error) {
           report(`${item.title || item.id}: ${res.error}`);
-          setTubeSources([]);
           return;
         }
         const sources = sourcesFromResolve(res as Record<string, unknown>, item.pageUrl);
-        resolveCache.current.set(activeTubeKey, sources);
-        setTubeSources(sources);
+        if (sources.length) {
+          resolveCache.current.set(activeTubeKey, { sources, expiresAt: Date.now() + RESOLVE_TTL_MS });
+          if (resolveCache.current.size > MAX_RESOLVE_CACHE) {
+            const oldest = resolveCache.current.keys().next().value;
+            if (oldest !== undefined) resolveCache.current.delete(oldest);
+          }
+        }
+        setTubePlayback({ key: activeTubeKey, sources });
         if (!sources.length) report(`${item.title || item.id}: 无可用直链`);
       } catch (err) {
-        if (!cancelled) report(err instanceof Error ? err.message : String(err));
+        if (!controller.signal.aborted) report(err instanceof Error ? err.message : String(err));
       } finally {
-        if (!cancelled) setTubeResolving(false);
+        if (!controller.signal.aborted) setTubeResolving(false);
       }
     })();
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [activeTubeKey, mode, report, tubeItems]);
+  }, [activeTubeKey, activeTubeItem, mode, report]);
 
   const openLibraryPlay = async (work: Work) => {
+    libraryRequest.current?.controller.abort();
+    const controller = new AbortController();
+    libraryRequest.current = { workId: work.id, controller };
     setLibResolving(true);
     setActiveLibId(work.id);
     setLibSources([]);
     try {
-      const resolved = await api.workPlayResolve(work.id);
+      const resolved = await api.workPlayResolve(work.id, controller.signal);
+      if (controller.signal.aborted) return;
       const preferred = resolved.chosen || resolved.preferred;
       const list = (resolved.sources ?? []).map((s) => ({
         kind: s.kind,
@@ -329,10 +364,11 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report }: Props) {
       report("暂无可用片源（需 Emby 或本地 playback-sites）");
       setActiveLibId(null);
     } catch (err) {
+      if (controller.signal.aborted) return;
       report(err instanceof Error ? err.message : String(err));
       setActiveLibId(null);
     } finally {
-      setLibResolving(false);
+      if (!controller.signal.aborted) setLibResolving(false);
     }
   };
 
@@ -371,6 +407,11 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report }: Props) {
           {tubeItems.length ? ` · ${tubeItems.length}` : ""}
         </span>
       )}
+      {mode === "tube" && tubeItems.length > 0 && tubeError && !tubeLoading ? (
+        <button type="button" className="secondary" onClick={() => void loadTube()}>
+          重试加载
+        </button>
+      ) : null}
     </div>
   );
 
@@ -465,10 +506,7 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report }: Props) {
                         title={title}
                         sources={libSources}
                         onReport={report}
-                        onClose={() => {
-                          setActiveLibId(null);
-                          setLibSources([]);
-                        }}
+                        onClose={stopLibraryPlay}
                       />
                     ) : thumb ? (
                       <CoverImage src={thumb} className="swipe-card-cover" loading={index < 3 ? "eager" : "lazy"} />

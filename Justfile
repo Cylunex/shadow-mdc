@@ -14,7 +14,8 @@ dev:
     just --parallel api web
 
 test:
-    uv run pytest
+    uv run python -m pytest
+    cd web && pnpm test
 
 lint:
     uv run ruff check src tests
