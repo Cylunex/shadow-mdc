@@ -695,8 +695,9 @@ export const api = {
   workPlayerUrl: (workId: string) => appUrl(`/api/works/${workId}/player`) ?? `/api/works/${workId}/player`,
 
   /** Tube swipefeed sidecar (proxied under /api/swipe). */
-  swipeFeed: (params: { cursor?: string | null; limit?: number; category?: string } = {}) => {
+  swipeFeed: (params: { cursor?: string | null; limit?: number; category?: string; mode?: string } = {}) => {
     const q = new URLSearchParams();
+    q.set("mode", params.mode ?? "random");
     if (params.cursor) q.set("cursor", params.cursor);
     if (params.limit) q.set("limit", String(params.limit));
     if (params.category) q.set("category", params.category);

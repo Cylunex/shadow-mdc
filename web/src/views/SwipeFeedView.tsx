@@ -135,7 +135,7 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report }: Props) {
       setTubeError(null);
       try {
         const cursor = opts.reset ? null : tubeCursor;
-        const res = await api.swipeFeed({ cursor, limit: 12 });
+        const res = await api.swipeFeed({ cursor, limit: 12, mode: "random" });
         const rawItems = Array.isArray(res.items) ? res.items : [];
         const mapped: TubeItem[] = rawItems
           .map((row) => {
