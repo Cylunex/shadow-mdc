@@ -99,7 +99,7 @@ if [[ "${1:-}" == "--prune-backups" ]]; then
   exit 0
 fi
 
-for command_name in curl flock git mktemp pnpm python3 supervisorctl tar uv; do
+for command_name in curl flock git mktemp node npm pnpm python3 supervisorctl tar uv; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "missing required command: $command_name" >&2
     exit 10
@@ -221,6 +221,26 @@ if [[ ! -f "$release_dir/web/dist/index.html" ]]; then
   echo "frontend build did not create web/dist/index.html" >&2
   exit 19
 fi
+if [[ ! -f "$release_dir/web/dist/index.html" ]]; then
+  echo "frontend build did not create web/dist/index.html" >&2
+  exit 19
+fi
+
+swipefeed_dir="$release_dir/services/swipefeed"
+if [[ -f "$swipefeed_dir/package.json" ]]; then
+  echo "Installing swipefeed sidecar dependencies ..."
+  if [[ -f "$swipefeed_dir/package-lock.json" ]]; then
+    npm --prefix "$swipefeed_dir" ci --omit=dev
+  else
+    npm --prefix "$swipefeed_dir" install --omit=dev
+  fi
+  if [[ ! -f "$swipefeed_dir/src/server.js" ]]; then
+    echo "swipefeed sidecar missing src/server.js" >&2
+    exit 21
+  fi
+else
+  echo "WARNING: services/swipefeed missing; tube swipe proxy will be unhealthy" >&2
+fi
 (
   cd "$release_dir"
   PYTHONPATH="$release_dir/src" "$release_dir/.venv/bin/python" -c "import shadow_mdc.api"
@@ -236,6 +256,9 @@ printf '%s\n' "$previous_release" > "$backup_dir/previous-release.txt"
 printf '%s\n' "$commit" > "$backup_dir/target-commit.txt"
 if [[ -f /etc/supervisor/conf.d/shadow-mdc.conf ]]; then
   cp -a /etc/supervisor/conf.d/shadow-mdc.conf "$backup_dir/"
+fi
+if [[ -f /etc/supervisor/conf.d/shadow-mdc-swipefeed.conf ]]; then
+  cp -a /etc/supervisor/conf.d/shadow-mdc-swipefeed.conf "$backup_dir/"
 fi
 if [[ -f /etc/nginx/snippets/shadow-mdc.conf ]]; then
   cp -a /etc/nginx/snippets/shadow-mdc.conf "$backup_dir/"
@@ -355,6 +378,42 @@ if [[ "$healthy" != true ]]; then
 fi
 curl --fail --silent --show-error "$proxy_url" >/dev/null
 supervisorctl status "$service_name"
+
+# Tube swipefeed sidecar (Node) — local site-settings under shared/data/swipefeed.
+swipe_service="${SHADOW_MDC_SWIPE_SERVICE:-shadow-mdc-swipefeed}"
+swipe_data_dir="${SHADOW_MDC_SWIPE_DATA_DIR:-$shared_root/data/swipefeed}"
+swipe_conf_src="$release_dir/deploy/supervisor/shadow-mdc-swipefeed.conf"
+swipe_conf_dst="/etc/supervisor/conf.d/shadow-mdc-swipefeed.conf"
+swipe_health_url="${SHADOW_MDC_SWIPE_HEALTH_URL:-http://127.0.0.1:8700/api/swipe/health}"
+mkdir -p "$swipe_data_dir"
+if [[ ! -f "$swipe_data_dir/site-settings.json" && -f /data/project/swipefeed-web/data/site-settings.json ]]; then
+  echo "Seeding swipefeed site-settings from legacy swipefeed-web ..."
+  cp -a /data/project/swipefeed-web/data/site-settings.json "$swipe_data_dir/site-settings.json"
+fi
+if [[ -f "$swipe_conf_src" ]]; then
+  cp -a "$swipe_conf_src" "$swipe_conf_dst"
+  supervisorctl reread >/dev/null
+  supervisorctl update >/dev/null
+  supervisorctl stop "$swipe_service" >/dev/null 2>&1 || true
+  supervisorctl start "$swipe_service"
+  swipe_ok=false
+  for _ in $(seq 1 30); do
+    if curl --fail --silent --show-error "$swipe_health_url" >/dev/null 2>&1; then
+      swipe_ok=true
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$swipe_ok" != true ]]; then
+    echo "WARNING: swipe sidecar health did not pass within 30s ($swipe_health_url)" >&2
+    supervisorctl status "$swipe_service" || true
+  else
+    echo "Swipe sidecar healthy: $swipe_health_url"
+    supervisorctl status "$swipe_service"
+  fi
+else
+  echo "WARNING: missing $swipe_conf_src; skip swipe sidecar supervisor install" >&2
+fi
 
 trap - ERR INT TERM
 echo "Deployed Shadow MDC commit $commit"

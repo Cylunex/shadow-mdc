@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0a0a" />
+  <title>Swipefeed</title>
+  <base href="/swipefeed/" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preload" as="script" href="vendor/hls.min.js" />
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="modes">
+        <button data-mode="single" class="chip active">单站</button>
+        <button data-mode="random" class="chip">随机</button>
+        <button data-mode="category" class="chip">分类</button>
+        <button data-mode="search" class="chip">搜索</button>
+        <button type="button" id="historyBtn" class="chip" title="本地历史">历史</button>
+        <button type="button" id="viewBtn" class="chip" title="查看：站点卡片墙 / 工具目录">查看</button>
+        <button type="button" id="settingsBtn" class="chip settings-chip" title="站点开关">设置</button>
+      </div>
+      <div id="siteRow" class="scroll-row"></div>
+      <div id="catRow" class="scroll-row hidden"></div>
+      <div id="searchRow" class="hidden">
+        <input id="searchInput" type="search" placeholder="搜索关键词…" enterkeyhint="search" />
+        <button id="searchBtn" class="chip">搜</button>
+      </div>
+    </header>
+
+    <main id="stage">
+      <div id="cover" class="cover"></div>
+      <video id="player" playsinline webkit-playsinline preload="auto"></video>
+      <!-- Hidden warm player: directional shallow preload only (never visible) -->
+      <video id="warmPlayer" playsinline webkit-playsinline muted preload="auto" class="warm-player" aria-hidden="true" tabindex="-1"></video>
+      <div id="hud">
+        <div id="title"></div>
+        <div id="meta"></div>
+        <div id="hudActions" class="hud-actions"></div>
+      </div>
+      <div id="toast"></div>
+      <div id="controls">
+        <button id="favBtn" title="收藏 (本地)">☆</button>
+        <button id="muteBtn" title="静音 (M)">🔊</button>
+        <button id="pipBtn" title="画中画" class="hidden">PiP</button>
+        <button id="fitBtn" title="contain/cover">适应</button>
+        <button id="copyStreamBtn" title="复制当前直链">复制直链</button>
+        <button id="pauseHint" title="tap">暂停</button>
+      </div>
+      <div id="progress" class="progress" aria-label="播放进度">
+        <div class="progress-hit"></div>
+        <div class="progress-track">
+          <div id="progressBuffered" class="progress-buffered"></div>
+          <div id="progressFill" class="progress-fill"></div>
+          <div id="progressKnob" class="progress-knob"></div>
+        </div>
+        <div id="progressTime" class="progress-time"></div>
+      </div>
+      <div id="seekBuf" class="seek-buf hide" aria-hidden="true">缓冲中</div>
+      <div id="loading">加载中…</div>
+      <div id="ttffHint" class="ttff-hint hide" aria-hidden="true"></div>
+    </main>
+  </div>
+
+  <div id="settingsPanel" class="settings-panel hidden" aria-hidden="true">
+    <div class="settings-sheet">
+      <div class="settings-head">
+        <strong>站点开关</strong>
+        <span class="settings-sub">关闭后不进随机/分类/搜索/列表 · 色点=健康</span>
+        <button type="button" id="settingsClose" class="chip">关闭</button>
+      </div>
+      <div id="settingsList" class="settings-list"></div>
+      <details class="settings-random" id="randomSrcBlock">
+        <summary>
+          <strong>随机 / 刷流源</strong>
+          <span class="settings-sub" id="randomSrcSummary">只勾选的源才进随机混排（本机记住）</span>
+        </summary>
+        <div class="settings-random-actions">
+          <button type="button" id="randomSrcAll" class="chip">全选</button>
+          <button type="button" id="randomSrcNone" class="chip">全不选</button>
+          <button type="button" id="randomSrcOk" class="chip">只留可用</button>
+          <span id="randomSrcStatus" class="settings-status"></span>
+        </div>
+        <div id="randomSrcList" class="random-src-list"></div>
+      </details>
+      <div class="settings-foot">
+        <button type="button" id="settingsSave" class="chip active">保存</button>
+        <button type="button" id="circuitResetAll" class="chip">清除熔断</button>
+        <span id="settingsStatus" class="settings-status"></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="historyPanel" class="settings-panel hidden" aria-hidden="true">
+    <div class="settings-sheet history-sheet">
+      <div class="settings-head">
+        <strong>本地历史 / 收藏</strong>
+        <span class="settings-sub">仅存本机 · 点条目重新解析播放</span>
+        <button type="button" id="historyClose" class="chip">关闭</button>
+      </div>
+      <div class="history-tabs">
+        <button type="button" class="chip active" data-hist-tab="history">历史</button>
+        <button type="button" class="chip" data-hist-tab="favorites">收藏</button>
+        <button type="button" id="historyClear" class="chip">清空当前</button>
+      </div>
+      <div id="historyList" class="settings-list history-list"></div>
+    </div>
+  </div>
+
+  <!-- 查看：站点卡片墙（浏览） + tool\ 工具目录 -->
+  <div id="viewPanel" class="view-panel hidden" aria-hidden="true">
+    <div class="view-sheet">
+      <div class="view-head">
+        <div class="view-headline">
+          <strong id="viewTitle">查看</strong>
+          <span id="viewSub" class="view-sub"></span>
+        </div>
+        <div class="view-head-actions">
+          <button type="button" id="viewReload" class="chip" title="重新拉取当前列表">刷新</button>
+          <button type="button" id="viewClose" class="chip">关闭</button>
+        </div>
+      </div>
+      <div class="view-tabs" id="viewTabs">
+        <button type="button" class="chip active" data-view-tab="browse">站点浏览</button>
+        <button type="button" class="chip" data-view-tab="tools">工具目录</button>
+      </div>
+      <div class="view-toolbar" id="viewToolbar">
+        <button type="button" id="viewSidebarBtn" class="chip view-sidebar-btn" title="站点列表">☰ 站点</button>
+        <span id="viewCurrentSite" class="view-current">—</span>
+        <input id="viewSiteSearch" type="search" placeholder="搜索站点 / 域名…" />
+        <button type="button" id="viewSessionBtn" class="chip" title="站点会话（cookie / localStorage）">会话</button>
+        <div class="view-layout" id="viewLayout">
+          <button type="button" class="chip active" data-layout="grid" title="网格">▦</button>
+          <button type="button" class="chip" data-layout="list" title="列表">☰</button>
+        </div>
+        <label class="view-check"><input type="checkbox" id="viewEnrich" checked /> 抓封面(慢)</label>
+      </div>
+      <div class="view-session-panel hidden" id="viewSessionPanel">
+        <div class="view-session-head">
+          <strong>站点会话</strong>
+          <span class="view-sub">服务端取源前要用的 cookie / localStorage（只落本机 data/sessions.json）</span>
+          <button type="button" id="viewSessionClose" class="chip">收起</button>
+        </div>
+        <div class="view-session-body">
+          <div class="view-session-row">
+            <input id="viewSessHost" type="text" placeholder="域名，如 hstv.fun" />
+            <button type="button" id="viewSessUserscript" class="chip" title="下载配套油猴脚本，在目标站一键导出会话">下载采集脚本</button>
+            <button type="button" id="viewSessPaste" class="chip" title="从当前选中站点自动填域名">填当前站点</button>
+          </div>
+          <textarea id="viewSessCookie" rows="2" placeholder="Cookie：直接粘贴 document.cookie 的内容，或从开发者工具复制请求头里的 Cookie"></textarea>
+          <textarea id="viewSessStorage" rows="2" placeholder="localStorage（每行 key=value，可多行），例如：&#10;uu1d=U2026...&#10;theLink=https://hstv.fun"></textarea>
+          <div class="view-session-row">
+            <button type="button" id="viewSessSave" class="chip active">保存会话</button>
+            <button type="button" id="viewSessClear" class="chip">清空全部</button>
+            <span id="viewSessStatus" class="settings-status"></span>
+          </div>
+          <div id="viewSessList" class="view-sess-list"></div>
+        </div>
+      </div>
+      <div class="view-note hidden" id="viewModeNote"></div>
+      <div class="view-cats hidden" id="viewCatChips"></div>
+      <div class="view-tools-filter hidden" id="viewToolsFilter">
+        <input id="viewToolSearch" type="search" placeholder="搜索工具 / 域名 / 能力…" />
+        <div class="view-kinds" id="viewKinds"></div>
+      </div>
+      <div id="viewBodyWrap" class="view-body-wrap">
+        <div id="viewSiteSidebar" class="view-sidebar" aria-hidden="true">
+          <div class="view-sidebar-head">
+            <input id="viewSideSearch" type="search" placeholder="筛选站点…" />
+            <button type="button" id="viewSideClose" class="chip">✕</button>
+          </div>
+          <div id="viewSiteList" class="view-site-list"></div>
+        </div>
+        <div id="viewBody" class="view-body"></div>
+      </div>
+      <div class="view-foot">
+        <button type="button" id="viewMore" class="chip hidden">加载更多</button>
+        <span id="viewStatus" class="settings-status"></span>
+      </div>
+    </div>
+  </div>
+
+  <script src="views.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -65,8 +65,8 @@ _BANNED_TYPE_FRAGMENTS = (
 
 # Default integrity-gate bounds (overridable via PlaybackSitesFile).
 _DEFAULT_RESOLVE_BUDGET_MS = 12_000
-_DEFAULT_M3U8_PROBE_TIMEOUT_S = 5.0
-_DEFAULT_M3U8_MAX_BYTES = 512 * 1024
+_DEFAULT_M3U8_PROBE_TIMEOUT_S = 6.5
+_DEFAULT_M3U8_MAX_BYTES = 768 * 1024
 _PROBE_CACHE_MAX = 64
 _PROBE_CACHE_TTL_S = 120.0
 
@@ -127,6 +127,8 @@ class VodProviderConfig(BaseModel):
     whitelist_type_ids: list[int] = Field(default_factory=list)
     enabled: bool = True
     timeout_seconds: float = Field(default=8.0, ge=1.0, le=60.0)
+    # Optional override for m3u8 integrity probe (falls back to file-level default).
+    m3u8_probe_timeout_seconds: float | None = Field(default=None, ge=0.5, le=30.0)
 
 
 class PlaybackSitesFile(BaseModel):
@@ -806,8 +808,13 @@ async def resolve_play(
                         )
                         break
                     if sites.m3u8_probe_enabled:
+                        provider_probe = (
+                            provider.m3u8_probe_timeout_seconds
+                            if provider.m3u8_probe_timeout_seconds is not None
+                            else sites.m3u8_probe_timeout_seconds
+                        )
                         probe_timeout = min(
-                            sites.m3u8_probe_timeout_seconds,
+                            provider_probe,
                             max(0.4, remaining - 0.1),
                         )
                         probe = await probe_m3u8_url(

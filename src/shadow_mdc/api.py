@@ -5746,7 +5746,7 @@ _SWIPE_ENTRY_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <p style="font-family:system-ui;padding:24px;color:#9fb2b9;background:#080b0d">
-    正在进入片库刷流…若未跳转请 <a href="../?view=swipe">点此打开</a>。
+    正在进入刷流…若未跳转请 <a href="../?view=swipe">点此打开</a>。
   </p>
 </body>
 </html>
@@ -5756,7 +5756,7 @@ _SWIPE_ENTRY_HTML = """<!DOCTYPE html>
 @app.get("/swipe", include_in_schema=False)
 @app.get("/swipe/", include_in_schema=False)
 def swipe_feed_entry() -> HTMLResponse:
-    """Library swipe-feed entry (vertical UI lives in the SPA ``?view=swipe``).
+    """Swipe-feed entry (SPA ``?view=swipe``: 外站 tube + 本库).
 
     Served as HTML (relative redirect) so the nginx ``/mdc/`` prefix is preserved.
     Same OIDC cookie/session as the main UI; MCP Bearer token is not required for
@@ -5767,8 +5767,10 @@ def swipe_feed_entry() -> HTMLResponse:
 
 
 from .mcp_api import router as _mcp_router  # noqa: E402 - needs route helpers above
+from .swipe_proxy import create_swipe_proxy_router  # noqa: E402
 
 app.include_router(_mcp_router)
+app.include_router(create_swipe_proxy_router(Settings()))
 
 source_web_dist = Path(__file__).resolve().parents[2] / "web" / "dist"
 packaged_web_dist = Path(__file__).resolve().parent / "static"

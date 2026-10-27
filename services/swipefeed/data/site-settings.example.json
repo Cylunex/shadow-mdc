@@ -1,0 +1,93 @@
+{
+  "updatedAt": "example",
+  "sites": {
+    "motherless": {
+      "enabled": false,
+      "note": "dead / unreachable (fetch failed)"
+    },
+    "bitporno": {
+      "enabled": false,
+      "note": "dead / unreachable (fetch failed)"
+    },
+    "noodlemagazine": {
+      "enabled": false,
+      "note": "Cloudflare 403 after headers+proxy+retry"
+    },
+    "4tube": {
+      "enabled": false,
+      "note": "Cloudflare 403 after headers+proxy+retry"
+    },
+    "spankbang": {
+      "enabled": false,
+      "note": "Cloudflare 403 after headers+proxy+retry"
+    },
+    "pornone": {
+      "enabled": false,
+      "note": "Cloudflare 403 after headers+proxy+retry"
+    },
+    "demo": {
+      "enabled": true,
+      "note": ""
+    },
+    "xhamster": {
+      "enabled": false,
+      "note": "上游 403（key 令牌绑 IP/会话）"
+    },
+    "eporner": {
+      "enabled": false,
+      "note": "上游 403（gvideo 拒绝本机）"
+    },
+    "netflav": {
+      "enabled": false,
+      "note": "上游 403（dmm 区域限制）"
+    },
+    "sexvid": {
+      "enabled": false,
+      "note": "get_file 直链 404（CDN 侧拒绝）"
+    },
+    "haijiao": {
+      "enabled": true,
+      "note": ""
+    },
+    "beeg": {
+      "enabled": true,
+      "note": ""
+    },
+    "redgifs": {
+      "enabled": true,
+      "note": ""
+    },
+    "txxx": {
+      "enabled": true,
+      "note": ""
+    },
+    "pektino": {
+      "enabled": false,
+      "note": "域名 TLS 握手失败（本机不可达）"
+    },
+    "okxxx": {
+      "enabled": false,
+      "note": "域名 TLS 握手失败（ok.xxx）"
+    },
+    "porntop": {
+      "enabled": false,
+      "note": "只有 11 条首页 + 预览片"
+    },
+    "hqporner": {
+      "enabled": true,
+      "note": ""
+    },
+    "porntube": {
+      "enabled": false,
+      "note": "正片走带 token 的私有 API"
+    },
+    "thisvid": {
+      "enabled": false,
+      "note": "get_file 直链只回 1x1 GIF（防盗链）"
+    },
+    "hanxiucao": {
+      "enabled": false,
+      "note": "需登录态：在会话面板给 API 域名导入 Auth token 后可开"
+    }
+  }
+}

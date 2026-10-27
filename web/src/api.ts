@@ -631,8 +631,7 @@ export const api = {
       z.object({
         work_id: z.string(),
         code: z.string().nullable().optional(),
-        preferred: z
-          .object({
+        preferred: z.object({
             kind: z.string(),
             label: z.string(),
             url: z.string(),
@@ -641,6 +640,22 @@ export const api = {
             item_id: z.string().nullable().optional(),
             provider: z.string().nullable().optional(),
             note: z.string().nullable().optional(),
+            probe_ok: z.boolean().nullable().optional(),
+            probe_reason: z.string().nullable().optional(),
+          })
+          .nullable()
+          .optional(),
+        chosen: z.object({
+            kind: z.string(),
+            label: z.string(),
+            url: z.string(),
+            playable_in_app: z.boolean().optional(),
+            app_scheme: z.string().nullable().optional(),
+            item_id: z.string().nullable().optional(),
+            provider: z.string().nullable().optional(),
+            note: z.string().nullable().optional(),
+            probe_ok: z.boolean().nullable().optional(),
+            probe_reason: z.string().nullable().optional(),
           })
           .nullable()
           .optional(),
@@ -654,14 +669,79 @@ export const api = {
             item_id: z.string().nullable().optional(),
             provider: z.string().nullable().optional(),
             note: z.string().nullable().optional(),
+            probe_ok: z.boolean().nullable().optional(),
+            probe_reason: z.string().nullable().optional(),
           }),
         ),
+        failures: z
+          .array(
+            z.object({
+              stage: z.string(),
+              provider: z.string().nullable().optional(),
+              reason: z.string(),
+              detail: z.string().nullable().optional(),
+              elapsed_ms: z.number().nullable().optional(),
+            }),
+          )
+          .optional(),
         emby_in_library: z.boolean(),
         sites_loaded: z.boolean().optional(),
         external_site_count: z.number().optional(),
         vod_provider_count: z.number().optional(),
+        resolve_ms: z.number().optional(),
       }),
       `/api/works/${workId}/play`,
     ),
   workPlayerUrl: (workId: string) => appUrl(`/api/works/${workId}/player`) ?? `/api/works/${workId}/player`,
+
+  /** Tube swipefeed sidecar (proxied under /api/swipe). */
+  swipeFeed: (params: { cursor?: string | null; limit?: number; category?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.cursor) q.set("cursor", params.cursor);
+    if (params.limit) q.set("limit", String(params.limit));
+    if (params.category) q.set("category", params.category);
+    const qs = q.toString();
+    return request(
+      z.object({
+        items: z.array(z.record(z.string(), z.unknown())),
+        nextCursor: z.string().nullable().optional(),
+        hasMore: z.boolean().optional(),
+        error: z.string().optional(),
+      }).passthrough(),
+      `/api/swipe/feed${qs ? `?${qs}` : ""}`,
+    );
+  },
+  swipeResolve: (payload: { site: string; id: string; pageUrl?: string }) =>
+    request(
+      z
+        .object({
+          url: z.string().optional(),
+          type: z.string().optional(),
+          directUrl: z.string().optional(),
+          qualities: z.array(z.record(z.string(), z.unknown())).optional(),
+          error: z.string().optional(),
+        })
+        .passthrough(),
+      "/api/swipe/resolve",
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+  swipeSites: () =>
+    request(z.array(z.record(z.string(), z.unknown())).or(z.record(z.string(), z.unknown())), "/api/swipe/sites"),
+  swipeHealth: () =>
+    request(
+      z.object({
+        ok: z.boolean(),
+        upstream: z.string().nullable().optional(),
+        status: z.number().optional(),
+        error: z.string().optional(),
+      }),
+      "/api/swipe/health",
+    ),
+  /** Same-origin media proxy for external m3u8/mp4 (Referer/ORB). */
+  swipeMediaProxyUrl: (rawUrl: string, opts: { type?: "hls" | "stream"; referer?: string } = {}) => {
+    const kind = opts.type === "stream" || (!/\.m3u8/i.test(rawUrl) && opts.type !== "hls") ? "stream" : "hls";
+    const q = new URLSearchParams({ u: rawUrl });
+    if (opts.referer) q.set("r", opts.referer);
+    return appUrl(`/api/swipe/${kind}?${q.toString()}`) ?? `/api/swipe/${kind}?${q.toString()}`;
+  },
 };

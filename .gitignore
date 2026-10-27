@@ -25,3 +25,9 @@ playback-sites.local.json
 playback-sites.json
 **/playback-sites.local.json
 data/playback-sites*.json
+
+# Tube swipefeed site settings / sessions (local + NAS only — never push)
+**/site-settings.json
+services/swipefeed/data/sessions.json
+services/swipefeed/data/site-settings.json
+!services/swipefeed/data/site-settings.example.json

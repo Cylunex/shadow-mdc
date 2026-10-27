@@ -1,5 +1,6 @@
 import { Lightbox } from "../components/Lightbox";
 import { CoverImage } from "../components/CoverImage";
+import { InAppPlayer, type PlayerSource } from "../components/InAppPlayer";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api, appUrl } from "../api";
@@ -159,6 +160,10 @@ export function WorkDetailView(props: {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
+  const [playerOpen, setPlayerOpen] = useState(false);
+  const [playerSources, setPlayerSources] = useState<PlayerSource[]>([]);
+  const [playerTitle, setPlayerTitle] = useState("");
+  const [playerBusy, setPlayerBusy] = useState(false);
   const [titleMode, setTitleMode] = useState<LangMode>("translated");
   const [plotMode, setPlotMode] = useState<LangMode>("translated");
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
@@ -633,30 +638,62 @@ export function WorkDetailView(props: {
               <button
                 type="button"
                 className="secondary"
+                disabled={playerBusy}
                 onClick={() => {
                   void (async () => {
+                    setPlayerBusy(true);
                     try {
                       const resolved = await api.workPlayResolve(work.id);
-                      const preferred = resolved.preferred;
-                      if (preferred?.playable_in_app) {
-                        window.open(api.workPlayerUrl(work.id), "_blank", "noopener,noreferrer");
+                      const preferred = resolved.chosen || resolved.preferred;
+                      const list = (resolved.sources ?? []).map((s) => ({
+                        kind: s.kind,
+                        label: s.label,
+                        url: s.url,
+                        playable_in_app: s.playable_in_app,
+                        app_scheme: s.app_scheme,
+                        provider: s.provider,
+                        note: s.note,
+                        probe_ok: s.probe_ok,
+                        probe_reason: s.probe_reason,
+                      })) as PlayerSource[];
+                      const inApp = list.filter(
+                        (s) =>
+                          s.playable_in_app
+                          || s.kind === "vod"
+                          || s.kind === "m3u8"
+                          || /\.m3u8/i.test(s.url)
+                          || /\.mp4/i.test(s.url),
+                      );
+                      if (preferred?.url) {
+                        const idx = inApp.findIndex((s) => s.url === preferred.url);
+                        if (idx > 0) {
+                          const [hit] = inApp.splice(idx, 1);
+                          if (hit) inApp.unshift(hit);
+                        }
+                      }
+                      if (inApp.length) {
+                        setPlayerTitle(work.title || work.primary_code || "在线播放");
+                        setPlayerSources(inApp);
+                        setPlayerOpen(true);
+                        const fails = resolved.failures ?? [];
+                        if (fails.length) {
+                          props.report?.(`已选片源；${fails.length} 路探测失败`);
+                        }
                         return;
                       }
                       if (preferred?.url) {
                         window.open(preferred.url, "_blank", "noopener,noreferrer");
                         return;
                       }
-                      if ((resolved.sources ?? []).length > 0) {
-                        window.open(api.workPlayerUrl(work.id), "_blank", "noopener,noreferrer");
-                        return;
-                      }
                       window.alert("暂无可用片源（需配置 Emby 或本地 playback-sites）");
                     } catch (err) {
                       window.alert(err instanceof Error ? err.message : String(err));
+                    } finally {
+                      setPlayerBusy(false);
                     }
                   })();
                 }}
-              >在线播放</button>
+              >{playerBusy ? "解析中…" : "在线播放"}</button>
             </div>
             <p className="muted">一对多保存在本地；可复制，或「推到 115 离线」（需在设置中完成 115 登录并选择目录）。可在「榜单 → 多源搜索」勾选后保存到作品。</p>
             {(work.magnets ?? []).length === 0
@@ -933,6 +970,19 @@ export function WorkDetailView(props: {
           </section>
         </div>
       </div>
+      {playerOpen && playerSources.length > 0 ? (
+        <div className="in-app-player-portal" role="dialog" aria-modal="true" aria-label="在线播放">
+          <InAppPlayer
+            title={playerTitle}
+            sources={playerSources}
+            onClose={() => {
+              setPlayerOpen(false);
+              setPlayerSources([]);
+            }}
+            onReport={props.report}
+          />
+        </div>
+      ) : null}
     </section>
   );
 }

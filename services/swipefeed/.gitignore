@@ -1,0 +1,12 @@
+node_modules/
+npm-debug.log*
+.DS_Store
+*.log
+.env
+
+# 站点会话（cookie / localStorage）：本机敏感数据，绝不入库
+data/sessions.json
+
+# local site toggles (never commit real lists)
+data/site-settings.json
+data/sessions.json

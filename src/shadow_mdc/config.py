@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     # Production NAS: redis://192.168.0.21:6379/0
     # Local/dev fallback: redis://127.0.0.1:6379/0 when reachable.
     redis_url: str | None = "redis://127.0.0.1:6379/0"
+    # Tube swipefeed Node sidecar (listing/resolve/media proxy). Empty → /api/swipe/* returns 503.
+    swipe_upstream_url: str | None = "http://127.0.0.1:8791"
+    swipe_proxy_timeout_seconds: float = Field(default=60.0, ge=5, le=600)
     user_agent: str = "ShadowMDC/0.1 (+https://github.com/Cylunex/shadow-mdc)"
     # 115 Open Platform — temporary community id; prefer your own app at open.115.com
     pan_client_id: str = "100197303"

@@ -1,0 +1,23 @@
+{
+  "name": "shadow-mdc-swipefeed",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tube swipe feed sidecar shipped inside shadow-mdc (listing/resolve/media proxy)",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "probe": "node scripts/probe.js",
+    "probe:tool": "node scripts/probe-tool-sources.mjs",
+    "test:cards": "node scripts/test-card-parse.mjs",
+    "test:cache": "node scripts/test-list-cache.mjs",
+    "test": "node scripts/test-card-parse.mjs && node scripts/test-list-cache.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "express": "^4.21.2",
+    "undici": "^6.29.0"
+  }
+}
