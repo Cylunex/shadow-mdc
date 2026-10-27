@@ -718,17 +718,28 @@ export const api = {
   workPlayerUrl: (workId: string) => appUrl(`/api/works/${workId}/player`) ?? `/api/works/${workId}/player`,
 
   /** Tube swipefeed sidecar (proxied under /api/swipe). */
-  swipeFeed: (params: { cursor?: string | null; limit?: number; category?: string; mode?: string } = {}) => {
+  swipeFeed: (params: {
+    cursor?: string | number | Record<string, unknown> | null;
+    limit?: number;
+    category?: string;
+    mode?: string;
+  } = {}) => {
     const q = new URLSearchParams();
     q.set("mode", params.mode ?? "random");
-    if (params.cursor) q.set("cursor", params.cursor);
+    // Sidecar cursors are JSON objects (e.g. {page:1}) or strings; mirror swipefeed-web.
+    if (params.cursor != null && params.cursor !== "") {
+      q.set(
+        "cursor",
+        typeof params.cursor === "string" ? params.cursor : JSON.stringify(params.cursor),
+      );
+    }
     if (params.limit) q.set("limit", String(params.limit));
     if (params.category) q.set("category", params.category);
     const qs = q.toString();
     return request(
       z.object({
         items: z.array(z.record(z.string(), z.unknown())),
-        nextCursor: z.string().nullable().optional(),
+        nextCursor: z.union([z.string(), z.number(), z.record(z.string(), z.unknown())]).nullable().optional(),
         hasMore: z.boolean().optional(),
         error: z.string().optional(),
       }).passthrough(),

@@ -114,7 +114,7 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
   const [offlineId, setOfflineId] = useState<string | null>(null);
 
   const [tubeItems, setTubeItems] = useState<TubeItem[]>([]);
-  const [tubeCursor, setTubeCursor] = useState<string | null>(null);
+  const [tubeCursor, setTubeCursor] = useState<string | number | Record<string, unknown> | null>(null);
   const [tubeHasMore, setTubeHasMore] = useState(true);
   const [tubeLoading, setTubeLoading] = useState(false);
   const [tubeReady, setTubeReady] = useState(false);
