@@ -6,7 +6,8 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, appUrl } from "../api";
 import { hideBrokenImage, mediaUrl } from "../lib/mediaUrl";
 import { StatusBadges } from "../components/StatusBadges";
-import type { PanOfflineTask, Work, WorkDetail, WorkRelated } from "../model";
+import { useWorkPage } from "../hooks/useWorkPage";
+import type { Work, WorkDetail } from "../model";
 
 const EDITABLE_LOCK_FIELDS = ["title", "actors", "studio", "series", "tags", "plot"] as const;
 
@@ -154,11 +155,7 @@ export function WorkDetailView(props: {
   onOpenActor?: (name: string) => void;
   report?: (message: string) => void;
 }) {
-  const [detail, setDetail] = useState<WorkDetail | null>(null);
-  const [related, setRelated] = useState<WorkRelated>({ by_actor: [], by_tag: [] });
-  const [offlineTasks, setOfflineTasks] = useState<PanOfflineTask[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { detail, related, offlineTasks, setOfflineTasks, loadError, loading, reload } = useWorkPage(props.workId);
   const [editOpen, setEditOpen] = useState(false);
   const [playerOpen, setPlayerOpen] = useState(false);
   const [playerSources, setPlayerSources] = useState<PlayerSource[]>([]);
@@ -168,30 +165,7 @@ export function WorkDetailView(props: {
   const [plotMode, setPlotMode] = useState<LangMode>("translated");
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
-  const reload = async (workId: string) => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const [next, relatedNext, offlineNext] = await Promise.all([
-        api.workDetail(workId),
-        api.workRelated(workId, 18).catch(() => ({ by_actor: [], by_tag: [] } as WorkRelated)),
-        api.workOfflineTasks(workId).catch(() => [] as PanOfflineTask[])
-      ]);
-      setDetail(next);
-      setRelated(relatedNext);
-      setOfflineTasks(offlineNext);
-    } catch (error) {
-      setDetail(null);
-      setRelated({ by_actor: [], by_tag: [] });
-      setOfflineTasks([]);
-      setLoadError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    void reload(props.workId);
     setTitleMode("translated");
     setPlotMode("translated");
     window.scrollTo(0, 0);

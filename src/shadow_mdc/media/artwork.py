@@ -5,7 +5,7 @@ import os
 import re
 import shutil
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -337,9 +337,11 @@ def dmm_awsimgsrc_url(url: str) -> str | None:
     if matched is None:
         return None
     section, content_id, filename = matched.groups()
-    mirror = {"digital/video": "digital/video", "digital/amateur": "digital/amateur", "mono/movie/adult": "mono/movie"}[
-        section
-    ]
+    mirror = {
+        "digital/video": "digital/video",
+        "digital/amateur": "digital/amateur",
+        "mono/movie/adult": "mono/movie",
+    }[section]
     return f"https://awsimgsrc.dmm.com/dig/{mirror}/{content_id}/{filename}"
 
 
@@ -379,7 +381,9 @@ def _validate_remote_url(url: str) -> None:
 LIST_THUMB_MAX_WIDTH = 480
 
 
-def ensure_list_thumbnail(work_root: Path, source: Path, *, max_width: int = LIST_THUMB_MAX_WIDTH) -> Path | None:
+def ensure_list_thumbnail(
+    work_root: Path, source: Path, *, max_width: int = LIST_THUMB_MAX_WIDTH
+) -> Path | None:
     """Create data/artwork/<work>/thumb.jpg for faster works-grid rendering."""
 
     if not source.is_file():
@@ -388,8 +392,8 @@ def ensure_list_thumbnail(work_root: Path, source: Path, *, max_width: int = LIS
     if existing is not None:
         return existing
     try:
-        with Image.open(source) as image:
-            image = image.convert("RGB")
+        with Image.open(source) as opened:
+            image = opened.convert("RGB")
             width, height = image.size
             if width > max_width:
                 ratio = max_width / float(width)
@@ -509,7 +513,40 @@ def resolve_work_display_image(
     ``/api/works/.../artwork/poster`` (404) when only samples/fanart/thumb existed.
     """
 
-    root = _resolve_artwork_root(work, data_dir)
+    return _work_display_image(work, kind, _resolve_artwork_root(work, data_dir))
+
+
+def resolve_work_display_images(
+    works: Iterable[Work], *, data_dir: Path, kind: str = "poster"
+) -> dict[str, str | None]:
+    """Resolve one request's covers from a fresh root listing, once per unique work.
+
+    This snapshot is deliberately request-scoped: new artwork is visible on the next
+    request without a directory-existence TTL or one stat per absent work directory.
+    """
+
+    root = data_dir / "artwork"
+    names: set[str] | None
+    try:
+        with os.scandir(root) as entries:
+            names = {entry.name for entry in entries if entry.is_dir()}
+    except FileNotFoundError:
+        names = set()
+    except OSError:
+        names = None
+    resolved: dict[str, str | None] = {}
+    for work in works:
+        if work.id in resolved:
+            continue
+        work_root = (
+            _resolve_artwork_root(work, data_dir)
+            if names is None else (root / work.id if work.id in names else None)
+        )
+        resolved[work.id] = _work_display_image(work, kind, work_root)
+    return resolved
+
+
+def _work_display_image(work: Work, kind: str, root: Path | None) -> str | None:
     if kind == "fanart":
         if root is not None and _existing_stem(root, ("fanart",)):
             return f"/api/works/{work.id}/artwork/fanart"

@@ -6,7 +6,7 @@ import mimetypes
 import re
 import tempfile
 import unicodedata
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -188,7 +188,9 @@ from .enums import (
 )
 from .identity import IdentityAliasRules, build_identity_hints, extract_code, normalize_identity_value
 from .matching import normalize_title, rank_candidates, score_candidate
-from .media.artwork import ArtworkDownloadResult, ArtworkStore, resolve_work_display_image
+from .media.artwork import (
+    ArtworkDownloadResult, ArtworkStore, resolve_work_display_image, resolve_work_display_images,
+)
 from .media.magnets import MagnetLink
 from .media.nfo import build_nfo, parse_nfo
 from .media.organizer import Organizer, plan_move_cleanup
@@ -220,6 +222,7 @@ from .providers.sukebei import SukebeiClient
 from .services.actor_catalog import (
     ActorCatalogStore,
     ActorProfile,
+    build_actor_list_profiles,
     enrich_actor_aliases,
     sync_actor_catalog_from_relations,
 )
@@ -2336,7 +2339,7 @@ def list_actor_catalog(request: Request, repo: Repo) -> Response:
     cached_raw = cache.get_raw(cache_key)
     if cached_raw is not None:
         return Response(content=cached_raw, media_type="application/json")
-    profiles = sync_actor_catalog_from_relations(
+    profiles = build_actor_list_profiles(
         app_runtime.actor_store,
         repo.list_actor_work_relations(lean=True),
         app_runtime.alias_store.load(),
@@ -2585,7 +2588,10 @@ async def javranking_sections(
         )
     for slug in CURATED_LIST_SLUGS:
         try:
-            curated = await cache.load_curated_list(slug, force_refresh=force_refresh)
+            curated = (
+                await cache.load_curated_list(slug, force_refresh=True)
+                if force_refresh else cache.read_curated_list(slug)
+            )
         except Exception:
             curated = cache.read_curated_list(slug)
         title = CURATED_LIST_TITLES.get(slug, slug)
@@ -2637,6 +2643,7 @@ async def javranking_list(
             return JavRankingListOut.model_validate(cached)
 
     def _store_javranking_list(payload: JavRankingListOut) -> JavRankingListOut:
+        response_cache.invalidate(javranking_sections_key())
         response_cache.set_json(
             list_key, payload.model_dump(mode="json"), ttl_seconds=TTL_STATIC
         )
@@ -2646,7 +2653,11 @@ async def javranking_list(
         client=app_runtime.http,
     )
     if slug in CURATED_LIST_SLUGS:
-        curated = await cache.load_curated_list(slug, force_refresh=force_refresh)
+        curated = cache.read_curated_list(slug) if not force_refresh else None
+        curated = (
+            cache.enrich_curated_list_covers(curated) if curated is not None
+            else await cache.load_curated_list(slug, force_refresh=force_refresh)
+        )
         section = JavRankingSectionOut(
             id=f"curated:{slug}",
             title=CURATED_LIST_TITLES.get(slug, curated.title),
@@ -2659,15 +2670,19 @@ async def javranking_list(
         items: list[JavRankingListItemOut] = []
         if curated.kind == "videos":
             data_dir = app_runtime.settings.data_dir
+            works_by_code = repo.find_works_by_codes(
+                (entry.code for entry in curated.videos if entry.code), lean=True
+            )
+            local_ids = repo.work_ids_with_local_media()
             for entry in curated.videos:
                 state = None
                 work_id = None
                 work = None
                 if entry.code:
-                    work = repo.find_work_by_code(entry.code)
+                    work = works_by_code.get(entry.code)
                     if work is not None:
                         work_id = work.id
-                        state = "in_library" if repo.list_assets_for_work(work.id) else "catalog_only"
+                        state = "in_library" if work.id in local_ids else "catalog_only"
                     else:
                         state = "not_in_library"
                 items.append(
@@ -2732,6 +2747,10 @@ async def javranking_list(
 
         local = read_yearly_list(data_dir, year_from_slug)
         if local is not None and local.items:
+            works_by_code = repo.find_works_by_codes(
+                (entry.code for entry in local.items if entry.code), lean=True
+            )
+            local_ids = repo.work_ids_with_local_media()
             section = JavRankingSectionOut(
                 id=f"top250:{slug}",
                 title=local.title or yearly_title(year_from_slug),
@@ -2747,10 +2766,10 @@ async def javranking_list(
                 work_id = None
                 work = None
                 if entry.code:
-                    work = repo.find_work_by_code(entry.code)
+                    work = works_by_code.get(entry.code)
                     if work is not None:
                         work_id = work.id
-                        state = "in_library" if repo.list_assets_for_work(work.id) else "catalog_only"
+                        state = "in_library" if work.id in local_ids else "catalog_only"
                     else:
                         state = "not_in_library"
                 items.append(
@@ -2782,6 +2801,10 @@ async def javranking_list(
         # Legacy curated list mirror (list-javdb-top250-*.json)
         disk_list = cache.read_curated_list(slug)
         if disk_list is not None and disk_list.kind == "videos" and disk_list.videos:
+            works_by_code = repo.find_works_by_codes(
+                (entry.code for entry in disk_list.videos if entry.code), lean=True
+            )
+            local_ids = repo.work_ids_with_local_media()
             section = JavRankingSectionOut(
                 id=f"top250:{slug}",
                 title=disk_list.title or yearly_title(year_from_slug),
@@ -2798,10 +2821,10 @@ async def javranking_list(
                 work_id = None
                 work = None
                 if entry.code:
-                    work = repo.find_work_by_code(entry.code)
+                    work = works_by_code.get(entry.code)
                     if work is not None:
                         work_id = work.id
-                        state = "in_library" if repo.list_assets_for_work(work.id) else "catalog_only"
+                        state = "in_library" if work.id in local_ids else "catalog_only"
                     else:
                         state = "not_in_library"
                 items.append(
@@ -2856,6 +2879,8 @@ async def javranking_list(
         )
     )
     items = []
+    works_by_code = repo.find_works_by_codes((video.code for video in videos if video.code), lean=True)
+    local_ids = repo.work_ids_with_local_media()
     for video in videos:
         position = next(
             appearance.position for appearance in video.ranking_appearances if appearance.slug == slug
@@ -2864,10 +2889,10 @@ async def javranking_list(
         work_id = None
         work = None
         if video.code:
-            work = repo.find_work_by_code(video.code)
+            work = works_by_code.get(video.code)
             if work is not None:
                 work_id = work.id
-                state = "in_library" if repo.list_assets_for_work(work.id) else "catalog_only"
+                state = "in_library" if work.id in local_ids else "catalog_only"
             else:
                 state = "not_in_library"
         items.append(
@@ -2954,10 +2979,13 @@ async def javranking_seed_endpoint(
 @app.get("/api/non-jav-actors", response_model=tuple[NonJavActorOut, ...])
 def list_non_jav_actors(request: Request, repo: Repo) -> tuple[NonJavActorOut, ...]:
     app_runtime = runtime(request)
-    works_index = _non_jav_works_index(repo)
+    catalog = app_runtime.non_jav_actor_store.load().actors
+    if not catalog:
+        return ()
+    works_index = _non_jav_works_index(repo, data_dir=app_runtime.settings.data_dir)
     actors = tuple(
         _non_jav_actor_out(actor, works=_works_for_non_jav_actor(actor, works_index))
-        for actor in app_runtime.non_jav_actor_store.load().actors
+        for actor in catalog
     )
     return tuple(sorted(actors, key=lambda item: (-item.work_count, item.name.casefold())))
 
@@ -3779,6 +3807,7 @@ def list_works(
     collection_kind: CollectionKind | None = None,
     collection: str | None = None,
     tag: Annotated[list[str] | None, Query()] = None,
+    compact: bool = False,
 ) -> Response:
     """Lean library cards: slim JSON, Redis raw-byte cache, no Pydantic re-validate on hit.
 
@@ -3797,6 +3826,8 @@ def list_works(
         collection=collection,
         tags=selected_tags,
     )
+    if compact:
+        cache_key = f"works:list:compact:{cache_key}"
     cached_raw = cache.get_raw(cache_key)
     if cached_raw is not None:
         return Response(content=cached_raw, media_type="application/json")
@@ -3815,6 +3846,7 @@ def list_works(
     collections_map = repo.collections_by_work_ids([work.id for work in works])
     data_dir = app_runtime.settings.data_dir
     ranking_cache = JavRankingIndexCache(data_dir / "javranking")
+    image_urls = resolve_work_display_images(works, data_dir=data_dir)
     results = [
         _work_list_out(
             work,
@@ -3823,10 +3855,13 @@ def list_works(
             has_local_media=work.id in local_ids,
             data_dir=data_dir,
             ranking=ranking_cache.lookup_honors(work.primary_code),
+            image_urls=image_urls,
         )
         for work in works
     ]
-    payload = [_slim_work_card_dict(item.model_dump(mode="json")) for item in results]
+    payload = [
+        _slim_work_card_dict(item.model_dump(mode="json", exclude_defaults=compact)) for item in results
+    ]
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
     cache.set_raw(cache_key, raw, ttl_seconds=TTL_WORKS)
     return Response(content=raw, media_type="application/json")
@@ -3858,8 +3893,8 @@ def search_works(
     rows = cache.get_json(cache_key)
     if rows is None:
         # Populate the same lean list cache used by /api/works.
-        list_works(request, repo, tag=list(selected_tags) or None)
-        rows = cache.get_json(cache_key) or []
+        response = list_works(request, repo, tag=list(selected_tags) or None)
+        rows = json.loads(response.body)
     if category and category != "all":
         rows = [row for row in rows if str(row.get("category") or "") == category]
     page, total = rank_work_dicts(q, rows, limit=limit, offset=offset)
@@ -4067,7 +4102,7 @@ def get_related_works(
 
     actor_scored: list[tuple[int, Work]] = []
     tag_scored: list[tuple[int, Work]] = []
-    for candidate in repo.list_works():
+    for candidate in repo.list_works(lean=True):
         if candidate.id == work.id:
             continue
         if actor_keys:
@@ -4094,6 +4129,12 @@ def get_related_works(
         )
         return [item[1] for item in rows[:limit]]
 
+    ranked_actor = _rank(actor_scored)
+    ranked_tags = _rank(tag_scored)
+    image_urls = resolve_work_display_images(
+        [*ranked_actor, *ranked_tags], data_dir=runtime(request).settings.data_dir
+    )
+
     def _outs(rows: list[Work]) -> list[WorkOut]:
         collections_map = repo.collections_by_work_ids([item.id for item in rows])
         return [
@@ -4102,13 +4143,14 @@ def get_related_works(
                 collections=collections_map.get(item.id, []),
                 want_list=item.id in want,
                 has_local_media=item.id in local_ids,
+                image_urls=image_urls,
             )
             for item in rows
         ]
 
     return WorkRelatedOut(
-        by_actor=_outs(_rank(actor_scored)),
-        by_tag=_outs(_rank(tag_scored)),
+        by_actor=_outs(ranked_actor),
+        by_tag=_outs(ranked_tags),
     )
 
 
@@ -4941,12 +4983,16 @@ def _normalize_person_name(value: str) -> str:
     return unicodedata.normalize("NFKC", value).casefold().strip()
 
 
-def _non_jav_works_index(repo: Repository) -> dict[str, tuple[NonJavActorWorkOut, ...]]:
+def _non_jav_works_index(
+    repo: Repository, *, data_dir: Path | None = None
+) -> dict[str, tuple[NonJavActorWorkOut, ...]]:
     """Map normalized actor names to non-JAV works for actor-library display."""
 
     buckets: dict[str, list[NonJavActorWorkOut]] = {}
     seen: dict[str, set[str]] = {}
-    for work in repo.list_works():
+    works = repo.list_works(lean=True, exclude_jav=True)
+    images = resolve_work_display_images(works, data_dir=data_dir) if data_dir is not None else None
+    for work in works:
         if work.family == ContentFamily.JAV.value:
             continue
         if work.category == MediaCategory.JAPAN.value and work.primary_code:
@@ -4960,7 +5006,7 @@ def _non_jav_works_index(repo: Repository) -> dict[str, tuple[NonJavActorWorkOut
             studio=work.studio,
             series=work.series,
             release_date=work.release_date,
-            image_url=_work_display_artwork(work, "poster"),
+            image_url=images.get(work.id) if images is not None else _work_display_artwork(work, "poster"),
         )
         for raw_name in work.actors:
             key = _normalize_person_name(raw_name)
@@ -4997,6 +5043,7 @@ def _invalidate_library_caches(cache: ResponseCache) -> None:
     cache.invalidate_prefix("works:tags:")
     cache.invalidate_prefix("actors:")
     cache.invalidate_prefix("categories:")
+    cache.invalidate_prefix("javranking:list:")
 
 
 def _work_list_out(
@@ -5007,6 +5054,7 @@ def _work_list_out(
     has_local_media: bool = False,
     data_dir: Path | None = None,
     ranking: WorkJavRankingInfo | None = None,
+    image_urls: Mapping[str, str | None] | None = None,
 ) -> WorkOut:
     """Card-oriented WorkOut: no plot/reviews/identities/artwork blobs, no per-work DB hits.
 
@@ -5057,7 +5105,10 @@ def _work_list_out(
         directors=[],
         tags=tags,
         artwork=[],
-        image_url=_work_display_artwork(work, "poster", data_dir=data_dir),
+        image_url=(
+            image_urls.get(work.id) if image_urls is not None
+            else _work_display_artwork(work, "poster", data_dir=data_dir)
+        ),
         fanart_url=None,
         sample_urls=[],
         rating_value=getattr(work, "rating_value", None),
@@ -5126,7 +5177,7 @@ def _slim_actor_profile_dict(row: dict[str, object]) -> dict[str, object]:
     """Keep list cards light: preview works only; codes stay searchable client-side."""
 
     works = list(row.get("works") or [])
-    codes = [
+    codes = list(row.get("work_codes") or []) or [
         str(item.get("code"))
         for item in works
         if isinstance(item, dict) and item.get("code")

@@ -1,14 +1,14 @@
 import re
 import shutil
 import unicodedata
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import Engine, create_engine, event, exists, func, or_, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, load_only, sessionmaker
 
 from ..actress_aliases import merge_actor_names
 from ..collection_names import detect_collection_kind, normalize_collection_name
@@ -17,6 +17,7 @@ from ..enums import (
     AssetState,
     CandidateState,
     CollectionKind,
+    ContentFamily,
     IdentityKind,
     MatchDecision,
     MediaCategory,
@@ -788,17 +789,24 @@ class Repository:
         collection_kind: CollectionKind | str | None = None,
         collection_name: str | None = None,
         lean: bool = False,
+        exclude_jav: bool = False,
     ) -> list[Work]:
         """List works newest-first.
 
-        ``lean=True`` skips heavy JSON columns (plot/artwork/reviews/field_sources)
+        ``lean=True`` skips heavy JSON columns (plot/reviews/field_sources)
         that list/search cards never display — cuts SQLite decode cost on large catalogs.
         """
 
         statement = select(Work)
+        if exclude_jav:
+            statement = statement.where(
+                Work.family != ContentFamily.JAV.value,
+                or_(
+                    Work.category != MediaCategory.JAPAN.value,
+                    Work.primary_code.is_(None), Work.primary_code == "",
+                ),
+            )
         if lean:
-            from sqlalchemy.orm import load_only
-
             statement = statement.options(
                 load_only(
                     Work.id,
@@ -923,8 +931,6 @@ class Repository:
             .order_by(Actor.name, WorkActor.position, Work.release_date, Work.title)
         )
         if lean:
-            from sqlalchemy.orm import load_only
-
             statement = statement.options(
                 load_only(
                     Work.id,
@@ -1148,6 +1154,35 @@ class Repository:
         if identity is None:
             return None
         return self.get_work(identity.work_id)
+
+    def find_works_by_codes(self, codes: Iterable[str], *, lean: bool = False) -> dict[str, Work]:
+        """Batch the same global-identity-first lookup as find_work_by_code."""
+
+        requested = tuple(dict.fromkeys(codes))
+        if not requested:
+            return {}
+        normalized = {code: normalize_identity_value(code) for code in requested}
+        statement = (
+            select(ExternalIdentity.normalized_value, Work)
+            .join(Work, Work.id == ExternalIdentity.work_id)
+            .where(
+                ExternalIdentity.provider == "global", ExternalIdentity.kind == IdentityKind.CODE.value,
+                ExternalIdentity.normalized_value.in_(set(normalized.values())),
+            )
+        )
+        if lean:
+            statement = statement.options(load_only(Work.id, Work.primary_code, Work.artwork))
+        identities = {key: work for key, work in self._session.execute(statement)}
+        found = {code: identities[key] for code, key in normalized.items() if key in identities}
+        missing = [code for code in requested if code not in found]
+        if missing:
+            fallback = select(Work).where(Work.primary_code.in_(missing)).order_by(Work.created_at)
+            if lean:
+                fallback = fallback.options(load_only(Work.id, Work.primary_code, Work.artwork))
+            for work in self._session.scalars(fallback):
+                if work.primary_code is not None:
+                    found.setdefault(work.primary_code, work)
+        return found
 
 
     def list_work_magnets(self, work_id: str) -> list[WorkMagnet]:

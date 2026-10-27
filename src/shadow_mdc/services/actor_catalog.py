@@ -3,17 +3,14 @@ import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .javranking_client import ActorJavRankingInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..db.models import Actor, Work
 from ..enums import ContentFamily, MediaCategory
 from ..identity import IdentityAliasRules, extract_code
-from ..media.artwork import resolve_work_display_image
+from ..media.artwork import resolve_work_display_image, resolve_work_display_images
+from .javranking_client import ActorJavRankingInfo
 
 _DOMAIN_ACTOR = re.compile(r"(?i)^(?:www\.)?[a-z0-9-]+\.(?:com|net|org|tv|cc|me|xyz|top|vip)$")
 _INVALID_ACTOR_NAMES = frozenset({"unknown", "uncategorized", "未知", "未归类", "未歸類", "未分类", "未分類"})
@@ -43,7 +40,7 @@ class ActorProfile(BaseModel):
     works: tuple[ActorWorkReference, ...]
     image_url: str | None = None
     x_handle: str | None = None
-    javranking: "ActorJavRankingInfo | None" = None
+    javranking: ActorJavRankingInfo | None = None
 
 
 class ActorCatalogPayload(BaseModel):
@@ -51,6 +48,10 @@ class ActorCatalogPayload(BaseModel):
 
     version: int = Field(default=1, ge=1)
     profiles: tuple[ActorProfile, ...] = ()
+
+
+class ActorListProfile(ActorProfile):
+    work_codes: tuple[str, ...] = ()
 
 
 class ActorCatalogStore:
@@ -141,6 +142,7 @@ def build_actor_catalog_from_relations(
     rules: IdentityAliasRules,
     *,
     data_dir: Path | None = None,
+    resolve_images: bool = True,
 ) -> tuple[ActorProfile, ...]:
     alias_to_canonical = {
         _normalize(alias): canonical.strip()
@@ -148,41 +150,51 @@ def build_actor_catalog_from_relations(
         if alias.strip() and canonical.strip()
     }
     accumulators: dict[str, _ActorAccumulator] = {}
+    images: dict[str, str | None] = {}
+    actor_accumulators: dict[str, _ActorAccumulator] = {}
+    references: dict[str, ActorWorkReference] = {}
     for actor, work in relations:
-        canonical = alias_to_canonical.get(_normalize(actor.name), actor.name)
-        key = _normalize(canonical)
-        accumulator = accumulators.setdefault(
-            key,
-            _ActorAccumulator(
-                name=canonical,
-                id=actor.id,
-                image_url=actor.image_url,
-                x_handle=getattr(actor, "x_handle", None),
-            ),
-        )
-        accumulator.aliases.update(alias for alias in actor.aliases if alias.strip())
-        if _normalize(actor.name) != key:
-            accumulator.aliases.add(actor.name)
+        accumulator = actor_accumulators.get(actor.id)
+        if accumulator is None:
+            normalized_name = _normalize(actor.name)
+            canonical = alias_to_canonical.get(normalized_name, actor.name)
+            key = _normalize(canonical)
+            accumulator = accumulators.get(key)
+            if accumulator is None:
+                accumulator = _ActorAccumulator(
+                    name=canonical,
+                    id=actor.id,
+                    image_url=actor.image_url,
+                    x_handle=actor.x_handle,
+                )
+                accumulators[key] = accumulator
+            accumulator.aliases.update(alias for alias in actor.aliases if alias.strip())
+            if normalized_name != key:
+                accumulator.aliases.add(actor.name)
+            actor_accumulators[actor.id] = accumulator
         accumulator.categories.add(work.category)
         if work.id not in accumulator.work_ids:
             accumulator.work_ids.add(work.id)
-            accumulator.works.append(
-                ActorWorkReference(
+            if resolve_images and work.id not in images:
+                images[work.id] = _work_image_url(work, data_dir)
+            reference = references.get(work.id)
+            if reference is None:
+                reference = ActorWorkReference(
                     id=work.id,
                     title=work.title,
                     code=work.primary_code,
                     category=work.category,
-                    image_url=_work_image_url(work, data_dir),
+                    image_url=images.get(work.id),
                     release_date=work.release_date.isoformat() if work.release_date else None,
                     studio=work.studio,
                 )
-            )
+                references[work.id] = reference
+            accumulator.works.append(reference)
     for alias, canonical in rules.actors.items():
         matched = accumulators.get(_normalize(canonical))
         if matched is not None and _normalize(alias) != _normalize(canonical):
             matched.aliases.add(alias.strip())
     return _profiles_from_accumulators(accumulators)
-
 
 
 def _sorted_works(works: Iterable[ActorWorkReference]) -> tuple[ActorWorkReference, ...]:
@@ -269,8 +281,7 @@ def merge_actor_catalogs(
             categories=tuple(sorted(item.categories)),
             work_count=len(item.works),
             works=_sorted_works(item.works),
-            image_url=item.image_url
-            or next((work.image_url for work in item.works if work.image_url), None),
+            image_url=item.image_url or next((work.image_url for work in item.works if work.image_url), None),
             x_handle=getattr(item, "x_handle", None),
         )
         for item in accumulators.values()
@@ -285,9 +296,7 @@ def sync_actor_catalog(
     *,
     data_dir: Path | None = None,
 ) -> tuple[ActorProfile, ...]:
-    merged = merge_actor_catalogs(
-        store.load(), build_actor_catalog(works, rules, data_dir=data_dir), rules
-    )
+    merged = merge_actor_catalogs(store.load(), build_actor_catalog(works, rules, data_dir=data_dir), rules)
     return store.save(filter_jav_actor_catalog(merged))
 
 
@@ -303,16 +312,73 @@ def sync_actor_catalog_from_relations(
     return store.save(filter_jav_actor_catalog(merged))
 
 
+def build_actor_list_profiles(
+    store: ActorCatalogStore,
+    relations: list[tuple[Actor, Work]],
+    rules: IdentityAliasRules,
+    *,
+    data_dir: Path,
+    preview_limit: int = 8,
+) -> tuple[ActorListProfile, ...]:
+    """Read-only actor cards: count/search full filmographies, resolve only previews."""
+
+    current = build_actor_catalog_from_relations(relations, rules, resolve_images=False)
+    profiles = filter_jav_actor_catalog(merge_actor_catalogs(store.load(), current, rules))
+    works = {work.id: work for _, work in relations}
+    preview_ids = {ref.id for profile in profiles for ref in profile.works[:preview_limit]}
+    images = resolve_work_display_images(
+        (works[work_id] for work_id in preview_ids if work_id in works), data_dir=data_dir
+    )
+    output: list[ActorListProfile] = []
+    for profile in profiles:
+        previews = tuple(
+            ref.model_copy(update={"image_url": images.get(ref.id, ref.image_url)})
+            for ref in profile.works[:preview_limit]
+        )
+        portrait = profile.image_url or next((ref.image_url for ref in previews if ref.image_url), None)
+        if portrait is None:
+            # Sparse libraries may only have artwork outside the preview window.
+            for ref in profile.works[preview_limit:]:
+                if ref.id not in images and ref.id in works:
+                    images[ref.id] = _work_image_url(works[ref.id], data_dir)
+                portrait = images.get(ref.id, ref.image_url)
+                if portrait:
+                    break
+        output.append(
+            ActorListProfile(
+                id=profile.id,
+                name=profile.name,
+                aliases=profile.aliases,
+                categories=profile.categories,
+                work_count=profile.work_count,
+                works=previews,
+                image_url=portrait,
+                x_handle=profile.x_handle,
+                javranking=profile.javranking,
+                work_codes=tuple(ref.code for ref in profile.works if ref.code)[:80],
+            )
+        )
+    return tuple(output)
+
+
 def filter_jav_actor_catalog(
     profiles: tuple[ActorProfile, ...],
 ) -> tuple[ActorProfile, ...]:
     """Keep only actor-work knowledge backed by an actual JAV code."""
 
     filtered: list[ActorProfile] = []
+    eligibility: dict[tuple[str, str | None], bool] = {}
+
+    def eligible(work: ActorWorkReference) -> bool:
+        key = (work.category, work.code)
+        if key not in eligibility:
+            eligibility[key] = _is_jav_work(work)
+        return eligibility[key]
+
     for profile in profiles:
         if _is_invalid_actor_name(profile.name):
             continue
-        works = tuple(work for work in profile.works if _is_jav_work(work))
+        works = tuple(work for work in profile.works if eligible(work))
         if not works:
             continue
         filtered.append(
@@ -347,8 +413,7 @@ def _profiles_from_accumulators(
             categories=tuple(sorted(item.categories)),
             work_count=len(item.works),
             works=_sorted_works(item.works),
-            image_url=item.image_url
-            or next((work.image_url for work in item.works if work.image_url), None),
+            image_url=item.image_url or next((work.image_url for work in item.works if work.image_url), None),
             x_handle=getattr(item, "x_handle", None),
         )
         for item in accumulators.values()
@@ -358,7 +423,6 @@ def _profiles_from_accumulators(
 
 def _work_image_url(work: Work, data_dir: Path | None = None) -> str | None:
     return resolve_work_display_image(work, "poster", data_dir=data_dir)
-
 
 
 def _work_identity(work: ActorWorkReference) -> tuple[str, str]:
@@ -376,11 +440,3 @@ def _is_jav_work(work: ActorWorkReference) -> bool:
 def _is_invalid_actor_name(name: str) -> bool:
     normalized = _normalize(name)
     return normalized in _INVALID_ACTOR_NAMES or _DOMAIN_ACTOR.fullmatch(normalized) is not None
-
-
-try:
-    from .javranking_client import ActorJavRankingInfo as _ActorJavRankingInfo
-
-    ActorProfile.model_rebuild(_types_namespace={"ActorJavRankingInfo": _ActorJavRankingInfo})
-except Exception:
-    pass

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "./api";
 import { DiscoverPanel } from "./components/DiscoverPanel";
@@ -120,7 +120,7 @@ export function App() {
   const [taskTab, setTaskTab] = useState<"inbox" | "runs">("runs");
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [works, setWorks] = useState<Work[]>([]);
+  const [workRows, setWorks] = useState<Work[]>([]);
   const [actors, setActors] = useState<ActorProfile[]>([]);
   const [nonJavActors, setNonJavActors] = useState<NonJavActor[]>([]);
   const [tasks, setTasks] = useState<TaskRun[]>([]);
@@ -134,32 +134,42 @@ export function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState("正在连接 Shadow MDC…");
   const [loaded, setLoaded] = useState<Partial<Record<AppView | "core", boolean>>>({});
-
-  const refreshCore = useCallback(async () => {
-    const [nextLibraries, nextPrefs, nextTasks] = await Promise.all([
-      api.libraries(),
-      api.libraryPrefs(),
-      api.tasks()
-    ]);
-    setLibraries(nextLibraries);
-    setPrefs(nextPrefs);
-    setTasks(nextTasks);
-    setLoaded((current) => ({ ...current, core: true }));
+  const wantIds = useMemo(() => new Set(prefs.want_list), [prefs.want_list]);
+  const works = useMemo(
+    () => workRows.map((item) => item.want_list === wantIds.has(item.id)
+      ? item : { ...item, want_list: wantIds.has(item.id) }),
+    [workRows, wantIds],
+  );
+  const pendingLoads = useRef(new Map<string, Promise<void>>());
+  const loadOnce = useCallback((key: string, load: () => Promise<void>): Promise<void> => {
+    const pending = pendingLoads.current.get(key);
+    if (pending) return pending;
+    const request = load().finally(() => { pendingLoads.current.delete(key); });
+    pendingLoads.current.set(key, request);
+    return request;
   }, []);
 
-  const refreshWorks = useCallback(async () => {
-    const rows = await api.works();
-    const want = new Set(prefs.want_list);
-    setWorks(rows.map((item) => (want.has(item.id) ? { ...item, want_list: true } : { ...item, want_list: false })));
-    setLoaded((current) => ({ ...current, works: true }));
-  }, [prefs.want_list]);
+  const refreshCore = useCallback(() => loadOnce("core", async () => {
+    await Promise.all([
+      api.libraries().then(setLibraries),
+      api.libraryPrefs().then(setPrefs),
+      api.tasks().then(setTasks)
+    ]);
+    setLoaded((current) => ({ ...current, core: true }));
+  }), [loadOnce]);
 
-  const refreshActors = useCallback(async () => {
+  const refreshWorks = useCallback(() => loadOnce("works", async () => {
+    const rows = await api.works();
+    setWorks(rows);
+    setLoaded((current) => ({ ...current, works: true }));
+  }), [loadOnce]);
+
+  const refreshActors = useCallback(() => loadOnce("actors", async () => {
     const [nextActors, nextNonJav] = await Promise.all([api.actors(), api.nonJavActors()]);
     setActors(nextActors);
     setNonJavActors(nextNonJav);
     setLoaded((current) => ({ ...current, actors: true }));
-  }, []);
+  }), [loadOnce]);
 
   const refreshInbox = useCallback(async () => {
     setAssets(await api.assets());
@@ -213,7 +223,7 @@ export function App() {
     void (async () => {
       try {
         let refreshed = false;
-        if ((view === "works" || view === "work-detail" || view === "swipe") && !loaded.works) {
+        if ((view === "works" || view === "swipe") && !loaded.works) {
           await refreshWorks();
           refreshed = true;
         } else if ((view === "actors" || view === "actor-detail") && !loaded.actors) {
@@ -236,11 +246,13 @@ export function App() {
     setBusy(key);
     try {
       await action();
-      if (refresh === "works" || refresh === "all") await refreshWorks();
-      if (refresh === "actors" || refresh === "all") await refreshActors();
-      if (refresh === "inbox" || refresh === "all") await refreshInbox();
-      if (refresh === "tasks" || refresh === "all") await refreshTasks();
-      if (refresh === "core" || refresh === "all") await refreshCore();
+      await Promise.all([
+        ...(refresh === "works" || refresh === "all" ? [refreshWorks()] : []),
+        ...(refresh === "actors" || refresh === "all" ? [refreshActors()] : []),
+        ...(refresh === "inbox" || refresh === "all" ? [refreshInbox()] : []),
+        ...(refresh === "tasks" ? [refreshTasks()] : []),
+        ...(refresh === "core" || refresh === "all" ? [refreshCore()] : []),
+      ]);
     } catch (error) {
       setMessage(errorMessage(error));
     } finally {
@@ -414,7 +426,7 @@ export function App() {
                 try {
                   setLoaded({});
                   await refreshCore();
-                  if (view === "works" || view === "work-detail" || view === "swipe") await refreshWorks();
+                  if (view === "works" || view === "swipe") await refreshWorks();
                   if (view === "actors" || view === "actor-detail") await refreshActors();
                   if (view === "tasks") await refreshInbox();
                   setMessage("已强制刷新");

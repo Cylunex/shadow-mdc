@@ -167,7 +167,7 @@ export const identitySchema = z.object({
 export const actorSummarySchema = z.object({
   id: z.string(),
   name: z.string(),
-  image_url: z.string().nullable(),
+  image_url: z.string().nullable().optional().default(null),
   x_handle: z.string().nullable().optional(),
   x_url: z.string().nullable().optional()
 });

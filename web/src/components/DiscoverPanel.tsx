@@ -107,6 +107,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
       setJrSlug(preferred);
       const detail = await api.javrankingList(preferred, forceRefresh);
       setJrList(detail);
+      setJrSections((current) => current.map((item) => item.slug === detail.section.slug ? detail.section : item));
       report(`榜单分区 ${result.sections.length} · 当前 ${detail.items.length} 条（只读）`);
     } else {
       setJrList(null);
@@ -118,6 +119,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
     setJrSlug(slug);
     const detail = await api.javrankingList(slug, forceRefresh);
     setJrList(detail);
+    setJrSections((current) => current.map((item) => item.slug === detail.section.slug ? detail.section : item));
     report(`「${detail.section.title}」${detail.items.length} 条（只读）`);
   }
 
@@ -266,7 +268,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
           }}
         >
           神作 TOP100
-          {jrGroups.curatedVideos[0] ? ` · ${jrGroups.curatedVideos[0].item_count}` : ""}
+          {jrGroups.curatedVideos[0]?.revision ? ` · ${jrGroups.curatedVideos[0].item_count}` : ""}
         </button>
         <button
           type="button"

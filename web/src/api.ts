@@ -264,6 +264,7 @@ export const api = {
     tags?: string[];
   }) => {
     const query = new URLSearchParams();
+    query.set("compact", "true");
     if (params?.collection_id) query.set("collection_id", params.collection_id);
     if (params?.collection_kind) query.set("collection_kind", params.collection_kind);
     if (params?.collection) query.set("collection", params.collection);
@@ -326,9 +327,9 @@ export const api = {
         localize: payload.localize ?? false
       })
     }),
-  workDetail: (workId: string) => request(workDetailSchema, `/api/works/${workId}`),
-  workRelated: (workId: string, limit = 18) =>
-    request(workRelatedSchema, `/api/works/${workId}/related?limit=${limit}`),
+  workDetail: (workId: string, signal?: AbortSignal) => request(workDetailSchema, `/api/works/${workId}`, { signal }),
+  workRelated: (workId: string, limit = 18, signal?: AbortSignal) =>
+    request(workRelatedSchema, `/api/works/${workId}/related?limit=${limit}`, { signal }),
   updateWork: (
     workId: string,
     payload: {
@@ -617,8 +618,8 @@ export const api = {
     request(panOfflineTaskSchema, `/api/works/${workId}/offline`, {
       method: "POST", body: JSON.stringify(payload)
     }),
-  workOfflineTasks: (workId: string) =>
-    request(z.array(panOfflineTaskSchema), `/api/works/${workId}/offline`),
+  workOfflineTasks: (workId: string, signal?: AbortSignal) =>
+    request(z.array(panOfflineTaskSchema), `/api/works/${workId}/offline`, { signal }),
   workEmbyLink: async (workId: string): Promise<string | null> => {
     const path = `/api/works/${workId}/emby-link`;
     const response = await fetch(appUrl(path) ?? path);
