@@ -1,13 +1,15 @@
+import { notifyManager } from "@tanstack/react-query";
+import { queryClient, queryKeys } from "../query/client";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api";
-import { workDetailSchema } from "../model";
+import { libraryPrefsSchema, workDetailSchema } from "../model";
 import { useWorkPage } from "./useWorkPage";
 
 vi.mock("../api", () => ({ api: {
-  workDetail: vi.fn(), workRelated: vi.fn(), workOfflineTasks: vi.fn(),
+  workDetail: vi.fn(), workRelated: vi.fn(), workOfflineTasks: vi.fn(), libraryPrefs: vi.fn(),
 } }));
 
 function deferred<T>() {
@@ -28,16 +30,20 @@ describe("progressive detail loading", () => {
     return <output>{page.loading ? "loading" : page.detail?.title ?? page.loadError}</output>;
   }
   beforeEach(() => {
+    queryClient.clear();
+    notifyManager.setScheduler(queueMicrotask);
     vi.clearAllMocks();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.mocked(api.workDetail).mockImplementation(async (id) => detail(id));
     vi.mocked(api.workRelated).mockResolvedValue({ by_actor: [], by_tag: [] });
     vi.mocked(api.workOfflineTasks).mockResolvedValue([]);
+    vi.mocked(api.libraryPrefs).mockResolvedValue(libraryPrefsSchema.parse({}));
     container = document.createElement("div");
     root = createRoot(container);
   });
   afterEach(async () => {
     await act(async () => root.unmount());
+    queryClient.clear();
     vi.unstubAllGlobals();
   });
 
@@ -58,12 +64,29 @@ describe("progressive detail loading", () => {
     const old = deferred<Awaited<ReturnType<typeof api.workDetail>>>();
     vi.mocked(api.workDetail).mockReturnValueOnce(old.promise);
     await act(async () => root.render(<Harness />));
+    expect(api.workRelated).not.toHaveBeenCalled();
+    expect(api.workOfflineTasks).not.toHaveBeenCalled();
     const signal = vi.mocked(api.workDetail).mock.calls[0]?.[1];
     await act(async () => root.render(<Harness id="second" />));
     expect(signal?.aborted).toBe(true);
     expect(container.textContent).toBe("second");
     await act(async () => old.resolve(detail("first")));
     expect(container.textContent).toBe("second");
+  });
+
+  it("reuses a complete detail when navigating away and back", async () => {
+    await act(async () => root.render(<Harness />));
+    await act(async () => root.render(<Harness id="second" />));
+    await act(async () => root.render(<Harness />));
+    expect(container.textContent).toBe("first");
+    expect(api.workDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it("updates the want badge from shared preferences without another detail download", async () => {
+    await act(async () => root.render(<Harness />));
+    await act(async () => { queryClient.setQueryData(queryKeys.prefs, libraryPrefsSchema.parse({ want_list: ["first"] })); });
+    expect(page.detail?.want_list).toBe(true);
+    expect(api.workDetail).toHaveBeenCalledTimes(1);
   });
 
   it("keeps primary content usable when optional requests fail", async () => {

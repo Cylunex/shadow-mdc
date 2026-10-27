@@ -1,8 +1,10 @@
+import { useQuery } from "@tanstack/react-query";
 import { CoverImage } from "../components/CoverImage";
 import { useEffect, useMemo, useState } from "react";
+import { queryClient } from "../query/client";
+import { resources } from "../query/resources";
 
-import { api, appUrl } from "../api";
-import type { CategoryItem } from "../model";
+import { appUrl } from "../api";
 
 type Props = {
   onOpenTag: (tag: string) => void;
@@ -10,33 +12,16 @@ type Props = {
 };
 
 export function CategoriesView({ onOpenTag, report }: Props) {
-  const [items, setItems] = useState<CategoryItem[]>([]);
   const [onlyWithWorks, setOnlyWithWorks] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
 
+  const result = useQuery(resources.categories(onlyWithWorks), queryClient);
+  const items = result.data?.categories ?? [];
+  const loading = result.isPending;
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    void (async () => {
-      try {
-        const page = await api.categories({ onlyWithWorks });
-        if (!cancelled) {
-          setItems(page.categories);
-          report?.(`分类 ${page.categories.length} 个`);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          report?.(error instanceof Error ? error.message : String(error));
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [onlyWithWorks, report]);
+    if (result.error) report?.(result.error.message);
+    else if (result.data) report?.(`分类 ${result.data.categories.length} 个`);
+  }, [result.data, result.error, report]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLocaleLowerCase();
@@ -74,7 +59,9 @@ export function CategoriesView({ onOpenTag, report }: Props) {
         </div>
       </div>
 
-      {loading ? (
+      {result.error && !result.data ? (
+        <p role="alert">分类加载失败，可点击上方刷新重试。</p>
+      ) : loading ? (
         <div className="skeleton-grid" aria-busy="true" aria-label="分类加载中">
           {Array.from({ length: 8 }, (_, index) => (
             <div className="skeleton-card" key={index}>

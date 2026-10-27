@@ -177,6 +177,8 @@ export function Pagination(props: {
 export function Actors(props: {
   actors: ActorProfile[];
   nonJavActors: NonJavActor[];
+  loadingActors?: boolean;
+  loadingNonJavActors?: boolean;
   busy: string | null;
   prefs?: LibraryPrefs;
   onOpenWork: (workId: string) => void;
@@ -200,7 +202,9 @@ export function Actors(props: {
       <button className={source === "jav" ? "active" : "ghost"} onClick={() => setSource("jav")}>JAV 演员作品库 · {props.actors.length}</button>
       <button className={source === "non-jav" ? "active" : "ghost"} onClick={() => setSource("non-jav")}>非 JAV 演员 / 作品 · {props.nonJavActors.length} · 作品 {nonJavWorkTotal}</button>
     </div>
-    {source === "jav"
+    {(source === "jav" ? props.loadingActors : props.loadingNonJavActors)
+      ? <p className="muted" aria-busy="true">正在读取演员资料…</p>
+      : source === "jav"
       ? <JavActors actors={props.actors} prefs={props.prefs} onActorTags={props.onActorTags} busy={props.busy} onOpenWork={props.onOpenWork} onOpenActor={props.onOpenActor} />
       : <NonJavActorsManager
           actors={props.nonJavActors}

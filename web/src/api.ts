@@ -1,3 +1,4 @@
+import { invalidateMutation, queryClient, queryKeys } from "./query/client";
 import {
   z } from "zod";
 
@@ -115,12 +116,26 @@ async function request<T>(schema: z.ZodType<T>, path: string, init?: RequestInit
     const detail = await response.text();
     throw new Error(detail || `HTTP ${response.status}`);
   }
-  const payload: unknown = await response.json();
-  return schema.parse(payload);
+  let result: T;
+  try {
+    const payload: unknown = await response.json();
+    result = schema.parse(payload);
+  } catch (error) {
+    if (init?.method && init.method !== "GET") await invalidateMutation(path);
+    throw error;
+  }
+  if (init?.method && init.method !== "GET") {
+    const preferences = path.startsWith("/api/library-prefs") ? libraryPrefsSchema.safeParse(result) : null;
+    if (preferences?.success) {
+      await queryClient.cancelQueries({ queryKey: queryKeys.prefs });
+      queryClient.setQueryData(queryKeys.prefs, preferences.data);
+    } else await invalidateMutation(path);
+  }
+  return result;
 }
 
 export const api = {
-  libraries: () => request(librariesSchema, "/api/libraries"),
+  libraries: (signal?: AbortSignal) => request(librariesSchema, "/api/libraries", { signal }),
   createLibrary: (payload: {
     name: string;
     root_path: string;
@@ -165,7 +180,7 @@ export const api = {
         skip_remote_when_identified: options.skip_remote_when_identified !== false
       })
     }),
-  tasks: () => request(taskRunsSchema, "/api/tasks"),
+  tasks: (signal?: AbortSignal) => request(taskRunsSchema, "/api/tasks", { signal }),
   cancelTask: (taskId: string) => request(taskRunSchema, `/api/tasks/${taskId}/cancel`, { method: "POST" }),
   discoverBrowse: (params: { provider?: string; list?: string; page?: number } = {}) => {
     const query = new URLSearchParams();
@@ -221,10 +236,11 @@ export const api = {
     const path = `/api/works/${workId}/magnets/${magnetId}`;
     const response = await fetch(appUrl(path) ?? path, { method: "DELETE" });
     if (!response.ok) throw new Error(await response.text());
+    await invalidateMutation(path);
   },
   retryTask: (taskId: string) => request(taskRunSchema, `/api/tasks/${taskId}/retry`, { method: "POST" }),
   providerHealth: () => request(providerHealthSchema, "/api/providers/health"),
-  assets: () => request(assetInboxListSchema, "/api/inbox"),
+  assets: (signal?: AbortSignal) => request(assetInboxListSchema, "/api/inbox", { signal }),
   candidates: (assetId: string) => request(candidatesSchema, `/api/assets/${assetId}/candidates`),
   manualCandidate: (assetId: string, payload: { title?: string }) =>
     request(candidateSchema, `/api/assets/${assetId}/manual-candidate`, {
@@ -262,7 +278,7 @@ export const api = {
     collection_kind?: string;
     collection?: string;
     tags?: string[];
-  }) => {
+  }, signal?: AbortSignal) => {
     const query = new URLSearchParams();
     query.set("compact", "true");
     if (params?.collection_id) query.set("collection_id", params.collection_id);
@@ -272,7 +288,7 @@ export const api = {
       if (tag.trim()) query.append("tag", tag.trim());
     }
     const suffix = query.toString() ? `?${query}` : "";
-    return request(worksSchema, `/api/works${suffix}`);
+    return request(worksSchema, `/api/works${suffix}`, { signal });
   },
   searchWorks: (params: {
     q: string;
@@ -291,13 +307,13 @@ export const api = {
     }
     return request(workSearchSchema, `/api/works/search?${query}`);
   },
-  actorWorks: (actorRef: string) =>
-    request(actorWorksSchema, `/api/actors/${encodeURIComponent(actorRef)}/works`),
+  actorWorks: (actorRef: string, signal?: AbortSignal) =>
+    request(actorWorksSchema, `/api/actors/${encodeURIComponent(actorRef)}/works`, { signal }),
   workTagFacets: (limit = 40) =>
     request(workTagFacetsSchema, `/api/works/tags?limit=${limit}`),
-  categories: (params: { onlyWithWorks?: boolean } = {}) => {
+  categories: (params: { onlyWithWorks?: boolean } = {}, signal?: AbortSignal) => {
     const query = params.onlyWithWorks ? "?only_with_works=true" : "";
-    return request(categoriesPageSchema, `/api/categories${query}`);
+    return request(categoriesPageSchema, `/api/categories${query}`, { signal });
   },
   collections: (params?: { kind?: string; q?: string; seed_if_empty?: boolean }) => {
     const query = new URLSearchParams();
@@ -356,8 +372,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ artwork_index: artworkIndex })
     }),
-  actors: () => request(actorProfilesSchema, "/api/actors"),
-  nonJavActors: () => request(nonJavActorsSchema, "/api/non-jav-actors"),
+  actors: (signal?: AbortSignal) => request(actorProfilesSchema, "/api/actors", { signal }),
+  nonJavActors: (signal?: AbortSignal) => request(nonJavActorsSchema, "/api/non-jav-actors", { signal }),
   createNonJavActor: (payload: NonJavActorEditPayload) =>
     request(nonJavActorSchema, "/api/non-jav-actors", {
       method: "POST",
@@ -374,6 +390,7 @@ export const api = {
       method: "DELETE"
     });
     if (!response.ok) throw new Error(await response.text());
+    await invalidateMutation(path);
   },
   uploadNonJavActorImage: (actorName: string, file: File) =>
     request(nonJavActorSchema, `/api/non-jav-actors/${encodeURIComponent(actorName)}/image`, {
@@ -477,9 +494,11 @@ export const api = {
     body.append("file", file);
     const response = await fetch(appUrl(path) ?? path, { method: "POST", body });
     if (!response.ok) throw new Error(await response.text());
-    return catalogImportResultSchema.parse(await response.json());
+    const result = catalogImportResultSchema.parse(await response.json());
+    if (!options.dry_run) await invalidateMutation(path);
+    return result;
   },
-  libraryPrefs: () => request(libraryPrefsSchema, "/api/library-prefs"),
+  libraryPrefs: (signal?: AbortSignal) => request(libraryPrefsSchema, "/api/library-prefs", { signal }),
   setWantList: (work_id: string, wanted: boolean) =>
     request(libraryPrefsSchema, "/api/library-prefs/want-list", {
       method: "PUT", body: JSON.stringify({ work_id, wanted })
@@ -509,7 +528,7 @@ export const api = {
   }) => request(mediaServerSettingsSchema, "/api/settings/media-server", {
     method: "PUT", body: JSON.stringify(payload)
   }),
-  panStatus: () => request(panStatusSchema, "/api/pan/status"),
+  panStatus: (signal?: AbortSignal) => request(panStatusSchema, "/api/pan/status", { signal }),
   panImportTokens: (payload: {
     access_token: string; refresh_token: string; expires_in?: number;
     user_id?: string | null; user_name?: string | null;
@@ -530,6 +549,7 @@ export const api = {
     const path = "/api/pan/account";
     const response = await fetch(appUrl(path) ?? path, { method: "DELETE" });
     if (!response.ok) throw new Error(await response.text());
+    await invalidateMutation(path);
   },
   panFiles: (directoryId = "0", page = 1) => {
     const query = new URLSearchParams({ directory_id: directoryId, page: String(page) });
@@ -588,6 +608,7 @@ export const api = {
     const path = "/api/pan/openlist/credentials";
     const response = await fetch(appUrl(path) ?? path, { method: "DELETE" });
     if (!response.ok) throw new Error(await response.text());
+    await invalidateMutation(path);
   },
   testOpenList: () => request(openListTestSchema, "/api/pan/openlist/test", { method: "POST" }),
   openListFiles: (path = "/", page = 1) => {
@@ -599,12 +620,12 @@ export const api = {
       "/api/pan/strm/rewrite", { method: "POST" }),
   strmReconcile: () =>
     request(z.object({ started: z.boolean() }).passthrough(), "/api/pan/strm/reconcile", { method: "POST" }),
-  panOfflineTasks: () => request(z.array(panOfflineTaskSchema), "/api/pan/offline/tasks"),
+  panOfflineTasks: (signal?: AbortSignal) => request(z.array(panOfflineTaskSchema), "/api/pan/offline/tasks", { signal }),
   panOfflineCancel: (taskId: string) =>
     request(panOfflineTaskSchema, `/api/pan/offline/tasks/${taskId}/cancel`, { method: "POST" }),
   panOfflineNext: (taskId: string) =>
     request(panOfflineTaskSchema, `/api/pan/offline/tasks/${taskId}/next`, { method: "POST" }),
-  panPipeline: () => request(panPipelineSchema, "/api/pan/pipeline"),
+  panPipeline: (signal?: AbortSignal) => request(panPipelineSchema, "/api/pan/pipeline", { signal }),
   panOfflineIntake: (payload: { url: string; work_id?: string; code?: string }) =>
     request(panOfflineTaskSchema, "/api/pan/offline/intake", {
       method: "POST", body: JSON.stringify(payload)

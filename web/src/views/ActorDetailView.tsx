@@ -1,5 +1,8 @@
+import { useQuery } from "@tanstack/react-query";
 import { CoverImage } from "../components/CoverImage";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
+import { queryClient } from "../query/client";
+import { resources } from "../query/resources";
 
 import { api, appUrl } from "../api";
 import { hideBrokenImage, mediaUrl } from "../lib/mediaUrl";
@@ -145,38 +148,15 @@ export function ActorDetailView(props: {
   onActorTags?: (actorKey: string, tags: TagState) => Promise<void>;
   report?: (message: string) => void;
 }) {
-  const [extraWorks, setExtraWorks] = useState<ActorWorkRef[] | null>(null);
-  const [worksLoading, setWorksLoading] = useState(false);
-
-  useEffect(() => {
-    window.scrollTo(0, 0);
-  }, [props.model?.ref]);
-
-  useEffect(() => {
-    setExtraWorks(null);
-    const model = props.model;
-    if (!model || model.source !== "jav") return;
-    if (model.works.length >= model.work_count) return;
-    let cancelled = false;
-    setWorksLoading(true);
-    void api.actorWorks(model.ref).then((page) => {
-      if (cancelled) return;
-      setExtraWorks(page.works.map((work) => ({
-        id: work.id,
-        title: work.title,
-        code: work.code ?? null,
-        image_url: work.image_url ?? null,
-        category: work.category,
-        release_date: work.release_date ?? null,
-        studio: work.studio ?? null
-      })));
-    }).catch(() => {
-      if (!cancelled) setExtraWorks(null);
-    }).finally(() => {
-      if (!cancelled) setWorksLoading(false);
-    });
-    return () => { cancelled = true; };
-  }, [props.model?.ref, props.model?.work_count, props.model?.works.length, props.model?.source]);
+  const model = props.model;
+  const needsWorks = Boolean(model && model.source === "jav" && model.works.length < model.work_count);
+  const result = useQuery({ ...resources.actorWorks(model?.ref ?? ""), enabled: needsWorks }, queryClient);
+  const extraWorks: ActorWorkRef[] | null = needsWorks && result.data ? result.data.works.map((work) => ({
+    id: work.id, title: work.title, code: work.code ?? null, image_url: work.image_url ?? null,
+    category: work.category, release_date: work.release_date ?? null, studio: work.studio ?? null,
+  })) : null;
+  const worksLoading = needsWorks && result.isPending;
+  useEffect(() => { window.scrollTo(0, 0); }, [model?.ref]);
 
   const portrait = useMemo(() => {
     if (!props.model?.image_url) return null;

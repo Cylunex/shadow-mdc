@@ -1,51 +1,40 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { api } from "../api";
-import type { PanOfflineTask, WorkDetail, WorkRelated } from "../model";
+import type { PanOfflineTask } from "../model";
+import { queryClient, queryKeys } from "../query/client";
+import { resources } from "../query/resources";
 
 export function useWorkPage(workId: string) {
-  const [detail, setDetail] = useState<WorkDetail | null>(null);
-  const [related, setRelated] = useState<WorkRelated>({ by_actor: [], by_tag: [] });
-  const [offlineTasks, setOfflineTasks] = useState<PanOfflineTask[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const active = useRef<AbortController | null>(null);
-
+  const primary = useQuery(resources.detail(workId), queryClient);
+  const preferences = useQuery(resources.prefs(), queryClient);
+  const detail = useMemo(() => primary.data && preferences.data
+    ? { ...primary.data, want_list: preferences.data.want_list.includes(workId) }
+    : primary.data ?? null, [primary.data, preferences.data, workId]);
+  // Optional expensive reads start after the main content can paint.
+  const related = useQuery({ ...resources.related(workId), enabled: Boolean(primary.data) }, queryClient);
+  const offline = useQuery({ ...resources.offline(workId), enabled: Boolean(primary.data) }, queryClient);
   const reload = useCallback(async (id: string) => {
-    active.current?.abort();
-    const controller = new AbortController();
-    active.current = controller;
-    const { signal } = controller;
-    setLoading(true);
-    setLoadError(null);
-    setRelated({ by_actor: [], by_tag: [] });
-    setOfflineTasks([]);
-
-    // Primary content paints as soon as its own request completes.
-    const primary = api.workDetail(id, signal);
-    void api.workRelated(id, 18, signal).then((rows) => {
-      if (!signal.aborted) setRelated(rows);
-    }).catch(() => undefined);
-    void api.workOfflineTasks(id, signal).then((rows) => {
-      if (!signal.aborted) setOfflineTasks(rows);
-    }).catch(() => undefined);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.related(id) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.offline(id) });
     try {
-      const next = await primary;
-      if (!signal.aborted) setDetail(next);
-    } catch (error) {
-      if (!signal.aborted) {
-        setDetail(null);
-        setLoadError(error instanceof Error ? error.message : String(error));
-      }
-    } finally {
-      if (!signal.aborted) setLoading(false);
+      await queryClient.fetchQuery({ ...resources.detail(id), staleTime: 0 });
+    } catch {
+      // The shared observer exposes the failure while keeping any existing data.
     }
   }, []);
+  const setOfflineTasks = useCallback((next: PanOfflineTask[] | ((current: PanOfflineTask[]) => PanOfflineTask[])) => {
+    queryClient.setQueryData<PanOfflineTask[]>(queryKeys.offline(workId), (current) =>
+      typeof next === "function" ? next(current ?? []) : next);
+  }, [workId]);
 
-  useEffect(() => {
-    void reload(workId);
-    return () => active.current?.abort();
-  }, [workId, reload]);
-
-  return { detail: detail?.id === workId ? detail : null, related, offlineTasks, setOfflineTasks, loadError, loading, reload };
+  return {
+    detail,
+    related: related.data ?? { by_actor: [], by_tag: [] },
+    offlineTasks: offline.data ?? [],
+    setOfflineTasks,
+    loadError: primary.error?.message ?? null,
+    loading: primary.isPending,
+    reload,
+  };
 }

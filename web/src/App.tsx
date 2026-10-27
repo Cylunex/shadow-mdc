@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "./api";
-import { DiscoverPanel } from "./components/DiscoverPanel";
+import { invalidateLibrary, queryClient, queryKeys } from "./query/client";
+import { resources } from "./query/resources";
 import { TaskCenter } from "./components/TaskCenter";
 import { TopNav, type AppView } from "./components/TopNav";
-import type { ActorProfile, Asset, Candidate, Library, LibraryPrefs, NonJavActor, TaskRun, Work } from "./model";
+import type { Asset, Candidate, LibraryPrefs, TaskRun, Work } from "./model";
 import { Actors, Inbox, Works } from "./panels";
 import { CategoriesView } from "./views/CategoriesView";
-import { SettingsView } from "./views/SettingsView";
-import { SubscriptionsView } from "./views/SubscriptionsView";
 import { WorkDetailView } from "./views/WorkDetailView";
 import { SwipeFeedView } from "./views/SwipeFeedView";
 import {
@@ -102,6 +102,13 @@ function applyWorksFilterPatch(
 }
 
 
+const SettingsView = lazy(() => import("./views/SettingsView").then((module) => ({ default: module.SettingsView })));
+const DiscoverPanel = lazy(() => import("./components/DiscoverPanel").then((module) => ({ default: module.DiscoverPanel })));
+const SubscriptionsView = lazy(() => import("./views/SubscriptionsView").then((module) => ({ default: module.SubscriptionsView })));
+const EMPTY_ROWS: never[] = [];
+const EMPTY_PREFS: LibraryPrefs = { want_list: [], actor_tags: {}, subscriptions: [], queue: [] };
+
+
 export function App() {
   const initialWorkId = typeof window !== "undefined" ? readWorkIdFromUrl() : null;
   const initialActorRef = typeof window !== "undefined" ? readActorRefFromUrl() : null;
@@ -118,78 +125,89 @@ export function App() {
     initialActorRef && !initialWorkId ? "actors" : "works"
   );
   const [taskTab, setTaskTab] = useState<"inbox" | "runs">("runs");
-  const [libraries, setLibraries] = useState<Library[]>([]);
-  const [assets, setAssets] = useState<Asset[]>([]);
-  const [workRows, setWorks] = useState<Work[]>([]);
-  const [actors, setActors] = useState<ActorProfile[]>([]);
-  const [nonJavActors, setNonJavActors] = useState<NonJavActor[]>([]);
-  const [tasks, setTasks] = useState<TaskRun[]>([]);
-  const [prefs, setPrefs] = useState<LibraryPrefs>({
-    want_list: [],
-    actor_tags: {},
-    subscriptions: [],
-    queue: []
-  });
+  const [swipeNeedsWorks, setSwipeNeedsWorks] = useState(false);
+  const showingActors = view === "actors" || view === "actor-detail";
+  const libraryQuery = useQuery({ ...resources.libraries(), enabled: view === "settings" || view === "tasks" }, queryClient);
+  const worksQuery = useQuery({ ...resources.works(), enabled: view === "works" || (view === "swipe" && swipeNeedsWorks) }, queryClient);
+  const actorsQuery = useQuery({ ...resources.actors(), enabled: showingActors }, queryClient);
+  const nonJavQuery = useQuery({ ...resources.nonJavActors(), enabled: showingActors }, queryClient);
+  const inboxQuery = useQuery({ ...resources.inbox(), enabled: view === "tasks" }, queryClient);
+  const tasksQuery = useQuery({ ...resources.tasks(), enabled: view === "tasks" }, queryClient);
+  const prefsQuery = useQuery(resources.prefs(), queryClient);
+  const libraries = libraryQuery.data ?? EMPTY_ROWS;
+  const assets = inboxQuery.data ?? EMPTY_ROWS;
+  const workRows = worksQuery.data ?? EMPTY_ROWS;
+  const actors = actorsQuery.data ?? EMPTY_ROWS;
+  const nonJavActors = nonJavQuery.data ?? EMPTY_ROWS;
+  const tasks = tasksQuery.data ?? EMPTY_ROWS;
+  const prefs = prefsQuery.data ?? EMPTY_PREFS;
+  const setPrefs = useCallback((next: LibraryPrefs) => { queryClient.setQueryData(queryKeys.prefs, next); }, []);
+  const setWorks = useCallback((next: Work[] | ((current: Work[]) => Work[])) => {
+    queryClient.setQueryData<Work[]>(queryKeys.works, (current) =>
+      typeof next === "function" ? (current ? next(current) : undefined) : next);
+  }, []);
+  const setTasks = useCallback((next: TaskRun[]) => {
+    void queryClient.cancelQueries({ queryKey: queryKeys.tasks });
+    queryClient.setQueryData(queryKeys.tasks, next);
+  }, []);
+  const lastTasks = useRef<TaskRun[] | undefined>(undefined);
+  useEffect(() => {
+    const next = tasksQuery.data;
+    const previous = lastTasks.current;
+    const finished = new Map(previous?.map((task) => [task.id, task.finished_at]));
+    if (previous && next?.some((task) => task.finished_at
+      && task.finished_at !== finished.get(task.id))) {
+      void invalidateLibrary();
+      void queryClient.invalidateQueries({ queryKey: queryKeys.prefs });
+    }
+    lastTasks.current = next;
+  }, [tasksQuery.data]);
   const [candidates, setCandidates] = useState<Record<string, Candidate[]>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState("正在连接 Shadow MDC…");
-  const [loaded, setLoaded] = useState<Partial<Record<AppView | "core", boolean>>>({});
+  const loaded = {
+    works: worksQuery.data !== undefined,
+    actors: actorsQuery.data !== undefined || nonJavQuery.data !== undefined,
+    tasks: inboxQuery.data !== undefined,
+  };
   const wantIds = useMemo(() => new Set(prefs.want_list), [prefs.want_list]);
   const works = useMemo(
     () => workRows.map((item) => item.want_list === wantIds.has(item.id)
       ? item : { ...item, want_list: wantIds.has(item.id) }),
     [workRows, wantIds],
   );
-  const pendingLoads = useRef(new Map<string, Promise<void>>());
-  const loadOnce = useCallback((key: string, load: () => Promise<void>): Promise<void> => {
-    const pending = pendingLoads.current.get(key);
-    if (pending) return pending;
-    const request = load().finally(() => { pendingLoads.current.delete(key); });
-    pendingLoads.current.set(key, request);
-    return request;
+  const refreshCore = useCallback(async () => {
+    await queryClient.fetchQuery({ ...resources.prefs(), staleTime: 0 });
   }, []);
-
-  const refreshCore = useCallback(() => loadOnce("core", async () => {
+  const refreshWorks = useCallback(async () => {
+    if (view === "works" || (view === "swipe" && swipeNeedsWorks)) {
+      await queryClient.fetchQuery({ ...resources.works(), staleTime: 0 });
+    } else await queryClient.invalidateQueries({ queryKey: queryKeys.works, refetchType: "none" });
+  }, [view, swipeNeedsWorks]);
+  const refreshActors = useCallback(async () => {
+    if (!showingActors) {
+      await Promise.all([queryKeys.actors, queryKeys.nonJavActors].map((queryKey) =>
+        queryClient.invalidateQueries({ queryKey, refetchType: "none" })));
+      return;
+    }
     await Promise.all([
-      api.libraries().then(setLibraries),
-      api.libraryPrefs().then(setPrefs),
-      api.tasks().then(setTasks)
+      queryClient.fetchQuery({ ...resources.actors(), staleTime: 0 }),
+      queryClient.fetchQuery({ ...resources.nonJavActors(), staleTime: 0 }),
     ]);
-    setLoaded((current) => ({ ...current, core: true }));
-  }), [loadOnce]);
-
-  const refreshWorks = useCallback(() => loadOnce("works", async () => {
-    const rows = await api.works();
-    setWorks(rows);
-    setLoaded((current) => ({ ...current, works: true }));
-  }), [loadOnce]);
-
-  const refreshActors = useCallback(() => loadOnce("actors", async () => {
-    const [nextActors, nextNonJav] = await Promise.all([api.actors(), api.nonJavActors()]);
-    setActors(nextActors);
-    setNonJavActors(nextNonJav);
-    setLoaded((current) => ({ ...current, actors: true }));
-  }), [loadOnce]);
-
+  }, [showingActors]);
   const refreshInbox = useCallback(async () => {
-    setAssets(await api.assets());
-    setLoaded((current) => ({ ...current, tasks: true }));
-  }, []);
-
-  const refreshTasks = useCallback(async () => {
-    setTasks(await api.tasks());
-  }, []);
+    if (view === "tasks") await queryClient.fetchQuery({ ...resources.inbox(), staleTime: 0 });
+    else await queryClient.invalidateQueries({ queryKey: queryKeys.inbox, refetchType: "none" });
+  }, [view]);
+  const refreshTasks = useCallback(async () => { await queryClient.fetchQuery(resources.tasks()); }, []);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        await refreshCore();
-        setMessage("数据已同步");
-      } catch (error) {
-        setMessage(errorMessage(error));
-      }
-    })();
-  }, [refreshCore]);
+    const error = [prefsQuery.error, libraryQuery.error, worksQuery.error, actorsQuery.error,
+      nonJavQuery.error, inboxQuery.error, tasksQuery.error].find(Boolean);
+    if (error) setMessage(errorMessage(error));
+    else if (prefsQuery.data) setMessage("数据已同步");
+  }, [prefsQuery.error, prefsQuery.data, libraryQuery.error, worksQuery.error, actorsQuery.error,
+    nonJavQuery.error, inboxQuery.error, tasksQuery.error]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -218,27 +236,6 @@ export function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        let refreshed = false;
-        if ((view === "works" || view === "swipe") && !loaded.works) {
-          await refreshWorks();
-          refreshed = true;
-        } else if ((view === "actors" || view === "actor-detail") && !loaded.actors) {
-          await refreshActors();
-          refreshed = true;
-        } else if (view === "tasks" && !loaded.tasks) {
-          await refreshInbox();
-          refreshed = true;
-        }
-        if (refreshed) setMessage("数据已同步");
-      } catch (error) {
-        setMessage(errorMessage(error));
-      }
-    })();
-  }, [view, loaded.works, loaded.actors, loaded.tasks, refreshWorks, refreshActors, refreshInbox]);
 
   const inbox = useMemo(() => assets.filter((asset) => asset.state !== "identified"), [assets]);
 
@@ -424,11 +421,8 @@ export function App() {
             onClick={() => {
               void (async () => {
                 try {
-                  setLoaded({});
-                  await refreshCore();
-                  if (view === "works" || view === "swipe") await refreshWorks();
-                  if (view === "actors" || view === "actor-detail") await refreshActors();
-                  if (view === "tasks") await refreshInbox();
+                  await queryClient.cancelQueries({ queryKey: queryKeys.all });
+                  await queryClient.invalidateQueries({ queryKey: queryKeys.all }, { throwOnError: true });
                   setMessage("已强制刷新");
                 } catch (error) {
                   setMessage(errorMessage(error));
@@ -440,7 +434,7 @@ export function App() {
           </button>
         </div>
 
-        {view === "actors" && !loaded.actors && (
+        {view === "actors" && !loaded.actors && (actorsQuery.isPending || nonJavQuery.isPending) && (
           <div className="skeleton-grid" aria-busy="true" aria-label="演员加载中">
             {Array.from({ length: 6 }, (_, index) => (
               <div className="skeleton-card" key={index}>
@@ -452,10 +446,19 @@ export function App() {
             ))}
           </div>
         )}
+        {view === "actors" && (actorsQuery.isFetching || nonJavQuery.isFetching) && loaded.actors && (
+          <p className="muted" role="status">演员资料仍在更新…</p>
+        )}
+        {view === "works" && worksQuery.error && <p role="alert">影片加载失败：{worksQuery.error.message}，可点击上方刷新重试。</p>}
+        {view === "actors" && (actorsQuery.error || nonJavQuery.error) && (
+          <p role="alert">部分演员资料加载失败，可点击上方刷新重试。</p>
+        )}
         {view === "actors" && loaded.actors && (
           <Actors
             actors={actors}
             nonJavActors={nonJavActors}
+            loadingActors={actorsQuery.isPending}
+            loadingNonJavActors={nonJavQuery.isPending}
             busy={busy}
             prefs={prefs}
             onOpenWork={openWorkDetail}
@@ -502,7 +505,7 @@ export function App() {
         {view === "actor-detail" && (
           <ActorDetailView
             model={selectedActorRef ? resolveActorDetail(selectedActorRef, actors, nonJavActors) : null}
-            loading={!loaded.actors}
+            loading={actorsQuery.isPending || nonJavQuery.isPending}
             busy={busy}
             tags={(() => {
               if (!selectedActorRef) return undefined;
@@ -552,7 +555,7 @@ export function App() {
           />
         )}
 
-        {view === "works" && !loaded.works && (
+        {view === "works" && worksQuery.isPending && (
           <div className="skeleton-grid" aria-busy="true" aria-label="作品加载中">
             {Array.from({ length: 6 }, (_, index) => (
               <div className="skeleton-card" key={index}>
@@ -698,44 +701,49 @@ export function App() {
         {view === "swipe" && (
           <SwipeFeedView
             works={works}
-            loading={!loaded.works}
+            loading={worksQuery.isPending}
+            onLibraryMode={setSwipeNeedsWorks}
             onOpenDetail={openWorkDetail}
             report={setMessage}
           />
         )}
 
         {view === "rankings" && (
-          <DiscoverPanel
-            busy={busy}
-            report={setMessage}
-            onOpenWork={openWorkDetail}
-            onFilterByCode={(code) => {
-              navigateToFilteredWorks({ q: code }, `已按番号筛选：${code}`, true);
-            }}
-            wantListIds={prefs.want_list}
-            onToggleWant={async (workId, wanted) => {
-              await run(`want-${workId}`, async () => {
-                const next = await api.setWantList(workId, wanted);
-                setPrefs(next);
-                setWorks((items) =>
-                  items.map((item) => (item.id === workId ? { ...item, want_list: wanted } : item))
-                );
-                setMessage(wanted ? "已加入想看" : "已移出想看");
-              });
-            }}
-            onSeeded={async () => {
-              await refreshWorks();
-            }}
-          />
+          <Suspense fallback={<p className="muted" aria-busy="true">正在打开页面…</p>}>
+            <DiscoverPanel
+              busy={busy}
+              report={setMessage}
+              onOpenWork={openWorkDetail}
+              onFilterByCode={(code) => {
+                navigateToFilteredWorks({ q: code }, `已按番号筛选：${code}`, true);
+              }}
+              wantListIds={prefs.want_list}
+              onToggleWant={async (workId, wanted) => {
+                await run(`want-${workId}`, async () => {
+                  const next = await api.setWantList(workId, wanted);
+                  setPrefs(next);
+                  setWorks((items) =>
+                    items.map((item) => (item.id === workId ? { ...item, want_list: wanted } : item))
+                  );
+                  setMessage(wanted ? "已加入想看" : "已移出想看");
+                }, "none");
+              }}
+              onSeeded={async () => {
+                await refreshWorks();
+              }}
+            />
+          </Suspense>
         )}
 
         {view === "subscriptions" && (
-          <SubscriptionsView
-            prefs={prefs}
-            busy={busy}
-            report={setMessage}
-            onChanged={setPrefs}
-          />
+          <Suspense fallback={<p className="muted" aria-busy="true">正在打开页面…</p>}>
+            <SubscriptionsView
+              prefs={prefs}
+              busy={busy}
+              report={setMessage}
+              onChanged={setPrefs}
+            />
+          </Suspense>
         )}
 
         {view === "tasks" && (
@@ -790,12 +798,14 @@ export function App() {
         )}
 
         {view === "settings" && (
-          <SettingsView
-            libraries={libraries}
-            busy={busy}
-            run={(key, action, refresh = "core") => run(key, action, refresh)}
-            report={setMessage}
-          />
+          <Suspense fallback={<p className="muted" aria-busy="true">正在打开页面…</p>}>
+            <SettingsView
+              libraries={libraries}
+              busy={busy}
+              run={(key, action, refresh = "core") => run(key, action, refresh)}
+              report={setMessage}
+            />
+          </Suspense>
         )}
       </main>
     </div>

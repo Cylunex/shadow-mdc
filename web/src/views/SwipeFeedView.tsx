@@ -11,6 +11,7 @@ type Props = {
   loading: boolean;
   onOpenDetail: (workId: string) => void;
   report: (message: string) => void;
+  onLibraryMode?: (active: boolean) => void;
 };
 
 type Mode = "tube" | "library";
@@ -99,8 +100,12 @@ async function enqueueOffline(workId: string, report: (message: string) => void)
   }
 }
 
-export function SwipeFeedView({ works, loading, onOpenDetail, report }: Props) {
+export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryMode }: Props) {
   const [mode, setMode] = useState<Mode>("tube");
+  useEffect(() => {
+    onLibraryMode?.(mode === "library");
+    return () => onLibraryMode?.(false);
+  }, [mode, onLibraryMode]);
   const [orderKey, setOrderKey] = useState(0);
   const [filter, setFilter] = useState<LibraryFilter>("all");
   const [activeLibId, setActiveLibId] = useState<string | null>(null);

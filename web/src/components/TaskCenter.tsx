@@ -1,5 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
-import type { PanOfflineTask, TaskRun } from "../model";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { queryClient } from "../query/client";
+import { resources } from "../query/resources";
+import type { TaskRun } from "../model";
 import { api } from "../api";
 import { useTaskUpdates } from "../hooks/useTaskUpdates";
 
@@ -15,14 +18,8 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
   const [autoRefresh, setAutoRefresh] = useState(true);
   const live = useTaskUpdates({ enabled: autoRefresh, onChanged, onTasksSnapshot });
   const [kindFilter, setKindFilter] = useState("all");
-  const [offlineTasks, setOfflineTasks] = useState<PanOfflineTask[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    void api.panOfflineTasks()
-      .then((rows) => { if (!cancelled) setOfflineTasks(rows); })
-      .catch(() => { if (!cancelled) setOfflineTasks([]); });
-    return () => { cancelled = true; };
-  }, [tasks]);
+  const offline = useQuery({ ...resources.offlineList(), refetchInterval: autoRefresh ? 5_000 : false }, queryClient);
+  const offlineTasks = offline.data ?? [];
 
   const kinds = useMemo(() => ["all", ...Array.from(new Set(tasks.map((task) => task.kind))).sort()], [tasks]);
   const visible = useMemo(() => kindFilter === "all" ? tasks : tasks.filter((task) => task.kind === kindFilter), [tasks, kindFilter]);

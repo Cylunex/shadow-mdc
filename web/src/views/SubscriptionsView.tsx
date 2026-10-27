@@ -1,6 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { LibraryPrefs, SubscriptionWatchStatus } from "../model";
+import { queryClient } from "../query/client";
+import { resources } from "../query/resources";
 
 type Props = {
   prefs: LibraryPrefs;
@@ -10,6 +13,7 @@ type Props = {
 };
 
 export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
+  useQuery(resources.prefs(), queryClient);
   const [tab, setTab] = useState<"subs" | "queue">("subs");
   const [actorKey, setActorKey] = useState("");
   const [actorName, setActorName] = useState("");
@@ -123,7 +127,7 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
             onClick={() => {
               void runLocal("scan-subs", async () => {
                 const result = await api.scanSubscriptions();
-                const next = await api.libraryPrefs();
+                const next = await queryClient.fetchQuery({ ...resources.prefs(), staleTime: 0 });
                 onChanged(next);
                 report(`扫描完成：新增队列 ${result.queued}，跳过暂停 ${result.skipped}`);
               });

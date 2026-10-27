@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { queryClient } from "../query/client";
+import { resources } from "../query/resources";
 import { FieldPrioritySettings } from "../components/FieldPrioritySettings";
 import { IdentifyByUrlPanel } from "../components/IdentifyByUrlPanel";
 import type { Library, MediaServerSettings, OpenListTest, PanOfflineTask, PanPipeline, PanSettings, PanStatus } from "../model";
@@ -40,30 +42,41 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
   const [pipeline, setPipeline] = useState<PanPipeline | null>(null);
   const [intakeUrl, setIntakeUrl] = useState("");
   const [intakeCode, setIntakeCode] = useState("");
+  const panRead = useRef(0);
 
   const reloadPan = async () => {
-    const [status, settings, tasks, pipe] = await Promise.all([
-      api.panStatus(),
-      api.panSettings().catch(() => null),
-      api.panOfflineTasks().catch(() => []),
-      api.panPipeline().catch(() => null),
+    const generation = ++panRead.current;
+    await Promise.all([
+      queryClient.fetchQuery(resources.panStatus()).then((value) => {
+        if (generation === panRead.current) setPan(value);
+      }).catch((error: unknown) => {
+        if (generation !== panRead.current) return;
+        setPan(null);
+        throw error;
+      }),
+      api.panSettings().then((settings) => {
+        if (generation !== panRead.current) return;
+        setPanSettings(settings);
+        setDirDraft(settings.offline_directory_id ?? "");
+        setClientIdDraft(settings.client_id);
+        setClientSecretDraft("");
+        setOlUserDraft(settings.openlist_username ?? "");
+        if (settings.openlist_offline_path) setOlBrowsePath(settings.openlist_offline_path);
+      }).catch(() => undefined),
+      queryClient.fetchQuery({ ...resources.offlineList(), staleTime: 0 }).then((value) => {
+        if (generation === panRead.current) setOfflineTasks(value);
+      }).catch(() => undefined),
+      queryClient.fetchQuery(resources.pipeline()).then((value) => {
+        if (generation === panRead.current) setPipeline(value);
+      }).catch(() => undefined),
     ]);
-    setPan(status);
-    if (settings) {
-      setPanSettings(settings);
-      setDirDraft(settings.offline_directory_id ?? "");
-      setClientIdDraft(settings.client_id);
-      setClientSecretDraft("");
-      setOlUserDraft(settings.openlist_username ?? "");
-      if (settings.openlist_offline_path) setOlBrowsePath(settings.openlist_offline_path);
-    }
-    setOfflineTasks(tasks);
-    setPipeline(pipe);
   };
 
   useEffect(() => {
-    void reloadPan().catch(() => setPan(null));
-    void api.mediaServer().then(setMedia).catch(() => setMedia(null));
+    let active = true;
+    void reloadPan().catch(() => undefined);
+    void api.mediaServer().then((value) => { if (active) setMedia(value); }).catch(() => { if (active) setMedia(null); });
+    return () => { active = false; ++panRead.current; };
   }, []);
 
   useEffect(() => {

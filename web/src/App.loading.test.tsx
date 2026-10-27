@@ -1,3 +1,5 @@
+import { notifyManager } from "@tanstack/react-query";
+import { queryClient } from "./query/client";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +21,12 @@ vi.mock("./panels", () => ({
   Actors: () => <div>actors-ready</div>, Inbox: () => null,
 }));
 vi.mock("./views/WorkDetailView", () => ({ WorkDetailView: () => <div>detail-ready</div> }));
+vi.mock("./components/DiscoverPanel", () => ({ DiscoverPanel: ({ onToggleWant }: { onToggleWant: (id: string, wanted: boolean) => void }) => (
+  <button onClick={() => onToggleWant("fixture", true)}>want-from-ranking</button>
+) }));
+vi.mock("./views/SwipeFeedView", () => ({ SwipeFeedView: ({ onLibraryMode }: { onLibraryMode: (active: boolean) => void }) => (
+  <button onClick={() => onLibraryMode(true)}>load-library-feed</button>
+) }));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -31,6 +39,8 @@ describe("page load request budget", () => {
   let root: Root;
   let container: HTMLDivElement;
   beforeEach(() => {
+    queryClient.clear();
+    notifyManager.setScheduler(queueMicrotask);
     vi.clearAllMocks();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
@@ -47,6 +57,7 @@ describe("page load request budget", () => {
   });
   afterEach(async () => {
     await act(async () => root.unmount());
+    queryClient.clear();
     container.remove();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -78,6 +89,70 @@ describe("page load request budget", () => {
     await act(async () => root.render(<App />));
     expect(container.textContent).toContain("detail-ready");
     expect(api.works).not.toHaveBeenCalled();
+  });
+
+  it("starts only works and preferences on a completely cold film page", async () => {
+    await act(async () => root.render(<App />));
+    expect(api.works).toHaveBeenCalledTimes(1);
+    expect(api.libraryPrefs).toHaveBeenCalledTimes(1);
+    expect(api.tasks).not.toHaveBeenCalled();
+    expect(api.libraries).not.toHaveBeenCalled();
+    expect(api.assets).not.toHaveBeenCalled();
+    expect(api.actors).not.toHaveBeenCalled();
+    expect(api.nonJavActors).not.toHaveBeenCalled();
+  });
+
+  it("shows actor content while the other directory is still pending", async () => {
+    window.history.replaceState({}, "", "/?view=actors");
+    vi.mocked(api.nonJavActors).mockReturnValue(new Promise(() => undefined));
+    await act(async () => root.render(<App />));
+    expect(container.textContent).toContain("actors-ready");
+    expect(container.textContent).toContain("演员资料仍在更新");
+    expect(api.works).not.toHaveBeenCalled();
+    expect(api.tasks).not.toHaveBeenCalled();
+  });
+
+  it("does not download the library until the local swipe feed is selected", async () => {
+    window.history.replaceState({}, "", "/?view=swipe");
+    await act(async () => root.render(<App />));
+    expect(api.works).not.toHaveBeenCalled();
+    await act(async () => [...container.querySelectorAll("button")]
+      .find((button) => button.textContent === "load-library-feed")!.click());
+    expect(api.works).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not turn an unloaded library into a cached empty list when a ranking item is marked wanted", async () => {
+    window.history.replaceState({}, "", "/?view=rankings");
+    vi.mocked(api.setWantList).mockResolvedValue(libraryPrefsSchema.parse({ want_list: ["fixture"] }));
+    await act(async () => root.render(<App />));
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "want-from-ranking")!.click());
+    expect(api.works).not.toHaveBeenCalled();
+    await nav("影片");
+    expect(api.works).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("[data-works]")?.textContent).toBe("fixture:true");
+  });
+
+  it("shares fulfilled resources across app remounts", async () => {
+    await act(async () => root.render(<App />));
+    await act(async () => root.render(null));
+    await act(async () => root.render(<App />));
+    expect(container.querySelector("[data-works]")?.textContent).toBe("fixture:false");
+    expect(api.works).toHaveBeenCalledTimes(1);
+    expect(api.libraryPrefs).toHaveBeenCalledTimes(1);
+  });
+
+  it("force-refreshes visible queries together without blanking existing content", async () => {
+    await act(async () => root.render(<App />));
+    const prefs = deferred<Awaited<ReturnType<typeof api.libraryPrefs>>>();
+    const rows = deferred<Work[]>();
+    vi.mocked(api.libraryPrefs).mockReturnValue(prefs.promise);
+    vi.mocked(api.works).mockReturnValue(rows.promise);
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "刷新")!.click());
+    expect(api.libraryPrefs).toHaveBeenCalledTimes(2);
+    expect(api.works).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("[data-works]")).not.toBeNull();
+    expect(api.tasks).not.toHaveBeenCalled();
+    await act(async () => { prefs.resolve(libraryPrefsSchema.parse({})); rows.resolve([work]); });
   });
 
   it("deduplicates a pending list request when switching pages", async () => {
