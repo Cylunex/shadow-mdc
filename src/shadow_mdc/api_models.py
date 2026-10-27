@@ -742,17 +742,30 @@ class PlaySourceOut(BaseModel):
     item_id: str | None = None
     provider: str | None = None
     note: str | None = None
+    probe_ok: bool | None = None
+    probe_reason: str | None = None
+
+
+class PlayProbeFailureOut(BaseModel):
+    stage: str
+    provider: str | None = None
+    reason: str
+    detail: str | None = None
+    elapsed_ms: int | None = None
 
 
 class PlayResolveOut(BaseModel):
     work_id: str
     code: str | None = None
     preferred: PlaySourceOut | None = None
+    chosen: PlaySourceOut | None = None
     sources: list[PlaySourceOut] = Field(default_factory=list)
+    failures: list[PlayProbeFailureOut] = Field(default_factory=list)
     emby_in_library: bool = False
     sites_loaded: bool = False
     external_site_count: int = 0
     vod_provider_count: int = 0
+    resolve_ms: int = 0
 
 
 class GfriendsFillRequest(BaseModel):

@@ -20,5 +20,9 @@
     }
   ],
   "vod_max_providers": 4,
-  "vod_max_sources": 8
+  "vod_max_sources": 8,
+  "resolve_budget_ms": 12000,
+  "m3u8_probe_enabled": true,
+  "m3u8_probe_timeout_seconds": 5.0,
+  "m3u8_max_bytes": 524288
 }

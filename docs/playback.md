@@ -7,7 +7,9 @@ Shadow MDC 可为作品解析播放入口：**Emby/Jellyfin 深链**（公开代
 1. **媒体库优先**：若已配置 Emby/Jellyfin 且 Items 搜索命中，首选打开媒体库条目深链（或 App Scheme）。
 2. **外站跳转**：按本地 `playback-sites.local.json` 的 `external_sites[].url_template` 用番号展开 URL，在新标签打开。
 3. **VOD m3u8**：对配置的 Apple-CMS `provide/vod` 用 `ac=detail&wd=番号` 搜索；仅保留 **白名单 type_id** 且分类名未命中未成年暗示词的结果；应用内 HLS 页播放（hls.js），**不代传媒体字节**。
-4. 未配置片源文件时，仅 Emby 搜索链可用（与原先「打开 Emby」一致）。
+4. **有界多源 resolve**（LumenBox 思路重写）：整次解析有总预算 `resolve_budget_ms`（默认 12s）；顺序 Emby → 外站模板 → VOD；单源探针失败（超时 / 非 200 / 清单非法）记入 `failures` 并跳过下一源，已命中源仍返回。响应含 `chosen`（= preferred）、`failures`、`resolve_ms`，片源可带 `probe_ok` / `probe_reason`。
+5. **m3u8 完整性门闩**：把 VOD URL 标为可播前，有界拉取清单（`m3u8_max_bytes` / `m3u8_probe_timeout_seconds`）；须以 `#EXTM3U` 开头且含 `#EXTINF` 或 `#EXT-X-STREAM-INF`；截断 / 空体 / HTML 错误页视为失败，**不当成功缓存**。同一门闩供 resolve 与应用内播放预检复用。
+6. 未配置片源文件时，仅 Emby 搜索链可用（与原先「打开 Emby」一致）。
 
 ## 配置
 

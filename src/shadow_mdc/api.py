@@ -93,6 +93,7 @@ from .api_models import (
     MagnetLinkOut,
     ManualCandidateRequest,
     MediaServerSettingsPayload,
+    PlayProbeFailureOut,
     PlayResolveOut,
     PlaySourceOut,
     MultiSiteSearchOut,
@@ -1579,15 +1580,19 @@ async def work_play_resolve(work_id: str, request: Request, repo: Repo) -> PlayR
         sites=sites,
         client=app_runtime.http,
     )
+    chosen = result.chosen or result.preferred
     return PlayResolveOut(
         work_id=result.work_id,
         code=result.code,
         preferred=PlaySourceOut.model_validate(result.preferred.model_dump()) if result.preferred else None,
+        chosen=PlaySourceOut.model_validate(chosen.model_dump()) if chosen else None,
         sources=[PlaySourceOut.model_validate(s.model_dump()) for s in result.sources],
+        failures=[PlayProbeFailureOut.model_validate(f.model_dump()) for f in result.failures],
         emby_in_library=result.emby_in_library,
         sites_loaded=bool(sites.external_sites or sites.vod_providers),
         external_site_count=sum(1 for s in sites.external_sites if s.enabled),
         vod_provider_count=sum(1 for p in sites.vod_providers if p.enabled),
+        resolve_ms=result.resolve_ms,
     )
 
 
