@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { memoryStorage } from "../test/storage";
 import { CoverImage } from "./CoverImage";
 import { InAppPlayer, type PlayerSource } from "./InAppPlayer";
 import { Lightbox } from "./Lightbox";
@@ -30,6 +31,7 @@ describe("media component lifecycle", () => {
   let container: HTMLDivElement;
   let root: Root;
   beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("Hls", FakeHls);
     FakeHls.instances = [];
@@ -98,6 +100,45 @@ describe("media component lifecycle", () => {
     await act(async () => container.querySelector("video")!.dispatchEvent(new Event("error")));
     expect(container.querySelector("video")?.getAttribute("src")).toBe("/b.mp4");
     expect(container.textContent).toContain("媒体错误");
+  });
+
+  it("continues a work across refreshed URLs and resets when the work identity changes", async () => {
+    await act(async () => root.render(<InAppPlayer playbackKey="work:a" sources={[source("/a.mp4?v=1")]} />));
+    const first = container.querySelector("video")!;
+    Object.defineProperty(first, "duration", { value: 600 });
+    await act(async () => first.dispatchEvent(new Event("loadedmetadata")));
+    first.currentTime = 120;
+    await act(async () => root.render(<InAppPlayer playbackKey="work:a" sources={[source("/a.mp4?v=2")]} />));
+    const refreshed = container.querySelector("video")!;
+    Object.defineProperty(refreshed, "duration", { value: 600 });
+    await act(async () => refreshed.dispatchEvent(new Event("loadedmetadata")));
+    expect(refreshed.currentTime).toBe(120);
+    await act(async () => root.render(<InAppPlayer playbackKey="work:b" sources={[source("/a.mp4?v=2")]} />));
+    const other = container.querySelector("video")!;
+    expect(other).not.toBe(refreshed);
+    Object.defineProperty(other, "duration", { value: 600 });
+    await act(async () => other.dispatchEvent(new Event("loadedmetadata")));
+    expect(other.currentTime).toBe(0);
+  });
+
+  it.each(["manual", "failover"])("preserves position during %s source changes without stored progress", async (mode) => {
+    await act(async () => root.render(<InAppPlayer sources={[source("/a.mp4"), source("/b.mp4")]} />));
+    const video = container.querySelector("video")!;
+    Object.defineProperty(video, "duration", { value: 600 });
+    await act(async () => video.dispatchEvent(new Event("loadedmetadata")));
+    video.currentTime = 72;
+    await act(async () => {
+      if (mode === "manual") {
+        const buttons = container.querySelectorAll<HTMLButtonElement>(".in-app-player-sources button");
+        buttons[1]!.click();
+      } else {
+        video.dispatchEvent(new Event("error"));
+      }
+    });
+    expect(video.getAttribute("src")).toBe("/b.mp4");
+    video.currentTime = 0;
+    await act(async () => video.dispatchEvent(new Event("loadedmetadata")));
+    expect(video.currentTime).toBe(72);
   });
 
   it("focuses the lightbox, keeps keys inside it and restores focus on close", async () => {

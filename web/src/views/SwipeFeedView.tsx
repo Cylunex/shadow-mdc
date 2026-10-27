@@ -504,6 +504,7 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report }: Props) {
                       <InAppPlayer
                         embedded
                         title={title}
+                        playbackKey={`work:${work.id}`}
                         sources={libSources}
                         onReport={report}
                         onClose={stopLibraryPlay}

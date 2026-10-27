@@ -947,6 +947,7 @@ export function WorkDetailView(props: {
       {playerOpen && playerSources.length > 0 ? (
         <div className="in-app-player-portal" role="dialog" aria-modal="true" aria-label="在线播放">
           <InAppPlayer
+            playbackKey={`work:${props.workId}`}
             title={playerTitle}
             sources={playerSources}
             onClose={() => {

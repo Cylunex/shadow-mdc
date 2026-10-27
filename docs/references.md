@@ -17,6 +17,8 @@ Shadow MDC 的代码与数据模型从零实现。下列项目只用于确认常
 - [beets](https://docs.beets.io/en/stable/reference/cli.html#import)：增量导入与保留既有元数据的流程取舍。
 - [hls.js](https://github.com/video-dev/hls.js/blob/master/docs/API.md)：媒体绑定、错误处理与播放实例释放。
 - [HTTP Retry-After](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after)：来源退避的协议依据。
+- [Peach](https://gitgud.io/peach-mitao/peach)：稳定媒体身份下的播放记忆、已有时间轴预览复用、共享查询缓存与持久任务后继。
+  本地副本核对版本为 `1b8beb9b`（0.50.0）；具体证据与本项目取舍见[Peach 对照](reference-audit.md#peach-对照与独立改进)。
 
 ## 明确取舍
 

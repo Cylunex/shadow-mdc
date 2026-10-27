@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, appUrl } from "../api";
+import { trackPlaybackProgress } from "./playbackProgress";
 
 export type PlayerSource = {
   kind: string;
@@ -19,6 +20,8 @@ export type PlayerSource = {
 
 type Props = {
   title?: string;
+  /** Stable work identity; signed media URLs are never used as storage keys. */
+  playbackKey?: string;
   sources: PlayerSource[];
   initialIndex?: number;
   autoPlay?: boolean;
@@ -103,14 +106,15 @@ function pickInitialIndex(sources: PlayerSource[], preferred?: number): number {
 }
 
 export function InAppPlayer(props: Props) {
-  const sessionKey = JSON.stringify(props.sources.map((source) => [
+  const sessionKey = JSON.stringify([props.playbackKey, props.sources.map((source) => [
     source.url, source.kind, source.referer, source.skip_proxy, source.playable_in_app,
-  ]));
+  ])]);
   return <PlayerSession key={sessionKey} {...props} />;
 }
 
 function PlayerSession({
   title,
+  playbackKey,
   sources,
   initialIndex,
   autoPlay = true,
@@ -168,7 +172,7 @@ function PlayerSession({
   );
 
   const attachSource = useCallback(
-    async (source: PlayerSource, signal: AbortSignal, startAt = 0) => {
+    async (source: PlayerSource, signal: AbortSignal) => {
       const video = videoRef.current;
       if (!video || !source?.url) return;
       destroyHls();
@@ -191,13 +195,6 @@ function PlayerSession({
             hls.attachMedia(video);
             hls.on(Hls.Events.MANIFEST_PARSED || "hlsManifestParsed", () => {
               if (signal.aborted) return;
-              if (startAt > 0) {
-                try {
-                  video.currentTime = startAt;
-                } catch {
-                  /* ignore */
-                }
-              }
               if (autoPlay) void video.play().catch(() => {
                 if (!signal.aborted) setStatus("idle");
               });
@@ -215,18 +212,6 @@ function PlayerSession({
           video.src = mediaUrl;
         } else {
           video.src = mediaUrl;
-        }
-        if (startAt > 0) {
-          const onMeta = () => {
-            try {
-              video.currentTime = startAt;
-            } catch {
-              /* ignore */
-            }
-            video.removeEventListener("loadedmetadata", onMeta);
-          };
-          video.addEventListener("loadedmetadata", onMeta);
-          signal.addEventListener("abort", () => video.removeEventListener("loadedmetadata", onMeta), { once: true });
         }
         if (autoPlay) await video.play().catch(() => {
           if (!signal.aborted) setStatus("idle");
@@ -249,8 +234,10 @@ function PlayerSession({
     resumeAtRef.current = 0;
     const controller = new AbortController();
     const video = videoRef.current;
-    void attachSource(current, controller.signal, startAt);
+    const stopTracking = video ? trackPlaybackProgress(video, playbackKey, startAt) : undefined;
+    void attachSource(current, controller.signal);
     return () => {
+      stopTracking?.();
       controller.abort();
       destroyHls();
       if (video) {
