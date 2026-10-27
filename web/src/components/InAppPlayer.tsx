@@ -71,6 +71,32 @@ function looksLikeHls(url: string): boolean {
   return /\.m3u8($|\?)/i.test(url) || /\/hls(\?|$)/i.test(url);
 }
 
+
+const DEEP_LINK_KINDS = new Set(["emby", "jellyfin", "external_site", "external", "app"]);
+
+/** Emby / Jellyfin / external playback-site deep links open in a new tab. */
+export function isDeepLinkSource(source: PlayerSource): boolean {
+  if (DEEP_LINK_KINDS.has(source.kind)) return true;
+  if (source.playable_in_app === false && !looksLikeHls(source.url) && !/\.(mp4|mkv|webm)($|\?)/i.test(source.url)) {
+    return true;
+  }
+  return false;
+}
+
+/** HLS / mp4 / VOD rows that the in-app video element can play. */
+export function isInAppMediaSource(source: PlayerSource): boolean {
+  if (!source.url || isDeepLinkSource(source)) return false;
+  return (
+    source.playable_in_app === true ||
+    source.kind === "vod" ||
+    source.kind === "m3u8" ||
+    source.kind === "vod_m3u8" ||
+    source.kind === "tube" ||
+    looksLikeHls(source.url) ||
+    /\.(mp4|mkv|webm)($|\?)/i.test(source.url)
+  );
+}
+
 function isSameOrigin(url: string): boolean {
   try {
     const u = new URL(url, window.location.href);
@@ -99,7 +125,7 @@ export function proxiedPlayUrl(source: PlayerSource): string {
   }
   if (isSameOrigin(raw)) return raw;
   // Emby / deep-links that are not direct media stay as-is (browser navigation).
-  if (source.kind === "emby" || source.kind === "external" || source.kind === "app") {
+  if (isDeepLinkSource(source)) {
     // Only proxy when the URL looks like raw media.
     if (!looksLikeHls(raw) && !/\.(mp4|mkv|webm|ts)($|\?)/i.test(raw)) {
       return raw;
@@ -138,18 +164,20 @@ function PlayerSession({
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<{ destroy: () => void } | null>(null);
-  const playable = useMemo(
-    () => sources.filter((s) => Boolean(s.url) && (s.playable_in_app !== false || looksLikeHls(s.url) || /\.mp4/i.test(s.url))),
-    [sources],
-  );
+  const allSources = useMemo(() => sources.filter((s) => Boolean(s.url)), [sources]);
+  const playable = useMemo(() => allSources.filter(isInAppMediaSource), [allSources]);
   const [index, setIndex] = useState(() => {
     const preferred = initialIndex === undefined ? undefined : sources[initialIndex];
-    return pickInitialIndex(playable, preferred ? playable.indexOf(preferred) : undefined);
+    if (preferred && isInAppMediaSource(preferred)) {
+      const idx = playable.indexOf(preferred);
+      if (idx >= 0) return idx;
+    }
+    return pickInitialIndex(playable, undefined);
   });
   const [status, setStatus] = useState<"idle" | "loading" | "playing" | "error">("idle");
   const [errorText, setErrorText] = useState<string | null>(null);
   const [muted, setMuted] = useState(true);
-  const triedRef = useRef<Set<number>>(new Set([index]));
+  const triedRef = useRef<Set<number>>(new Set(playable.length ? [index] : []));
   const resumeAtRef = useRef(0);
 
   const current = playable[index] ?? playable[0] ?? null;
@@ -239,6 +267,12 @@ function PlayerSession({
 
   useEffect(() => {
     if (!current) {
+      // Deep-link-only resolve: chips still work; do not flash a fatal empty error.
+      if (!playable.length && allSources.length) {
+        setStatus("idle");
+        setErrorText(null);
+        return;
+      }
       setStatus("error");
       setErrorText("无可用片源");
       return;
@@ -288,7 +322,12 @@ function PlayerSession({
     onReport?.(`已切换：${playable[next]?.label || `源 ${next + 1}`}`);
   };
 
-  if (!playable.length) {
+  const openDeepLink = (source: PlayerSource) => {
+    window.open(source.url, "_blank", "noopener,noreferrer");
+    onReport?.(`已打开：${source.label}`);
+  };
+
+  if (!allSources.length) {
     return (
       <div className={`in-app-player in-app-player--empty ${className || ""}`}>
         <p>暂无可用片源</p>
@@ -319,16 +358,20 @@ function PlayerSession({
         </div>
       ) : null}
       <div className="in-app-player-stage">
-        <video
-          ref={videoRef}
-          className="in-app-player-video"
-          playsInline
-          controls={!embedded}
-          muted={muted}
-          preload="metadata"
-        />
-        {status === "loading" ? <div className="in-app-player-status">解析 / 缓冲中…</div> : null}
-        {status === "error" ? (
+        {playable.length ? (
+          <video
+            ref={videoRef}
+            className="in-app-player-video"
+            playsInline
+            controls={!embedded}
+            muted={muted}
+            preload="metadata"
+          />
+        ) : (
+          <div className="in-app-player-status">无应用内片源 — 下方选择外站 / Emby 打开</div>
+        )}
+        {playable.length && status === "loading" ? <div className="in-app-player-status">解析 / 缓冲中…</div> : null}
+        {playable.length && status === "error" ? (
           <div className="in-app-player-status in-app-player-status--error">
             {errorText || "播放失败"}
             {onClose ? (
@@ -338,7 +381,7 @@ function PlayerSession({
             ) : null}
           </div>
         ) : null}
-        {embedded ? (
+        {embedded && playable.length ? (
           <button
             type="button"
             className="in-app-player-mute"
@@ -349,20 +392,27 @@ function PlayerSession({
           </button>
         ) : null}
       </div>
-      {playable.length > 1 ? (
+      {allSources.length ? (
         <div className="in-app-player-sources" role="group" aria-label="片源">
-          {playable.map((s, i) => (
-            <button
-              key={`${s.kind}-${s.label}-${i}`}
-              type="button"
-              className={i === index ? "warm" : "ghost"}
-              onClick={() => switchSource(i)}
-              title={s.probe_reason || s.note || undefined}
-            >
-              {s.label}
-              {s.probe_ok === false ? " !" : ""}
-            </button>
-          ))}
+          {allSources.map((s, i) => {
+            const deep = isDeepLinkSource(s);
+            const playableIdx = deep ? -1 : playable.indexOf(s);
+            const active = !deep && playableIdx === index;
+            return (
+              <button
+                key={`${s.kind}-${s.label}-${i}`}
+                type="button"
+                className={active ? "warm" : "ghost"}
+                onClick={() => {
+                  if (deep) openDeepLink(s);
+                  else if (playableIdx >= 0) switchSource(playableIdx);
+                }}
+                title={deep ? `外开 · ${s.kind}` : (s.probe_reason || s.note || undefined)}
+              >
+                {s.label}{deep ? " ↗" : ""}{s.probe_ok === false ? " !" : ""}
+              </button>
+            );
+          })}
         </div>
       ) : null}
     </div>

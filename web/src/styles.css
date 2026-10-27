@@ -2453,6 +2453,20 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .swipe-card-actions button { min-width: 104px; }
 @media (prefers-reduced-motion: reduce) {
   .swipe-feed-scroller { scroll-behavior: auto; }
+.swipe-feed-sites {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  max-width: min(720px, 70vw);
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.swipe-feed-sites button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 4px 10px;
+}
 
 /* In-app player (shared by swipe + work detail) */
 .in-app-player-portal {

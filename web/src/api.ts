@@ -723,6 +723,7 @@ export const api = {
     limit?: number;
     category?: string;
     mode?: string;
+    sites?: string[];
   } = {}) => {
     const q = new URLSearchParams();
     q.set("mode", params.mode ?? "random");
@@ -735,6 +736,7 @@ export const api = {
     }
     if (params.limit) q.set("limit", String(params.limit));
     if (params.category) q.set("category", params.category);
+    if (params.sites?.length) q.set("sites", params.sites.join(","));
     const qs = q.toString();
     return request(
       z.object({

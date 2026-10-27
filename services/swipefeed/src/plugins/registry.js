@@ -20,6 +20,9 @@ import { haijiao } from './haijiao.js';
 import { videoshub } from './videoshub.js';
 import { mrds } from './mrds.js';
 import { hanxiucao } from './hanxiucao.js';
+import { cherrygasp, jiuse } from './newwave.js';
+import { e18j, avjb, rb91 } from './newwave2.js';
+import { porn87 } from './newwave3.js';
 import { CATEGORIES, CATEGORY_TEMPLATES, SITE_BASE } from './categories.js';
 import { isSiteEnabled, loadSiteSettings } from '../util/site-settings.js';
 import {
@@ -30,7 +33,7 @@ import {
 export const ALL_SOURCES = [
   pornhub, xvideos, xhamster, xnxx, spankbang, eporner, youporn, beeg, youjizz,
   ...AGGREGATOR_SOURCES,
-  pektino, threego, haijiao, videoshub, mrds, hanxiucao,
+  pektino, threego, haijiao, videoshub, mrds, hanxiucao, cherrygasp, jiuse, e18j, avjb, rb91, porn87,
   redtube, tube8, txxx, drtuber, tnaflix, empflix, porntube, sunporno,
   thisvid, hellporno, fourtube, porntop, peekvids, redgifs, hqporner,
   porntrex, threemovs, pornone, anysex, pornhat, okxxx, porngo,

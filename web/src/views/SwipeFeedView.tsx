@@ -122,6 +122,8 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
   const [activeTubeKey, setActiveTubeKey] = useState<string | null>(null);
   const [tubePlayback, setTubePlayback] = useState<{ key: string; sources: PlayerSource[] } | null>(null);
   const [tubeResolving, setTubeResolving] = useState(false);
+  const [tubeSites, setTubeSites] = useState<{ id: string; label: string }[]>([]);
+  const [selectedSiteIds, setSelectedSiteIds] = useState<string[]>([]);
   const resolveCache = useRef<Map<string, { sources: PlayerSource[]; expiresAt: number }>>(new Map());
   const libraryRequest = useRef<{ workId: string; controller: AbortController } | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -161,7 +163,7 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
       setTubeError(null);
       try {
         const cursor = opts.reset ? null : tubeCursor;
-        const res = await api.swipeFeed({ cursor, limit: 12, mode: "random" });
+        const res = await api.swipeFeed({ cursor, limit: 12, mode: "random", sites: selectedSiteIds.length ? selectedSiteIds : undefined });
         const rawItems = Array.isArray(res.items) ? res.items : [];
         const mapped: TubeItem[] = rawItems
           .map((row) => {
@@ -204,8 +206,53 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
         loadingMoreRef.current = false;
       }
     },
-    [report, tubeCursor],
+    [report, tubeCursor, selectedSiteIds],
   );
+
+  useEffect(() => {
+    if (mode !== "tube") return;
+    setTubeReady(false);
+    setTubeItems([]);
+    setTubeCursor(null);
+    setTubeHasMore(true);
+    setActiveTubeKey(null);
+    setTubePlayback(null);
+    resolveCache.current.clear();
+  }, [selectedSiteIds, mode]);
+
+
+  useEffect(() => {
+    if (mode !== "tube") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const raw = await api.swipeSites();
+        const rows = Array.isArray(raw)
+          ? raw
+          : Array.isArray((raw as { sites?: unknown }).sites)
+            ? (raw as { sites: unknown[] }).sites
+            : [];
+        const mapped = rows
+          .map((row) => {
+            if (!row || typeof row !== "object") return null;
+            const r = row as Record<string, unknown>;
+            const id = String(r.id || "");
+            if (!id || id === "demo") return null;
+            if (r.enabled === false) return null;
+            const label = String(r.displayName || r.name || r.label || id);
+            return { id, label };
+          })
+          .filter(Boolean) as { id: string; label: string }[];
+        if (!cancelled) setTubeSites(mapped);
+      } catch {
+        // Sites picker is optional; feed still works with sidecar defaults.
+        if (!cancelled) setTubeSites([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, report]);
 
   useEffect(() => {
     if (mode !== "tube") return;
@@ -335,37 +382,25 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
         probe_reason: s.probe_reason,
       })) as PlayerSource[];
 
-      const inApp = list.filter(
-        (s) =>
-          s.playable_in_app ||
-          s.kind === "vod" ||
-          s.kind === "m3u8" ||
-          /\.m3u8/i.test(s.url) ||
-          /\.mp4/i.test(s.url),
-      );
-
-      if (inApp.length) {
-        // Prefer chosen/preferred first
-        if (preferred?.url) {
-          const idx = inApp.findIndex((s) => s.url === preferred.url);
-          if (idx > 0) {
-            const [hit] = inApp.splice(idx, 1);
-            if (hit) inApp.unshift(hit);
-          }
+      if (preferred?.url) {
+        const idx = list.findIndex((s) => s.url === preferred.url);
+        if (idx > 0) {
+          const [hit] = list.splice(idx, 1);
+          if (hit) list.unshift(hit);
         }
-        setLibSources(inApp);
+      }
+
+      if (list.length) {
+        setLibSources(list);
         const fails = resolved.failures ?? [];
-        if (fails.length) {
-          report(`已选片源；${fails.length} 路探测失败`);
-        }
+        const ext = list.filter((s) => s.kind === "external_site").length;
+        report(
+          `片源 ${list.length}（外站 ${ext}）`
+          + (fails.length ? `；${fails.length} 路探测失败` : ""),
+        );
         return;
       }
 
-      if (preferred?.url && !preferred.playable_in_app) {
-        window.open(preferred.url, "_blank", "noopener,noreferrer");
-        setActiveLibId(null);
-        return;
-      }
       report("暂无可用片源（需 Emby 或本地 playback-sites）");
       setActiveLibId(null);
     } catch (err) {
@@ -406,11 +441,43 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
           </button>
         </>
       ) : (
-        <span className="swipe-feed-hint">
-          外站 tube · 滑到卡片自动解析播放
-          {tubeLoading ? " · 加载中…" : ""}
-          {tubeItems.length ? ` · ${tubeItems.length}` : ""}
-        </span>
+        <>
+          <span className="swipe-feed-hint">
+            外站 tube · 滑到卡片自动解析播放
+            {tubeLoading ? " · 加载中…" : ""}
+            {tubeItems.length ? ` · ${tubeItems.length}` : ""}
+          </span>
+          {tubeSites.length ? (
+            <div className="swipe-feed-filters swipe-feed-sites" role="group" aria-label="站点筛选">
+              <button
+                type="button"
+                className={selectedSiteIds.length === 0 ? "warm" : "ghost"}
+                onClick={() => setSelectedSiteIds([])}
+              >
+                全部
+              </button>
+              {tubeSites.slice(0, 24).map((site) => {
+                const on = selectedSiteIds.includes(site.id);
+                return (
+                  <button
+                    key={site.id}
+                    type="button"
+                    className={on ? "warm" : "ghost"}
+                    title={site.id}
+                    onClick={() => {
+                      setSelectedSiteIds((prev) => {
+                        if (prev.includes(site.id)) return prev.filter((id) => id !== site.id);
+                        return [...prev, site.id];
+                      });
+                    }}
+                  >
+                    {site.label}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+        </>
       )}
       {mode === "tube" && tubeItems.length > 0 && tubeError && !tubeLoading ? (
         <button type="button" className="secondary" onClick={() => void loadTube()}>

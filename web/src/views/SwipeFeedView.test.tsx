@@ -9,7 +9,7 @@ import { SwipeFeedView } from "./SwipeFeedView";
 
 vi.mock("../api", () => ({
   appUrl: (path: string) => path,
-  api: { swipeFeed: vi.fn(), swipeResolve: vi.fn(), workPlayResolve: vi.fn() },
+  api: { swipeFeed: vi.fn(), swipeResolve: vi.fn(), swipeSites: vi.fn(async () => []), workPlayResolve: vi.fn() },
 }));
 vi.mock("../components/CoverImage", () => ({ CoverImage: () => null }));
 vi.mock("../components/InAppPlayer", () => ({

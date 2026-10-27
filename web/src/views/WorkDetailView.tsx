@@ -630,33 +630,25 @@ export function WorkDetailView(props: {
                         probe_ok: s.probe_ok,
                         probe_reason: s.probe_reason,
                       })) as PlayerSource[];
-                      const inApp = list.filter(
-                        (s) =>
-                          s.playable_in_app
-                          || s.kind === "vod"
-                          || s.kind === "m3u8"
-                          || /\.m3u8/i.test(s.url)
-                          || /\.mp4/i.test(s.url),
-                      );
+                      // Keep Emby + VOD + external_site deep links; InAppPlayer opens deep links in a new tab.
                       if (preferred?.url) {
-                        const idx = inApp.findIndex((s) => s.url === preferred.url);
+                        const idx = list.findIndex((s) => s.url === preferred.url);
                         if (idx > 0) {
-                          const [hit] = inApp.splice(idx, 1);
-                          if (hit) inApp.unshift(hit);
+                          const [hit] = list.splice(idx, 1);
+                          if (hit) list.unshift(hit);
                         }
                       }
-                      if (inApp.length) {
+                      if (list.length) {
                         setPlayerTitle(work.title || work.primary_code || "在线播放");
-                        setPlayerSources(inApp);
+                        setPlayerSources(list);
                         setPlayerOpen(true);
                         const fails = resolved.failures ?? [];
-                        if (fails.length) {
-                          props.report?.(`已选片源；${fails.length} 路探测失败`);
-                        }
-                        return;
-                      }
-                      if (preferred?.url) {
-                        window.open(preferred.url, "_blank", "noopener,noreferrer");
+                        const ext = list.filter((s) => s.kind === "external_site").length;
+                        const vod = list.filter((s) => s.kind === "vod_m3u8" || s.kind === "vod" || s.kind === "m3u8").length;
+                        props.report?.(
+                          `片源 ${list.length}（外站 ${ext} / VOD ${vod}）`
+                          + (fails.length ? `；${fails.length} 路探测失败` : ""),
+                        );
                         return;
                       }
                       window.alert("暂无可用片源（需配置 Emby 或本地 playback-sites）");
