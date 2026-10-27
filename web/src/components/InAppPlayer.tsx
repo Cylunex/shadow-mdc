@@ -84,6 +84,19 @@ function isSameOrigin(url: string): boolean {
 export function proxiedPlayUrl(source: PlayerSource): string {
   const raw = source.url;
   if (!raw || source.skip_proxy) return raw;
+  // Resolve / HLS rewrite emit absolute `/api/swipe/...`. Under the /mdc SPA that
+  // hits host nginx (OIDC 401). Prefix via appUrl → `./api/swipe/...` → `/mdc/api/swipe/...`.
+  try {
+    const u = new URL(raw, window.location.href);
+    if (
+      u.origin === window.location.origin &&
+      (u.pathname === "/api/swipe" || u.pathname.startsWith("/api/swipe/"))
+    ) {
+      return appUrl(`${u.pathname}${u.search}${u.hash}`) ?? raw;
+    }
+  } catch {
+    /* ignore */
+  }
   if (isSameOrigin(raw)) return raw;
   // Emby / deep-links that are not direct media stay as-is (browser navigation).
   if (source.kind === "emby" || source.kind === "external" || source.kind === "app") {

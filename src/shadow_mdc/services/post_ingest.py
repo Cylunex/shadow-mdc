@@ -72,7 +72,7 @@ def work_needs_translation(work: Work) -> bool:
 
 
 async def translate_after_ingest(
-    repo: "Repository", work: Work | None, translator: Any, *, timeout: float = 30.0
+    repo: "Repository", work: Work | None, translator: Any, *, timeout: float = 90.0
 ) -> str:
     """Translate one work; returns a status string, never raises."""
 
@@ -81,6 +81,13 @@ async def translate_after_ingest(
     try:
         result = await asyncio.wait_for(translator.translate_work(repo, work), timeout=timeout)
         return str(getattr(result, "status", "done"))
+    except TimeoutError:
+        log.warning(
+            "post-ingest translation timed out for %s after %.0fs (check SHADOW_MDC_PROXY_URL / HTTPS_PROXY)",
+            getattr(work, "id", "?"),
+            timeout,
+        )
+        return "failed"
     except Exception as exc:  # noqa: BLE001 - ingest must not break on translation
         log.warning("post-ingest translation failed for %s: %s", getattr(work, "id", "?"), exc)
         return "failed"
@@ -131,7 +138,7 @@ async def translate_pending_works(
     since: datetime | None = None,
     limit: int | None = None,
     checkpoint: Path | None = None,
-    timeout: float = 30.0,
+    timeout: float = 90.0,
 ) -> TranslationBackfillStats:
     """Translate works lacking translation. Bounded by ``limit``; resumable via ``checkpoint``."""
 
@@ -191,9 +198,16 @@ async def run_post_ingest_translation(
 
     if not settings.translation_enabled:
         return None
+    if not settings.proxy_url:
+        log.warning(
+            "post-ingest translation: no proxy_url (set SHADOW_MDC_PROXY_URL or HTTPS_PROXY); "
+            "Google translate often times out without one"
+        )
     own = client is None
     http = client or httpx.AsyncClient(
-        timeout=settings.request_timeout_seconds, follow_redirects=True, proxy=settings.proxy_url
+        timeout=max(settings.request_timeout_seconds, 60.0),
+        follow_redirects=True,
+        proxy=settings.proxy_url,
     )
     try:
         translator = build_work_translator(settings, http)

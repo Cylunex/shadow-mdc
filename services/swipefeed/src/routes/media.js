@@ -28,8 +28,8 @@ const PUBLIC_BASE = (() => {
 })();
 /**
  * Browser-facing API root (no trailing slash). Default `${SWIPEFEED_BASE}/api`.
- * Inside shadow-mdc set SWIPEFEED_BROWSER_API_PREFIX=/api/swipe so playlist
- * rewrites and resolve wrappers point at FastAPI's reverse proxy.
+ * Inside shadow-mdc (SPA under /mdc) set SWIPEFEED_BROWSER_API_PREFIX=/mdc/api/swipe
+ * so playlist rewrites and resolve wrappers hit FastAPI under the SPA base.
  */
 const BROWSER_API_ROOT = (() => {
   const raw = String(process.env.SWIPEFEED_BROWSER_API_PREFIX || `${PUBLIC_BASE}/api`).trim();

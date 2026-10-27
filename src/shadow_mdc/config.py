@@ -1,7 +1,8 @@
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
@@ -58,6 +59,29 @@ class Settings(BaseSettings):
     translation_concurrency: int = Field(default=4, ge=1, le=16)
     proxy_url: str | None = None
     translation_enabled: bool = True
+
+    @field_validator("proxy_url", mode="before")
+    @classmethod
+    def _proxy_url_fallback(cls, value: object) -> object:
+        """Prefer SHADOW_MDC_PROXY_URL; else HTTPS_PROXY / HTTP_PROXY / PROXY_URL.
+
+        Seed/import CLI often sources secrets without the supervisor env block;
+        without a proxy Google translate hangs until the post-ingest timeout.
+        """
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        for key in (
+            "SHADOW_MDC_PROXY_URL",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "PROXY_URL",
+            "https_proxy",
+            "http_proxy",
+        ):
+            raw = os.environ.get(key)
+            if raw and raw.strip():
+                return raw.strip()
+        return value
     translation_backend: str = "google"
     translation_endpoint: str = "https://translate.google.com/translate_a/single"
     translation_api_key: str | None = None

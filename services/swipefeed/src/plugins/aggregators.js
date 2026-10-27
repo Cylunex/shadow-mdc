@@ -162,8 +162,14 @@ export const rou = {
     const videoUrl = decoded.videoUrl || decoded.url;
     if (!videoUrl) throw new Error('No videoUrl in rou payload');
     const abs = absUrl(ROU_BASE, videoUrl);
-    // PNG-wrapped HLS — expose via local unwrap proxy (absolute path under /swipefeed/)
-    const proxyPath = `/swipefeed/api/png-hls?u=${encodeURIComponent(abs)}&r=${encodeURIComponent(pageUrl)}`;
+    // PNG-wrapped HLS — browser prefix matches FastAPI reverse proxy (/mdc/api/swipe on NAS)
+    const browserApi = (() => {
+      const raw = String(process.env.SWIPEFEED_BROWSER_API_PREFIX || '').trim();
+      if (raw) return (raw.startsWith('/') ? raw : `/${raw}`).replace(/\/+$/, '');
+      const base = String(process.env.SWIPEFEED_BASE || '/swipefeed').trim().replace(/\/+$/, '');
+      return `${base || ''}/api`.replace(/\/+/g, '/') || '/api';
+    })();
+    const proxyPath = `${browserApi}/png-hls?u=${encodeURIComponent(abs)}&r=${encodeURIComponent(pageUrl)}`;
     return {
       url: proxyPath,
       type: 'hls',
