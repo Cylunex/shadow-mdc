@@ -27,6 +27,10 @@ type Props = {
 
 /** Whole-image cover: one network fetch; blurred backdrop uses CSS background (HTTP cache). */
 export function CoverImage({ src, className, frontCrop, loading = "lazy" }: Props) {
+  return <CoverImageContent key={src} src={src} className={className} frontCrop={frontCrop} loading={loading} />;
+}
+
+function CoverImageContent({ src, className, frontCrop, loading = "lazy" }: Props) {
   const [shape, setShape] = useState<CoverShape | null>(null);
   const [broken, setBroken] = useState(false);
   if (broken) return <div className="poster-fallback" aria-hidden />;

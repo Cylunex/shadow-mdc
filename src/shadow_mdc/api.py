@@ -505,6 +505,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             JsonLdProvider(next(source_clients), settings.request_retries),
         ],
         max_concurrent_calls=settings.provider_concurrency,
+        call_timeout_seconds=settings.request_timeout_seconds * (settings.request_retries + 1) * 3,
     )
     backends = build_translation_backends(
         client,

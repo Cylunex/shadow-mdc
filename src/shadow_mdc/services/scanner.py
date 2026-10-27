@@ -6,7 +6,7 @@ from xml.etree import ElementTree
 
 from pydantic import BaseModel, ConfigDict
 
-from ..db.models import Library
+from ..db.models import Library, MediaAsset, Work
 from ..db.repository import Repository
 from ..domain import MediaTechnicalInfo
 from ..enums import ContentFamily, MediaCategory, QueryMode, RecognitionScope
@@ -98,7 +98,7 @@ class Scanner:
         directory_actor_rules: DirectoryActorRules | None = None,
         non_jav_actor_catalog: NonJavActorCatalog | None = None,
         artwork_dir: Path | None = None,
-    ):
+    ) -> None:
         self._repository = repository
         self._alias_rules = alias_rules or IdentityAliasRules()
         self._path_filter = path_filter or MediaPathFilter()
@@ -124,8 +124,10 @@ class Scanner:
         skipped = 0
         errors: list[str] = []
         obsolete_codes: list[str] = []
-        paths = list(_walk_files(root, recursive=library.recursive, errors=errors))
-        volume_codes = _directory_volume_codes(paths)
+        if progress is not None:
+            progress({"progress_current": 0, "progress_total": 0, "phase": "discover"})
+        paths = list(_walk_files(root, recursive=library.recursive, errors=errors, cancelled=cancelled))
+        volume_codes = _directory_volume_codes(paths, cancelled=cancelled)
         total = len(paths)
         for index, path in enumerate(paths, start=1):
             if cancelled is not None and cancelled():
@@ -159,7 +161,7 @@ class Scanner:
                     library,
                     root,
                     path,
-                    volume_code=volume_codes.get(path.parent.resolve()),
+                    volume_code=volume_codes.get(path.parent),
                 )
                 discovered += int(created)
                 updated += int(not created)
@@ -330,22 +332,25 @@ class Scanner:
         return created, newly_queued, tuple(obsolete)
 
 
-
-def _directory_volume_codes(paths: list[Path]) -> dict[Path, str]:
+def _directory_volume_codes(
+    paths: list[Path], *, cancelled: Callable[[], bool] | None = None
+) -> dict[Path, str]:
     """Map parent directories to a volume-merge code when the lettered set qualifies."""
 
     by_parent: dict[Path, list[Path]] = {}
-    for path in paths:
+    for index, path in enumerate(paths):
+        if index % 128 == 0 and cancelled is not None and cancelled():
+            return {}
         if path.suffix.casefold() not in MEDIA_EXTENSIONS:
             continue
-        try:
-            parent = path.parent.resolve()
-        except OSError:
-            parent = path.parent
+        # Walked paths are already rooted at the resolved library directory.
+        parent = path.parent
         by_parent.setdefault(parent, []).append(path)
 
     result: dict[Path, str] = {}
     for parent, media in by_parent.items():
+        if cancelled is not None and cancelled():
+            break
         names: list[str] = []
         sizes: list[int | None] = []
         for item in media:
@@ -371,7 +376,7 @@ def _apply_volume_merge_code(
     repository: Repository,
     *,
     path: Path,
-    existing,
+    existing: MediaAsset | None,
     hints_code: str | None,
     volume_code: str | None,
     obsolete: list[str],
@@ -417,9 +422,13 @@ def _resolve_library_root(value: str) -> Path:
         raise ValueError(f"library root is unavailable: {value}: {exc}") from exc
 
 
-def _walk_files(root: Path, *, recursive: bool, errors: list[str]) -> Iterator[Path]:
+def _walk_files(
+    root: Path, *, recursive: bool, errors: list[str], cancelled: Callable[[], bool] | None = None
+) -> Iterator[Path]:
     pending = [root]
     while pending:
+        if cancelled is not None and cancelled():
+            return
         directory = pending.pop()
         try:
             with os.scandir(directory) as iterator:
@@ -427,7 +436,9 @@ def _walk_files(root: Path, *, recursive: bool, errors: list[str]) -> Iterator[P
         except OSError as exc:
             errors.append(f"{directory}: cannot list directory: {exc}")
             continue
-        for entry in entries:
+        for index, entry in enumerate(entries):
+            if index % 128 == 0 and cancelled is not None and cancelled():
+                return
             try:
                 if entry.is_file(follow_symlinks=False):
                     yield Path(entry.path)
@@ -459,7 +470,7 @@ def _adopt_nfo_manual_fields(repository: Repository, work_id: str, nfo_path: Pat
         return
 
 
-def _adopt_sibling_artwork(repository: Repository, work, media_path: Path, artwork_dir: Path) -> None:
+def _adopt_sibling_artwork(repository: Repository, work: Work, media_path: Path, artwork_dir: Path) -> None:
     """Copy NFO-adjacent poster/fanart into the local artwork cache and make a list thumb."""
 
     siblings = sibling_artwork_paths(media_path)

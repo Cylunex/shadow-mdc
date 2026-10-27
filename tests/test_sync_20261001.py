@@ -57,20 +57,20 @@ def test_migrate_moves_managed_exports_and_rewrites(tmp_path: Path) -> None:
     export_work(settings=_relay(old_root), code="XYZ-9", videos=[RemoteVideo("v9", "XYZ-9.mp4")])
     (old_root / "README.txt").write_text("not ours", encoding="utf-8")
     # Pre-existing export at the target for XYZ-9 must never be overwritten.
-    (new_root / "XYZ-9").mkdir(parents=True)
-    (new_root / "XYZ-9" / SIDECAR_NAME).write_text("{}", encoding="utf-8")
+    (new_root / "Unknown Studio" / "XYZ-9").mkdir(parents=True)
+    (new_root / "Unknown Studio" / "XYZ-9" / SIDECAR_NAME).write_text("{}", encoding="utf-8")
 
     settings = _relay(new_root, token="new")
     result = migrate_strm_tree(old_root, new_root, settings)
 
     assert [(s.name, t.name) for s, t in result.moved] == [("ABC-123", "ABC-123")]
     assert [p.name for p in result.conflicts] == ["XYZ-9"]
-    assert not (old_root / "ABC-123").exists()
-    assert (old_root / "XYZ-9" / "XYZ-9.strm").is_file()  # conflict left in place
+    assert not (old_root / "Unknown Studio" / "ABC-123").exists()
+    assert (old_root / "Unknown Studio" / "XYZ-9" / "XYZ-9.strm").is_file()  # conflict left in place
     assert (old_root / "README.txt").is_file()  # unmanaged file untouched
-    body = (new_root / "ABC-123" / "ABC-123.strm").read_text().strip()
+    body = (new_root / "Unknown Studio" / "ABC-123" / "ABC-123.strm").read_text().strip()
     assert body == "http://nas:8700/api/strm/play/v1?token=new"
-    assert (new_root / "ABC-123" / SIDECAR_NAME).is_file()
+    assert (new_root / "Unknown Studio" / "ABC-123" / SIDECAR_NAME).is_file()
 
 
 def test_migrate_into_nested_new_root(tmp_path: Path) -> None:
@@ -78,7 +78,7 @@ def test_migrate_into_nested_new_root(tmp_path: Path) -> None:
     new_root = old_root / "strm"
     export_work(settings=_relay(old_root), code="ABC-1", videos=[RemoteVideo("v1", "ABC-1.mp4")])
     result = migrate_strm_tree(old_root, new_root, _relay(new_root))
-    assert [t for _, t in result.moved] == [new_root / "ABC-1"]
+    assert [t for _, t in result.moved] == [new_root / "Unknown Studio" / "ABC-1"]
     # Second run is a no-op (already under the new root).
     again = migrate_strm_tree(old_root, new_root, _relay(new_root))
     assert again.moved == [] and again.conflicts == []
@@ -124,15 +124,15 @@ def test_poller_migrate_rebases_rows_and_notifies(tmp_path: Path) -> None:
             migrated = await poller.migrate_root(str(old_root), before)
             assert len(migrated.moved) == 1
             assert poller.notifier.pending == {
-                "/media/strm/ABC-123": "Deleted",
-                "/media/new/ABC-123": "Created",
+                "/media/strm/Unknown Studio/ABC-123": "Deleted",
+                "/media/new/Unknown Studio/ABC-123": "Created",
             }
             assert poller.maintenance.last_migrate["moved"] == 1
 
     asyncio.run(scenario())
     with database.session() as session:
         stored = session.scalars(select(PanOfflineTask)).one()
-        assert stored.strm_path == str(new_root / "ABC-123" / "ABC-123.strm")
+        assert stored.strm_path == str(new_root / "Unknown Studio" / "ABC-123" / "ABC-123.strm")
 
 
 def test_settings_api_triggers_migration_on_root_change(

@@ -90,7 +90,7 @@ def test_reexport_identical_bytes_writes_nothing(tmp_path: Path, monkeypatch: py
     videos = [_video("11", "a.mp4")]
     first = export_work(settings=_relay(root), code="ABC-123", videos=videos, work=work)
     assert first.changed and first.created
-    folder = root / "ABC-123"
+    folder = first.directory
     stamps = {path.name: path.stat().st_mtime_ns for path in folder.iterdir()}
     for path in folder.iterdir():
         os.utime(path, ns=(1, 1))
@@ -130,14 +130,14 @@ def test_poller_skips_emby_notify_for_unchanged_export(tmp_path: Path) -> None:
             )
             first = export_work(settings=cfg, code="ABC-1", videos=[_video("1", "a.mp4")])
             poller._notify_export(first, cfg)
-            assert poller.notifier.pending == {"/media/strm/ABC-1": "Created"}
+            assert poller.notifier.pending == {"/media/strm/Unknown Studio/ABC-1": "Created"}
             poller.notifier._pending.clear()
             again = export_work(settings=cfg, code="ABC-1", videos=[_video("1", "a.mp4")])
             poller._notify_export(again, cfg)
             assert poller.notifier.pending == {}
             moved = export_work(settings=cfg, code="ABC-1", videos=[_video("2", "a.mp4")])
             poller._notify_export(moved, cfg)
-            assert poller.notifier.pending == {"/media/strm/ABC-1": "Modified"}
+            assert poller.notifier.pending == {"/media/strm/Unknown Studio/ABC-1": "Modified"}
 
     asyncio.run(scenario())
 
@@ -158,8 +158,8 @@ def test_config_problems_relay_and_emby_mapping(tmp_path: Path) -> None:
 
 def test_rewrite_and_migrate_refuse_half_config(tmp_path: Path) -> None:
     root = tmp_path / "emby"
-    export_work(settings=_relay(root), code="AAA-1", videos=[_video("1", "a.mp4")])
-    strm = root / "AAA-1" / "AAA-1.strm"
+    exported = export_work(settings=_relay(root), code="AAA-1", videos=[_video("1", "a.mp4")])
+    strm = exported.strm_paths[0]
     before = strm.read_text()
     with pytest.raises(StrmConfigError):
         rewrite_strm_tree(root, _relay(root, strm_public_base_url=None))

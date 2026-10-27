@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { PanOfflineTask, TaskRun } from "../model";
-import { api, appUrl } from "../api";
-import { taskRunsSchema } from "../model";
+import { api } from "../api";
+import { useTaskUpdates } from "../hooks/useTaskUpdates";
 
 type Props = {
   tasks: TaskRun[];
@@ -13,44 +13,19 @@ type Props = {
 
 export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: Props) {
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [live, setLive] = useState(false);
+  const live = useTaskUpdates({ enabled: autoRefresh, onChanged, onTasksSnapshot });
   const [kindFilter, setKindFilter] = useState("all");
   const [offlineTasks, setOfflineTasks] = useState<PanOfflineTask[]>([]);
   useEffect(() => {
+    let cancelled = false;
     void api.panOfflineTasks()
-      .then(setOfflineTasks)
-      .catch(() => setOfflineTasks([]));
+      .then((rows) => { if (!cancelled) setOfflineTasks(rows); })
+      .catch(() => { if (!cancelled) setOfflineTasks([]); });
+    return () => { cancelled = true; };
   }, [tasks]);
 
   const kinds = useMemo(() => ["all", ...Array.from(new Set(tasks.map((task) => task.kind))).sort()], [tasks]);
   const visible = useMemo(() => kindFilter === "all" ? tasks : tasks.filter((task) => task.kind === kindFilter), [tasks, kindFilter]);
-
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const url = appUrl("/api/tasks/events");
-    if (!url || typeof EventSource === "undefined") {
-      const hasRunning = tasks.some((task) => !task.finished_at && task.status !== "succeeded");
-      if (!hasRunning) return;
-      const timer = window.setInterval(() => {
-        void onChanged();
-      }, 2500);
-      return () => window.clearInterval(timer);
-    }
-    const source = new EventSource(url);
-    source.addEventListener("tasks", (event) => {
-      try {
-        const payload = taskRunsSchema.parse(JSON.parse((event as MessageEvent).data));
-        setLive(true);
-        onTasksSnapshot?.(payload);
-      } catch {
-        void onChanged();
-      }
-    });
-    source.onerror = () => {
-      setLive(false);
-    };
-    return () => source.close();
-  }, [autoRefresh, onChanged, onTasksSnapshot, tasks]);
 
   const offlinePanel = offlineTasks.length > 0 ? (
     <section className="offline-task-panel" aria-label="115 离线任务">

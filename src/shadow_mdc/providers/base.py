@@ -2,6 +2,9 @@ import asyncio
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from math import isfinite
 from typing import Protocol
 
 import httpx
@@ -13,11 +16,14 @@ from .impersonate import FALLBACK_STATUSES, ImpersonateError, impersonated_get
 
 
 class ProviderError(RuntimeError):
-    def __init__(self, provider: str, reason: str, detail: str):
+    def __init__(
+        self, provider: str, reason: str, detail: str, *, retry_after_seconds: float | None = None
+    ) -> None:
         super().__init__(f"{provider}: {reason}: {detail}")
         self.provider = provider
         self.reason = reason
         self.detail = detail
+        self.retry_after_seconds = retry_after_seconds
 
 
 class ProviderFailure(BaseModel):
@@ -46,7 +52,7 @@ class HttpProvider:
     # Retry blocked GETs once through the curl_cffi browser-fingerprint transport.
     impersonate_fallback: bool = True
 
-    def __init__(self, client: httpx.AsyncClient, retries: int = 1):
+    def __init__(self, client: httpx.AsyncClient, retries: int = 1) -> None:
         self._client = client
         self._retries = retries
 
@@ -95,7 +101,9 @@ class HttpProvider:
         except ProviderError as exc:
             if method != "GET" or not self.impersonate_fallback or exc.reason != "blocked":
                 raise
-            return await self._impersonated_text(provider, url, exc, params=params, headers=headers, cookies=cookies)
+            return await self._impersonated_text(
+                provider, url, exc, params=params, headers=headers, cookies=cookies
+            )
 
     async def _impersonated_text(
         self,
@@ -107,7 +115,9 @@ class HttpProvider:
         headers: dict[str, str] | None,
         cookies: dict[str, str] | None,
     ) -> str:
-        merged_cookies = {**{c.name: c.value for c in self._client.cookies.jar}, **(cookies or {})}
+        merged_cookies = {
+            **{c.name: c.value for c in self._client.cookies.jar if c.value is not None}, **(cookies or {})
+        }
         merged_headers = {k: v for k, v in self._client.headers.items() if k.casefold() not in _HOP_HEADERS}
         merged_headers.update(headers or {})
         try:
@@ -122,9 +132,13 @@ class HttpProvider:
             raise ProviderError(provider, "blocked", f"{original.detail}; impersonate: {exc}") from exc
         kind = challenge_kind(response.text, response.url)
         if kind is not None:
-            raise ProviderError(provider, "blocked", f"{original.detail}; impersonate: {kind} (HTTP {response.status_code})")
+            raise ProviderError(
+                provider, "blocked", f"{original.detail}; impersonate: {kind} (HTTP {response.status_code})"
+            )
         if response.status_code in FALLBACK_STATUSES or not response.ok:
-            raise ProviderError(provider, "blocked", f"{original.detail}; impersonate: status={response.status_code}")
+            raise ProviderError(
+                provider, "blocked", f"{original.detail}; impersonate: status={response.status_code}"
+            )
         return response.text
 
     async def _httpx_request_text(
@@ -159,18 +173,26 @@ class HttpProvider:
                 raise ProviderError(provider, reason, _http_error_detail(exc, attempt + 1)) from exc
             except httpx.HTTPStatusError as exc:
                 code = exc.response.status_code
+                retry_after = _retry_after_seconds(exc.response.headers.get("Retry-After"))
+                if code == 429 or (code == 503 and retry_after is not None):
+                    raise ProviderError(
+                        provider,
+                        "rate_limited",
+                        f"status={code}; attempts={attempt + 1}",
+                        retry_after_seconds=retry_after,
+                    ) from exc
                 if code in {403, 429, 503}:
                     # Challenge walls are often 403/503: report them as such and
                     # do not burn retries on a page that will not change.
                     kind = challenge_kind(_safe_text(exc.response), str(exc.response.url))
                     if kind is not None:
                         raise ProviderError(provider, "blocked", f"{kind} (HTTP {code})") from exc
-                if attempt < self._retries and (code == 429 or code >= 500):
+                if attempt < self._retries and code >= 500:
                     await asyncio.sleep(0.25 * (attempt + 1))
                     continue
                 raise ProviderError(
                     provider,
-                    "blocked" if code in {403, 429, 451} else "http",
+                    "blocked" if code in {403, 451} else "http",
                     f"status={code}; attempts={attempt + 1}",
                 ) from exc
             except httpx.HTTPError as exc:
@@ -188,6 +210,22 @@ class HttpProvider:
 
 
 _HOP_HEADERS = frozenset({"host", "content-length", "accept-encoding", "connection", "user-agent", "cookie"})
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        delay = float(value)
+    except ValueError:
+        try:
+            deadline = parsedate_to_datetime(value)
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=UTC)
+            delay = (deadline - datetime.now(UTC)).total_seconds()
+        except (ValueError, TypeError, OverflowError):
+            return None
+    return max(0.0, delay) if isfinite(delay) else None
 
 
 def _client_timeout(client: httpx.AsyncClient) -> float:
@@ -216,11 +254,15 @@ class ProviderRegistry:
         failure_threshold: int = 4,
         cooldown_seconds: float = 300,
         max_concurrent_calls: int = 16,
-    ):
+        call_timeout_seconds: float = 90,
+    ) -> None:
+        if call_timeout_seconds <= 0 or not isfinite(call_timeout_seconds):
+            raise ValueError("call_timeout_seconds must be finite and positive")
         self._providers = {provider.descriptor.id: provider for provider in providers}
         self._failure_threshold = failure_threshold
         self._cooldown_seconds = cooldown_seconds
         self._call_slots = asyncio.Semaphore(max_concurrent_calls)
+        self._call_timeout_seconds = call_timeout_seconds
         self._health: dict[str, _ProviderHealth] = {}
 
     def descriptors(self) -> tuple[ProviderDescriptor, ...]:
@@ -243,9 +285,7 @@ class ProviderRegistry:
     ) -> tuple[str, ...]:
         return tuple(provider.descriptor.id for provider in self._eligible(hints, provider_ids))
 
-    def _eligible(
-        self, hints: IdentityHints, provider_ids: tuple[str, ...] | None
-    ) -> list[Provider]:
+    def _eligible(self, hints: IdentityHints, provider_ids: tuple[str, ...] | None) -> list[Provider]:
         allowed = set(provider_ids) if provider_ids is not None else None
         return [
             provider
@@ -281,12 +321,27 @@ class ProviderRegistry:
         async def invoke(provider: Provider) -> tuple[list[ProviderRecord], ProviderFailure | None]:
             try:
                 async with self._call_slots:
-                    records = await provider.search(hints)
+                    # A preceding call may have opened the circuit while we queued.
+                    health = self._health.get(provider.descriptor.id)
+                    if health is not None and health.retry_after > time.monotonic():
+                        return [], ProviderFailure(
+                            provider=provider.descriptor.id,
+                            reason="cooldown",
+                            detail=f"retry_in={max(1, round(health.retry_after - time.monotonic()))}s",
+                        )
+                    async with asyncio.timeout(self._call_timeout_seconds):
+                        records = await provider.search(hints)
                 self._health.pop(provider.descriptor.id, None)
                 return records, None
             except ProviderError as exc:
                 self._record_failure(exc)
                 return [], ProviderFailure(provider=exc.provider, reason=exc.reason, detail=exc.detail)
+            except TimeoutError:
+                error = ProviderError(
+                    provider.descriptor.id, "timeout", f"search deadline={self._call_timeout_seconds:g}s"
+                )
+                self._record_failure(error)
+                return [], ProviderFailure(provider=error.provider, reason=error.reason, detail=error.detail)
             except Exception as exc:
                 return [], ProviderFailure(
                     provider=provider.descriptor.id,
@@ -339,11 +394,16 @@ class ProviderRegistry:
         return 1 if self._health.pop(provider_id, None) is not None else 0
 
     def _record_failure(self, error: ProviderError) -> None:
-        if error.reason not in {"blocked", "connect_timeout", "network", "timeout"}:
+        if error.reason not in {"blocked", "connect_timeout", "network", "timeout", "rate_limited"}:
             return
         health = self._health.setdefault(error.provider, _ProviderHealth())
         health.failures += 1
-        if health.failures >= self._failure_threshold:
+        if error.reason == "rate_limited":
+            delay = error.retry_after_seconds
+            health.retry_after = time.monotonic() + max(
+                0.25, delay if delay is not None else self._cooldown_seconds
+            )
+        elif health.failures >= self._failure_threshold:
             health.retry_after = time.monotonic() + self._cooldown_seconds
 
 

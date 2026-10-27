@@ -52,14 +52,14 @@ def test_parse_magnet_links_from_html() -> None:
     assert magnets[0].has_subtitle is True
 
 
-def test_resolve_sidecar_nfo_prefers_movie_nfo(tmp_path: Path) -> None:
+def test_resolve_sidecar_nfo_prefers_media_specific_nfo(tmp_path: Path) -> None:
     media = tmp_path / "SSIS-123.mp4"
     media.write_bytes(b"x")
     (tmp_path / "movie.nfo").write_text(
         "<movie><title>T</title><num>SSIS-123</num></movie>", encoding="utf-8"
     )
     (tmp_path / "SSIS-123.nfo").write_text("<movie><title>Other</title></movie>", encoding="utf-8")
-    assert resolve_sidecar_nfo(media) == tmp_path / "movie.nfo"
+    assert resolve_sidecar_nfo(media) == tmp_path / "SSIS-123.nfo"
 
 
 def test_ensure_list_thumbnail(tmp_path: Path) -> None:

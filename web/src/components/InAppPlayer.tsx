@@ -53,7 +53,11 @@ function ensureHls(): Promise<typeof window.Hls | undefined> {
       script.src = appUrl("/vendor/hls.min.js") ?? "/vendor/hls.min.js";
       script.async = true;
       script.onload = () => resolve();
-      script.onerror = () => reject(new Error("hls.js 加载失败"));
+      script.onerror = () => {
+        hlsLoader = null;
+        script.remove();
+        reject(new Error("hls.js 加载失败"));
+      };
       document.head.appendChild(script);
     });
   }
@@ -98,7 +102,14 @@ function pickInitialIndex(sources: PlayerSource[], preferred?: number): number {
   return healthy >= 0 ? healthy : 0;
 }
 
-export function InAppPlayer({
+export function InAppPlayer(props: Props) {
+  const sessionKey = JSON.stringify(props.sources.map((source) => [
+    source.url, source.kind, source.referer, source.skip_proxy, source.playable_in_app,
+  ]));
+  return <PlayerSession key={sessionKey} {...props} />;
+}
+
+function PlayerSession({
   title,
   sources,
   initialIndex,
@@ -110,17 +121,19 @@ export function InAppPlayer({
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<{ destroy: () => void } | null>(null);
-  const [index, setIndex] = useState(() => pickInitialIndex(sources, initialIndex));
-  const [status, setStatus] = useState<"idle" | "loading" | "playing" | "error">("idle");
-  const [errorText, setErrorText] = useState<string | null>(null);
-  const [muted, setMuted] = useState(true);
-  const triedRef = useRef<Set<number>>(new Set());
-  const resumeAtRef = useRef(0);
-
   const playable = useMemo(
     () => sources.filter((s) => Boolean(s.url) && (s.playable_in_app !== false || looksLikeHls(s.url) || /\.mp4/i.test(s.url))),
     [sources],
   );
+  const [index, setIndex] = useState(() => {
+    const preferred = initialIndex === undefined ? undefined : sources[initialIndex];
+    return pickInitialIndex(playable, preferred ? playable.indexOf(preferred) : undefined);
+  });
+  const [status, setStatus] = useState<"idle" | "loading" | "playing" | "error">("idle");
+  const [errorText, setErrorText] = useState<string | null>(null);
+  const [muted, setMuted] = useState(true);
+  const triedRef = useRef<Set<number>>(new Set([index]));
+  const resumeAtRef = useRef(0);
 
   const current = playable[index] ?? playable[0] ?? null;
 
@@ -155,7 +168,7 @@ export function InAppPlayer({
   );
 
   const attachSource = useCallback(
-    async (source: PlayerSource, startAt = 0) => {
+    async (source: PlayerSource, signal: AbortSignal, startAt = 0) => {
       const video = videoRef.current;
       if (!video || !source?.url) return;
       destroyHls();
@@ -166,6 +179,7 @@ export function InAppPlayer({
       try {
         if (looksLikeHls(source.url) || looksLikeHls(mediaUrl)) {
           const Hls = await ensureHls();
+          if (signal.aborted) return;
           if (Hls?.isSupported()) {
             const hls = new Hls({
               enableWorker: true,
@@ -176,6 +190,7 @@ export function InAppPlayer({
             hls.loadSource(mediaUrl);
             hls.attachMedia(video);
             hls.on(Hls.Events.MANIFEST_PARSED || "hlsManifestParsed", () => {
+              if (signal.aborted) return;
               if (startAt > 0) {
                 try {
                   video.currentTime = startAt;
@@ -183,12 +198,14 @@ export function InAppPlayer({
                   /* ignore */
                 }
               }
-              if (autoPlay) void video.play().catch(() => undefined);
-              setStatus("playing");
+              if (autoPlay) void video.play().catch(() => {
+                if (!signal.aborted) setStatus("idle");
+              });
+              else setStatus("idle");
             });
             hls.on(Hls.Events.ERROR || "hlsError", (_evt, data) => {
               const d = data as { fatal?: boolean; type?: string; details?: string };
-              if (!d?.fatal) return;
+              if (signal.aborted || !d?.fatal) return;
               destroyHls();
               tryFailover(d.details || d.type || "HLS 错误");
             });
@@ -209,19 +226,18 @@ export function InAppPlayer({
             video.removeEventListener("loadedmetadata", onMeta);
           };
           video.addEventListener("loadedmetadata", onMeta);
+          signal.addEventListener("abort", () => video.removeEventListener("loadedmetadata", onMeta), { once: true });
         }
-        if (autoPlay) await video.play().catch(() => undefined);
-        setStatus("playing");
+        if (autoPlay) await video.play().catch(() => {
+          if (!signal.aborted) setStatus("idle");
+        });
+        else setStatus("idle");
       } catch (err) {
-        tryFailover(err instanceof Error ? err.message : String(err));
+        if (!signal.aborted) tryFailover(err instanceof Error ? err.message : String(err));
       }
     },
     [autoPlay, destroyHls, tryFailover],
   );
-
-  useEffect(() => {
-    triedRef.current = new Set([index]);
-  }, [sources]);
 
   useEffect(() => {
     if (!current) {
@@ -231,8 +247,18 @@ export function InAppPlayer({
     }
     const startAt = resumeAtRef.current;
     resumeAtRef.current = 0;
-    void attachSource(current, startAt);
-    return () => destroyHls();
+    const controller = new AbortController();
+    const video = videoRef.current;
+    void attachSource(current, controller.signal, startAt);
+    return () => {
+      controller.abort();
+      destroyHls();
+      if (video) {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+      }
+    };
   }, [current?.url, current?.label, index]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {

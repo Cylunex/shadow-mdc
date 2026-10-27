@@ -1759,6 +1759,7 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .lightbox-nav { position: absolute; top: 50%; transform: translateY(-50%); font-size: 2.4rem; background: rgba(0,0,0,.45); border: 0; color: #e6f1f4; width: 52px; height: 72px; border-radius: 10px; cursor: pointer; }
 .lightbox-nav.prev { left: 16px; } .lightbox-nav.next { right: 16px; }
 .lightbox-count { position: absolute; bottom: 16px; color: #9db0b8; font-size: .9rem; }
+.lightbox-close { position: absolute; top: 16px; right: 16px; color: #e6f1f4; background: rgba(0,0,0,.6); border: 0; border-radius: 50%; width: 44px; height: 44px; font-size: 1.8rem; cursor: pointer; }
 .sample-thumb { cursor: zoom-in; }
 .sample-thumb img { transition: transform .2s; } .sample-thumb:hover img { transform: scale(1.05); }
 

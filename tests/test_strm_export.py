@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -446,8 +446,9 @@ def _fake_pan(client: _FakeRelayClient, connected: bool = True, ua: str | None =
 
 
 def test_relay_prefers_direct_download_and_caches() -> None:
-    signed = "https://cdn.115/direct?t=1791631985&s=sig"
-    fake = _FakeRelayClient(download=signed, play="https://cdn.115/play.m3u8?t=1791631985")
+    expires = int((datetime.now(UTC) + timedelta(hours=1)).timestamp())
+    signed = f"https://cdn.115/direct?t={expires}&s=sig"
+    fake = _FakeRelayClient(download=signed, play=f"https://cdn.115/play.m3u8?t={expires}")
     relay = StrmRelay(_fake_pan(fake))
     first = asyncio.run(relay.resolve("42", "Emby/4.8"))
     second = asyncio.run(relay.resolve("42", "Emby/4.8"))

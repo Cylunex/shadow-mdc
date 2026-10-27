@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import date
+from hashlib import sha256
+from math import isfinite
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -12,9 +15,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..db.models import MediaAsset, Work
 from ..db.repository import Repository
-from ..domain import ProviderRecord
-from ..enums import ContentFamily, MediaCategory
-from ..identity import extract_code, normalize_identity_value
+from ..domain import MatchEvidence, ProviderRecord, ScoredCandidate
+from ..enums import ContentFamily, MatchDecision, MediaCategory
+from ..identity import extract_code
 from ..remaster import parse_remaster_identity
 
 _CODE_TAG = re.compile(r"(?i)^(?:num|id|code|jav)$")
@@ -52,6 +55,7 @@ NFO_LOCKABLE_FIELDS: tuple[str, ...] = (
     "series",
     "tags",
     "release_date",
+    "runtime_seconds",
 )
 
 
@@ -65,6 +69,7 @@ class ParsedNfo(BaseModel):
     studio: str | None = None
     series: str | None = None
     premiered: str | None = None
+    runtime_seconds: int | None = None
     actors: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     unique_ids: dict[str, str] = Field(default_factory=dict)
@@ -93,7 +98,7 @@ class NfoImportResult(BaseModel):
 @dataclass(slots=True)
 class NfoImporter:
     repository: Repository
-    policy: NfoImportPolicy = NfoImportPolicy()
+    policy: NfoImportPolicy = field(default_factory=NfoImportPolicy)
 
     def import_library_assets(self, assets: list[MediaAsset]) -> NfoImportResult:
         scanned = trusted = candidates = ignored = 0
@@ -118,9 +123,6 @@ class NfoImporter:
                 apply_nfo_locked_fields(self.repository, work, parsed)
                 trusted += 1
             else:
-                from ..domain import MatchEvidence, ScoredCandidate
-                from ..enums import MatchDecision
-
                 scored = ScoredCandidate(
                     record=record,
                     score=0.55,
@@ -139,11 +141,10 @@ class NfoImporter:
 
 
 def resolve_sidecar_nfo(media_path: Path) -> Path | None:
-    """Prefer movie.nfo, then <stem>.nfo, then <code>-style siblings (miyabi rebuild path)."""
+    """Prefer media-specific metadata before a shared directory-level movie.nfo."""
 
     directory = media_path.parent
     candidates = [
-        directory / "movie.nfo",
         media_path.with_suffix(".nfo"),
     ]
     stem = media_path.stem
@@ -152,6 +153,7 @@ def resolve_sidecar_nfo(media_path: Path) -> Path | None:
         if stem.endswith(suffix):
             candidates.append(directory / f"{stem[: -len(suffix)]}.nfo")
             break
+    candidates.append(directory / "movie.nfo")
     for path in candidates:
         if path.is_file():
             return path
@@ -161,10 +163,12 @@ def resolve_sidecar_nfo(media_path: Path) -> Path | None:
 def sibling_artwork_paths(media_path: Path) -> dict[str, Path]:
     directory = media_path.parent
     found: dict[str, Path] = {}
-    for kind, names in {
-        "poster": ("poster.jpg", "poster.png", "poster.webp", f"{media_path.stem}-poster.jpg"),
-        "fanart": ("fanart.jpg", "fanart.png", "fanart.webp", f"{media_path.stem}-fanart.jpg"),
-    }.items():
+    for kind in ("poster", "fanart"):
+        names = [
+            f"{stem}.{extension}"
+            for stem in (f"{media_path.stem}-{kind}", kind)
+            for extension in ("jpg", "jpeg", "png", "webp", "gif")
+        ]
         for name in names:
             path = directory / name
             if path.is_file():
@@ -182,32 +186,43 @@ def parse_movie_nfo(path: Path) -> ParsedNfo:
     original = _text(root, "originaltitle")
     plot = _text(root, "plot")
     studio = _text(root, "studio")
-    series = _text(root, "set") or _text(root, "showtitle")
+    series = _text(root, "set/name") or _text(root, "set") or _text(root, "showtitle")
     premiered = _text(root, "premiered") or _text(root, "releasedate")
-    code = _text(root, "num") or _text(root, "id")
+    code = _text(root, "num")
+    legacy_id = _text(root, "id")
+    legacy_node = root.find("id")
+    legacy_kind = (legacy_node.get("type", "") if legacy_node is not None else "").strip().casefold()
+    if not code and (not legacy_kind or _CODE_TAG.fullmatch(legacy_kind)):
+        code = legacy_id
     actors = tuple(
-        name for actor in root.findall("actor") if (name := (actor.findtext("name") or "").strip())
+        dict.fromkeys(
+            name for actor in root.findall("actor") if (name := (actor.findtext("name") or "").strip())
+        )
     )
     tags = tuple(
         dict.fromkeys(
-            value.strip()
+            value
             for tag in list(root.findall("tag")) + list(root.findall("genre"))
-            if (value := (tag.text or ""))
+            if (value := (tag.text or "").strip())
         )
     )
     unique_ids: dict[str, str] = {}
     for node in root.findall("uniqueid"):
         value = (node.text or "").strip()
-        kind = (node.attrib.get("type") or "").strip() or "provider"
+        kind = (node.attrib.get("type") or "").strip().casefold() or "provider"
         if value:
             unique_ids[kind] = value
             if _CODE_TAG.match(kind) and not code:
                 code = value
+    if legacy_id and legacy_kind and not _CODE_TAG.fullmatch(legacy_kind):
+        unique_ids.setdefault(legacy_kind, legacy_id)
+    elif legacy_id and re.fullmatch(r"tt\d+", legacy_id, re.IGNORECASE):
+        unique_ids.setdefault("imdb", legacy_id)
     if code:
         # extract_code returns (code, family); keep remaster tails (HD/AI/H) verbatim.
         extracted, _family = extract_code(code)
         literal = code.strip().upper()
-        code = literal if parse_remaster_identity(literal) is not None else (extracted or literal)
+        code = literal if parse_remaster_identity(literal) is not None else extracted
     if not title and not code:
         raise ValueError("nfo missing title and id")
     present = {
@@ -219,6 +234,7 @@ def parse_movie_nfo(path: Path) -> ParsedNfo:
         "series": series,
         "tags": tags,
         "release_date": premiered,
+        "runtime_seconds": _runtime_seconds(_text(root, "runtime")),
     }
     locked = _parse_locked_fields(root, present)
     return ParsedNfo(
@@ -229,6 +245,7 @@ def parse_movie_nfo(path: Path) -> ParsedNfo:
         studio=studio,
         series=series,
         premiered=premiered,
+        runtime_seconds=_runtime_seconds(_text(root, "runtime")),
         actors=actors,
         tags=tags,
         unique_ids=unique_ids,
@@ -237,9 +254,17 @@ def parse_movie_nfo(path: Path) -> ParsedNfo:
     )
 
 
-def _to_provider_record(parsed: ParsedNfo) -> ProviderRecord:
-    from datetime import date
+def _runtime_seconds(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        minutes = float(value)
+        return int(minutes * 60) if isfinite(minutes) and minutes >= 0 else None
+    except (ValueError, OverflowError):
+        return None
 
+
+def _to_provider_record(parsed: ParsedNfo) -> ProviderRecord:
     release: date | None = None
     if parsed.premiered:
         try:
@@ -248,7 +273,16 @@ def _to_provider_record(parsed: ParsedNfo) -> ProviderRecord:
             release = None
     family = ContentFamily.JAV if parsed.code else ContentFamily.UNKNOWN
     category = MediaCategory.JAPAN if parsed.code else MediaCategory.OTHER
-    external_id = parsed.code or normalize_identity_value(parsed.title or parsed.source_path)
+    if parsed.code:
+        external_id = parsed.code
+    elif "nfo-import" in parsed.unique_ids:
+        external_id = parsed.unique_ids["nfo-import"]
+    elif parsed.unique_ids:
+        kind = next((name for name in ("imdb", "tmdb", "tvdb") if name in parsed.unique_ids), None)
+        kind = kind or sorted(parsed.unique_ids)[0]
+        external_id = f"{kind}:{parsed.unique_ids[kind]}"
+    else:
+        external_id = f"path:{sha256(parsed.source_path.encode('utf-8')).hexdigest()}"
     return ProviderRecord(
         provider="nfo-import",
         external_id=external_id,
@@ -261,6 +295,7 @@ def _to_provider_record(parsed: ParsedNfo) -> ProviderRecord:
         studio=parsed.studio,
         series=parsed.series,
         release_date=release,
+        runtime_seconds=parsed.runtime_seconds,
         actors=parsed.actors,
         tags=parsed.tags,
         source_url=None,
@@ -275,7 +310,7 @@ def _text(root: ElementTree.Element, tag: str) -> str | None:
     return cleaned or None
 
 
-def _parse_locked_fields(root: ElementTree.Element, present: dict[str, object]) -> tuple[str, ...]:
+def _parse_locked_fields(root: ElementTree.Element, present: Mapping[str, object]) -> tuple[str, ...]:
     locked: list[str] = []
     own = _text(root, SHADOW_LOCKS_TAG)
     if own:
@@ -329,6 +364,9 @@ def apply_nfo_locked_fields(repository: Repository, work: Work, parsed: ParsedNf
                 work.release_date = date.fromisoformat(parsed.premiered[:10])
             except ValueError:
                 continue
+            applied.append(name)
+        elif name == "runtime_seconds" and parsed.runtime_seconds is not None:
+            work.runtime_seconds = parsed.runtime_seconds
             applied.append(name)
     if edits:
         repository.update_work_fields(work, lock_edited=False, **edits)  # type: ignore[arg-type]
