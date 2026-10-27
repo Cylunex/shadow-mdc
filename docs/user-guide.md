@@ -485,6 +485,10 @@ OpenList API：`POST /api/pan/openlist/credentials`、`DELETE /api/pan/openlist/
 - `/api/discover/seed` 在建档后同样触发翻译，避免仅种下原文标题/简介
 - 神作 TOP100 可用 `scripts/enrich_shenzuo_top100.py` 对缺失字段做幂等补全，再 `scripts/sync_catalog_to_nas.sh` 同步到 NAS
 
+## 片库刷流
+
+顶栏「刷流」：竖滑浏览本库海报/番号/标题，可「在线播放」（`/api/works/{id}/play`）或进详情。直达 `/mdc/swipe/`（或 `/?view=swipe`）。与主站同一 OIDC 会话；MCP token 仅用于 `/api/mcp/v1`。外站信息流仍用独立 swipefeed-web，站点名单只放 NAS 本地配置。详见 [playback.md](playback.md#片库刷流swipe)。
+
 ## NAS：deploy 与 ops 备份保留
 
 生产部署脚本：`scripts/nas/deploy-mdc.sh`（须 root；**本仓库不自动部署**，由运维在 NAS 上执行）。

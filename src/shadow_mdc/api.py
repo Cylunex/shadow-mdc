@@ -5725,6 +5725,47 @@ def _batch_plan_out(plans: list[OperationPlan]) -> BatchPlanOut:
     )
 
 
+
+_SWIPE_ENTRY_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Shadow MDC · 刷流</title>
+  <meta http-equiv="refresh" content="0;url=../?view=swipe" />
+  <script>
+    (function () {
+      try {
+        var target = new URL("../?view=swipe", window.location.href);
+        window.location.replace(target.pathname + target.search + target.hash);
+      } catch (e) {
+        window.location.href = "../?view=swipe";
+      }
+    })();
+  </script>
+</head>
+<body>
+  <p style="font-family:system-ui;padding:24px;color:#9fb2b9;background:#080b0d">
+    正在进入片库刷流…若未跳转请 <a href="../?view=swipe">点此打开</a>。
+  </p>
+</body>
+</html>
+"""
+
+
+@app.get("/swipe", include_in_schema=False)
+@app.get("/swipe/", include_in_schema=False)
+def swipe_feed_entry() -> HTMLResponse:
+    """Library swipe-feed entry (vertical UI lives in the SPA ``?view=swipe``).
+
+    Served as HTML (relative redirect) so the nginx ``/mdc/`` prefix is preserved.
+    Same OIDC cookie/session as the main UI; MCP Bearer token is not required for
+    this page (MCP covers ``/api/mcp/v1`` only — see docs/mcp.md).
+    """
+
+    return HTMLResponse(content=_SWIPE_ENTRY_HTML)
+
+
 from .mcp_api import router as _mcp_router  # noqa: E402 - needs route helpers above
 
 app.include_router(_mcp_router)

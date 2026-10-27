@@ -10,6 +10,7 @@ import { CategoriesView } from "./views/CategoriesView";
 import { SettingsView } from "./views/SettingsView";
 import { SubscriptionsView } from "./views/SubscriptionsView";
 import { WorkDetailView } from "./views/WorkDetailView";
+import { SwipeFeedView } from "./views/SwipeFeedView";
 import {
   ActorDetailView,
   findActorRefByName,
@@ -45,6 +46,7 @@ const APP_VIEWS: ReadonlySet<string> = new Set([
   "works",
   "categories",
   "rankings",
+  "swipe",
   "subscriptions",
   "tasks",
   "settings"
@@ -211,7 +213,7 @@ export function App() {
     void (async () => {
       try {
         let refreshed = false;
-        if ((view === "works" || view === "work-detail") && !loaded.works) {
+        if ((view === "works" || view === "work-detail" || view === "swipe") && !loaded.works) {
           await refreshWorks();
           refreshed = true;
         } else if ((view === "actors" || view === "actor-detail") && !loaded.actors) {
@@ -377,7 +379,7 @@ export function App() {
   };
 
   return (
-    <div className="app-shell">
+    <div className={view === "swipe" ? "app-shell swipe-mode" : "app-shell"}>
       <TopNav
         view={view}
         onChange={(next) => {
@@ -412,7 +414,7 @@ export function App() {
                 try {
                   setLoaded({});
                   await refreshCore();
-                  if (view === "works" || view === "work-detail") await refreshWorks();
+                  if (view === "works" || view === "work-detail" || view === "swipe") await refreshWorks();
                   if (view === "actors" || view === "actor-detail") await refreshActors();
                   if (view === "tasks") await refreshInbox();
                   setMessage("已强制刷新");
@@ -678,6 +680,15 @@ export function App() {
                 setMessage(`图片缓存：新下载 ${result.downloaded}，已有 ${result.cached}，失败 ${result.failed}`);
               }, "works");
             }}
+          />
+        )}
+
+        {view === "swipe" && (
+          <SwipeFeedView
+            works={works}
+            loading={!loaded.works}
+            onOpenDetail={openWorkDetail}
+            report={setMessage}
           />
         )}
 

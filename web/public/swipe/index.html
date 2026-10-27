@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#080b0d" />
+  <title>Shadow MDC · 刷流</title>
+  <!-- Relative redirect keeps the /mdc/ nginx prefix. -->
+  <meta http-equiv="refresh" content="0;url=../?view=swipe" />
+  <script>
+    (function () {
+      try {
+        var target = new URL("../?view=swipe", window.location.href);
+        window.location.replace(target.pathname + target.search + target.hash);
+      } catch (e) {
+        window.location.href = "../?view=swipe";
+      }
+    })();
+  </script>
+  <style>
+    html, body { margin: 0; background: #080b0d; color: #eef2f4; font-family: system-ui, sans-serif; }
+    p { padding: 24px; opacity: .7; }
+  </style>
+</head>
+<body>
+  <p>正在进入片库刷流…若未跳转请 <a href="../?view=swipe">点此打开</a>。</p>
+</body>
+</html>

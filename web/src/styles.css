@@ -2312,3 +2312,142 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   font-weight: 700;
   font-size: 12.5px;
 }
+
+/* —— 片库刷流（竖滑） —— */
+.app-shell.swipe-mode .app-main {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.app-shell.swipe-mode .status-bar { display: none; }
+.swipe-feed {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: calc(100vh - 72px);
+  background: #050708;
+  overscroll-behavior-y: contain;
+}
+.swipe-feed--loading,
+.swipe-feed--empty {
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  color: var(--muted);
+}
+.swipe-feed-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  background: linear-gradient(180deg, rgba(8, 11, 13, 0.92), rgba(8, 11, 13, 0.55) 70%, transparent);
+  pointer-events: none;
+}
+.swipe-feed-toolbar > * { pointer-events: auto; }
+.swipe-feed-hint {
+  font-size: 12px;
+  color: #9fb2b9;
+}
+.swipe-feed-scroller {
+  flex: 1;
+  height: calc(100vh - 72px);
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  scroll-behavior: smooth;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.swipe-card {
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  height: calc(100vh - 72px);
+  min-height: 420px;
+  position: relative;
+}
+.swipe-card-stage {
+  position: absolute;
+  inset: 0;
+  background: #0a0e10;
+  overflow: hidden;
+}
+.swipe-card-cover,
+.swipe-card-stage .cover-frame {
+  position: absolute !important;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+}
+.swipe-card-stage .cover-main {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.swipe-card-stage .cover-bg {
+  filter: blur(28px) saturate(1.1);
+  transform: scale(1.15);
+  opacity: 0.55;
+}
+.swipe-card-fallback {
+  position: absolute;
+  inset: 0;
+  background: #12181b;
+}
+.swipe-card-gradient {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 35%, rgba(0, 0, 0, 0.55) 62%, rgba(0, 0, 0, 0.88) 100%);
+  pointer-events: none;
+}
+.swipe-card-hud {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: max(20px, env(safe-area-inset-bottom));
+  z-index: 2;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.85);
+}
+.swipe-card-code {
+  display: inline-block;
+  font: 600 12px/1.2 "Cascadia Code", Consolas, monospace;
+  letter-spacing: 0.04em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(45, 212, 191, 0.18);
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  color: #b7fff4;
+  margin-bottom: 8px;
+}
+.swipe-card-title {
+  margin: 0 0 6px;
+  font-size: clamp(16px, 2.4vw, 22px);
+  line-height: 1.35;
+  max-height: 2.7em;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.swipe-card-meta {
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: #c5d2d7;
+  opacity: 0.9;
+  max-height: 2.8em;
+  overflow: hidden;
+}
+.swipe-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.swipe-card-actions button { min-width: 104px; }
+@media (prefers-reduced-motion: reduce) {
+  .swipe-feed-scroller { scroll-behavior: auto; }
+}

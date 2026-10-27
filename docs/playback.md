@@ -40,3 +40,11 @@ Schema 示例（示例域名为 `example.invalid`，**勿提交真实站点**）
 ## UI
 
 作品详情「磁力」面板：`打开 Emby` + `在线播放`（后者走 `/play`，有 m3u8 时开播放页）。
+
+### 片库刷流（Swipe）
+
+- 顶栏 **刷流** 标签，或深链 `/?view=swipe`；入口页 `/swipe/`（nginx 下为 `/mdc/swipe/`）相对跳转到该视图。
+- 竖滑（`scroll-snap`）浏览本库作品：海报 / 番号 / 标题；**在线播放** 调 `GET /api/works/{id}/play`（与详情页相同 resolve），可播则开 `/api/works/{id}/player`；**详情** 进作品页。
+- 与主 UI 同源，复用 nginx OIDC cookie/session；**不**走 MCP Bearer。LAN 无 OIDC 时用 MCP 请仍只打 `/api/mcp/v1/*`（见 [mcp.md](mcp.md)）。
+- 外站 tube 刷流仍在独立 `swipefeed-web`；片源名单仅 NAS/本机 local-config，**勿**提交真实站点 URL/token。
+
