@@ -12,6 +12,8 @@ type Props = {
   report: (message: string) => void;
 };
 
+type FeedFilter = "all" | "local" | "want";
+
 function shuffle<T>(items: readonly T[]): T[] {
   const next = [...items];
   for (let i = next.length - 1; i > 0; i -= 1) {
@@ -59,12 +61,29 @@ async function openPlay(workId: string, report: (message: string) => void): Prom
   }
 }
 
+async function enqueueOffline(workId: string, report: (message: string) => void): Promise<void> {
+  try {
+    await api.submitWorkOffline(workId, {});
+    report("已提交离线入库任务");
+  } catch (err) {
+    report(err instanceof Error ? err.message : String(err));
+  }
+}
+
 export function SwipeFeedView({ works, loading, onOpenDetail, report }: Props) {
   const [orderKey, setOrderKey] = useState(0);
+  const [filter, setFilter] = useState<FeedFilter>("all");
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const [offlineId, setOfflineId] = useState<string | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
-  const feed = useMemo(() => rankWorks(works), [works, orderKey]);
+  const filtered = useMemo(() => {
+    if (filter === "local") return works.filter((w) => w.has_local_media);
+    if (filter === "want") return works.filter((w) => Boolean(w.want_list));
+    return works;
+  }, [works, filter]);
+
+  const feed = useMemo(() => rankWorks(filtered), [filtered, orderKey]);
 
   const reshuffle = useCallback(() => {
     setOrderKey((value) => value + 1);
@@ -109,6 +128,11 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report }: Props) {
     <section className="swipe-feed" aria-label="片库刷流">
       <div className="swipe-feed-toolbar">
         <span className="swipe-feed-hint">上下滑切换 · J/K 或 ↑↓ · 共 {feed.length} 部</span>
+        <div className="swipe-feed-filters" role="group" aria-label="刷流筛选">
+          <button type="button" className={filter === "all" ? "warm" : "ghost"} onClick={() => setFilter("all")}>全部</button>
+          <button type="button" className={filter === "local" ? "warm" : "ghost"} onClick={() => setFilter("local")}>本地</button>
+          <button type="button" className={filter === "want" ? "warm" : "ghost"} onClick={() => setFilter("want")}>想看</button>
+        </div>
         <button type="button" className="ghost" onClick={reshuffle}>打乱</button>
       </div>
       <div className="swipe-feed-scroller" ref={scrollerRef}>
@@ -149,6 +173,17 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report }: Props) {
                       }}
                     >
                       {playingId === work.id ? "解析中…" : "在线播放"}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={offlineId === work.id}
+                      onClick={() => {
+                        setOfflineId(work.id);
+                        void enqueueOffline(work.id, report).finally(() => setOfflineId(null));
+                      }}
+                    >
+                      {offlineId === work.id ? "提交中…" : "入库"}
                     </button>
                     <button type="button" className="secondary" onClick={() => onOpenDetail(work.id)}>
                       详情

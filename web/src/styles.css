@@ -2350,6 +2350,8 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   pointer-events: none;
 }
 .swipe-feed-toolbar > * { pointer-events: auto; }
+.swipe-feed-filters { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.swipe-feed-filters button { min-width: 52px; padding: 4px 10px; font-size: 12px; }
 .swipe-feed-hint {
   font-size: 12px;
   color: #9fb2b9;

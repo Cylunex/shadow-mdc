@@ -487,7 +487,7 @@ OpenList API：`POST /api/pan/openlist/credentials`、`DELETE /api/pan/openlist/
 
 ## 片库刷流
 
-顶栏「刷流」：竖滑浏览本库海报/番号/标题，可「在线播放」（`/api/works/{id}/play`）或进详情。直达 `/mdc/swipe/`（或 `/?view=swipe`）。与主站同一 OIDC 会话；MCP token 仅用于 `/api/mcp/v1`。外站信息流仍用独立 swipefeed-web，站点名单只放 NAS 本地配置。详见 [playback.md](playback.md#片库刷流swipe)。
+顶栏「刷流」：竖滑浏览本库海报/番号/标题；可「在线播放」（play resolve）、「入库」（离线任务）或进详情；筛选全部/本地/想看。直达 `/mdc/swipe/`（或 `/?view=swipe`）。与主站同一 OIDC 会话；MCP token 仅用于 `/api/mcp/v1`。外站信息流仍用独立 swipefeed-web，站点名单只放 NAS 本地配置。详见 [playback.md](playback.md#片库刷流swipe)。
 
 ## NAS：deploy 与 ops 备份保留
 
