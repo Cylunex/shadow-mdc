@@ -76,6 +76,30 @@ async def test_jav321_ignores_embedded_player_script_before_plot() -> None:
 
 
 @pytest.mark.asyncio
+
+@pytest.mark.asyncio
+async def test_jav321_decodes_html_entities_before_splitting_actors() -> None:
+    """Raw 出演者 text may contain &amp; / &#39; — decode before comma split."""
+    html = (
+        FIXTURE.read_text(encoding="utf-8")
+        .replace(
+            '<b>出演者</b>: 河北彩花 &nbsp; <br>',
+            '<b>出演者</b>: A&amp;B &#39;s Girl、河北彩花 &nbsp; <br>',
+        )
+        # Drop star links so the regex raw path is exercised.
+        .replace('href="/star/', 'href="/nostar/')
+        .replace('href="/heyzo_star/', 'href="/nostar/')
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=html, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        records = await Jav321Provider(client, "https://www.jav321.com").search(_hints())
+
+    assert records[0].actors == ("A&B 's Girl", "河北彩花")
+
+
 async def test_jav321_rejects_invalid_or_drifted_page() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="<html><h1>changed</h1></html>", request=request)

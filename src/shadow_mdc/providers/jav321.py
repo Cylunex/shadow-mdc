@@ -1,3 +1,4 @@
+import html
 import re
 from datetime import date
 from urllib.parse import urljoin, urlparse
@@ -93,9 +94,12 @@ class Jav321Provider(HttpProvider):
         )
 
 
-def _field(html: str, name: str) -> str | None:
-    match = _FIELD_PATTERNS[name].search(html)
-    return match.group(1).replace("&nbsp;", " ").strip() if match else None
+def _field(page_html: str, name: str) -> str | None:
+    match = _FIELD_PATTERNS[name].search(page_html)
+    if not match:
+        return None
+    # Decode entities before callers split (e.g. actress names with &amp;).
+    return html.unescape(match.group(1).replace("&nbsp;", " ")).strip() or None
 
 
 def _heading_title(heading: Node) -> str:
