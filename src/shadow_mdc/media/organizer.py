@@ -105,6 +105,20 @@ class Organizer:
             )
         )
         operations.extend(extra_operations)
+        # Distinct sidecars can normalize to the same target (e.g. .srt/.SRT).
+        # Surface all collisions in preview and fail before moving any media.
+        targets: dict[str, int] = {}
+        for operation in operations:
+            if operation.detail in {"media", "subtitle"}:
+                key = operation.destination.casefold()
+                targets[key] = targets.get(key, 0) + 1
+        operations = [
+            operation.model_copy(update={"conflict": True})
+            if operation.detail in {"media", "subtitle"}
+            and targets[operation.destination.casefold()] > 1
+            else operation
+            for operation in operations
+        ]
         token = _plan_token(asset.id, operations)
         return OperationPlan(asset_id=asset.id, token=token, operations=tuple(operations))
 
@@ -149,9 +163,12 @@ class Organizer:
         for operation in plan.operations:
             destination = Path(operation.destination)
             if operation.kind is OperationKind.DELETE_FILTERED_FILE:
-                if destination.is_file() and not destination.is_symlink():
-                    if journal is None or not journal.trash(destination):
-                        destination.unlink()
+                if (
+                    destination.is_file()
+                    and not destination.is_symlink()
+                    and (journal is None or not journal.trash(destination))
+                ):
+                    destination.unlink()
                 continue
             if operation.kind is OperationKind.REMOVE_DIRECTORY:
                 try:

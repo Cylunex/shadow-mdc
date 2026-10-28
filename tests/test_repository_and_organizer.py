@@ -14,6 +14,7 @@ from shadow_mdc.enums import (
     OutputMode,
     QueryMode,
 )
+from shadow_mdc.media.organize_journal import OrganizeJournal, undo_entries
 from shadow_mdc.media.organizer import Organizer
 
 
@@ -596,3 +597,95 @@ def test_organize_plan_shortens_long_windows_paths_deterministically(
         token=first.token,
     )
     assert Path(media_destination).is_file()
+
+
+@pytest.mark.parametrize("mode", [OutputMode.COPY, OutputMode.MOVE, OutputMode.HARDLINK, OutputMode.SYMLINK])
+def test_subtitle_pairing_survives_plan_execution_and_undo(
+    repository: Repository,
+    tmp_path: Path,
+    mode: OutputMode,
+) -> None:
+    source_root = tmp_path / "source"
+    target_root = tmp_path / "target"
+    source_root.mkdir()
+    target_root.mkdir()
+    library, asset = _asset(repository, source_root, name="ABC-123.1080p-CD2.strm")
+    source = Path(asset.path)
+    subtitle = source_root / "ABC_123-part2.zh-Hans.forced.srt"
+    subtitle.write_text("second part")
+    unrelated = source_root / "ABC-123-CD1.zh.srt"
+    unrelated.write_text("first part")
+    work = repository.catalog_asset(
+        asset,
+        ProviderRecord(
+            provider="local-path",
+            external_id="safe-part",
+            code="ABC-123",
+            title="Parts",
+            family=ContentFamily.JAV,
+        ),
+    )
+    organizer = Organizer(repository)
+    plan = organizer.plan(asset=asset, work=work, library=library, mode=mode, target_root=str(target_root))
+    subtitle_ops = [operation for operation in plan.operations if operation.detail == "subtitle"]
+    assert len(subtitle_ops) == 1
+    target = Path(subtitle_ops[0].destination)
+    assert target.name == "ABC-123-CD2.zh-Hans.forced.srt"
+    journal = OrganizeJournal()
+    organizer.execute(
+        asset=asset,
+        work=work,
+        library=library,
+        identities=[],
+        mode=mode,
+        target_root=str(target_root),
+        token=plan.token,
+        journal=journal,
+    )
+    assert target.read_text() == "second part"
+    assert unrelated.read_text() == "first part"
+    report = undo_entries(journal.entries, dry_run=False)
+    assert report.errors == 0 and report.skipped == 0
+    assert subtitle.read_text() == "second part" and source.is_file()
+    assert not target.exists()
+
+
+def test_subtitle_target_collision_blocks_before_any_media_move(
+    repository: Repository, tmp_path: Path
+) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    library, asset = _asset(repository, root, name="ABC-123.1080p-CD2.mp4")
+    subtitles = [root / name for name in ("ABC-123-CD2.zh.srt", "ABC_123-part2.zh.srt")]
+    for subtitle in subtitles:
+        subtitle.write_text(subtitle.name)
+    work = repository.catalog_asset(
+        asset,
+        ProviderRecord(
+            provider="local-path",
+            external_id="collision",
+            code="ABC-123",
+            title="Collision",
+            family=ContentFamily.JAV,
+        ),
+    )
+    organizer = Organizer(repository)
+    plan = organizer.plan(
+        asset=asset, work=work, library=library, mode=OutputMode.MOVE, target_root=str(target)
+    )
+    assert sum(operation.conflict for operation in plan.operations) == 2
+    with pytest.raises(FileExistsError):
+        organizer.execute(
+            asset=asset,
+            work=work,
+            library=library,
+            identities=[],
+            mode=OutputMode.MOVE,
+            target_root=str(target),
+            token=plan.token,
+        )
+    assert Path(asset.path).is_file()
+    assert all(subtitle.read_text() == subtitle.name for subtitle in subtitles)
+    assert list(target.iterdir()) == []

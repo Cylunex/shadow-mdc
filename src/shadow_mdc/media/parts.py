@@ -42,46 +42,119 @@ def detect_media_part(path: Path, code: str | None) -> MediaPart | None:
     return None
 
 
+# Strip only recognized language/accessibility tags, never release names or part numbers.
+_SUBTITLE_TAGS = re.compile(
+    r"(?i)(?:[. _-](?:zh(?:[-_](?:cn|tw|hans|hant))?|chs|cht|chi|zho|"
+    r"en|eng|ja|jpn|jp|ko|kor|fr|fra|fre|de|deu|ger|es|spa|it|ita|"
+    r"pt(?:[-_]br)?|por|ru|rus|ar|ara|th|tha|vi|vie|id|ind|"
+    r"forced|sdh|cc|default|简体|繁体|简中|繁中|中文|双语))+$"
+)
+
+
+def _subtitle_name(subtitle: Path) -> tuple[str, str]:
+    match = _SUBTITLE_TAGS.search(subtitle.stem)
+    if match is None:
+        return subtitle.stem, ""
+    return subtitle.stem[:match.start()], match.group()
+
+
+def subtitle_matches_stem(subtitle: Path, stem: str) -> bool:
+    """Whether a sidecar names this media stem plus recognized subtitle tags."""
+    return _exact_subtitle_tail(subtitle, stem) is not None
+
+
+def _exact_subtitle_tail(subtitle: Path, stem: str) -> str | None:
+    if _fold_name(subtitle.stem) == _fold_name(stem):
+        return ""
+    for separator in re.finditer(r"[. _-]", subtitle.stem):
+        base, tail = subtitle.stem[:separator.start()], subtitle.stem[separator.start():]
+        if _fold_name(base) == _fold_name(stem) and _SUBTITLE_TAGS.fullmatch(tail):
+            return tail
+    return None
+
+
+def _fold_name(value: str) -> str:
+    return unicodedata.normalize("NFC", value).casefold()
+
+
+def _code_pattern(code: str) -> str:
+    # Accept delimiter differences, but never a prefix of a longer code.
+    return r"[-_. ]*".join(re.escape(piece) for piece in re.split(r"[-_. ]+", code))
+
+
+def _code_part(base: str, code: str) -> int | None:
+    match = re.fullmatch(
+        _code_pattern(code) + r"(?:[-_. ]+(?:cd|part|pt|v)?0*([1-9]\d*)|[-_. ]+([a-i]))?",
+        base,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    if match.group(1):
+        return int(match.group(1))
+    if match.group(2):
+        return ord(match.group(2).upper()) - ord("A") + 1
+    return 0
+
+
 def find_subtitles(media: Path, code: str | None) -> tuple[Path, ...]:
-    media_part = detect_media_part(media, code)
-    matches: list[Path] = []
+    """Pair sidecars with one local asset; ambiguous versions stay untouched.
+
+    Exact media basenames take precedence. Code-only fallback requires the same
+    explicit part and one eligible sibling. STRM is treated as a local filename;
+    its locator is never opened here. Subtitle symlinks are not followed.
+    """
     try:
         siblings = sorted(media.parent.iterdir(), key=lambda item: item.name.casefold())
+        videos = [
+            item for item in siblings
+            if item.suffix.casefold() in _VIDEO_NAME_SUFFIXES and item.is_file()
+        ]
+        # Also supports callers checking a target before the media exists.
+        if media not in videos:
+            videos.append(media)
+        part = detect_media_part(media, code)
+        matches: list[Path] = []
+        for candidate in siblings:
+            if (
+                candidate.suffix.casefold() not in SUBTITLE_EXTENSIONS
+                or candidate.is_symlink()
+                or not candidate.is_file()
+            ):
+                continue
+            base, _tail = _subtitle_name(candidate)
+            exact = [item for item in videos if subtitle_matches_stem(candidate, item.stem)]
+            if exact:
+                longest = max(len(_fold_name(item.stem)) for item in exact)
+                exact = [item for item in exact if len(_fold_name(item.stem)) == longest]
+                if exact == [media]:
+                    matches.append(candidate)
+                continue
+            if code is None:
+                continue
+            subtitle_part = _code_part(base, code)
+            if subtitle_part is None or subtitle_part != (part.index if part else 0):
+                continue
+            peers = []
+            for video in videos:
+                peer_part = detect_media_part(video, code)
+                if (peer_part.index if peer_part else 0) == subtitle_part:
+                    peers.append(video)
+            if peers == [media]:
+                matches.append(candidate)
+        return tuple(matches)
     except OSError:
         return ()
-    for candidate in siblings:
-        if not candidate.is_file() or candidate.suffix.casefold() not in SUBTITLE_EXTENSIONS:
-            continue
-        if _subtitle_matches(candidate, media, code, media_part):
-            matches.append(candidate)
-    return tuple(matches)
 
 
 def subtitle_destination(subtitle: Path, media: Path, destination: Path) -> Path:
-    tail = ""
-    if subtitle.stem.casefold().startswith(media.stem.casefold()):
-        tail = subtitle.stem[len(media.stem) :]
+    """Preserve language/forced/SDH tags even when paired by code or part."""
+    tail = _exact_subtitle_tail(subtitle, media.stem)
+    if tail is None:
+        _base, tail = _subtitle_name(subtitle)
     if tail and tail[0] not in ".-_":
-        tail = f".{tail}"
+        tail = f".{tail.lstrip()}"
     return destination.with_name(f"{destination.stem}{tail}{subtitle.suffix.casefold()}")
-
-
-def _subtitle_matches(
-    subtitle: Path,
-    media: Path,
-    code: str | None,
-    media_part: MediaPart | None,
-) -> bool:
-    if subtitle.stem.casefold().startswith(media.stem.casefold()):
-        return True
-    if code is None or _compact(code) not in _compact(subtitle.stem):
-        return False
-    subtitle_part = detect_media_part(subtitle, code)
-    if media_part is None:
-        return subtitle_part is None
-    if subtitle_part is None:
-        return media_part.index == 1
-    return subtitle_part.index == media_part.index
 
 
 def _compact(value: str) -> str:

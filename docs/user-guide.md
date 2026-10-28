@@ -539,3 +539,16 @@ Settings / 环境变量：`SHADOW_MDC_R18_DUMP_REFRESH_ENABLED`（默认 `false`
 实现：`scripts/run_r18_dump_weekly.py`、`src/shadow_mdc/services/r18_dump_refresh.py`。
 dump 未变时可跳过 enrich；enrich 后若 `jav_total` 增加则失败。勿把 `r18-dumps/` 推进 git。
 
+
+### 字幕配对与整理（2026-10-28）
+
+整理时优先使用影片完整文件名对应的字幕，例如 `Film.1080p.mp4` 对应
+`Film.1080p.zh-Hans.forced.srt`。语言、强制字幕和 SDH 标记随重命名保留。
+番号回退需要相同分段且没有同目录版本歧义；`ABC-123-CD2.zh.srt` 不会归给 CD1，
+无分段字幕也不会自动归给 CD1。同一分段存在多个版本时，请把字幕命名为所选视频完整名
+加语言后缀，再重新生成整理计划。未识别后缀及字幕软链接留在原位置。
+
+预览若显示两个字幕将写入同一目标，执行会在移动视频前报冲突；先明确要保留的字幕命名再重试。
+SubtitleCat 下载会检查 SRT 结构，错误结果中的 `detail` 给出原因；它不会覆盖已有或并发写入
+的字幕。结构有效不代表字幕已经与影片时长、发行版本或对白同步匹配。字幕下载的原子发布需要
+目标文件系统支持硬链接，不支持时返回错误并保留原文件。

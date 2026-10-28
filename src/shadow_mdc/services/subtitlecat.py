@@ -13,16 +13,19 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urljoin
 
 import httpx
 
-from ..media.parts import SUBTITLE_EXTENSIONS
+from ..media.parts import SUBTITLE_EXTENSIONS, subtitle_matches_stem
+from ..media.subtitle_validation import validate_srt
 
 logger = logging.getLogger(__name__)
 
@@ -108,14 +111,15 @@ def parse_detail_zh_links(page: str, base_url: str) -> dict[str, str]:
 
 
 def has_existing_subtitle(directory: Path, stem: str) -> bool:
-    folded = stem.casefold()
     try:
-        for entry in directory.iterdir():
-            if entry.suffix.casefold() in SUBTITLE_EXTENSIONS and entry.name.casefold().startswith(folded):
-                return True
+        return any(
+            entry.suffix.casefold() in SUBTITLE_EXTENSIONS
+            and (entry.is_file() or entry.is_symlink())
+            and subtitle_matches_stem(entry, stem)
+            for entry in directory.iterdir()
+        )
     except OSError:
         return False
-    return False
 
 
 @dataclass
@@ -216,12 +220,24 @@ class SubtitleCatFetcher:
             if dry_run:
                 return SubtitleFetchResult(code=code, status="dry-run", path=target, pick=pick)
             body = self._get(pick.url).content
-            if len(body) < 32 or b"-->" not in body[:4096]:
-                return SubtitleFetchResult(code=code, status="error", pick=pick, detail="not an srt payload")
+            invalid = validate_srt(body)
+            if invalid is not None:
+                return SubtitleFetchResult(code=code, status="error", pick=pick, detail=invalid)
             directory.mkdir(parents=True, exist_ok=True)
-            tmp = target.with_name(target.name + ".part")
-            tmp.write_bytes(body)
-            tmp.replace(target)
+            # Publish a complete file without replacing a concurrent/user subtitle.
+            temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(body)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                try:
+                    os.link(temporary, target)
+                except FileExistsError:
+                    return SubtitleFetchResult(code=code, status="exists", path=target, pick=pick)
+            finally:
+                temporary.unlink(missing_ok=True)
             return SubtitleFetchResult(code=code, status="written", path=target, pick=pick)
         except (httpx.HTTPError, OSError, ValueError) as exc:
             logger.warning("subtitlecat %s failed: %s: %s", code, type(exc).__name__, exc)

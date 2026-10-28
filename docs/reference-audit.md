@@ -124,3 +124,65 @@ Shadow MDC 只吸收行为、边界和使用流程，所有代码、模型、接
 请求预算、取消与失效规则、构建尺寸、回归入口和测量边界见
 [共享查询与冷加载等待链](dev/performance.md#8-共享查询与冷加载等待链2026-10-27)。
 已有预览格式复用、任务后继与通用断点续跑仍是候选，本次没有改变这些状态。
+
+## 2026-10-28 独立 MDC：字幕配对与整理可靠性
+
+范围仅为 MDC。先核对当前源码、此前交付记录和离线测试，再读取以下上游选定修订的源码与
+LICENSE；未运行、安装或验证上游服务，不把 README 宣传计为实际效果。实现与测试独立编写，
+没有复制上游代码、引入其依赖或新增 Shadow Relay 调用。
+
+### 来源与取舍
+
+| 参考及固定修订 | 已读实现 / 许可 | 本次取舍 |
+|---|---|---|
+| [mdcz `e2474680686f`](https://github.com/ShotHeadman/mdcz/tree/e2474680686f44c51e0e93e3546587b6673a99ea) | `packages/runtime/src/scrape/media/subtitleSidecars.ts`、`canonicalizeActorAliases.ts`、`packages/shared/subtitleFilename.ts`；GPL-3.0 | 借鉴字幕有明确所属文件、同目录版本歧义不抢占、改名保留后缀的行为；演员归一已有 `actress_aliases.py`、用户别名与关系表，不引入第二套人物真值 |
+| [subtitle-scout `caae8e2719c5`](https://github.com/fancydirty/subtitle-scout/tree/caae8e2719c5c114c528f5c0b9a251d0c4f9f613) | `src/files/subtitleInspect.ts`、`subtitleWriter.ts`、`src/v2/subtitleJudge.ts`；AGPL-3.0 | 采用安装前结构检查、结果可诊断和保护已有字幕的原则；不引入 LLM 评判、翻译、压缩包或跨剧集自动安装 |
+| [kaloscope `bec1f1c8bbd8`](https://github.com/kaloscope/kaloscope/tree/bec1f1c8bbd836bc251149364c64770541f2fd87) | `backend/app/core/flow/engine.py`、`backend/app/services/flow.py`；GPL-3.0 | 源码具有恢复实例和暂停／恢复任务机制；MDC 保留现有任务记录、协作取消和局部检查点，不为修复文件配对加入可视化图、调度引擎或任意脚本节点 |
+| [Subliminal `dbbb1348a528`](https://github.com/Diaoul/subliminal/tree/dbbb1348a528baaff62418588cbffae3ac90a518) | 补充检索后核对 `src/subliminal/score.py`、`core.py`；MIT | 作品、季集、发行版本、帧率等匹配维度分开；本次先落实本地文件和分段约束，不将“同番号”当“同版本”，不凭下载量宣称同步匹配 |
+
+### 现状核对
+
+- `api.py` 自己创建 ProviderRegistry，`providers/base.py` 管理来源能力、并发、超时和冷却；
+  `services/field_priority.py` 和 Repository 保留字段优先级、手工锁与快照。来源管理不依赖 Relay。
+- 业务偏好、字段优先级、目录规则及播放站点已有本地文件存储；核心 `Settings` 仍有历史 `.env`
+  兼容加载，本轮没有迁移实际配置，也不声称全部配置已统一。后续调整应继续采用文件优先原则。
+- `services/strm_relay.py` 是 MDC 内部的 STRM 播放重定向实现，并非 Shadow Relay 项目依赖；
+  播放／刷流接口和共享查询不需为本次配对修复变动。
+- `services/jobs.py` 的通用执行器仍以进程内任务为主；`/api/tasks/{id}/retry` 只登记审计记录，
+  不会自动重跑原动作。字幕补全有目录检查点，但仅处理主 STRM、目录内已有任意字幕即跳过；
+  不将此等同于逐资产、逐版本的完整补全。这些是后续任务执行优化项。
+
+### 已落地行为
+
+1. 字幕先按完整媒体名匹配，比较做 NFC 和大小写归一；多个前缀都可匹配时由最长完整媒体名
+   所属，同名实体视频和 STRM 并存时不猜所属。相邻编号、相邻片名不会因字符串前缀相同而配对。
+2. 番号回退只接受完整番号加显式分段，分隔符差异可兼容，分段必须一致。同目录同分段有多个
+   可能版本（包括无编号文件）时不回退；不再把无分段字幕自动塞给 CD1。未配对文件留在原处。
+3. 改名保留 `.zh-Hans.forced`、`.en.sdh` 等已识别语言和辅助标记；未知后缀保守不配对。
+   字幕软链接不会被跟随并搬走其目标；STRM 配对只读取文件名，不读取或访问远程媒体。
+4. 不同字幕经归一后目标相同时，既有预览就显示冲突；执行在任何媒体移动前失败。
+   无须新增审核页面，仍使用原计划 token、执行和撤销流程。
+5. SubtitleCat 的“已存在”检查采用完整媒体名与字幕标记，邻号字幕或同名目录不再造成误跳过。
+   下载内容必须包含有效 SRT 时间轴和正文，拒绝 HTML、空正文、倒序／逆向时间及超过 8 MiB 的
+   内容；支持 UTF-8、带 BOM 的 UTF-16、GB18030 与 Big5，保留原字节。失败返回具体 `detail`，
+   不安装、不记作“无结果”缓存。
+6. 字幕使用同目录唯一临时文件，写完并 fsync 后以不覆盖的硬链接发布；若已有文件或其他写入
+   抢先创建目标，返回 `exists` 并保留原内容。成功及失败均清理自己的临时文件。不支持硬链接
+   发布的文件系统会明确返回 `error`，不降级成覆盖式写入。
+
+### 验证与边界
+
+- 新增离线测试涵盖邻号／邻片名、语言后缀、分段、STRM、版本歧义、Unicode、软链接、
+  目标碰撞、四种整理模式及撤销、字幕编码／结构、下载并发目标保护与临时文件清理。
+- 所有文件操作测试使用 pytest 临时目录；网络用 MockTransport。没有访问真实媒体目录，
+  没有部署、APK 或其他发布包构建，未变更生产配置；没有 UI 改动。
+- SRT 结构检查并不能证明内容语言、发行版、季集或音画同步；尚未接入资产时长比对。
+  8 MiB 检查发生在响应下载后，不是流式下载内存上限。已有本地字幕不在本轮自动修复或重编码。
+- 本轮不改变身份接受阈值、作品／文件分层、演员归一、手工锁、批量执行顺序及通用任务恢复模型。
+  不对过往误配对文件执行自动迁移。跨项目需求无新增。
+
+最终验证（包含远端已有播放更新 `7e6744f`）：`uv run --frozen python -m pytest` **800 项通过**；
+`web/pnpm test` **64 项通过**，`pnpm check` 通过。本次涉及的 7 个 Python 源码／测试文件通过
+Ruff 与严格 mypy（`--follow-imports=silent`，不宣称全仓静态检查已清理），`git diff --check` 通过。
+仅保留已有 Starlette/httpx 弃用提示。测试工具自动产生的锁文件格式改写已撤销，未升级项目依赖；
+测试临时目录已清理。
