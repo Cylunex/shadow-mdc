@@ -547,12 +547,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         (provider for provider in providers._providers.values() if provider.descriptor.id == "fanza"),
         None,
     )
+    javdb_api = build_javdb_app_api(settings, client)
+    if isinstance(javdb_provider, JavDBProvider):
+        javdb_provider.bind_app_api(javdb_api)
     discover_service = DiscoverService(
         providers,
         javdb_provider if isinstance(javdb_provider, JavDBProvider) else None,
         fanza_provider if isinstance(fanza_provider, FanzaProvider) else None,
         r18_dump_path=settings.resolved_r18_dump_db(),
-        javdb_api=build_javdb_app_api(settings, client),
+        javdb_api=javdb_api,
         sukebei=SukebeiClient(client, retries=settings.request_retries),
     )
     task_events = TaskEventHub()

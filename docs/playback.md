@@ -20,7 +20,7 @@ Shadow MDC 可为作品解析播放入口：**Emby/Jellyfin 深链**（公开代
 
 Schema 示例（示例域名为 `example.invalid`，**勿提交真实站点**）：见 [dev/playback-sites.example.json](dev/playback-sites.example.json)。
 
-部署时用 `scp`/`rsync` 把本机 `data/playback-sites.local.json` 拷到 NAS `shared/data/`，**不要**经 git push。
+部署时用 `scp`/`rsync` 把本机 `data/playback-sites.local.json` 拷到 NAS `shared/data/`，**不要**经 git push。可并列配置 JavDB 官方与自建镜像搜索模板（深链打开外站）；**短评仍走 App API 写入本地库**，不在 mdc 内嵌浏览镜像站评论。
 
 ## API
 

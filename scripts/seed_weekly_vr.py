@@ -98,12 +98,14 @@ async def _run(arguments: argparse.Namespace) -> int:
         [javdb, fanza],
         max_concurrent_calls=settings.provider_concurrency,
     )
+    javdb_api = build_javdb_app_api(settings, client)
+    javdb.bind_app_api(javdb_api)
     discover = DiscoverService(
         providers,
         javdb,
         fanza,
         r18_dump_path=settings.resolved_r18_dump_db(),
-        javdb_api=build_javdb_app_api(settings, client),
+        javdb_api=javdb_api,
     )
 
     try:

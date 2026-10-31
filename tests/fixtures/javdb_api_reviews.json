@@ -1,0 +1,50 @@
+{
+  "success": 1,
+  "data": {
+    "reviews": [
+      {
+        "id": 18667414,
+        "user_id": 89614,
+        "username": "stevenabcd123",
+        "watched_count": 6977,
+        "status": "watched",
+        "status_title": "看過",
+        "score": 5,
+        "content": "让星宫的蜜穴再爽一些吧",
+        "likes_count": 10,
+        "liked": false,
+        "created_at": "2021-11-16T12:48:06.000Z"
+      },
+      {
+        "id": 18667415,
+        "user_id": 1,
+        "username": "viewer_two",
+        "status": "watched",
+        "status_title": "看過",
+        "score": 4.5,
+        "content": "演技在线，推荐一看",
+        "likes_count": 3,
+        "liked": false,
+        "created_at": "2022-01-01T00:00:00.000Z"
+      },
+      {
+        "id": 18667416,
+        "user_id": 2,
+        "username": "empty_content",
+        "score": 3,
+        "content": "",
+        "likes_count": 0,
+        "created_at": "2022-02-01T00:00:00.000Z"
+      },
+      {
+        "id": 18667417,
+        "user_id": 3,
+        "username": "whitespace",
+        "score": 2,
+        "content": "   ",
+        "likes_count": 0,
+        "created_at": "2022-03-01T00:00:00.000Z"
+      }
+    ]
+  }
+}

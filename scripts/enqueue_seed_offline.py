@@ -125,12 +125,14 @@ async def _run(arguments: argparse.Namespace) -> int:
     javdb = JavDBProvider(client, settings.javdb_base_url, settings.request_retries)
     fanza = FanzaProvider(client, settings.fanza_base_url, settings.request_retries)
     providers = ProviderRegistry([javdb, fanza], max_concurrent_calls=settings.provider_concurrency)
+    javdb_api = build_javdb_app_api(settings, client)
+    javdb.bind_app_api(javdb_api)
     discover = DiscoverService(
         providers,
         javdb,
         fanza,
         r18_dump_path=settings.resolved_r18_dump_db(),
-        javdb_api=build_javdb_app_api(settings, client),
+        javdb_api=javdb_api,
         sukebei=SukebeiClient(client, retries=settings.request_retries),
     )
     try:

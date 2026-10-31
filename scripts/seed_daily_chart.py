@@ -146,12 +146,14 @@ async def _run(arguments: argparse.Namespace) -> int:
             "offline intake fallback disabled",
             file=sys.stderr,
         )
+    javdb_api = build_javdb_app_api(settings, client)
+    javdb.bind_app_api(javdb_api)
     discover = DiscoverService(
         providers,
         javdb,
         fanza,
         r18_dump_path=settings.resolved_r18_dump_db(),
-        javdb_api=build_javdb_app_api(settings, client),
+        javdb_api=javdb_api,
         sukebei=SukebeiClient(client, retries=settings.request_retries),
     )
     browse_providers = _parse_providers(arguments.providers)

@@ -1,4 +1,4 @@
-"""JavDB App JSON API client (rankings, TOP250, movie detail, magnets).
+"""JavDB App JSON API client (rankings, TOP250, movie detail, magnets, reviews).
 
 Ported from FlanChanXwO/javdb-cli (MIT): the ``jdsignature`` header
 (``internal/javdb/protocol/signature``), the public device params and envelope
@@ -24,7 +24,7 @@ from typing import Any, Literal
 import httpx
 
 from ..config import Settings
-from ..domain import Artwork, ProviderRecord
+from ..domain import Artwork, ProviderRecord, ReviewHighlight
 from ..enums import ContentFamily
 from ..identity import extract_code
 from ..media.magnets import MagnetLink, magnet_quality_flags
@@ -319,6 +319,50 @@ def parse_magnets(data: Mapping[str, Any]) -> tuple[MagnetLink, ...]:
     return tuple(found)
 
 
+
+def parse_reviews(
+    data: Mapping[str, Any],
+    *,
+    provider: str = "javdb",
+    limit: int = 20,
+) -> tuple[ReviewHighlight, ...]:
+    """Map ``/api/v1/movies/{id}/reviews`` ``data`` into review highlights.
+
+    Empty ``content`` rows are dropped; never invent text.
+    """
+
+    rows = data.get("reviews")
+    if not isinstance(rows, list):
+        return ()
+    cap = max(1, min(int(limit), 50))
+    highlights: list[ReviewHighlight] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        content = _as_str(row.get("content"))
+        if not content:
+            continue
+        text = content[:2000]
+        if text in seen:
+            continue
+        seen.add(text)
+        score = _as_float(row.get("score"))
+        if score is not None and score < 0:
+            score = None
+        highlights.append(
+            ReviewHighlight(
+                provider=provider,
+                text=text,
+                author=_as_str(row.get("username")),
+                score=score,
+            )
+        )
+        if len(highlights) >= cap:
+            break
+    return tuple(highlights)
+
+
 class JavDBAppApi:
     """Signed, read-only client for the JavDB app API."""
 
@@ -448,9 +492,39 @@ class JavDBAppApi:
         )
         return parse_movie_rows(data, zone=zone)
 
+    async def reviews(
+        self,
+        movie_id: str,
+        *,
+        page: int = 1,
+        limit: int = 20,
+        sort_by: str = "hotly",
+    ) -> tuple[ReviewHighlight, ...]:
+        """``GET /api/v1/movies/{id}/reviews`` — short user comments (``content``)."""
+
+        data = await self.get_json(
+            f"/api/v1/movies/{movie_id.strip()}/reviews",
+            {
+                "page": str(max(1, page)),
+                "limit": str(max(1, min(limit, 50))),
+                "sort_by": (sort_by or "hotly").strip() or "hotly",
+            },
+        )
+        return parse_reviews(data, provider="javdb", limit=limit)
+
     async def movie_detail(self, movie_id: str) -> ProviderRecord:
-        data = await self.get_json(f"/api/v4/movies/{movie_id.strip()}")
-        return parse_movie_detail(data, site_base_url=self._site_base_url)
+        """Detail via ``/api/v4/movies/{id}``; best-effort attach short reviews."""
+
+        mid = movie_id.strip()
+        data = await self.get_json(f"/api/v4/movies/{mid}")
+        record = parse_movie_detail(data, site_base_url=self._site_base_url)
+        try:
+            highlights = await self.reviews(mid)
+        except Exception:  # noqa: BLE001 — reviews must not fail detail scrape
+            return record
+        if not highlights:
+            return record
+        return record.model_copy(update={"reviews": highlights})
 
     async def magnets(self, movie_id: str) -> tuple[MagnetLink, ...]:
         data = await self.get_json(f"/api/v1/movies/{movie_id.strip()}/magnets")

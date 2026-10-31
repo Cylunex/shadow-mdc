@@ -18,12 +18,27 @@ from .html import (
     parse_date,
     parse_runtime_seconds,
 )
+from .ratings import parse_short_reviews
 
 
 class JavDBProvider(HttpProvider):
-    def __init__(self, client: httpx.AsyncClient, base_url: str, retries: int = 1):
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        base_url: str,
+        retries: int = 1,
+        *,
+        app_api: object | None = None,
+    ):
         super().__init__(client, retries)
         self._base_url = base_url.rstrip("/")
+        # Optional JavDBAppApi: used to persist short reviews into ProviderRecord.reviews.
+        self._app_api = app_api
+
+    def bind_app_api(self, app_api: object | None) -> None:
+        """Attach the signed app API client after construction (reviews enrichment)."""
+
+        self._app_api = app_api
 
     @property
     def base_url(self) -> str:
@@ -83,7 +98,27 @@ class JavDBProvider(HttpProvider):
 
     async def _detail(self, url: str) -> ProviderRecord:
         html = await self._get_text(self.descriptor.id, url, params={"locale": "zh"})
-        return parse_javdb_detail(html, url)
+        record = parse_javdb_detail(html, url)
+        return await self._attach_reviews(record, html=html)
+
+    async def _attach_reviews(self, record: ProviderRecord, *, html: str | None = None) -> ProviderRecord:
+        """Fill ``reviews`` from the app API when available; else best-effort HTML snippets."""
+
+        if record.reviews:
+            return record
+        api = self._app_api
+        if api is not None and record.external_id:
+            try:
+                highlights = await api.reviews(record.external_id)  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001 — reviews must not fail HTML scrape
+                highlights = ()
+            if highlights:
+                return record.model_copy(update={"reviews": highlights})
+        if html:
+            html_reviews = parse_short_reviews(HTMLParser(html), provider=self.descriptor.id, limit=10)
+            if html_reviews:
+                return record.model_copy(update={"reviews": html_reviews})
+        return record
 
     async def magnets(self, external_id_or_url: str) -> tuple[MagnetLink, ...]:
         """List magnet URIs from the public detail page (display/save only)."""

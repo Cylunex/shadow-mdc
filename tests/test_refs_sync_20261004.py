@@ -37,8 +37,10 @@ from shadow_mdc.providers.javdb_api import (
     parse_magnets,
     parse_movie_detail,
     parse_movie_rows,
+    parse_reviews,
     sign,
 )
+from shadow_mdc.db.repository import _merge_reviews
 from shadow_mdc.providers.mgstage import MgstageProvider, mgstage_product_candidates
 from shadow_mdc.services.daily_chart_seed import collect_browse_pages
 from shadow_mdc.services.discover import DiscoverService, javdb_movie_id_from_url, parse_javdb_list
@@ -134,6 +136,67 @@ def test_parse_magnets_fixture_sizes_in_bytes() -> None:
     assert len(magnets) == 3
     assert magnets[0].size_bytes == 4935 * 1024 * 1024
     assert all(len(item.info_hash) == 40 and item.uri.startswith("magnet:?xt=urn:btih:") for item in magnets)
+
+
+def test_parse_reviews_drops_empty_content() -> None:
+    highlights = parse_reviews(_json_fixture("javdb_api_reviews.json")["data"], limit=20)
+    assert len(highlights) == 2
+    assert highlights[0].provider == "javdb"
+    assert highlights[0].author == "stevenabcd123"
+    assert highlights[0].score == 5.0
+    assert "星宫" in highlights[0].text
+    assert highlights[1].author == "viewer_two"
+
+
+def test_merge_reviews_keeps_existing_and_adds_javdb() -> None:
+    current = [{"provider": "fanza", "text": "既存レビュー", "author": "a", "score": 4.0}]
+    incoming = parse_reviews(_json_fixture("javdb_api_reviews.json")["data"])
+    merged = _merge_reviews(current, incoming, replace=False)
+    assert merged[0]["provider"] == "fanza"
+    assert any(item["provider"] == "javdb" and "星宫" in str(item["text"]) for item in merged)
+    # Idempotent: re-merge does not duplicate
+    again = _merge_reviews(merged, incoming, replace=False)
+    assert len(again) == len(merged)
+
+
+def test_app_api_movie_detail_attaches_reviews() -> None:
+    seen: list[httpx.Request] = []
+    handler = _api_handler(
+        {
+            "/api/v4/movies/M73KR": _json_fixture("javdb_api_movie_detail.json"),
+            "/api/v1/movies/M73KR/reviews": _json_fixture("javdb_api_reviews.json"),
+        },
+        seen,
+    )
+
+    async def run() -> Any:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            api = JavDBAppApi(client, hosts=("https://api.test",), clock=lambda: 1700000000)
+            return await api.movie_detail("M73KR")
+
+    record = asyncio.run(run())
+    assert record.reviews and record.reviews[0].provider == "javdb"
+    assert any(req.url.path.endswith("/reviews") for req in seen)
+    assert all("jdsignature" in req.headers for req in seen)
+
+
+def test_app_api_movie_detail_survives_reviews_failure() -> None:
+    seen: list[httpx.Request] = []
+    handler = _api_handler(
+        {
+            "/api/v4/movies/Mb0JkJ": _json_fixture("javdb_api_movie_detail.json"),
+            "/api/v1/movies/Mb0JkJ/reviews": {"success": 0, "action": "error", "message": "boom"},
+        },
+        seen,
+    )
+
+    async def run() -> Any:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await JavDBAppApi(client, hosts=("https://api.test",)).movie_detail("Mb0JkJ")
+
+    record = asyncio.run(run())
+    assert record.code == "IPZZ-937"
+    assert record.reviews == ()
 
 
 def _api_handler(responses: dict[str, Any], seen: list[httpx.Request]):

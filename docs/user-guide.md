@@ -332,6 +332,8 @@ Docker 镜像已经包含 `ffmpeg`；直接在 Windows/macOS/Linux 本地运行�
 和 FreeJavBT 元数据；FC2 会额外查询 FC2Club、FC2Hub、官方 FC2 Contents Market 与 Paipancon。站点受到地区限制、Cloudflare、登录或临时网络故障时，
 来源诊断会单独标记失败，其他来源仍继续工作。所有来源只查询番号、文本或用户指定 URL，不使用截图或图片反搜。
 
+JavDB **短评**经移动端 App API（``/api/v1/movies/{id}/reviews``）刮入本地 ``work.reviews``，详情页「精选评价」直接展示，不嵌外站。新刮/刷新作品会自动带上；已有库可用 ``scripts/backfill_javdb_reviews.py --code SSNI-806`` 补写，或对单部 ``POST /api/works/{id}/refresh`` 重刮。片源里的 JavDB 镜像仅作外站深链备用，与短评落库无关。
+
 作品首次正式识别后会缓存公开图片；也可点击“缓存图片”，整理预览会补齐尚未下载的图片。图片按作品独立存入
 `data/artwork/<作品ID>/poster.*` 和 `fanart.*`，不会跟随媒体质量版本重复下载。缓存
 只接受常见图片 MIME，单图默认最大 25 MiB，并拒绝 localhost、私网 IP 和 `.local` 地址。整理时图片统一写为
