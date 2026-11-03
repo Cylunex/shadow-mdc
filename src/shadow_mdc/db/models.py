@@ -345,3 +345,63 @@ class WorkTaxonomy(Base):
     forms: Mapped[list[str]] = mapped_column(JSON, default=list)
     regions: Mapped[list[str]] = mapped_column(JSON, default=list)
     release_year: Mapped[int | None] = mapped_column(Integer)
+
+
+class CatalogPersonRecord(Base):
+    __tablename__ = "catalog_people"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    document: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    edits: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    merged_into: Mapped[str | None] = mapped_column(String(36), index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class CatalogPersonReference(Base):
+    __tablename__ = "catalog_person_references"
+    ref: Mapped[str] = mapped_column(String(500), primary_key=True)
+    person_id: Mapped[str] = mapped_column(ForeignKey("catalog_people.id"), index=True)
+
+
+class CatalogPersonMerge(Base):
+    __tablename__ = "catalog_person_merges"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    target_id: Mapped[str] = mapped_column(String(36))
+    members: Mapped[list[str]] = mapped_column(JSON)
+    revisions: Mapped[dict[str, int]] = mapped_column(JSON)
+    previous_revisions: Mapped[dict[str, int]] = mapped_column(JSON, default=dict)
+    undone: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class CatalogOrganization(Base):
+    __tablename__ = "catalog_organizations"
+    id: Mapped[str] = mapped_column(ForeignKey("collections.id"), primary_key=True)
+    aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
+    description: Mapped[str | None] = mapped_column(Text)
+    parent_id: Mapped[str | None] = mapped_column(String(36))
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class CatalogWorkOrganization(Base):
+    __tablename__ = "catalog_work_organizations"
+    __table_args__ = (Index("ix_catalog_org_work", "organization_id", "work_id"),)
+    work_id: Mapped[str] = mapped_column(ForeignKey("works.id"), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("collections.id"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(30), primary_key=True)
+
+
+class CatalogPlaylist(Base):
+    __tablename__ = "catalog_playlists"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    owner: Mapped[str] = mapped_column(String(100), index=True)
+    name: Mapped[str] = mapped_column(String(300))
+    work_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class CatalogPersonCredit(Base):
+    __tablename__ = "catalog_person_credits"
+    person_id: Mapped[str] = mapped_column(ForeignKey("catalog_people.id"), primary_key=True)
+    work_id: Mapped[str] = mapped_column(ForeignKey("works.id"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(30), primary_key=True, default="actor")

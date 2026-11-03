@@ -169,4 +169,27 @@ describe("media component lifecycle", () => {
     window.removeEventListener("keydown", pageKey);
     opener.remove();
   });
+  it("refreshes an expired address once and does not jump to another cut", async () => {
+    const original = { ...source("/original.m3u8"), version_id: "cd1", source_id: "source-a" };
+    const otherCut = { ...source("/other.m3u8"), version_id: "cd2", source_id: "source-b" };
+    const refresh = vi.fn().mockResolvedValue({ ...original, url: "/refreshed.m3u8" });
+    await act(async () => root.render(<InAppPlayer
+      playbackKey="work:one" sources={[original, otherCut]} onRefreshSource={refresh}
+    />));
+    await act(async () => FakeHls.instances[0]!.callbacks.get("error")?.("error", { fatal: true }));
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(FakeHls.instances[1]?.loadSource).toHaveBeenCalledWith("/refreshed.m3u8");
+    await act(async () => FakeHls.instances[1]!.callbacks.get("error")?.("error", { fatal: true }));
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(FakeHls.instances).toHaveLength(2);
+    expect(container.textContent).toContain("HLS");
+  });
+
+  it("uses explicit HLS format for an address without an extension", async () => {
+    await act(async () => root.render(<InAppPlayer sources={[{
+      ...source("/signed?id=one"), mime_type: "application/vnd.apple.mpegurl"
+    }]} />));
+    expect(FakeHls.instances[0]?.loadSource).toHaveBeenCalledWith("/signed?id=one");
+  });
+
 });

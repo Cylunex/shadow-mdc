@@ -93,6 +93,20 @@ class LibraryPrefsStore:
                 actor_tags[actor_key] = tags
             return self.save(prefs.model_copy(update={"actor_tags": actor_tags}))
 
+    def set_actor_tag_group(self, actor_keys: list[str], *, favorite: bool, blacklist: bool) -> LibraryPrefs:
+        with self._lock:
+            prefs = self.load()
+            values = dict(prefs.actor_tags)
+            for key in actor_keys:
+                current = values.get(key, ActorTagState())
+                updated = current.model_copy(update={"favorite": favorite, "blacklist": blacklist})
+                if updated.favorite or updated.subscribe or updated.blacklist:
+                    values[key] = updated
+                else:
+                    values.pop(key, None)
+            return self.save(prefs.model_copy(update={"actor_tags": values}))
+
+
     def upsert_subscription(self, subscription: ActorSubscription) -> LibraryPrefs:
         with self._lock:
             prefs = self.load()

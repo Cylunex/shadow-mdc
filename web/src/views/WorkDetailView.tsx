@@ -1,3 +1,4 @@
+import { CatalogWorkCredits } from "./CatalogManagement";
 import { Lightbox } from "../components/Lightbox";
 import { CoverImage } from "../components/CoverImage";
 import { InAppPlayer, type PlayerSource } from "../components/InAppPlayer";
@@ -255,6 +256,7 @@ export function WorkDetailView(props: {
                       const resolved = await api.workPlayResolve(work.id);
                       const preferred = resolved.chosen || resolved.preferred;
                       const list = (resolved.sources ?? []).map((s) => ({
+                        mime_type: s.mime_type,
                         version_id: s.version_id,
                         source_id: s.source_id,
                         kind: s.kind,
@@ -439,24 +441,8 @@ export function WorkDetailView(props: {
                 </dd>
               </div>
 
-              <MetaRow label="演员" empty={work.actors.length === 0}>
-                {work.actors.length === 0 ? "—" : (
-                  <div className="work-page-actor-chips">
-                    {work.actors.map((name) => (
-                      props.onOpenActor ? (
-                        <button
-                          key={name}
-                          type="button"
-                          className="display-tag-chip"
-                          onClick={() => props.onOpenActor?.(name)}
-                          title={`查看演员：${name}`}
-                        >{name}</button>
-                      ) : (
-                        <span key={name} className="display-tag-chip static">{name}</span>
-                      )
-                    ))}
-                  </div>
-                )}
+              <MetaRow label="演职员">
+                <CatalogWorkCredits workId={work.id} fallback={work.actors} onOpen={props.onOpenActor} />
               </MetaRow>
 
               <MetaRow label="日期" empty={!work.release_date}>
@@ -946,6 +932,11 @@ export function WorkDetailView(props: {
             playbackKey={`work:${props.workId}`}
             title={playerTitle}
             sources={playerSources}
+            onRefreshSource={async source => {
+              const result = await api.workPlayResolve(props.workId);
+              return result.sources.find(candidate => candidate.source_id === source.source_id
+                && candidate.version_id === source.version_id) ?? null;
+            }}
             onClose={() => {
               setPlayerOpen(false);
               setPlayerSources([]);

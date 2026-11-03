@@ -94,6 +94,7 @@ class ProviderRequirement(StrEnum):
 class CollectionKind(StrEnum):
     """Collection kinds: series / studio / platform / label (not loose tags)."""
 
+    ORGANIZATION = "organization"
     SERIES = "series"
     STUDIO = "studio"
     PLATFORM = "platform"

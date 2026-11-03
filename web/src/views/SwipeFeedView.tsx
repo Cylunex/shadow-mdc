@@ -371,6 +371,7 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
       if (controller.signal.aborted) return;
       const preferred = resolved.chosen || resolved.preferred;
       const list = (resolved.sources ?? []).map((s) => ({
+        mime_type: s.mime_type, source_id: s.source_id, version_id: s.version_id,
         kind: s.kind,
         label: s.label,
         url: s.url,
@@ -578,6 +579,11 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
                         title={title}
                         playbackKey={`work:${work.id}`}
                         sources={libSources}
+                        onRefreshSource={async source => {
+                          const result = await api.workPlayResolve(work.id);
+                          return result.sources.find(candidate => candidate.source_id === source.source_id
+                            && candidate.version_id === source.version_id) ?? null;
+                        }}
                         onReport={report}
                         onClose={stopLibraryPlay}
                       />

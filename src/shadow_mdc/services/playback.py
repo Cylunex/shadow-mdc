@@ -27,7 +27,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -36,7 +36,7 @@ from .media_server import MediaServerSettings, build_media_server_deep_link
 
 logger = logging.getLogger(__name__)
 
-PlayKind = Literal["emby", "jellyfin", "external_site", "vod_m3u8"]
+PlayKind = Literal["emby", "jellyfin", "external_site", "vod_m3u8", "direct_video"]
 
 # type_name fragments that must never be collected (standing boss rules).
 _BANNED_TYPE_FRAGMENTS = (
@@ -85,6 +85,7 @@ class PlaySource(BaseModel):
     note: str | None = None
     probe_ok: bool | None = None
     probe_reason: str | None = None
+    mime_type: str | None = None
     version_id: str | None = None
     source_id: str | None = None
 
@@ -254,22 +255,13 @@ def matches_work_code(value: str, code: str) -> bool:
 
 
 def _score_item(item: dict[str, Any], code: str) -> int:
-    needle = code.strip().upper().replace("-", "")
-    if not needle:
+    if not code.strip():
         return 0
     name = str(item.get("Name") or "")
     path = str(item.get("Path") or "")
-    folded_name = name.upper().replace("-", "").replace(" ", "")
-    folded_path = path.upper().replace("-", "").replace(" ", "")
-    score = 0
-    if needle == folded_name or folded_name.startswith(needle) or needle in folded_name:
-        score += 100
-    if needle in folded_path:
-        score += 40
-    itype = str(item.get("Type") or "")
-    if itype in {"Movie", "Video", "Episode"}:
-        score += 10
-    return score
+    return (100 if matches_work_code(name, code) else 0) + (
+        40 if matches_work_code(path, code) else 0
+    )
 
 
 async def resolve_emby_item(
@@ -314,10 +306,47 @@ async def resolve_emby_item(
         if not isinstance(raw, dict) or not raw.get("Id"):
             continue
         ranked.append((_score_item(raw, q), raw))
-    ranked.sort(key=lambda pair: pair[0], reverse=True)
-    if not ranked or ranked[0][0] <= 0:
+    matching = [item for score, item in ranked if score > 0]
+    if len(matching) != 1:
         return None
-    return ranked[0][1]
+    return matching[0]
+
+
+
+@dataclass(frozen=True, slots=True)
+class VodTrack:
+    url: str
+    identity: str
+    label: str
+
+
+def extract_vod_tracks(value: str | None, groups: str | None = None) -> list[VodTrack]:
+    """Keep source-supplied part identities stable when lists reorder or URLs expire."""
+    names = (groups or "").split("$$$")
+    tracks: list[VodTrack] = []
+    seen: set[str] = set()
+    for group_index, group in enumerate((value or "").split("$$$")):
+        group_name = names[group_index] if group_index < len(names) and names[group_index] else ""
+        for entry in group.split("#"):
+            if entry.startswith(("http://", "https://")):
+                label, url = "", entry
+            else:
+                label, _, url = entry.partition("$")
+            url = url.strip()
+            if not url.startswith(("http://", "https://")) or url in seen:
+                continue
+            seen.add(url)
+            identity = (group_name + ":" + label.strip() if group_name and label.strip()
+                        else label.strip() + ":" + urlsplit(url).path)
+            tracks.append(VodTrack(url=url, identity=identity, label=label.strip()))
+    counts: dict[str, int] = {}
+    for track in tracks:
+        counts[track.identity] = counts.get(track.identity, 0) + 1
+    return [VodTrack(
+        url=track.url, label=track.label,
+        identity=track.identity if counts[track.identity] == 1
+        else track.identity + ":" + hashlib.sha256(track.url.encode()).hexdigest()[:16],
+    ) for track in tracks]
 
 
 def extract_m3u8_urls(vod_play_url: str | None) -> list[str]:
@@ -334,8 +363,6 @@ def extract_m3u8_urls(vod_play_url: str | None) -> list[str]:
         if "$" in part:
             part = part.split("$")[-1].strip()
         if not part.startswith("http"):
-            continue
-        if ".m3u8" not in part.lower():
             continue
         if part in seen:
             continue
@@ -557,6 +584,33 @@ async def probe_m3u8_url(
         return result
 
 
+
+async def probe_video_url(
+    client: httpx.AsyncClient, url: str, *, timeout_seconds: float,
+) -> M3u8ProbeResult:
+    """Verify a bounded prefix while leaving the actual stream to the client."""
+    started = time.monotonic()
+    try:
+        async with client.stream(
+            "GET", url, headers={"Range": "bytes=0-1023"},
+            timeout=timeout_seconds, follow_redirects=True,
+        ) as response:
+            if response.status_code not in (200, 206):
+                return M3u8ProbeResult(ok=False, reason=f"http_{response.status_code}")
+            prefix = bytearray()
+            async for chunk in response.aiter_bytes():
+                prefix.extend(chunk[:1024 - len(prefix)])
+                if len(prefix) >= 1024:
+                    break
+            valid = prefix[4:8] == b"ftyp" or prefix[:4] == b"\x1aE\xdf\xa3"
+            return M3u8ProbeResult(
+                ok=valid, reason="ok" if valid else "invalid_video",
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+            )
+    except httpx.HTTPError:
+        return M3u8ProbeResult(ok=False, reason="video_probe_failed")
+
+
 async def search_vod_provider(
     provider: VodProviderConfig,
     client: httpx.AsyncClient,
@@ -615,21 +669,29 @@ async def search_vod_provider(
         if not matches_work_code(title, code):
             continue
 
-        for part_index, url in enumerate(extract_m3u8_urls(
-            str(row.get("vod_play_url") or "") if row.get("vod_play_url") else None
-        )):
+        for track in extract_vod_tracks(
+            str(row.get("vod_play_url") or ""), str(row.get("vod_play_from") or ""),
+        ):
+            url = track.url
             sources.append(
                 PlaySource(
-                    kind="vod_m3u8",
-                    label=f"{provider.name}: {title[:60] or code}",
+                    kind="direct_video" if urlsplit(url).path.lower().endswith((".mp4", ".webm", ".mkv"))
+                    else "vod_m3u8",
+                    mime_type=(
+                        "video/mp4" if urlsplit(url).path.lower().endswith(".mp4") else
+                        "video/webm" if urlsplit(url).path.lower().endswith(".webm") else
+                        "video/x-matroska" if urlsplit(url).path.lower().endswith(".mkv") else
+                        "application/vnd.apple.mpegurl"
+                    ),
+                    label=f"{provider.name}: {title[:60] or code} {track.label}".strip(),
                     url=url,
                     playable_in_app=True,
                     provider=provider.name,
                     version_id=hashlib.sha256(
-                        f"{provider.name}:{row.get('vod_id', title)}:{part_index}".encode()
+                        f"{provider.name}:{row.get('vod_id', title)}:{track.identity}".encode()
                     ).hexdigest()[:24],
                     source_id=hashlib.sha256(
-                        f"{provider.name}:{row.get('vod_id', title)}:{part_index}".encode()
+                        f"{provider.name}:{row.get('vod_id', title)}:{track.identity}".encode()
                     ).hexdigest()[:24],
                 )
             )
@@ -842,12 +904,15 @@ async def resolve_play(
                             provider_probe,
                             max(0.4, remaining - 0.1),
                         )
-                        probe = await probe_m3u8_url(
-                            active_vod,
-                            cand.url,
-                            timeout_seconds=probe_timeout,
-                            max_bytes=sites.m3u8_max_bytes,
-                        )
+                        if cand.kind == "direct_video":
+                            probe = await probe_video_url(
+                                active_vod, cand.url, timeout_seconds=probe_timeout,
+                            )
+                        else:
+                            probe = await probe_m3u8_url(
+                                active_vod, cand.url, timeout_seconds=probe_timeout,
+                                max_bytes=sites.m3u8_max_bytes,
+                            )
                         if not probe.ok:
                             failures.append(
                                 PlayProbeFailure(

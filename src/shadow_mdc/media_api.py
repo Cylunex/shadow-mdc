@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.sqlite import insert
 
-from .catalog_api import build_catalog_router
+from .catalog_api import build_catalog_router, catalog_credit_names
 from .db.models import MediaEmbyBinding, Work
 from .services.playback import (
     PlaybackSettings,
@@ -110,6 +110,7 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
     def capabilities() -> dict[str, object]:
         return {"api_version": 1, "features": [
             "browse", "search", "detail", "emby", "binding", "catalog", "playback_plan",
+            "people_v2", "playlists", "organizations", "media_mime",
         ]}
 
     @router.get("/works", response_model=MediaPage)
@@ -143,7 +144,9 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
         with runtime(request).database.session() as session:
             rows = list(session.scalars(statement))
             page = rows[:limit]
-            items = [card(work) for work in page]
+            names = catalog_credit_names(runtime(request), session, page)
+            items = [card(work).model_copy(update={"actors": names[work.id]})
+                     if work.id in names else card(work) for work in page]
             next_cursor = None
             if len(rows) > limit:
                 last = page[-1]
@@ -158,7 +161,11 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
             work = session.get(Work, work_id)
             if work is None:
                 raise HTTPException(404, "work not found")
-            return card(work, detail=True)
+            names = catalog_credit_names(runtime(request), session, [work])
+            result = card(work, detail=True)
+            if work_id in names:
+                result.actors = names[work_id]
+            return result
 
     @router.get("/works/{work_id}/poster")
     def poster(work_id: str, request: Request) -> FileResponse:
@@ -267,10 +274,12 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
     @router.post("/works/{work_id}/plan", response_model=OnlinePlan)
     async def playback_plan(work_id: str, request: Request, online: bool = False) -> OnlinePlan:
         if not online:
+            with runtime(request).database.session() as session:
+                has_binding = session.get(MediaEmbyBinding, work_id) is not None
             try:
                 return OnlinePlan(emby=await resolve(work_id, request))
             except HTTPException as exc:
-                if exc.status_code not in (409, 502):
+                if has_binding or exc.status_code not in (409, 502):
                     raise
         app = runtime(request)
         with app.database.session() as session:

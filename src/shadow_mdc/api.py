@@ -198,6 +198,7 @@ from .media.parts import part_group_key
 from .media.screenshots import capture_screenshot
 from .media_api import build_media_router
 from .catalog_api import build_catalog_router
+from .services.catalog_people import enrich_catalog_aliases, register_renamed_reference
 from .providers import (
     AirAvProvider,
     AvSoxProvider,
@@ -3028,6 +3029,9 @@ def update_non_jav_actor(
     if rejection is not None:
         raise HTTPException(status_code=422, detail=rejection)
     existing = app_runtime.non_jav_actor_store.get(actor_name)
+    duplicate = app_runtime.non_jav_actor_store.get(payload.name)
+    if duplicate is not None and payload.name.casefold() != actor_name.casefold():
+        raise HTTPException(status_code=409, detail="a legacy profile already uses this name")
     if existing is None:
         raise HTTPException(status_code=404, detail="non-JAV actor not found")
     try:
@@ -3041,6 +3045,9 @@ def update_non_jav_actor(
         image_file=existing.image_file,
     )
     app_runtime.non_jav_actor_store.upsert(actor, previous_name=actor_name)
+    with app_runtime.database.session() as session:
+        register_renamed_reference(session, actor_name, actor.name)
+
     if (
         unicodedata.normalize("NFKC", actor_name).casefold()
         != unicodedata.normalize("NFKC", actor.name).casefold()
@@ -3222,6 +3229,8 @@ def scan_library(
             enrich_actor_aliases(alias_rules, actor_catalog),
             app_runtime.non_jav_actor_store.load(),
         )
+        with app_runtime.database.session() as catalog_session:
+            effective_alias_rules = enrich_catalog_aliases(catalog_session, effective_alias_rules)
         non_jav_actor_catalog = app_runtime.non_jav_actor_store.load()
         def _scan_progress(summary: dict[str, object]) -> None:
             repo.update_task_progress(task, summary)

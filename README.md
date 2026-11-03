@@ -1,6 +1,6 @@
 # Shadow MDC
 
-本地优先的影片元数据识别、刮削与整理服务。主要覆盖 JAV，同时支持国产长尾、欧美场景、无稳定编号和用户指定 URL 的内容。
+本地优先的影片元数据识别、刮削与整理服务。支持编号、来源身份、无稳定编号和用户指定 URL 等识别线索，作品与演员统一浏览。
 
 ## 设计重点
 
@@ -44,6 +44,7 @@ just build
 - [性能预算与缓存边界](docs/dev/performance.md)
 - [播放连接器](docs/playback.md)
 - [Media 原生片库与 Emby 播放](docs/media-client.md)
+- [统一作品、人物、机构与播放](docs/unified-library.md)
 - [刷流与解析生命周期](docs/swipe.md)
 - [MCP 接口](docs/mcp.md)
 - [开发文档](docs/dev/index.md)

@@ -121,6 +121,31 @@ class Database:
 
     def _migrate_sqlite(self) -> None:
         with self.engine.begin() as connection:
+            merge_columns = {str(row[1]) for row in connection.exec_driver_sql(
+                "PRAGMA table_info(catalog_person_merges)"
+            )}
+            if "previous_revisions" not in merge_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE catalog_person_merges ADD COLUMN "
+                    "previous_revisions JSON NOT NULL DEFAULT '{}'"
+                )
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE IF NOT EXISTS catalog_source_revisions "
+                "(name TEXT PRIMARY KEY, revision INTEGER NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT OR IGNORE INTO catalog_source_revisions VALUES ('people', 0)"
+            )
+            for table in ("actors", "works", "work_actors"):
+                for operation in ("INSERT", "UPDATE", "DELETE"):
+                    connection.exec_driver_sql(
+                        f"CREATE TRIGGER IF NOT EXISTS catalog_people_{table}_{operation.lower()} "
+                        f"AFTER {operation} ON {table} BEGIN "
+                        "UPDATE catalog_source_revisions SET revision = revision + 1 "
+                        "WHERE name = 'people'; END"
+                    )
+        with self.engine.begin() as connection:
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_works_mobile_created_at_id ON works (created_at, id)"
             )

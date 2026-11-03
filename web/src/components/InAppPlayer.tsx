@@ -4,6 +4,7 @@ import { api, appUrl } from "../api";
 import { trackPlaybackProgress } from "./playbackProgress";
 
 export type PlayerSource = {
+  mime_type?: string | null;
   version_id?: string | null;
   source_id?: string | null;
   kind: string;
@@ -29,6 +30,7 @@ type Props = {
   autoPlay?: boolean;
   onClose?: () => void;
   onReport?: (message: string) => void;
+  onRefreshSource?: (source: PlayerSource) => Promise<PlayerSource | null>;
   className?: string;
   /** Compact mode for swipe cards (no chrome chrome bar). */
   embedded?: boolean;
@@ -133,7 +135,7 @@ export function proxiedPlayUrl(source: PlayerSource): string {
       return raw;
     }
   }
-  const type = looksLikeHls(raw) ? "hls" : "stream";
+  const type = looksLikeHls(raw) || source.mime_type?.includes("mpegurl") ? "hls" : "stream";
   return api.swipeMediaProxyUrl(raw, {
     type,
     referer: source.referer ?? undefined,
@@ -149,6 +151,7 @@ function pickInitialIndex(sources: PlayerSource[], preferred?: number): number {
 export function InAppPlayer(props: Props) {
   const sessionKey = JSON.stringify([props.playbackKey, props.sources.map((source) => [
     source.url, source.kind, source.referer, source.skip_proxy, source.playable_in_app,
+    source.version_id, source.source_id, source.mime_type,
   ])]);
   return <PlayerSession key={sessionKey} {...props} />;
 }
@@ -161,12 +164,20 @@ function PlayerSession({
   autoPlay = true,
   onClose,
   onReport,
+  onRefreshSource,
   className,
   embedded = false,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<{ destroy: () => void } | null>(null);
-  const allSources = useMemo(() => sources.filter((s) => Boolean(s.url)), [sources]);
+  const [refreshed, setRefreshed] = useState<Record<string, PlayerSource>>({});
+  const [recoveryEpoch, setRecoveryEpoch] = useState(0);
+  const refreshAttempts = useRef(new Set<string>());
+  const refreshing = useRef(false);
+  const active = useRef(true);
+  const allSources = useMemo(() => sources.filter(s => Boolean(s.url)).map(source =>
+    refreshed[source.source_id ?? source.url] ?? source), [sources, refreshed]);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   const playable = useMemo(() => allSources.filter(isInAppMediaSource), [allSources]);
   const [index, setIndex] = useState(() => {
     const preferred = initialIndex === undefined ? undefined : sources[initialIndex];
@@ -195,7 +206,7 @@ function PlayerSession({
     }
   }, []);
 
-  const tryFailover = useCallback(
+  const switchAfterFailure = useCallback(
     (reason: string) => {
       if (!playable.length) return;
       triedRef.current.add(index);
@@ -217,6 +228,31 @@ function PlayerSession({
     [index, onReport, playable],
   );
 
+  const tryFailover = useCallback((reason: string) => {
+    if (refreshing.current) return;
+    const source = playable[index];
+    const key = source?.source_id;
+    if (!onRefreshSource || !key || !source.version_id || refreshAttempts.current.has(key)) {
+      switchAfterFailure(reason);
+      return;
+    }
+    refreshAttempts.current.add(key);
+    refreshing.current = true;
+    resumeAtRef.current = videoRef.current?.currentTime || 0;
+    setStatus("loading");
+    void onRefreshSource(source).then(replacement => {
+      if (!active.current) return;
+      if (!replacement || replacement.version_id !== source.version_id) {
+        switchAfterFailure(reason);
+        return;
+      }
+      setRefreshed(previous => ({ ...previous, [key]: replacement }));
+      setRecoveryEpoch(epoch => epoch + 1);
+      onReport?.("已刷新当前版本播放地址");
+    }).catch(() => { if (active.current) switchAfterFailure(reason); })
+      .finally(() => { refreshing.current = false; });
+  }, [index, onRefreshSource, onReport, playable, switchAfterFailure]);
+
   const attachSource = useCallback(
     async (source: PlayerSource, signal: AbortSignal) => {
       const video = videoRef.current;
@@ -227,7 +263,7 @@ function PlayerSession({
       const mediaUrl = proxiedPlayUrl(source);
 
       try {
-        if (looksLikeHls(source.url) || looksLikeHls(mediaUrl)) {
+        if (source.mime_type?.includes("mpegurl") || looksLikeHls(source.url) || looksLikeHls(mediaUrl)) {
           const Hls = await ensureHls();
           if (signal.aborted) return;
           if (Hls?.isSupported()) {
@@ -299,7 +335,7 @@ function PlayerSession({
         video.load();
       }
     };
-  }, [current?.url, current?.label, index]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [current?.url, current?.label, index, recoveryEpoch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const video = videoRef.current;

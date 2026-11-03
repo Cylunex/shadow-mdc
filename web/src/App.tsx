@@ -8,9 +8,8 @@ import { TaskCenter } from "./components/TaskCenter";
 import { TopNav, type AppView } from "./components/TopNav";
 import type { Asset, Candidate, LibraryPrefs, TaskRun, Work } from "./model";
 import { Actors, Inbox, Works } from "./panels";
-import { UnifiedCatalogView } from "./views/UnifiedCatalogView";
+import { UnifiedCatalogView, type CatalogFeedStart } from "./views/UnifiedCatalogView";
 import { WorkDetailView } from "./views/WorkDetailView";
-import { SwipeFeedView } from "./views/SwipeFeedView";
 import {
   ActorDetailView,
   findActorRefByName,
@@ -105,6 +104,8 @@ function applyWorksFilterPatch(
 const SettingsView = lazy(() => import("./views/SettingsView").then((module) => ({ default: module.SettingsView })));
 const DiscoverPanel = lazy(() => import("./components/DiscoverPanel").then((module) => ({ default: module.DiscoverPanel })));
 const SubscriptionsView = lazy(() => import("./views/SubscriptionsView").then((module) => ({ default: module.SubscriptionsView })));
+const SwipeFeedView = lazy(() => import("./views/SwipeFeedView").then(module => ({ default: module.SwipeFeedView })));
+const CatalogFeedView = lazy(() => import("./views/CatalogFeedView").then(module => ({ default: module.CatalogFeedView })));
 const EMPTY_ROWS: never[] = [];
 const EMPTY_PREFS: LibraryPrefs = { want_list: [], actor_tags: {}, subscriptions: [], queue: [] };
 
@@ -125,6 +126,11 @@ export function App() {
     initialActorRef && !initialWorkId ? "actors" : "works"
   );
   const [taskTab, setTaskTab] = useState<"inbox" | "runs">("runs");
+  const [catalogFeed, setCatalogFeed] = useState<CatalogFeedStart | null>(null);
+  const [catalogFeedReturn, setCatalogFeedReturn] = useState<AppView>("works");
+  function startCatalogFeed(state: CatalogFeedStart) {
+    setCatalogFeed(state); setCatalogFeedReturn(view); setView("swipe");
+  }
   const [swipeNeedsWorks, setSwipeNeedsWorks] = useState(false);
   const showingActors = view === "actors" || view === "actor-detail";
   const libraryQuery = useQuery({ ...resources.libraries(), enabled: view === "settings" || view === "tasks" }, queryClient);
@@ -435,7 +441,7 @@ export function App() {
         </div>
 
         {(view === "actors" || view === "works" || view === "categories") && (
-          <UnifiedCatalogView mode={view} onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
+          <UnifiedCatalogView mode={view} onStartFeed={startCatalogFeed} onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
         )}
         {view === "actors" && !loaded.actors && (actorsQuery.isPending || nonJavQuery.isPending) && (
           <div className="skeleton-grid" aria-busy="true" aria-label="演员加载中">
@@ -493,11 +499,11 @@ export function App() {
             saveNonJavActor={(previousName, payload) => run(`actor-${previousName ?? "new"}`, async () => {
               if (previousName) await api.updateNonJavActor(previousName, payload);
               else await api.createNonJavActor(payload);
-              setMessage(previousName ? "演员资料已更新" : "演员已加入非 JAV 名单");
+              setMessage(previousName ? "演员资料已更新" : "演员档案已创建");
             }, "actors")}
             deleteNonJavActor={(actor) => run(`actor-delete-${actor.name}`, async () => {
               await api.deleteNonJavActor(actor.name);
-              setMessage(`已从非 JAV 名单移除 ${actor.name}`);
+              setMessage(`已移除演员档案 ${actor.name}`);
             }, "actors")}
             uploadActorImage={(actor, file) => run(`actor-image-${actor.name}`, async () => {
               await api.uploadNonJavActorImage(actor.name, file);
@@ -506,8 +512,12 @@ export function App() {
           /></details>
         )}
 
-        {view === "actor-detail" && (
-          <ActorDetailView
+        {view === "actor-detail" && selectedActorRef && (
+          <>
+          <button className="ghost" onClick={closeActorDetail}>返回演员库</button>
+          <UnifiedCatalogView mode="actors" initialPersonRef={selectedActorRef}
+            onStartFeed={startCatalogFeed} onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
+          <details><summary>关注、订阅和兼容资料</summary><ActorDetailView
             model={selectedActorRef ? resolveActorDetail(selectedActorRef, actors, nonJavActors) : null}
             loading={actorsQuery.isPending || nonJavQuery.isPending}
             busy={busy}
@@ -547,7 +557,8 @@ export function App() {
               setPrefs(next);
               setMessage(`已更新 ${actorKey} 标签`);
             }, "none")}
-          />
+          /></details>
+          </>
         )}
 
 
@@ -696,7 +707,14 @@ export function App() {
           />
         )}
 
-        {view === "swipe" && (
+        {view === "swipe" && catalogFeed && (
+          <Suspense fallback={<p className="muted" aria-busy="true">正在打开播放器…</p>}>
+          <CatalogFeedView initial={catalogFeed} onState={setCatalogFeed}
+            onOpenWork={openWorkDetail} onClose={() => { setCatalogFeed(null); setView(catalogFeedReturn); }} />
+          </Suspense>
+        )}
+        {view === "swipe" && !catalogFeed && (
+          <Suspense fallback={<p className="muted" aria-busy="true">正在打开播放器…</p>}>
           <SwipeFeedView
             works={works}
             loading={worksQuery.isPending}
@@ -704,6 +722,7 @@ export function App() {
             onOpenDetail={openWorkDetail}
             report={setMessage}
           />
+          </Suspense>
         )}
 
         {view === "rankings" && (

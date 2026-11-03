@@ -734,6 +734,7 @@ class MediaServerSettingsPayload(BaseModel):
 
 
 class PlaySourceOut(BaseModel):
+    mime_type: str | None = None
     version_id: str | None = None
     source_id: str | None = None
     kind: str

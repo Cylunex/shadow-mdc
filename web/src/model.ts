@@ -176,7 +176,7 @@ export const actorSummarySchema = z.object({
 export const collectionSummarySchema = z.object({
   id: z.string(),
   name: z.string(),
-  kind: z.enum(["series", "studio", "platform", "label"]),
+  kind: z.enum(["series", "studio", "platform", "label", "organization"]),
   aliases: z.array(z.string()).default([])
 });
 
