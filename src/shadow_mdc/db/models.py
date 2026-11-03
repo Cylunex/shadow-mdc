@@ -334,3 +334,14 @@ class MediaEmbyBinding(Base):
     work_id: Mapped[str] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"), primary_key=True)
     server_id: Mapped[str] = mapped_column(String(100))
     item_id: Mapped[str] = mapped_column(String(100))
+
+
+class WorkTaxonomy(Base):
+    """Explicit library metadata, independent of scraper routing and legacy family."""
+
+    __tablename__ = "work_taxonomy"
+    work_id: Mapped[str] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"), primary_key=True)
+    genres: Mapped[list[str]] = mapped_column(JSON, default=list)
+    forms: Mapped[list[str]] = mapped_column(JSON, default=list)
+    regions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    release_year: Mapped[int | None] = mapped_column(Integer)

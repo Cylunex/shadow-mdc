@@ -2591,3 +2591,10 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 }
 
 }
+
+/* Unified catalog reuses the existing cover renderer with bounded card dimensions. */
+.unified-catalog .work-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; }
+.unified-catalog .work-card > button:first-child { display: flex; flex-direction: column; gap: 8px; text-align: left; width: 100%; }
+.unified-catalog .cover-frame { width: 100%; aspect-ratio: 16 / 10; overflow: hidden; }
+.unified-catalog .actor-card .cover-frame { aspect-ratio: 4 / 3; }
+.unified-catalog .genre-sheet label { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }

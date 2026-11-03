@@ -18,6 +18,7 @@ This module only knows the schema. Emby deep links use media-server settings.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -84,6 +85,8 @@ class PlaySource(BaseModel):
     note: str | None = None
     probe_ok: bool | None = None
     probe_reason: str | None = None
+    version_id: str | None = None
+    source_id: str | None = None
 
 
 class PlayProbeFailure(BaseModel):
@@ -236,6 +239,18 @@ def build_app_scheme(settings: MediaServerSettings, *, item_id: str) -> str | No
     if settings.kind == "emby":
         return f"emby://items/{item_id}"
     return f"jellyfin://items/{item_id}"
+
+
+def matches_work_code(value: str, code: str) -> bool:
+    # Ignore separators only between the alphabetic prefix and numeric suffix.
+    parts = re.fullmatch(r"([A-Za-z]+)[- _]?(\d+)", code)
+    if parts is None:
+        return bool(re.search(rf"(?<![A-Za-z0-9]){re.escape(code)}(?![A-Za-z0-9])", value, re.I))
+    return bool(re.search(
+        rf"(?<![A-Za-z0-9]){re.escape(parts[1])}[- _]?{re.escape(parts[2])}(?![A-Za-z0-9])",
+        value, re.I,
+    ))
+
 
 
 def _score_item(item: dict[str, Any], code: str) -> int:
@@ -596,9 +611,13 @@ async def search_vod_provider(
         if whitelist and (tid is None or tid not in whitelist):
             continue
         title = str(row.get("vod_name") or "")
-        for url in extract_m3u8_urls(
+        # A valid playlist alone does not establish the identity of its content.
+        if not matches_work_code(title, code):
+            continue
+
+        for part_index, url in enumerate(extract_m3u8_urls(
             str(row.get("vod_play_url") or "") if row.get("vod_play_url") else None
-        ):
+        )):
             sources.append(
                 PlaySource(
                     kind="vod_m3u8",
@@ -606,6 +625,12 @@ async def search_vod_provider(
                     url=url,
                     playable_in_app=True,
                     provider=provider.name,
+                    version_id=hashlib.sha256(
+                        f"{provider.name}:{row.get('vod_id', title)}:{part_index}".encode()
+                    ).hexdigest()[:24],
+                    source_id=hashlib.sha256(
+                        f"{provider.name}:{row.get('vod_id', title)}:{part_index}".encode()
+                    ).hexdigest()[:24],
                 )
             )
     return sources

@@ -188,33 +188,12 @@ export function Actors(props: {
   deleteNonJavActor: (actor: NonJavActor) => Promise<void>;
   uploadActorImage: (actor: NonJavActor, file: File) => Promise<void>;
 }) {
-  const nonJavWorkTotal = props.nonJavActors.reduce((sum, actor) => sum + (actor.work_count ?? 0), 0);
-  const [source, setSource] = useState<"jav" | "non-jav">(props.actors.length === 0 && props.nonJavActors.length > 0 ? "non-jav" : "jav");
   return <>
-    <div className="section-hero compact">
-      <div>
-        <p className="eyebrow">ACTORS</p>
-        <h1>演员列表</h1>
-        <p className="muted">共 {props.actors.length + props.nonJavActors.length} 位演员 · 标签：收藏 / 订阅 / 黑名单</p>
-      </div>
-    </div>
-    <div className="actor-source-tabs">
-      <button className={source === "jav" ? "active" : "ghost"} onClick={() => setSource("jav")}>JAV 演员作品库 · {props.actors.length}</button>
-      <button className={source === "non-jav" ? "active" : "ghost"} onClick={() => setSource("non-jav")}>非 JAV 演员 / 作品 · {props.nonJavActors.length} · 作品 {nonJavWorkTotal}</button>
-    </div>
-    {(source === "jav" ? props.loadingActors : props.loadingNonJavActors)
-      ? <p className="muted" aria-busy="true">正在读取演员资料…</p>
-      : source === "jav"
-      ? <JavActors actors={props.actors} prefs={props.prefs} onActorTags={props.onActorTags} busy={props.busy} onOpenWork={props.onOpenWork} onOpenActor={props.onOpenActor} />
-      : <NonJavActorsManager
-          actors={props.nonJavActors}
-          busy={props.busy}
-          save={props.saveNonJavActor}
-          remove={props.deleteNonJavActor}
-          uploadImage={props.uploadActorImage}
-          onOpenWork={props.onOpenWork}
-          onOpenActor={props.onOpenActor}
-        />}
+    <JavActors actors={props.actors} prefs={props.prefs} onActorTags={props.onActorTags}
+      busy={props.busy} onOpenWork={props.onOpenWork} onOpenActor={props.onOpenActor} />
+    <NonJavActorsManager actors={props.nonJavActors} busy={props.busy}
+      save={props.saveNonJavActor} remove={props.deleteNonJavActor} uploadImage={props.uploadActorImage}
+      onOpenWork={props.onOpenWork} onOpenActor={props.onOpenActor} />
   </>;
 }
 
@@ -274,7 +253,7 @@ function JavActors({ actors, prefs, onActorTags, busy, onOpenWork, onOpenActor }
     currentPage * ACTOR_PAGE_SIZE
   );
   if (actors.length === 0) {
-    return <Empty title="JAV 演员作品库为空" detail="扫描并接受带番号的作品后会出现在这里。国产/欧美请切换到「非 JAV 演员 / 作品」。" />;
+    return <Empty title="演员作品库为空" detail="扫描并接受作品后会出现在这里。" />;
   }
   return <>
     <div className="works-filter-stack">
@@ -510,13 +489,13 @@ function NonJavActorsManager(props: {
   }
 
   if (props.actors.length === 0) {
-    return <Empty title="非 JAV 演员名单为空" detail="可新增演员，或到媒体库页使用「导入词库」合并其它服务器的 catalog bundle。" />;
+    return <Empty title="演员档案为空" detail="可新增演员，或到媒体库页使用「导入词库」合并其它服务器的 catalog bundle。" />;
   }
 
   return <>
     <div className="non-jav-heading">
       <div>
-        <h2>非 JAV 演员与作品</h2>
+        <h2>人工演员档案</h2>
         <p>名单来自本地策展；热门演员的作品已写入作品库，可在卡片中直接查看。名称/别名会参与目录识别。也可在「媒体库」页使用「导入词库」从其它服务器合并。</p>
       </div>
       <button onClick={() => setDraft({ ...emptyActorDraft })}>新增演员</button>
@@ -562,7 +541,7 @@ function NonJavActorsManager(props: {
     </div>
     <p className="non-jav-stats">已有作品资料的演员 {withWorks} / {props.actors.length} · 当前显示 {visible.length}</p>
     {draft && <form className="actor-editor" onSubmit={(event) => void submit(event)}>
-      <div className="actor-editor-title"><h2>{draft.previousName ? `编辑 ${draft.previousName}` : "新增非 JAV 演员"}</h2><button type="button" className="ghost" onClick={() => setDraft(null)}>取消</button></div>
+      <div className="actor-editor-title"><h2>{draft.previousName ? `编辑 ${draft.previousName}` : "新增演员"}</h2><button type="button" className="ghost" onClick={() => setDraft(null)}>取消</button></div>
       <label><span>规范名称</span><input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
       <label><span>别名（逗号或换行分隔）</span><input value={draft.aliases} onChange={(event) => setDraft({ ...draft, aliases: event.target.value })} /></label>
       <label><span>分组</span><input value={draft.groups} onChange={(event) => setDraft({ ...draft, groups: event.target.value })} placeholder="madou, tanhua, onlyfans, western…" /></label>
@@ -576,7 +555,7 @@ function NonJavActorsManager(props: {
       <button disabled={props.busy?.startsWith("actor-")}>保存资料</button>
     </form>}
     {visible.length === 0
-      ? <Empty title="没有匹配的非 JAV 演员" detail="可以清空关键词、分类或分组筛选，或新增一位演员。" />
+      ? <Empty title="没有匹配的演员" detail="可以清空关键词、分类或分组筛选，或新增一位演员。" />
       : <><div className="actor-grid non-jav-grid">{rendered.map((actor) => <article className="actor-card actor-card--openable" key={actor.name}>
           <div
             className="actor-profile"

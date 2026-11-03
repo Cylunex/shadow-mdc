@@ -197,6 +197,7 @@ from .media.organizer import Organizer, plan_move_cleanup
 from .media.parts import part_group_key
 from .media.screenshots import capture_screenshot
 from .media_api import build_media_router
+from .catalog_api import build_catalog_router
 from .providers import (
     AirAvProvider,
     AvSoxProvider,
@@ -5828,6 +5829,7 @@ def swipe_feed_entry() -> HTMLResponse:
 from .mcp_api import router as _mcp_router  # noqa: E402 - needs route helpers above
 from .swipe_proxy import create_swipe_proxy_router  # noqa: E402
 
+app.include_router(build_catalog_router(runtime))
 app.include_router(build_media_router(runtime))
 app.include_router(_mcp_router)
 app.include_router(create_swipe_proxy_router(Settings()))

@@ -4,6 +4,8 @@ import { api, appUrl } from "../api";
 import { trackPlaybackProgress } from "./playbackProgress";
 
 export type PlayerSource = {
+  version_id?: string | null;
+  source_id?: string | null;
   kind: string;
   label: string;
   url: string;
@@ -197,7 +199,10 @@ function PlayerSession({
     (reason: string) => {
       if (!playable.length) return;
       triedRef.current.add(index);
-      const next = playable.findIndex((_, i) => !triedRef.current.has(i));
+      const currentVersion = playable[index]?.version_id;
+      const next = playable.findIndex((candidate, i) =>
+        !triedRef.current.has(i) && (currentVersion
+          ? candidate.version_id === currentVersion : !candidate.version_id));
       if (next < 0) {
         setStatus("error");
         setErrorText(reason || "全部片源播放失败");
@@ -281,7 +286,8 @@ function PlayerSession({
     resumeAtRef.current = 0;
     const controller = new AbortController();
     const video = videoRef.current;
-    const stopTracking = video ? trackPlaybackProgress(video, playbackKey, startAt) : undefined;
+    const stopTracking = video ? trackPlaybackProgress(video, playbackKey && current.version_id
+      ? playbackKey + ":version:" + current.version_id : playbackKey, startAt) : undefined;
     void attachSource(current, controller.signal);
     return () => {
       stopTracking?.();
@@ -316,7 +322,8 @@ function PlayerSession({
 
   const switchSource = (next: number) => {
     if (next === index || next < 0 || next >= playable.length) return;
-    resumeAtRef.current = videoRef.current?.currentTime || 0;
+    const sameVersion = playable[next]?.version_id === playable[index]?.version_id;
+    resumeAtRef.current = sameVersion ? videoRef.current?.currentTime || 0 : 0;
     triedRef.current.add(next);
     setIndex(next);
     onReport?.(`已切换：${playable[next]?.label || `源 ${next + 1}`}`);

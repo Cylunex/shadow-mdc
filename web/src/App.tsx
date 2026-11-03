@@ -8,7 +8,7 @@ import { TaskCenter } from "./components/TaskCenter";
 import { TopNav, type AppView } from "./components/TopNav";
 import type { Asset, Candidate, LibraryPrefs, TaskRun, Work } from "./model";
 import { Actors, Inbox, Works } from "./panels";
-import { CategoriesView } from "./views/CategoriesView";
+import { UnifiedCatalogView } from "./views/UnifiedCatalogView";
 import { WorkDetailView } from "./views/WorkDetailView";
 import { SwipeFeedView } from "./views/SwipeFeedView";
 import {
@@ -434,6 +434,9 @@ export function App() {
           </button>
         </div>
 
+        {(view === "actors" || view === "works" || view === "categories") && (
+          <UnifiedCatalogView mode={view} onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
+        )}
         {view === "actors" && !loaded.actors && (actorsQuery.isPending || nonJavQuery.isPending) && (
           <div className="skeleton-grid" aria-busy="true" aria-label="演员加载中">
             {Array.from({ length: 6 }, (_, index) => (
@@ -454,6 +457,7 @@ export function App() {
           <p role="alert">部分演员资料加载失败，可点击上方刷新重试。</p>
         )}
         {view === "actors" && loaded.actors && (
+          <details><summary>维护演员资料</summary>
           <Actors
             actors={actors}
             nonJavActors={nonJavActors}
@@ -499,7 +503,7 @@ export function App() {
               await api.uploadNonJavActorImage(actor.name, file);
               setMessage(`${actor.name} 的头像已更新`);
             }, "actors")}
-          />
+          /></details>
         )}
 
         {view === "actor-detail" && (
@@ -546,14 +550,7 @@ export function App() {
           />
         )}
 
-        {view === "categories" && (
-          <CategoriesView
-            report={setMessage}
-            onOpenTag={(tag) => {
-              navigateToFilteredWorks({ tags: [tag] }, `已筛选标签：${tag}`, true);
-            }}
-          />
-        )}
+
 
         {view === "works" && worksQuery.isPending && (
           <div className="skeleton-grid" aria-busy="true" aria-label="作品加载中">
@@ -568,6 +565,7 @@ export function App() {
           </div>
         )}
         {view === "works" && loaded.works && (
+          <details><summary>原有筛选与批量工具</summary>
           <Works
             works={works}
             busy={busy}
@@ -612,7 +610,7 @@ export function App() {
               const result = await api.seedCollections();
               setMessage(`合集索引：共 ${result.collections_total}，新建 ${result.collections_created}`);
             }, "works")}
-          />
+          /></details>
         )}
 
         {view === "work-detail" && selectedWorkId && (

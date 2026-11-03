@@ -18,7 +18,15 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.sqlite import insert
 
+from .catalog_api import build_catalog_router
 from .db.models import MediaEmbyBinding, Work
+from .services.playback import (
+    PlaybackSettings,
+    PlaySource,
+    load_sites_from_settings,
+    matches_work_code,
+    resolve_play,
+)
 
 if TYPE_CHECKING:
     from .api import Runtime
@@ -42,6 +50,12 @@ class MediaPage(BaseModel):
 class EmbyTarget(BaseModel):
     server_id: str
     item_id: str
+
+
+
+class OnlinePlan(BaseModel):
+    emby: EmbyTarget | None = None
+    sources: list[PlaySource] = Field(default_factory=list)
 
 
 class BindingChoice(BaseModel):
@@ -72,17 +86,6 @@ def _emby_page(payload: object) -> EmbyPage:
         raise HTTPException(502, "invalid Emby response") from exc
 
 
-def _exact_code(value: str, code: str) -> bool:
-    # Ignore separators only between the alphabetic prefix and numeric suffix.
-    parts = re.fullmatch(r"([A-Za-z]+)[- _]?(\d+)", code)
-    if parts is None:
-        return bool(re.search(rf"(?<![A-Za-z0-9]){re.escape(code)}(?![A-Za-z0-9])", value, re.I))
-    return bool(re.search(
-        rf"(?<![A-Za-z0-9]){re.escape(parts[1])}[- _]?{re.escape(parts[2])}(?![A-Za-z0-9])",
-        value, re.I,
-    ))
-
-
 def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
     """Build routes without importing the application singleton."""
 
@@ -105,7 +108,9 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
 
     @router.get("/capabilities")
     def capabilities() -> dict[str, object]:
-        return {"api_version": 1, "features": ["browse", "search", "detail", "emby", "binding"]}
+        return {"api_version": 1, "features": [
+            "browse", "search", "detail", "emby", "binding", "catalog", "playback_plan",
+        ]}
 
     @router.get("/works", response_model=MediaPage)
     def works(
@@ -215,7 +220,7 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
             page = _emby_page(payload)
             matches = [item for item in page.items
                        if item.type in ("Movie", "Video", "Episode")
-                       and _exact_code(item.name, work.primary_code)]
+                       and matches_work_code(item.name, work.primary_code)]
             if len(matches) != 1 or page.total > 100:
                 raise HTTPException(409, "Emby 匹配不唯一, 请选择一次对应条目")
             target = EmbyTarget(server_id=instance, item_id=matches[0].id)
@@ -259,4 +264,28 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
             ))
         return target
 
+    @router.post("/works/{work_id}/plan", response_model=OnlinePlan)
+    async def playback_plan(work_id: str, request: Request, online: bool = False) -> OnlinePlan:
+        if not online:
+            try:
+                return OnlinePlan(emby=await resolve(work_id, request))
+            except HTTPException as exc:
+                if exc.status_code not in (409, 502):
+                    raise
+        app = runtime(request)
+        with app.database.session() as session:
+            work = session.get(Work, work_id)
+            if work is None:
+                raise HTTPException(404, "work not found")
+            code, title = work.primary_code, work.title
+        media = app.media_server_store.load().model_copy(update={"enabled": False})
+        result = await resolve_play(
+            work_id=work_id, code=code, title=title, media=media,
+            sites=load_sites_from_settings(PlaybackSettings(), data_dir=app.settings.data_dir),
+            client=app.http,
+        )
+        return OnlinePlan(sources=[source for source in result.sources if source.playable_in_app
+                                  and source.probe_ok is not False])
+
+    router.include_router(build_catalog_router(runtime, prefix="/catalog"))
     return router

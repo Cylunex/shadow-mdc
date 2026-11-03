@@ -246,6 +246,57 @@ export function WorkDetailView(props: {
     return parts.length ? parts.join(" · ") : null;
   }, [work]);
 
+  function startOnlinePlayback() {
+    if (!work) return;
+
+                  void (async () => {
+                    setPlayerBusy(true);
+                    try {
+                      const resolved = await api.workPlayResolve(work.id);
+                      const preferred = resolved.chosen || resolved.preferred;
+                      const list = (resolved.sources ?? []).map((s) => ({
+                        version_id: s.version_id,
+                        source_id: s.source_id,
+                        kind: s.kind,
+                        label: s.label,
+                        url: s.url,
+                        playable_in_app: s.playable_in_app,
+                        app_scheme: s.app_scheme,
+                        provider: s.provider,
+                        note: s.note,
+                        probe_ok: s.probe_ok,
+                        probe_reason: s.probe_reason,
+                      })) as PlayerSource[];
+                      // Keep Emby + VOD + external_site deep links; InAppPlayer opens deep links in a new tab.
+                      if (preferred?.url) {
+                        const idx = list.findIndex((s) => s.url === preferred.url);
+                        if (idx > 0) {
+                          const [hit] = list.splice(idx, 1);
+                          if (hit) list.unshift(hit);
+                        }
+                      }
+                      if (list.length) {
+                        setPlayerTitle(work.title || work.primary_code || "在线播放");
+                        setPlayerSources(list);
+                        setPlayerOpen(true);
+                        const fails = resolved.failures ?? [];
+                        const ext = list.filter((s) => s.kind === "external_site").length;
+                        const vod = list.filter((s) => s.kind === "vod_m3u8" || s.kind === "vod" || s.kind === "m3u8").length;
+                        props.report?.(
+                          `片源 ${list.length}（外站 ${ext} / VOD ${vod}）`
+                          + (fails.length ? `；${fails.length} 路探测失败` : ""),
+                        );
+                        return;
+                      }
+                      window.alert("暂无可用片源（需配置 Emby 或本地 playback-sites）");
+                    } catch (err) {
+                      window.alert(err instanceof Error ? err.message : String(err));
+                    } finally {
+                      setPlayerBusy(false);
+                    }
+                  })();
+  }
+
   if (loading && !work) {
     return (
       <section className="work-page">
@@ -380,6 +431,8 @@ export function WorkDetailView(props: {
                     />
                   </div>
                   <h1 className="work-page-title">{displayTitle}</h1>
+                  <button type="button" className="primary" disabled={playerBusy}
+                    onClick={startOnlinePlayback}>{playerBusy ? "正在查找播放来源…" : "播放 / 继续观看"}</button>
                   {hasOriginalTitle && titleMode === "translated" && (
                     <p className="original-title muted-hint">原文可切换查看</p>
                   )}
@@ -609,57 +662,8 @@ export function WorkDetailView(props: {
                   })();
                 }}
               >打开 Emby</button>
-              <button
-                type="button"
-                className="secondary"
-                disabled={playerBusy}
-                onClick={() => {
-                  void (async () => {
-                    setPlayerBusy(true);
-                    try {
-                      const resolved = await api.workPlayResolve(work.id);
-                      const preferred = resolved.chosen || resolved.preferred;
-                      const list = (resolved.sources ?? []).map((s) => ({
-                        kind: s.kind,
-                        label: s.label,
-                        url: s.url,
-                        playable_in_app: s.playable_in_app,
-                        app_scheme: s.app_scheme,
-                        provider: s.provider,
-                        note: s.note,
-                        probe_ok: s.probe_ok,
-                        probe_reason: s.probe_reason,
-                      })) as PlayerSource[];
-                      // Keep Emby + VOD + external_site deep links; InAppPlayer opens deep links in a new tab.
-                      if (preferred?.url) {
-                        const idx = list.findIndex((s) => s.url === preferred.url);
-                        if (idx > 0) {
-                          const [hit] = list.splice(idx, 1);
-                          if (hit) list.unshift(hit);
-                        }
-                      }
-                      if (list.length) {
-                        setPlayerTitle(work.title || work.primary_code || "在线播放");
-                        setPlayerSources(list);
-                        setPlayerOpen(true);
-                        const fails = resolved.failures ?? [];
-                        const ext = list.filter((s) => s.kind === "external_site").length;
-                        const vod = list.filter((s) => s.kind === "vod_m3u8" || s.kind === "vod" || s.kind === "m3u8").length;
-                        props.report?.(
-                          `片源 ${list.length}（外站 ${ext} / VOD ${vod}）`
-                          + (fails.length ? `；${fails.length} 路探测失败` : ""),
-                        );
-                        return;
-                      }
-                      window.alert("暂无可用片源（需配置 Emby 或本地 playback-sites）");
-                    } catch (err) {
-                      window.alert(err instanceof Error ? err.message : String(err));
-                    } finally {
-                      setPlayerBusy(false);
-                    }
-                  })();
-                }}
-              >{playerBusy ? "解析中…" : "在线播放"}</button>
+              <button type="button" className="secondary" disabled={playerBusy}
+                onClick={startOnlinePlayback}>{playerBusy ? "解析中…" : "在线播放"}</button>
             </div>
             <p className="muted">一对多保存在本地；可复制，或「推到 115 离线」（需在设置中完成 115 登录并选择目录）。可在「榜单 → 多源搜索」勾选后保存到作品。</p>
             {(work.magnets ?? []).length === 0

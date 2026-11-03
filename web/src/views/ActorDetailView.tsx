@@ -224,7 +224,7 @@ export function ActorDetailView(props: {
       <div className="work-page-toolbar">
         <button type="button" className="ghost" onClick={props.onBack}>← 返回演员列表</button>
         <div className="work-page-toolbar-actions">
-          <span className="pill">{actor.source === "jav" ? "JAV" : "非 JAV"}</span>
+
           <span className="muted">作品 {actor.work_count}</span>
           {props.onFilterWorks && (
             <button
