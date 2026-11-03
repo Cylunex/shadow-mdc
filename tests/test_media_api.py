@@ -20,8 +20,15 @@ def test_mobile_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         assert request.headers["X-Emby-Token"] == "REPLACE_SERVER_TOKEN"
         if request.url.path.endswith("System/Info/Public"):
             return httpx.Response(200, json={"Id": "server-a"})
-        if request.url.path.endswith("Items/item-a"):
-            return httpx.Response(200, json={"Id": "item-a", "Type": "Movie"})
+        assert request.url.path.endswith("Items"), "Emby exact lookup uses /Items?Ids=..."
+        if request.url.params.get("Ids"):
+            item_id = request.url.params["Ids"]
+            rows = [] if item_id == "missing" else [{
+                "Id": "item-a" if item_id == "wrong-id" else item_id,
+                "Type": "Folder" if item_id == "folder" else "Movie",
+            }]
+            assert "SearchTerm" not in request.url.params
+            return httpx.Response(200, json={"Items": rows, "TotalRecordCount": len(rows)})
         searches.append(str(request.url))
         return httpx.Response(200, json={"Items": [
             {"Id": "item-a", "Name": "ABC-123", "Type": "Movie"},
@@ -66,6 +73,9 @@ def test_mobile_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         assert len(searches) == 1
         assert client.post("/api/media/v1/works/c/resolve").status_code == 409
         assert client.put("/api/media/v1/works/c/binding", json={"item_id": "../bad"}).status_code == 400
+        assert client.put("/api/media/v1/works/c/binding", json={"item_id": "missing"}).status_code == 404
+        assert client.put("/api/media/v1/works/c/binding", json={"item_id": "wrong-id"}).status_code == 404
+        assert client.put("/api/media/v1/works/c/binding", json={"item_id": "folder"}).status_code == 409
         assert client.put("/api/media/v1/works/c/binding", json={"item_id": "item-a"}).status_code == 200
         assert client.post("/api/media/v1/works/c/resolve").json()["item_id"] == "item-a"
         # Editing the existing Web settings must retain the file-only mobile secret.

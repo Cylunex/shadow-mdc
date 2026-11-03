@@ -203,6 +203,17 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
             raise HTTPException(502, "Emby server identity is unavailable")
         return str(info["Id"])
 
+    async def emby_item(request: Request, item_id: str) -> EmbyItem:
+        # Emby exposes account-independent exact lookup through GET /Items?Ids=...
+        # GET /Items/{id} is not the user-item detail endpoint.
+        payload = await emby_get(request, "Items", {
+            "Ids": item_id, "Recursive": "true", "Limit": "2",
+        })
+        matches = [item for item in _emby_page(payload).items if item.id == item_id]
+        if len(matches) != 1:
+            raise HTTPException(404, "Emby item no longer exists")
+        return matches[0]
+
     @router.post("/works/{work_id}/resolve", response_model=EmbyTarget)
     async def resolve(work_id: str, request: Request) -> EmbyTarget:
         instance = await server_id(request)
@@ -213,7 +224,9 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
             binding = session.get(MediaEmbyBinding, work_id)
             if binding is not None and binding.server_id == instance:
                 try:
-                    await emby_get(request, f"Items/{binding.item_id}")
+                    item = await emby_item(request, binding.item_id)
+                    if item.type not in ("Movie", "Video", "Episode"):
+                        raise HTTPException(409, "已关联的 Emby 条目不可播放, 请重新关联")
                     return EmbyTarget(server_id=instance, item_id=binding.item_id)
                 except HTTPException as exc:
                     if exc.status_code != 404:
@@ -258,8 +271,8 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
         if not re.fullmatch(r"[A-Za-z0-9-]{1,100}", choice.item_id):
             raise HTTPException(400, "invalid item id")
         instance = await server_id(request)
-        item = await emby_get(request, f"Items/{choice.item_id}")
-        if not isinstance(item, dict) or item.get("Type") not in ("Movie", "Video", "Episode"):
+        item = await emby_item(request, choice.item_id)
+        if item.type not in ("Movie", "Video", "Episode"):
             raise HTTPException(409, "请选择可播放的 Emby 条目")
         with runtime(request).database.session() as session:
             if session.get(Work, work_id) is None:

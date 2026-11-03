@@ -20,11 +20,13 @@
 
 所有移动端接口与封面都要求 `Authorization: Bearer REPLACE_RANDOM_MOBILE_TOKEN`。未配置移动端令牌返回 503，错误令牌返回 401。此令牌授权读取片库及维护播放关联。既有管理 API 沿用原来的网络和网关保护，外部移动访问的网关应只开放该契约路径，不应开放管理 API。现有浏览器登录网关若拦截 Bearer 请求，需要按此窄路径配置访问。
 
-Media 中从「影视 → 媒体库 → Shadow MDC 片库」添加连接。设置页也有入口。HTTPS 为默认选择，HTTP 需显式启用。连接凭据使用独立 Android Keystore 存储。MDC 目录独立浏览，不加入全局聚合搜索。
+Media 中从「影视 → 媒体库 → Shadow MDC 片库」添加连接。设置页也有入口。HTTPS 为默认选择，HTTP 需显式启用。连接凭据使用独立 Android Keystore 存储。MDC 目录默认独立浏览，可在连接中显式加入聚合搜索。
 
 ## 直接播放
 
 `POST /works/{id}/resolve` 返回结构化 `server_id` 和 `item_id`，由 Media 使用已保存的同服务器 Emby 用户登录播放。已关联作品按条目 ID 验证后直接返回。Emby 404 时重新匹配，其他错误保留原关联。首次匹配要求作品番号完整边界命中且候选唯一，多个版本或分片不自动挑选。
+
+持久绑定使用 [Emby Items 查询](https://dev.emby.media/reference/RestAPI/ItemsService/getItems.html) 的 `Ids` 参数精确校验，不带搜索词。返回 ID 与视频类型均须匹配；后续播放直接复用绑定。
 
 没有番号或有多个候选时，在作品详情选择「选择或更换 Emby 影片」，搜索并选一次。候选接口只返回 ID 和标题，选择后用 `PUT /works/{id}/binding` 保存，目标必须为 Emby 上存在的视频条目。关联是服务端全局作品关联，播放权限、进度和时长按 Media 中实际登录的账号及 Emby 条目处理。多账号时优先当前已选账号，不能唯一决定时要求先选择 Emby 账号。
 
