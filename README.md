@@ -43,6 +43,7 @@ just build
 - [参考审计与本轮改进](docs/reference-audit.md)
 - [性能预算与缓存边界](docs/dev/performance.md)
 - [播放连接器](docs/playback.md)
+- [Media 原生片库与 Emby 播放](docs/media-client.md)
 - [刷流与解析生命周期](docs/swipe.md)
 - [MCP 接口](docs/mcp.md)
 - [开发文档](docs/dev/index.md)

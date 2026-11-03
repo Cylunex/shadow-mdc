@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,6 +17,7 @@ class MediaServerSettings(BaseModel):
     kind: str = "jellyfin"  # jellyfin | emby
     base_url: str | None = None
     api_key: str | None = None
+    media_client_token: str | None = None
     verify_nfo_fields: bool = False
     # Optional Emby/Jellyfin deep link; {query} replaced with code/title
     deep_link_template: str | None = None
@@ -114,6 +115,8 @@ class MediaServerStore:
     def save(self, settings: MediaServerSettings) -> MediaServerSettings:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._path.with_suffix(f"{self._path.suffix}.tmp")
+        temporary.touch(mode=0o600, exist_ok=True)
+        temporary.chmod(0o600)
         temporary.write_text(settings.model_dump_json(indent=2) + "\n", encoding="utf-8")
         temporary.replace(self._path)
         return settings

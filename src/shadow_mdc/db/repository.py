@@ -120,6 +120,10 @@ class Database:
             self._migrate_sqlite()
 
     def _migrate_sqlite(self) -> None:
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_works_mobile_created_at_id ON works (created_at, id)"
+            )
         with self.engine.connect() as connection:
             connection.exec_driver_sql("PRAGMA journal_mode=WAL")
             connection.exec_driver_sql("PRAGMA busy_timeout=30000")

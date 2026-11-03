@@ -60,7 +60,10 @@ class Library(Base):
 
 class Work(Base):
     __tablename__ = "works"
-    __table_args__ = (Index("ix_works_created_at", "created_at"),)
+    __table_args__ = (
+        Index("ix_works_created_at", "created_at"),
+        Index("ix_works_mobile_created_at_id", "created_at", "id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     title: Mapped[str] = mapped_column(Text)
@@ -322,3 +325,12 @@ class PanOfflineTask(Base):
     recovery_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class MediaEmbyBinding(Base):
+    """Verified playback identity, independent of titles and temporary URLs."""
+
+    __tablename__ = "media_emby_bindings"
+    work_id: Mapped[str] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"), primary_key=True)
+    server_id: Mapped[str] = mapped_column(String(100))
+    item_id: Mapped[str] = mapped_column(String(100))
