@@ -12,12 +12,12 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 from typing import cast as type_cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 from weakref import WeakKeyDictionary
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.params import Depends
 from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
@@ -76,6 +76,7 @@ from .services.catalog_people import (
 from .services.catalog_people import (
     person as stored_person,
 )
+from .services.library_prefs import LibraryPrefs
 from .tags import normalize_tags
 
 if TYPE_CHECKING:
@@ -156,6 +157,22 @@ class CatalogPage(BaseModel):
 CatalogPerson = PersonDocument
 
 
+class PersonCard(BaseModel):
+    id: str
+    name: str
+    aliases: list[str]
+    image_url: str | None
+    work_count: int
+    revision: int
+    same_name: bool
+
+
+class PeoplePage(BaseModel):
+    items: list[PersonCard]
+    next_offset: int | None
+    labels: dict[str, str] = Field(default_factory=dict)
+
+
 class Facet(BaseModel):
     id: str
     name: str
@@ -219,9 +236,7 @@ def _legacy_people(runtime_state: Runtime, session: Session) -> list[CatalogPers
         )
     return list(result.values())
 
-def read_catalog_people(
-    runtime_state: Runtime, session: Session, *, private: bool = False,
-) -> list[CatalogPerson]:
+def _sync_people(runtime_state: Runtime, session: Session) -> None:
     engine = runtime_state.database.engine
     revision = session.scalar(text(
         "SELECT revision FROM catalog_source_revisions WHERE name = 'people'"
@@ -242,15 +257,32 @@ def read_catalog_people(
                 _imported_sources[engine] = signature
 
         event.listen(session, "after_commit", committed, once=True)
+
+
+def _person_tags(person: CatalogPerson, prefs: LibraryPrefs) -> tuple[bool, bool]:
+    keys = [person.id, *[ref.split(":", 1)[-1] for ref in person.refs]]
+    states = [prefs.actor_tags[key] for key in keys if key in prefs.actor_tags]
+    return any(state.favorite for state in states), any(state.blacklist for state in states)
+
+
+def _person_index(profiles: list[CatalogPerson]) -> dict[str, CatalogPerson]:
+    index = {
+        key: p for p in profiles for key in [*p.refs, *[ref.split(":", 1)[-1] for ref in p.refs]]
+    }
+    index.update({p.id: p for p in profiles})
+    return index
+
+
+def read_catalog_people(
+    runtime_state: Runtime, session: Session, *, private: bool = False,
+) -> list[CatalogPerson]:
+    _sync_people(runtime_state, session)
     items = stored_people(session, private=private)
     if private:
         prefs = runtime_state.library_prefs_store.load()
         for item in items:
-            keys = [item.id, *[ref.split(":", 1)[-1] for ref in item.refs]]
-            states = [prefs.actor_tags[key] for key in keys if key in prefs.actor_tags]
             item.image_url = actor_images().display_url(item.image_url)
-            item.favorite = any(state.favorite for state in states)
-            item.blacklist = any(state.blacklist for state in states)
+            item.favorite, item.blacklist = _person_tags(item, prefs)
     if not private:
         return [item.model_copy(update={
             "image_url": f"/api/media/v1/catalog/people/{item.id}/image",
@@ -331,10 +363,8 @@ def build_catalog_router(
         if filters.studio_name:
             statement = statement.where(Work.studio == filters.studio_name)
         if filters.actors:
-            profiles = actor_profiles if actor_profiles is not None else {
-                key: p for p in people(request, session)
-                for key in [p.id, *p.refs, *[ref.split(":", 1)[-1] for ref in p.refs]]
-            }
+            profiles = (actor_profiles if actor_profiles is not None
+                        else _person_index(people(request, session)))
             groups = [set(profiles[key].work_ids) if key in profiles else set() for key in filters.actors]
             ids = set.intersection(*groups) if filters.actors_all else set.union(*groups)
             statement = statement.where(Work.id.in_(ids))
@@ -467,13 +497,49 @@ def build_catalog_router(
                 key=lambda p: (-len(p.work_ids), p.name, p.id),
             )
 
+    if prefix == "/api/catalog":
+        @router.get("/people-cards")
+        def person_cards(
+            request: Request, q: str = Query(default="", max_length=300),
+            sort: Literal["works", "name"] = "works", followed: bool = False,
+            offset: int = Query(default=0, ge=0),
+            limit: int = Query(default=48, ge=1, le=100),
+            ids: Annotated[list[str] | None, Query(alias="id", max_length=100)] = None,
+        ) -> PeoplePage:
+            runtime_state = runtime(request)
+            with runtime_state.database.session() as session:
+                _sync_people(runtime_state, session)
+                profiles = stored_people(session)
+                if ids:
+                    index = _person_index(profiles)
+                    return PeoplePage(
+                        items=[], next_offset=None,
+                        labels={key: index[key].name for key in ids if key in index},
+                    )
+                names = Counter(person.name for person in profiles)
+                query = q.strip().casefold()
+                prefs = runtime_state.library_prefs_store.load() if followed else None
+                matches = [
+                    person for person in profiles
+                    if (not query or any(query in name.casefold() for name in [person.name, *person.aliases]))
+                    and (prefs is None or _person_tags(person, prefs)[0])
+                ]
+                matches.sort(key=lambda p: (
+                    -len(p.work_ids) if sort == "works" else 0, p.name.casefold(), p.id,
+                ))
+                return PeoplePage(
+                    items=[PersonCard(
+                        id=p.id, name=p.name, aliases=p.aliases[:2],
+                        image_url=actor_images().display_url(p.image_url), work_count=len(p.work_ids),
+                        revision=p.revision, same_name=names[p.name] > 1,
+                    ) for p in matches[offset:offset + limit]],
+                    next_offset=offset + limit if offset + limit < len(matches) else None,
+                )
+
     @router.post("/facets")
     def facets(filters: CatalogFilter, request: Request) -> dict[str, list[Facet]]:
         with runtime(request).database.session() as session:
-            actor_profiles = {key: person for person in people(request, session)
-                              for key in [person.id, *person.refs,
-                                          *[ref.split(":", 1)[-1] for ref in person.refs]]
-                              } if filters.actors or filters.q else None
+            actor_profiles = _person_index(people(request, session)) if filters.actors or filters.q else None
             year_filters = filters.model_copy(update={
                 "year_from": None, "year_to": None, "unknown_year": False,
             })
@@ -533,7 +599,7 @@ def build_catalog_router(
     @router.get("/people/{person_id}/image")
     async def person_image(person_id: str, request: Request) -> FileResponse:
         with runtime(request).database.session() as session:
-            people(request, session)
+            _sync_people(runtime(request), session)
             profile = stored_person(session, person_id)
         url = actor_images().display_url(profile.image_url) or ""
         lazy_prefix = "/api/actor-images/remote/"
@@ -554,17 +620,14 @@ def build_catalog_router(
     def person_detail(person_id: str, request: Request) -> CatalogPerson:
         with runtime(request).database.session() as session:
             catalog = people(request, session)
-            result = stored_person(session, person_id, private=prefix == "/api/catalog")
-            preferences = next((item for item in catalog if item.id == result.id), None)
-            if preferences:
-                result.favorite, result.blacklist = preferences.favorite, preferences.blacklist
-                result.image_url = preferences.image_url
+            result = stored_person(session, person_id, profiles=catalog)
             ids = set(result.work_ids)
-            result.collaborators = sorted([
-                Collaboration(id=other.id, name=other.name, count=len(ids.intersection(other.work_ids)))
-                for other in stored_people(session) if other.id != result.id
-                and ids.intersection(other.work_ids)
-            ], key=lambda item: (-item.count, item.name))[:20]
+            collaborators = []
+            for other in catalog:
+                count = len(ids.intersection(other.work_ids))
+                if other.id != result.id and count:
+                    collaborators.append(Collaboration(id=other.id, name=other.name, count=count))
+            result.collaborators = sorted(collaborators, key=lambda item: (-item.count, item.name))[:20]
             result.years = sorted({
                 work.release_date.year for work in session.scalars(select(Work).where(Work.id.in_(ids)))
                 if work.release_date

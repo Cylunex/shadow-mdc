@@ -33,7 +33,7 @@ export function CoverImage({ src, className, frontCrop, loading = "lazy" }: Prop
 function CoverImageContent({ src, className, frontCrop, loading = "lazy" }: Props) {
   const [shape, setShape] = useState<CoverShape | null>(null);
   const [broken, setBroken] = useState(false);
-  if (broken) return <div className="poster-fallback" aria-hidden />;
+  if (!src || broken) return <div className="poster-fallback" aria-hidden />;
   const onLoad = (event: SyntheticEvent<HTMLImageElement>) => {
     const img = event.currentTarget;
     setShape(classifyCover(img.naturalWidth, img.naturalHeight));

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { appUrl } from "../api";
+import { queryClient, queryKeys } from "../query/client";
 
 export type ManagedPerson = {
   id: string; ref: string; refs: string[]; name: string; aliases: string[];
@@ -8,6 +10,12 @@ export type ManagedPerson = {
   collaborators?: { id: string; name: string; count: number }[];
   organizations?: { id: string; name: string; count: number }[];
 };
+export type PersonCard = {
+  id: string; name: string; aliases: string[]; image_url: string | null;
+  work_count: number; revision: number; same_name: boolean;
+};
+type PeoplePage = { items: PersonCard[]; next_offset: number | null; labels: Record<string, string> };
+export const PEOPLE_PAGE_SIZE = 48;
 type Organization = { id: string; kind: string; name: string; aliases: string[]; description: string | null; parent_id: string | null; revision: number; work_count: number };
 type Playlist = { id: string; name: string; work_ids: string[]; revision: number };
 type Merge = { id: string; target_id: string; members: string[]; undone: boolean };
@@ -24,9 +32,9 @@ export function catalogOwner(): string {
     return fallbackOwner;
   }
 }
-export async function catalogRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+export async function catalogRequest<T>(path: string, method = "GET", body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(appUrl("/api/catalog/" + path)!, {
-    method, headers: { "Content-Type": "application/json", "X-Catalog-Owner": catalogOwner() },
+    method, signal, headers: { "Content-Type": "application/json", "X-Catalog-Owner": catalogOwner() },
     ...(body === undefined ? {} : { body: JSON.stringify(body) })
   });
   if (!response.ok) {
@@ -35,9 +43,74 @@ export async function catalogRequest<T>(path: string, method = "GET", body?: unk
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }
+
+export function usePeopleCards(q: string, sort: string, followed: boolean, offset: number, enabled: boolean) {
+  const [search, setSearch] = useState(q);
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(q), 180);
+    return () => clearTimeout(timer);
+  }, [q]);
+  const params = new URLSearchParams({
+    q: search, sort, followed: String(followed), offset: String(offset), limit: String(PEOPLE_PAGE_SIZE),
+  });
+  const result = useQuery({
+    queryKey: [...queryKeys.personCards, params.toString()],
+    queryFn: ({ signal }) => catalogRequest<PeoplePage>("people-cards?" + params, "GET", undefined, signal),
+    enabled: enabled && q === search,
+  }, queryClient);
+  return { page: q === search ? result.data : undefined, error: result.error, loading: q !== search || result.isPending };
+}
+
+export function usePersonLabels(ids: string[]) {
+  return useQuery({
+    queryKey: [...queryKeys.personCards, "labels", ids],
+    queryFn: async ({ signal }) => {
+      const labels: Record<string, string> = {};
+      for (let start = 0; start < ids.length; start += 100) {
+        const params = new URLSearchParams(ids.slice(start, start + 100).map(id => ["id", id]));
+        const page = await catalogRequest<PeoplePage>("people-cards?" + params, "GET", undefined, signal);
+        Object.assign(labels, page.labels);
+      }
+      return labels;
+    },
+    enabled: ids.length > 0,
+  }, queryClient).data;
+}
+
+export function PersonPicker({ label, exclude, onSelect }: {
+  label: string; exclude?: string; onSelect: (person: PersonCard) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [offset, setOffset] = useState(0);
+  const { page, error, loading } = usePeopleCards(search, "works", false, offset, open);
+  const nextOffset = page?.next_offset;
+  return <details onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>{label}</summary>
+    {open && <>
+      <input aria-label={label + "搜索"} value={search} maxLength={300} placeholder="姓名或别名"
+        onChange={event => { setSearch(event.target.value); setOffset(0); }} />
+      {loading && <span role="status">正在读取人物…</span>}
+      {error && <span role="alert">{error.message}</span>}
+      <select aria-label={label} value="" onChange={event => {
+        const item = page?.items.find(person => person.id === event.target.value);
+        if (item) onSelect(item);
+      }}>
+        <option value="">选择人物</option>
+        {page?.items.filter(person => person.id !== exclude).map(person =>
+          <option key={person.id} value={person.id}>{person.name} · {person.work_count} 部
+            {person.same_name ? " · " + person.id.slice(-6) : ""}</option>)}
+      </select>
+      {offset > 0 && <button disabled={loading}
+        onClick={() => setOffset(Math.max(0, offset - PEOPLE_PAGE_SIZE))}>上一页</button>}
+      {nextOffset != null && <button onClick={() => setOffset(nextOffset)}>下一页</button>}
+    </>}
+  </details>;
+}
+
 const split = (value: string) => [...new Set(value.split(/[、,\n]/).map(item => item.trim()).filter(Boolean))];
-export function CatalogPeopleEditor({ person, people, onSaved }: {
-  person: ManagedPerson | null; people: ManagedPerson[]; onSaved: () => void;
+export function CatalogPeopleEditor({ person, onSaved }: {
+  person: ManagedPerson | null; onSaved: () => void;
 }) {
   const [editing, setEditing] = useState<ManagedPerson | null>(null);
   const [aliasesText, setAliasesText] = useState("");
@@ -51,16 +124,26 @@ export function CatalogPeopleEditor({ person, people, onSaved }: {
   const [workOptions, setWorkOptions] = useState<{ id: string; title: string }[]>([]);
   const [creditWork, setCreditWork] = useState("");
   const [creditRole, setCreditRole] = useState("actor");
-  const [targetId, setTargetId] = useState("");
-  const [merges, setMerges] = useState<Merge[]>([]);
+  const [target, setTarget] = useState<PersonCard | null>(null);
+  const [showMerges, setShowMerges] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    catalogRequest<Merge[]>("people-merges").then(setMerges).catch(e => setError(String(e)));
-  }, [person]);
+  const mergesQuery = useQuery({
+    queryKey: [...queryKeys.personCards, "merges"],
+    queryFn: ({ signal }) => catalogRequest<Merge[]>("people-merges", "GET", undefined, signal),
+    enabled: showMerges,
+  }, queryClient);
+  const merges = mergesQuery.data ?? [];
+  const mergeNames = usePersonLabels(showMerges ? [...new Set(merges.map(item => item.target_id))] : []);
   async function run(operation: () => Promise<void | boolean>) {
     setBusy(true); setError("");
-    try { if (await operation() === false) return; onSaved(); setMerges(await catalogRequest<Merge[]>("people-merges")); }
+    try {
+      if (await operation() === false) return;
+      setTarget(null);
+      await queryClient.cancelQueries({ queryKey: queryKeys.personCards });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.personCards });
+      onSaved();
+    }
     catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
   function create() {
@@ -107,19 +190,18 @@ export function CatalogPeopleEditor({ person, people, onSaved }: {
           });
         })}>移除此关联</button>
       </details>
-      <label>合并到<select value={targetId} onChange={event => setTargetId(event.target.value)}>
-        <option value="">选择同一人的另一份档案</option>{people.filter(item => item.id !== person.id).map(item =>
-          <option key={item.id} value={item.id}>{item.name} · {item.work_ids.length} 部 · {item.id.slice(-6)}</option>)}
-      </select></label>
-      <button disabled={busy || !targetId} onClick={() => void run(async () => {
-        const target = people.find(item => item.id === targetId);
+      <PersonPicker label="合并到" exclude={person.id} onSelect={setTarget} />
+      {target && <span>{target.name} · {target.id.slice(-6)}</span>}
+      <button disabled={busy || !target} onClick={() => void run(async () => {
         if (!target || !window.confirm("确认将“" + person.name + "”合并到“" + target.name + "”？原档案和旧引用会保留，可从记录撤销。")) return false;
         await catalogRequest("people-merge", "POST", { target_id: target.id, source_id: person.id,
           target_revision: target.revision, source_revision: person.revision });
       })}>合并档案</button>
     </>}
-    <details><summary>人物合并记录</summary>{merges.map(item => <div key={item.id}>
-      <span>{people.find(p => p.id === item.target_id)?.name ?? "人物档案"} · {item.undone ? "已撤销" : "已合并"}</span>
+    <details onToggle={event => setShowMerges(event.currentTarget.open)}><summary>人物合并记录</summary>
+      {showMerges && mergesQuery.error && <p role="alert">{mergesQuery.error.message}</p>}
+      {showMerges && merges.map(item => <div key={item.id}>
+      <span>{mergeNames?.[item.target_id] ?? "人物档案"} · {item.undone ? "已撤销" : "已合并"}</span>
       {!item.undone && <button disabled={busy} onClick={() => void run(async () => {
         await catalogRequest("people-merges/" + item.id + "/undo", "POST");
       })}>撤销合并</button>}

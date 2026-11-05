@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { queryClient } from "../query/client";
 import { memoryStorage } from "../test/storage";
 import { CatalogPeopleEditor, CatalogPlaylists, type ManagedPerson } from "./CatalogManagement";
 
@@ -16,7 +17,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await act(async () => root.unmount());
-  container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals();
+  queryClient.clear(); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 const person = (id: string): ManagedPerson => ({
   id, ref: "person:" + id, refs: ["person:" + id], name: id,
@@ -28,13 +29,21 @@ const person = (id: string): ManagedPerson => ({
 it("merges only after inline confirmation and sends both revisions", async () => {
   const calls: { url: string; body: unknown }[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+    if (url.includes("/people-cards?")) return new Response(JSON.stringify({
+      items: [{ id: "target", name: "target", work_count: 0, revision: 1 }], next_offset: null,
+    }));
     if (init.method === "POST") calls.push({ url, body: JSON.parse(String(init.body)) });
     return new Response(JSON.stringify(init.method === "POST" ? { merge_id: "merge" } : []), { status: 200 });
   }));
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   const saved = vi.fn();
-  await act(async () => root.render(<CatalogPeopleEditor person={person("source")}
-    people={[person("source"), person("target")]} onSaved={saved} />));
+  await act(async () => root.render(<CatalogPeopleEditor person={person("source")} onSaved={saved} />));
+  await act(async () => {
+    const details = [...container.querySelectorAll("details")].find(item => item.querySelector("summary")?.textContent === "合并到")!;
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+  });
+  await vi.waitFor(() => expect(container.querySelector('option[value="target"]')).not.toBeNull());
   const select = [...container.querySelectorAll<HTMLSelectElement>("select")]
     .find(item => [...item.options].some(option => option.value === "target"))!;
   await act(async () => { select.value = "target"; select.dispatchEvent(new Event("change", { bubbles: true })); });

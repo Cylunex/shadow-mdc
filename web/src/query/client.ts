@@ -5,6 +5,7 @@ export const queryKeys = {
   works: ["mdc", "works"] as const,
   actors: ["mdc", "actors"] as const,
   nonJavActors: ["mdc", "non-jav-actors"] as const,
+  personCards: ["mdc", "person-cards"] as const,
   libraries: ["mdc", "libraries"] as const,
   prefs: ["mdc", "preferences"] as const,
   tasks: ["mdc", "tasks"] as const,
@@ -33,7 +34,7 @@ export const queryClient = new QueryClient({
   } },
 });
 
-const libraryGroups = new Set(["works", "actors", "non-jav-actors", "detail", "related", "categories", "actor-works", "inbox"]);
+const libraryGroups = new Set(["works", "actors", "non-jav-actors", "person-cards", "detail", "related", "categories", "actor-works", "inbox"]);
 async function invalidateGroups(groups: ReadonlySet<string>): Promise<void> {
   const filters = { predicate: (query: { queryKey: readonly unknown[] }) =>
     query.queryKey[0] === "mdc" && groups.has(String(query.queryKey[1])) };

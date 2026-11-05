@@ -67,6 +67,14 @@ def test_unified_catalog_facets_and_actor_intersection(
         assert client.post("/api/catalog/facets", json={}).json()["genres"][0]["name"] == "纪录"
         people = client.get("/api/catalog/people").json()
         assert next(p for p in people if p["id"] == "aa")["work_ids"] == ["a", "b"]
+        page = client.get("/api/catalog/people-cards", params={"limit": 1}).json()
+        assert page["next_offset"] == 1
+        assert [(p["id"], p["work_count"]) for p in page["items"]] == [("aa", 2)]
+        assert "work_ids" not in page["items"][0]
+        second_page = client.get("/api/catalog/people-cards", params={"limit": 1, "offset": 1}).json()
+        assert [p["id"] for p in second_page["items"]] == ["bb"]
+        assert second_page["next_offset"] is None
+        assert client.get("/api/catalog/people-cards", params={"limit": 101}).status_code == 422
 
 
 @pytest.mark.asyncio
@@ -101,7 +109,15 @@ def test_persistent_people_merge_undo_and_private_fields(
             "name": "Same Name", "aliases": ["Second Alias"], "revision": 1,
         }).json()
         assert first["id"] != second["id"]
-        assert len(client.get("/api/catalog/people").json()) == 2
+        found = client.get("/api/catalog/people-cards", params={"q": "second alias", "sort": "name"}).json()
+        assert [(p["id"], p["same_name"], p["work_count"]) for p in found["items"]] == [
+            (second["id"], True, 0),
+        ]
+        assert client.put(f"/api/catalog/people/{first['id']}/preference", json={
+            "favorite": True, "blacklist": False,
+        }).status_code == 200
+        followed = client.get("/api/catalog/people-cards", params={"followed": True}).json()
+        assert [p["id"] for p in followed["items"]] == [first["id"]]
         assert len(client.get("/api/catalog/people").json()) == 2
         merged = client.post("/api/catalog/people-merge", json={
             "target_id": first["id"], "source_id": second["id"],
@@ -109,6 +125,10 @@ def test_persistent_people_merge_undo_and_private_fields(
         })
         assert merged.status_code == 200, merged.text
         assert len(client.get("/api/catalog/people").json()) == 1
+        alias_page = client.get("/api/catalog/people-cards", params={"q": "second alias"}).json()
+        assert [p["id"] for p in alias_page["items"]] == [first["id"]]
+        labels = client.get("/api/catalog/people-cards", params={"id": second["ref"]}).json()
+        assert labels["labels"] == {second["ref"]: first["name"]}
         redirected = client.get("/api/catalog/people/" + second["id"]).json()
         assert redirected["id"] == first["id"]
         assert "Second Alias" in redirected["aliases"]

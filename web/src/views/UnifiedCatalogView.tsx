@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { appUrl } from "../api";
 import { readWorksFiltersFromSearch } from "../lib/worksFilters";
-import { CatalogPeopleEditor, CatalogOrganizations, CatalogPlaylists, catalogRequest, type ManagedPerson } from "./CatalogManagement";
+import {
+  CatalogPeopleEditor, CatalogOrganizations, CatalogPlaylists, PEOPLE_PAGE_SIZE, PersonPicker, catalogRequest,
+  usePeopleCards, usePersonLabels, type ManagedPerson
+} from "./CatalogManagement";
 import { CoverImage } from "../components/CoverImage";
 
 type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null };
@@ -15,7 +18,7 @@ async function request<T>(path: string, body?: unknown, signal?: AbortSignal): P
   if (!response.ok) throw new Error("读取失败（" + response.status + "）");
   return response.json() as Promise<T>;
 }
-export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPersonRef, onStartFeed }: { mode: "works" | "actors" | "categories"; initialPersonRef?: string; onStartFeed?: (state: CatalogFeedStart) => void; onOpenWork: (id: string) => void; onOpenActor: (id: string) => void }) {
+export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPersonRef, onStartFeed, refresh = 0 }: { mode: "works" | "actors" | "categories"; initialPersonRef?: string; refresh?: number; onStartFeed?: (state: CatalogFeedStart) => void; onOpenWork: (id: string) => void; onOpenActor: (id: string) => void }) {
   const [filters, setFilters] = useState<Filters>(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -29,18 +32,29 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       return { ...empty, ...JSON.parse(params.get("catalog") ?? sessionStorage.getItem("mdc:catalog-filter") ?? "{}") };
     } catch { return empty; }
   });
-  const generation = useRef(0);
+  const workRequest = useRef<AbortController | null>(null);
+  const initialFilters = useRef(filters);
+  const loadedFilters = useRef<Filters | null>(null);
   const [rows, setRows] = useState<Card[]>([]);
-  const [people, setPeople] = useState<Person[]>([]);
   const [facets, setFacets] = useState<Record<string, Facet[]>>({});
   const [cursor, setCursor] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [workError, setWorkError] = useState("");
+  const [facetError, setFacetError] = useState("");
   const [showFilters, setShowFilters] = useState(() => typeof window !== "undefined" && window.innerWidth >= 800);
   const [actorSort, setActorSort] = useState("works");
   const [followedOnly, setFollowedOnly] = useState(false);
   const [actorSearch, setActorSearch] = useState("");
+  const [actorOffset, setActorOffset] = useState(0);
+  const [personRef, setPersonRef] = useState("");
+  const activePersonRef = initialPersonRef ?? personRef;
+  const [resolvedRef, setResolvedRef] = useState("");
+  const { page: people, error: peopleError, loading: peopleLoading } =
+    usePeopleCards(actorSearch, actorSort, followedOnly, actorOffset, mode === "actors" && !initialPersonRef);
+  const nextActorOffset = people?.next_offset;
+  const actorNames = usePersonLabels(filters.actors);
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
   const [saved, setSaved] = useState<{ name: string; filters: Filters }[]>(() => {
     try { return JSON.parse(localStorage.getItem("mdc:saved-filters") ?? "[]"); } catch { return []; }
@@ -73,15 +87,23 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   const [saveName, setSaveName] = useState("");
   const patch = (value: Partial<Filters>) => setFilters(previous => ({ ...previous, ...value }));
   useEffect(() => {
-    if (!initialPersonRef) return;
-    let cancelled = false;
-    catalogRequest<Person>("people/" + encodeURIComponent(initialPersonRef)).then(person => {
-      if (cancelled) return;
-      setSelectedPerson(person);
-      setFilters(previous => ({ ...previous, actors: [person.id], actor_name: "" }));
-    }).catch(e => { if (!cancelled) setError(String(e)); });
-    return () => { cancelled = true; };
-  }, [initialPersonRef, revision]);
+    if (!activePersonRef) return;
+    const controller = new AbortController();
+    catalogRequest<Person>("people/" + encodeURIComponent(activePersonRef), "GET", undefined, controller.signal)
+      .then(person => {
+        if (controller.signal.aborted) return;
+        setSelectedPerson(person);
+        setFilters(previous => {
+          const mapped = [...new Set(previous.actors.map(id => id === activePersonRef ? person.id : id))];
+          const actors = mapped.includes(person.id) ? mapped : [person.id];
+          const unchanged = actors.length === previous.actors.length
+            && actors.every((id, index) => id === previous.actors[index]);
+          return unchanged && !previous.actor_name ? previous : { ...previous, actors, actor_name: "" };
+        });
+        setResolvedRef(activePersonRef);
+      }).catch(e => { if (!controller.signal.aborted) setError(String(e)); });
+    return () => controller.abort();
+  }, [activePersonRef, revision, refresh]);
   useEffect(() => { try {
       sessionStorage.setItem("mdc:catalog-filter", JSON.stringify(filters));
       const url = new URL(window.location.href);
@@ -89,48 +111,60 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       url.searchParams.set("catalog", JSON.stringify(filters));
       history.replaceState(history.state, "", url);
     } catch { /* Storage is optional. */ } }, [filters]);
+  const waitingForPerson = Boolean(initialPersonRef && initialPersonRef !== resolvedRef);
   useEffect(() => {
+    if (waitingForPerson) return;
     const controller = new AbortController();
-    request<Person[]>("people", undefined, controller.signal).then(setPeople).catch(e => { if (!controller.signal.aborted) setError(String(e)); });
-    return () => controller.abort();
-  }, [revision]);
-  useEffect(() => {
-    const controller = new AbortController();
-    generation.current += 1;
-    setLoading(true); setError("");
+    workRequest.current = controller;
+    const { signal } = controller;
+    setWorkError(""); setFacetError("");
     let snapshot: { filters: Filters; rows: Card[]; cursor: string | null; total: number; scroll: number; at: number } | null = null;
     try { snapshot = JSON.parse(sessionStorage.getItem("mdc:catalog-return") ?? "null"); } catch { /* Optional cache. */ }
+    function loadFacets() {
+      return request<Record<string, Facet[]>>("facets", filters, signal)
+        .then(values => { if (!signal.aborted) setFacets(values); })
+        .catch(e => { if (!signal.aborted) setFacetError("分类统计读取失败 · " + String(e)); });
+    }
     if (snapshot && Date.now() - snapshot.at < 300000 && JSON.stringify(snapshot.filters) === JSON.stringify(filters)) {
+      loadedFilters.current = filters;
       setRows(snapshot.rows); setCursor(snapshot.cursor); setTotal(snapshot.total); setLoading(false);
-      request<Record<string, Facet[]>>("facets", filters, controller.signal).then(setFacets)
-        .catch(e => { if (!controller.signal.aborted) setError(String(e)); });
+      void loadFacets();
       const position = snapshot.scroll;
       const frame = requestAnimationFrame(() => window.scrollTo(0, position));
       return () => { controller.abort(); cancelAnimationFrame(frame); };
     }
-    const timer = setTimeout(() => {
-      Promise.all([
-        request<{ items: Card[]; next_cursor: string | null; total: number }>("works/query", filters, controller.signal),
-        request<Record<string, Facet[]>>("facets", filters, controller.signal)
-      ]).then(([page, values]) => {
-        if (controller.signal.aborted) return;
-        setRows(page.items); setCursor(page.next_cursor); setTotal(page.total); setFacets(values);
-      }).catch(e => { if (!controller.signal.aborted) setError(String(e)); })
-        .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    }, 180);
-    return () => { clearTimeout(timer); controller.abort(); };
-  }, [filters, revision]);
-  async function more() {
-    if (!cursor || loading) return;
-    const active = generation.current;
     setLoading(true);
+    if (loadedFilters.current !== filters) {
+      setRows([]); setCursor(null); setTotal(0);
+    }
+    function loadWorks() {
+      request<{ items: Card[]; next_cursor: string | null; total: number }>("works/query", filters, signal)
+        .then(page => {
+          if (signal.aborted) return;
+          loadedFilters.current = filters;
+          setRows(page.items); setCursor(page.next_cursor); setTotal(page.total);
+        }).catch(e => { if (!signal.aborted) setWorkError(String(e)); })
+        .finally(() => { if (!signal.aborted) setLoading(false); });
+      void loadFacets();
+    }
+    if (filters === initialFilters.current) {
+      loadWorks();
+      return () => controller.abort();
+    }
+    const timer = setTimeout(loadWorks, 180);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [filters, revision, refresh, waitingForPerson]);
+  async function more() {
+    const signal = workRequest.current?.signal;
+    if (!cursor || loading || !signal || signal.aborted) return;
+    setLoading(true); setWorkError("");
     try {
-      const page = await request<{ items: Card[]; next_cursor: string | null }>("works/query", { ...filters, cursor });
-      if (active !== generation.current) return;
+      const page = await request<{ items: Card[]; next_cursor: string | null }>("works/query", { ...filters, cursor }, signal);
+      if (signal.aborted) return;
       setRows(previous => [...new Map([...previous, ...page.items].map(row => [row.id, row])).values()]);
       setCursor(page.next_cursor);
-    } catch (e) { if (active === generation.current) setError(String(e)); }
-    finally { if (active === generation.current) setLoading(false); }
+    } catch (e) { if (!signal.aborted) setWorkError(String(e)); }
+    finally { if (!signal.aborted) setLoading(false); }
   }
   function openWork(id: string) {
     try {
@@ -156,24 +190,33 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     }}>按当前筛选刷片</button>}
 
     {error && <p role="alert">{error}</p>}
+    {workError && <p role="alert">{workError}</p>}
+    {facetError && <p role="alert">{facetError}</p>}
     {mode === "actors" && <>
-      <select aria-label="演员排序" value={actorSort} onChange={e => setActorSort(e.target.value)}>
-        <option value="works">库内作品数</option><option value="name">姓名</option>
-      </select>
-      <label><input type="checkbox" checked={followedOnly} onChange={e => setFollowedOnly(e.target.checked)} />已关注</label>
-      <input aria-label="搜索演员与别名" placeholder="演员、别名" value={actorSearch} onChange={e => setActorSearch(e.target.value)} />
-      {!initialPersonRef && <div className="actor-grid">{people.filter(p => (!followedOnly || p.favorite) &&
-        [p.name, ...p.aliases].join(" ").toLowerCase().includes(actorSearch.toLowerCase()))
-        .sort((a, b) => actorSort === "name" ? a.name.localeCompare(b.name, "zh") : b.work_ids.length - a.work_ids.length)
-        .map(p =>
-        <button key={p.id} className="actor-card" onClick={() => {
-          patch({ actors: [p.id] });
-          catalogRequest<Person>("people/" + p.id).then(setSelectedPerson).catch(e => setError(String(e)));
-        }}>
-          <CoverImage src={appUrl(p.image_url) ?? ""} /><strong>{p.name}</strong>
-          {people.some(other => other.id !== p.id && other.name === p.name) && <span>档案 {p.id.slice(-6)}</span>}
-          <span>{p.aliases.slice(0, 2).join(" / ")} · {p.work_ids.length} 部</span>
-        </button>)}</div>}
+      {!initialPersonRef && <>
+        <select aria-label="演员排序" value={actorSort} onChange={e => { setActorSort(e.target.value); setActorOffset(0); }}>
+          <option value="works">库内作品数</option><option value="name">姓名</option>
+        </select>
+        <label><input type="checkbox" checked={followedOnly}
+          onChange={e => { setFollowedOnly(e.target.checked); setActorOffset(0); }} />已关注</label>
+        <input aria-label="搜索演员与别名" placeholder="演员、别名" value={actorSearch} maxLength={300}
+          onChange={e => { setActorSearch(e.target.value); setActorOffset(0); }} />
+        {peopleLoading && <p role="status">正在读取人物…</p>}
+        {peopleError && <p role="alert">{peopleError.message}</p>}
+        {people?.items.length === 0 && <p>没有匹配的演员。</p>}
+        <div className="actor-grid">{people?.items.map(p =>
+          <button key={p.id} className="actor-card" onClick={() => {
+            if (personRef !== p.id) setSelectedPerson(null);
+            setError(""); setPersonRef(p.id); patch({ actors: [p.id], actor_name: "" });
+          }}>
+            <CoverImage src={appUrl(p.image_url) ?? ""} /><strong>{p.name}</strong>
+            {p.same_name && <span>档案 {p.id.slice(-6)}</span>}
+            <span>{p.aliases.join(" / ")} · {p.work_count} 部</span>
+          </button>)}</div>
+        {actorOffset > 0 && <button disabled={peopleLoading}
+          onClick={() => setActorOffset(Math.max(0, actorOffset - PEOPLE_PAGE_SIZE))}>上一页演员</button>}
+        {nextActorOffset != null && <button onClick={() => setActorOffset(nextActorOffset)}>下一页演员</button>}
+      </>}
       {selectedPerson && <article><h2>{selectedPerson.name}</h2><p>{selectedPerson.biography}</p>
         {selectedPerson.x_handle && <a href={"https://x.com/" + encodeURIComponent(selectedPerson.x_handle)}
           target="_blank" rel="noreferrer">X · {selectedPerson.x_handle}</a>}
@@ -183,10 +226,8 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
         <p>合作机构</p>{selectedPerson.organizations?.map(other => <button key={other.id}
           onClick={() => patch({ actors: [selectedPerson.id], organizations: [other.id] })}>{other.name} · {other.count}</button>)}
       </article>}
-      <CatalogPeopleEditor person={selectedPerson} people={people} onSaved={() => {
-        if (selectedPerson) catalogRequest<Person>("people/" + selectedPerson.id)
-          .then(person => { setSelectedPerson(person); patch({ actors: [person.id] }); })
-          .catch(e => setError(String(e)));
+      <CatalogPeopleEditor key={selectedPerson?.id} person={selectedPerson} onSaved={() => {
+        try { sessionStorage.removeItem("mdc:catalog-return"); } catch { /* Storage is optional. */ }
         setRevision(value => value + 1);
       }} />
     </>}
@@ -208,13 +249,14 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       </select>)}
       <select aria-label="播放状态" value={filters.status} onChange={e => patch({ status: e.target.value })}><option value="all">全部状态</option><option value="emby">已关联 Emby</option><option value="files">有关联文件</option><option value="metadata">仅资料</option></select>
       <select aria-label="排序" value={filters.sort} onChange={e => patch({ sort: e.target.value })}><option value="added">最近入库</option><option value="newest">最新发行</option><option value="oldest">最早发行</option><option value="title">片名</option></select>
-      <select aria-label="追加演员" value="" onChange={e => { if (e.target.value) patch({ actors: [...new Set([...filters.actors, e.target.value])] }); }}><option value="">添加演员条件</option>{people.map(p => <option key={p.id} value={p.id}>{p.name} · {p.work_ids.length}</option>)}</select>
+      <PersonPicker label="追加演员" onSelect={person =>
+        patch({ actors: [...new Set([...filters.actors, person.id])] })} />
       <label><input type="checkbox" checked={filters.actors_all} onChange={e => patch({ actors_all: e.target.checked })} />共同出演</label>
       <label><input type="checkbox" checked={filters.tags_all} onChange={e => patch({ tags_all: e.target.checked })} />全部标签</label>
       <select aria-label="排除标签" value="" onChange={e => { if (e.target.value) patch({ exclude_tags: [...new Set([...filters.exclude_tags, e.target.value])] }); }}>
         <option value="">排除某标签</option>{(facets.tags ?? []).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
       </select>
-      <button onClick={() => { setFilters(empty); setSelectedPerson(null); }}>清除条件</button>
+      <button onClick={() => { setFilters(empty); setSelectedPerson(null); setPersonRef(""); }}>清除条件</button>
     </div>}
     <div className="active-filter-chips">
       {filters.tags.map(name => <button key={"tag:" + name} onClick={() => patch({ tags: filters.tags.filter(t => t !== name) })}>{name} ×</button>)}
@@ -223,14 +265,14 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       {(filters.year_from || filters.unknown_year) && <button onClick={() => patch({ year_from: undefined, year_to: undefined, unknown_year: false })}>{filters.unknown_year ? "年份待补" : filters.year_from === filters.year_to ? filters.year_from : `${filters.year_from}–${filters.year_to}`} ×</button>}
       {filters.status !== "all" && <button onClick={() => patch({ status: "all" })}>{({ emby: "已关联 Emby", files: "有关联文件", metadata: "仅资料" })[filters.status]} ×</button>}
       {filters.exclude_tags.map(name => <button key={name}
-      onClick={() => patch({ exclude_tags: filters.exclude_tags.filter(t => t !== name) })}>排除 {name} ×</button>)}{filters.actors.map(id => <button key={id} onClick={() => patch({ actors: filters.actors.filter(a => a !== id) })}>{people.find(p => p.id === id)?.name ?? id} ×</button>)}</div>
+      onClick={() => patch({ exclude_tags: filters.exclude_tags.filter(t => t !== name) })}>排除 {name} ×</button>)}{filters.actors.map(id => <button key={id} onClick={() => patch({ actors: filters.actors.filter(a => a !== id) })}>{actorNames?.[id] ?? id} ×</button>)}</div>
     <div className="catalog-tools">
     <details open={mode === "categories"}><summary>标签 · {facets.tags?.length ?? 0}</summary><div className="tag-capsules">{(facets.tags ?? []).map(f => <button key={f.id} className={filters.tags.includes(f.id) ? "active" : "ghost"} onClick={() => patch({ tags: filters.tags.includes(f.id) ? filters.tags.filter(t => t !== f.id) : [...filters.tags, f.id] })}>{f.name} · {f.count}</button>)}</div></details>
     <CatalogOrganizations works={rows} onFilter={(id, role) => patch({ organizations: [id], organization_role: role ?? "" })} />
     <CatalogPlaylists works={rows} onOpenWork={openWork} />
     <details><summary>保存的筛选</summary>{saved.map(item => <button key={item.name} onClick={() => setFilters(item.filters)}>{item.name}</button>)}<input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="筛选名称" /><button onClick={save}>保存到本机</button></details>
     </div>
-    {loading && <p role="status">正在读取…</p>}
+    {loading && !workError && !error && <p role="status">正在读取…</p>}
     <div className="work-grid">{rows.map(row => <article className="work-card" key={row.id}>
       <button onClick={() => openWork(row.id)}><CoverImage src={appUrl(row.poster) ?? ""} /><strong>{row.title}</strong></button>
       <span>{row.year ?? "年份待补"} · {row.studio}</span><span>{row.actors.slice(0, 2).join(" / ")}</span>
@@ -245,7 +287,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       <button type="submit">保存</button><button type="button" onClick={() => setEditing(null)}>取消</button>
     </form></div>}
 
-    {!loading && rows.length === 0 && <p>没有符合条件的作品，可移除部分条件后再试。</p>}
+    {!loading && !workError && rows.length === 0 && <p>没有符合条件的作品，可移除部分条件后再试。</p>}
     {cursor && <button disabled={loading} onClick={() => void more()}>加载下一页</button>}
   </section>;
 }

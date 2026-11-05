@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import cast
 from uuid import uuid4
 
@@ -97,13 +98,15 @@ def import_people(session: Session, documents: list[PersonDocument]) -> None:
     session.expire_all()
 
 
-def _root(person_id: str, rows: dict[str, CatalogPersonRecord]) -> str:
+def _root(person_id: str, get_record: Callable[[str], CatalogPersonRecord | None]) -> str:
     visited: set[str] = set()
-    while person_id in rows and rows[person_id].merged_into:
+    row = get_record(person_id)
+    while row is not None and row.merged_into:
         if person_id in visited:
             raise HTTPException(409, "invalid person redirect")
         visited.add(person_id)
-        person_id = rows[person_id].merged_into or person_id
+        person_id = row.merged_into
+        row = get_record(person_id)
     return person_id
 
 
@@ -112,19 +115,21 @@ def people(session: Session, *, private: bool = False) -> list[PersonDocument]:
     known_works = set(session.scalars(select(Work.id)))
     references: dict[str, list[str]] = {}
     for ref in session.scalars(select(CatalogPersonReference)):
-        references.setdefault(_root(ref.person_id, rows), []).append(ref.ref)
+        references.setdefault(_root(ref.person_id, rows.get), []).append(ref.ref)
     groups: dict[str, list[CatalogPersonRecord]] = {}
     for row in rows.values():
-        groups.setdefault(_root(row.id, rows), []).append(row)
+        groups.setdefault(_root(row.id, rows.get), []).append(row)
     credits: dict[str, dict[str, set[str]]] = {}
     for credit in session.scalars(select(CatalogPersonCredit)):
-        root = _root(credit.person_id, rows)
+        root = _root(credit.person_id, rows.get)
         credits.setdefault(root, {}).setdefault(credit.role, set()).add(credit.work_id)
     result: list[PersonDocument] = []
     for root_id, members in groups.items():
         primary = rows[root_id]
         primary_doc = PersonDocument.model_validate(primary.document)
-        documents = [PersonDocument.model_validate(row.document) for row in members]
+        documents = [primary_doc, *(
+            PersonDocument.model_validate(row.document) for row in members if row.id != root_id
+        )]
         public_refs = sorted(set(references.get(root_id, [])))
         merged = primary_doc.model_copy(update={
             "id": root_id, "ref": public_refs[0] if public_refs else primary_doc.ref,
@@ -134,28 +139,32 @@ def people(session: Session, *, private: bool = False) -> list[PersonDocument]:
             "work_ids": sorted({work for d in documents for work in d.work_ids if work in known_works}),
             "revision": primary.revision,
         })
-        merged = PersonDocument.model_validate({**merged.model_dump(), **primary.edits})
+        if primary.edits:
+            merged = PersonDocument.model_validate({**merged.model_dump(), **primary.edits})
         actor_works = set(merged.work_ids) | credits.get(root_id, {}).get("actor", set())
         merged.work_ids = sorted((actor_works - set(merged.excluded_work_ids)) & known_works)
         merged.directed_work_ids = sorted(credits.get(root_id, {}).get("director", set()) & known_works)
         if merged.name != primary_doc.name:
             merged.aliases = list(dict.fromkeys([primary_doc.name, *merged.aliases]))
         if not private:
-            merged = merged.model_copy(update={"notes": "", "match_names": [], "groups": []})
+            merged.notes = ""
+            merged.match_names = []
+            merged.groups = []
         result.append(merged)
     return result
 
 
-def person(session: Session, key: str, *, private: bool = False) -> PersonDocument:
+def person(
+    session: Session, key: str, *, private: bool = False, profiles: list[PersonDocument] | None = None,
+) -> PersonDocument:
     references = session.get(CatalogPersonReference, key)
     candidate = references.person_id if references else key
-    rows = {row.id: row for row in session.scalars(select(CatalogPersonRecord))}
-    candidate = _root(candidate, rows)
-    found = next((item for item in people(session, private=private) if item.id == candidate), None)
+    candidate = _root(candidate, lambda person_id: session.get(CatalogPersonRecord, person_id))
+    catalog = profiles if profiles is not None else people(session, private=private)
+    found = next((item for item in catalog if item.id == candidate), None)
     if found is None:
         name = key.removeprefix("jav:").removeprefix("nj:")
-        candidates = [item for item in people(session, private=private)
-                      if name == item.name or name in item.aliases]
+        candidates = [item for item in catalog if name == item.name or name in item.aliases]
         if len(candidates) > 1:
             raise HTTPException(409, "多位人物使用此姓名, 请从演员库选择具体档案")
         if len(candidates) == 1:
