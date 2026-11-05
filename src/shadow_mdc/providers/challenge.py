@@ -5,18 +5,21 @@ JavBus driver-verify markers from its ``scraper/javbus``. Cloudflare and site
 "verify you are human" pages are frequently served with HTTP 200 (or 403/503);
 parsing them yields garbage titles, so providers must fail fast with a clear
 ``blocked`` reason instead.
+
+``/cdn-cgi/challenge-platform`` alone is not a wall: Cloudflare injects the
+benign ``scripts/jsd`` (JavaScript Detection) asset on ordinary pages. Any
+*other* URL under that prefix (orchestrate, turnstile, flow, …) is treated as
+high-confidence challenge (herald pageguard hardening).
 """
 
 from __future__ import annotations
 
-# Markers that only appear on real challenge pages. ``/cdn-cgi/challenge-platform/
-# scripts/jsd/`` is injected into many *legitimate* Cloudflare-fronted pages, so
-# only the orchestration endpoints count.
+_PLATFORM_PREFIX = "/cdn-cgi/challenge-platform"
+# Characters that end a URL token in HTML or an inline script.
+_URL_END = frozenset(" \t\r\n\"'<>?#&),;`")
+
+# Non-path markers that only appear on real challenge pages.
 _HIGH_CONFIDENCE_MARKERS: tuple[str, ...] = (
-    "/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1",
-    "/cdn-cgi/challenge-platform/h/b/orchestrate/chl_hr/v1",
-    "/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page",
-    "/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page",
     "cf-browser-verification",
     "cf_chl_",
     "cf-chl-",
@@ -52,6 +55,8 @@ def is_cloudflare_challenge(body: str) -> bool:
     lowered = (body or "").strip().casefold()
     if not lowered:
         return False
+    if _has_blocking_challenge_platform(lowered):
+        return True
     if any(marker in lowered for marker in _HIGH_CONFIDENCE_MARKERS):
         return True
     return sum(1 for marker in _SOFT_MARKERS if marker in lowered) >= 3
@@ -74,3 +79,60 @@ def challenge_kind(body: str, final_url: str | None = None) -> str | None:
     if is_cloudflare_challenge(body):
         return "Cloudflare challenge"
     return None
+
+
+def _has_blocking_challenge_platform(sample: str) -> bool:
+    start = 0
+    while True:
+        index = sample.find(_PLATFORM_PREFIX, start)
+        if index < 0:
+            return False
+        tail = sample[index + len(_PLATFORM_PREFIX) :]
+        if not _is_jsd_asset(tail):
+            return True
+        start = index + len(_PLATFORM_PREFIX)
+
+
+def _is_jsd_asset(tail: str) -> bool:
+    """True when ``tail`` is only Cloudflare's benign ``scripts/jsd`` asset.
+
+    Accepted shapes, up to the end of the URL token:
+
+    - ``/scripts/jsd``
+    - ``/scripts/jsd/main.js`` (one filename)
+    - ``/h/<id>/scripts/jsd/main.js``
+    """
+
+    rest = tail
+    if rest.startswith("/h/"):
+        cursor = 3
+        while cursor < len(rest) and _is_host_id_char(rest[cursor]):
+            cursor += 1
+        if cursor == 3 or cursor >= len(rest) or rest[cursor] != "/":
+            return False
+        rest = rest[cursor:]
+    asset = "/scripts/jsd"
+    if not rest.startswith(asset):
+        return False
+    rest = rest[len(asset) :]
+    if rest.startswith("/"):
+        rest = rest[1:]
+        if not rest or rest[0] in _URL_END:
+            return True
+        cursor = 0
+        while cursor < len(rest) and _is_asset_char(rest[cursor]):
+            cursor += 1
+        if cursor == 0:
+            return False
+        rest = rest[cursor:]
+    if rest.startswith("/"):
+        return False
+    return not rest or rest[0] in _URL_END
+
+
+def _is_host_id_char(char: str) -> bool:
+    return ("a" <= char <= "z") or ("0" <= char <= "9")
+
+
+def _is_asset_char(char: str) -> bool:
+    return _is_host_id_char(char) or char in "._-"

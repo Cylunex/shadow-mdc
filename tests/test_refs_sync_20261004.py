@@ -80,6 +80,40 @@ def test_cloudflare_challenge_detected_and_normal_page_is_not() -> None:
     assert challenge_kind(normal) is None
 
 
+
+
+def test_jsd_only_platform_asset_is_not_challenge() -> None:
+    """Cloudflare jsd (JavaScript Detection) alone must not trip the wall."""
+
+    page = (
+        "<!DOCTYPE html><html><head><title>OK</title></head><body>"
+        '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
+        "<h1>Movie list</h1></body></html>"
+    )
+    assert not is_cloudflare_challenge(page)
+    prefixed = page.replace(
+        "/cdn-cgi/challenge-platform/scripts/jsd/main.js",
+        "/cdn-cgi/challenge-platform/h/b/scripts/jsd/main.js",
+    )
+    assert not is_cloudflare_challenge(prefixed)
+
+
+def test_non_jsd_challenge_platform_path_is_high_confidence() -> None:
+    """Any non-jsd challenge-platform URL is a wall (new orchestrate/turnstile shapes)."""
+
+    page = (
+        "<html><body>"
+        '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script>'
+        "</body></html>"
+    )
+    assert is_cloudflare_challenge(page)
+    flow = (
+        "<html><body>"
+        '<iframe src="/cdn-cgi/challenge-platform/flow/ov1/abc"></iframe>'
+        "</body></html>"
+    )
+    assert is_cloudflare_challenge(flow)
+
 def test_javbus_driver_verify_detected() -> None:
     assert is_javbus_verify_page("<html>age check</html>", "https://www.javbus.com/doc/driver-verify?referer=/ABP-123")
 

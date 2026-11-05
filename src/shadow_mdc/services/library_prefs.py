@@ -12,7 +12,12 @@ from weakref import WeakValueDictionary
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..media.atomicfile import write_text
-from .subscriptions import ActorSubscription, SubscriptionQueueItem, merge_queue_items
+from .subscriptions import (
+    ActorSubscription,
+    SubscriptionQueueItem,
+    merge_queue_items,
+    merge_seen_codes,
+)
 
 
 class ActorTagState(BaseModel):
@@ -123,6 +128,9 @@ class LibraryPrefsStore:
                     cursor_initialized=True,
                     created_at=previous.created_at,
                 )
+            if previous is not None and previous.seen_codes and not subscription.seen_codes:
+                # Edit payload never carries seen_codes; keep the durable set.
+                update["seen_codes"] = list(previous.seen_codes)
             subscription = subscription.model_copy(update=update)
             items.append(subscription)
             # Keep actor tag subscribe in sync
@@ -162,6 +170,28 @@ class LibraryPrefsStore:
             prefs = self.load()
             merged = merge_queue_items(list(prefs.queue), items)
             return self.save(prefs.model_copy(update={"queue": merged}))
+
+    def append_queue_and_mark_seen(
+        self,
+        items: list[SubscriptionQueueItem],
+        seen_by_actor: dict[str, list[str]],
+    ) -> LibraryPrefs:
+        """Append queue items and union per-actor seen_codes in one write."""
+
+        with self._lock:
+            prefs = self.load()
+            merged = merge_queue_items(list(prefs.queue), items)
+            subscriptions: list[ActorSubscription] = []
+            for sub in prefs.subscriptions:
+                extra = seen_by_actor.get(sub.actor_key)
+                if extra:
+                    sub = sub.model_copy(
+                        update={"seen_codes": merge_seen_codes(sub.seen_codes, extra)}
+                    )
+                subscriptions.append(sub)
+            return self.save(
+                prefs.model_copy(update={"queue": merged, "subscriptions": subscriptions})
+            )
 
     def update_queue_item(self, item_id: str, status: str) -> LibraryPrefs:
         with self._lock:

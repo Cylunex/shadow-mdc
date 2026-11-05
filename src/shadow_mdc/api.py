@@ -359,8 +359,11 @@ from .services.subscription_watch import (
 from .services.subscriptions import (
     ActorSubscription,
     SubscriptionQueueItem,
+    filter_unseen_works,
     filter_works_for_subscription,
     initialize_subscription_cursor,
+    merge_seen_codes,
+    queue_item_seen_key,
 )
 from .services.task_events import TaskEventHub
 from .services.translation import (
@@ -1480,7 +1483,12 @@ def patch_queue_item(item_id: str, payload: QueueItemStatusEdit, request: Reques
 
 @app.post("/api/library-prefs/subscriptions/scan", response_model=SubscriptionScanOut)
 def scan_actor_subscriptions(request: Request, repo: Repo) -> SubscriptionScanOut:
-    """Scan subscribed actors for catalog works after start_date within max_cast."""
+    """Scan subscribed actors for catalog works after start_date within max_cast.
+
+    Date/cast cursor still decides eligibility; a durable per-subscription
+    seen-key set (番号, title fallback) prevents re-queue after dismiss/prune
+    or release-date jitter on listing pages.
+    """
 
     from collections import defaultdict
     from datetime import date as date_cls
@@ -1490,11 +1498,16 @@ def scan_actor_subscriptions(request: Request, repo: Repo) -> SubscriptionScanOu
     skipped = 0
     notes: list[str] = []
     incoming: list[SubscriptionQueueItem] = []
+    seen_by_actor: dict[str, list[str]] = {}
 
     by_actor: dict[str, list[Work]] = defaultdict(list)
     for actor, work in repo.list_actor_work_relations():
         by_actor[actor.name].append(work)
         by_actor[actor.id].append(work)
+
+    queue_keys_by_actor: dict[str, list[str]] = defaultdict(list)
+    for item in prefs.queue:
+        queue_keys_by_actor[item.actor_key].append(queue_item_seen_key(item))
 
     for sub in prefs.subscriptions:
         if not sub.enabled:
@@ -1516,7 +1529,12 @@ def scan_actor_subscriptions(request: Request, repo: Repo) -> SubscriptionScanOu
         matched = filter_works_for_subscription(
             payloads, start_date=sub.effective_start_date(), max_cast=sub.max_cast
         )
-        for item in matched:
+        # Bootstrap durable seen from prior queue rows so upgrades / pruned
+        # queues do not re-notify works the user already handled.
+        known = merge_seen_codes(sub.seen_codes, queue_keys_by_actor.get(sub.actor_key, []))
+        fresh, fresh_keys = filter_unseen_works(matched, seen_codes=known)
+        seen_by_actor[sub.actor_key] = merge_seen_codes(known, fresh_keys)
+        for item in fresh:
             release = item.get("release_date")
             release_date: date_cls | None
             if isinstance(release, date_cls):
@@ -1540,9 +1558,9 @@ def scan_actor_subscriptions(request: Request, repo: Repo) -> SubscriptionScanOu
                 )
             )
     before = len(prefs.queue)
-    store.append_queue(incoming)
+    store.append_queue_and_mark_seen(incoming, seen_by_actor)
     after = len(store.load().queue)
-    notes.append(f"queue grew from {before} to {after} (deduped)")
+    notes.append(f"queue grew from {before} to {after} (seen-key deduped)")
     return SubscriptionScanOut(
         scanned_subscriptions=len([item for item in prefs.subscriptions if item.enabled]),
         queued=after - before,

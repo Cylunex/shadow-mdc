@@ -24,6 +24,10 @@ class ActorSubscription(BaseModel):
     # release from the days just before subscribing, is not dropped.
     cursor_date: date | None = None
     cursor_initialized: bool = False
+    # Herald-style durable seen keys (番号 / title fallback). Survives queue
+    # prune and release-date jitter; complements the date cursor rather than
+    # replacing it. Not exposed on the edit API — server-owned.
+    seen_codes: list[str] = Field(default_factory=list)
 
     def effective_start_date(self) -> date:
         if self.cursor_date is not None and self.cursor_date < self.start_date:
@@ -130,6 +134,63 @@ def filter_works_for_subscription(
             continue
         kept.append(work)
     return kept
+
+
+def subscription_item_key(*, code: str | None, title: str | None) -> str:
+    """Stable per-subscription seen key: 番号 when present, else title."""
+
+    raw = (code or "").strip()
+    if raw:
+        return raw.casefold()
+    return f"t:{(title or '').strip().casefold()}"
+
+
+def queue_item_seen_key(item: SubscriptionQueueItem) -> str:
+    return subscription_item_key(code=item.code, title=item.title)
+
+
+def merge_seen_codes(existing: Iterable[str], additions: Iterable[str]) -> list[str]:
+    """Union seen keys; keep deterministic order (casefold, insertion-stable)."""
+
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in list(existing) + list(additions):
+        key = (value or "").strip().casefold()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(key)
+    return merged
+
+
+def filter_unseen_works(
+    works: Iterable[dict[str, object]],
+    *,
+    seen_codes: Iterable[str],
+) -> tuple[list[dict[str, object]], list[str]]:
+    """Drop works whose 番号/title key is already in ``seen_codes``.
+
+    Returns ``(fresh_works, keys_of_fresh)``. Empty-key rows are kept once
+    (treated as unseen) so undated untitled placeholders still surface.
+    """
+
+    known = {(item or "").strip().casefold() for item in seen_codes if item}
+    fresh: list[dict[str, object]] = []
+    keys: list[str] = []
+    for work in works:
+        code = work.get("code")
+        title = work.get("title")
+        key = subscription_item_key(
+            code=code if isinstance(code, str) else None,
+            title=title if isinstance(title, str) else None,
+        )
+        if key and key in known:
+            continue
+        fresh.append(work)
+        if key:
+            keys.append(key)
+            known.add(key)
+    return fresh, keys
 
 
 def merge_queue_items(
