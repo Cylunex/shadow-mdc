@@ -201,6 +201,17 @@ class MatchCandidateRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class MatchFeedback(Base):
+    __tablename__ = "match_feedback"
+
+    asset_id: Mapped[str] = mapped_column(ForeignKey("media_assets.id", ondelete="CASCADE"), primary_key=True)
+    hints: Mapped[dict[str, object]] = mapped_column(JSON)
+    candidates: Mapped[list[dict[str, object]]] = mapped_column(JSON)
+    chosen_provider: Mapped[str] = mapped_column(String(100))
+    chosen_external_id: Mapped[str] = mapped_column(Text)
+    chosen_code: Mapped[str | None] = mapped_column(String(100))
+
+
 class SourceSnapshot(Base):
     __tablename__ = "source_snapshots"
     __table_args__ = (
@@ -239,6 +250,22 @@ class JobCheckpoint(Base):
     stats: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     task_id: Mapped[str | None] = mapped_column(String(36))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class LibraryScanSchedule(Base):
+    __tablename__ = "library_scan_schedules"
+
+    library_id: Mapped[str] = mapped_column(ForeignKey("libraries.id", ondelete="CASCADE"), primary_key=True)
+    interval_hours: Mapped[int] = mapped_column(Integer)
+    enabled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class LibraryScanItem(Base):
+    __tablename__ = "library_scan_items"
+
+    task_id: Mapped[str] = mapped_column(ForeignKey("task_runs.id"), primary_key=True)
+    path_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    obsolete_codes: Mapped[list[str]] = mapped_column(JSON, default=list)
 
 
 class OrganizeJournalRecord(Base):
@@ -398,6 +425,12 @@ class CatalogPlaylist(Base):
     work_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class CatalogPlaylistRule(Base):
+    __tablename__ = "catalog_playlist_rules"
+    playlist_id: Mapped[str] = mapped_column(ForeignKey("catalog_playlists.id"), primary_key=True)
+    filters: Mapped[dict[str, object]] = mapped_column(JSON)
 
 
 class CatalogPersonCredit(Base):

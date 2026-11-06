@@ -293,3 +293,34 @@ def test_curated_rename_preserves_private_notes_old_ref_and_zero_work_profile(
         assert new[0]["id"] == old["id"]
         assert client.get("/api/catalog/people/nj:Original").json()["id"] == old["id"]
         assert client.get("/api/catalog/people/nj:Renamed").json()["id"] == old["id"]
+
+
+def test_dynamic_playlist_reuses_mobile_contract_and_tracks_new_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{tmp_path / 'rules.db'}")
+    with TestClient(app) as client:
+        runtime = app.state.runtime
+        runtime.media_server_store.save(MediaServerSettings(media_client_token="REPLACE_TEST"))
+        with runtime.database.session() as session:
+            session.add_all([Work(id="first", title="Zulu", tags=["剧情"]), Work(id="other", title="Other")])
+        owner = {"X-Catalog-Owner": "same-device-space"}
+        mobile = {**owner, "Authorization": "Bearer REPLACE_TEST"}
+        created = client.post("/api/catalog/playlists", headers=owner, json={
+            "name": "Dynamic",
+            "filters": {"tags": ["剧情"], "sort": "title", "limit": 1, "cursor": "ignored"},
+        })
+        assert created.status_code == 201, created.text
+        playlist = created.json()
+        assert playlist["work_ids"] == ["first"]
+        assert playlist["filters"]["cursor"] is None
+        with runtime.database.session() as session:
+            session.add(Work(id="added", title="Alpha", tags=["剧情"]))
+        path = "/api/media/v1/catalog/playlists/" + playlist["id"] + "/works"
+        assert [row["id"] for row in client.get(path, headers=mobile).json()] == ["added", "first"]
+        assert client.get(path, headers={**mobile, "X-Catalog-Owner": "other"}).status_code == 404
+        mobile_playlists = client.get("/api/media/v1/catalog/playlists", headers=mobile).json()
+        assert mobile_playlists[0]["work_ids"] == ["added", "first"]
+        assert client.delete("/api/catalog/playlists/" + playlist["id"], headers=owner).status_code == 204
+        assert client.get(path, headers=mobile).status_code == 404

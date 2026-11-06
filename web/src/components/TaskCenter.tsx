@@ -16,6 +16,8 @@ type Props = {
 
 export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: Props) {
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [replay, setReplay] = useState<Awaited<ReturnType<typeof api.matchingReplay>>>();
+  const [replayLoading, setReplayLoading] = useState(false);
   const live = useTaskUpdates({ enabled: autoRefresh, onChanged, onTasksSnapshot });
   const [kindFilter, setKindFilter] = useState("all");
   const offline = useQuery({ ...resources.offlineList(), refetchInterval: autoRefresh ? 5_000 : false }, queryClient);
@@ -51,11 +53,25 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
     </section>
   ) : null;
 
+  const replayPanel = <>
+    <button type="button" disabled={replayLoading} onClick={() => {
+        setReplayLoading(true);
+        api.matchingReplay().then(setReplay).catch(error => report(String(error)))
+          .finally(() => setReplayLoading(false));
+      }}>回放人工确认样本</button>
+      {replay && <div aria-label="识别回放结果">
+        {([["有番号", replay.code], ["无番号", replay.without_code]] as const).map(([label, counts]) =>
+          <p key={label}>{label} {counts.samples} 个样本，需人工确认 {counts.manual_review} 个，
+            自动匹配 {counts.automatic} 个，其中与人工选择不一致 {counts.disagreed} 个。</p>)}
+      </div>}
+  </>;
+
   if (tasks.length === 0) {
     return (
       <div className="task-center">
-        {offlinePanel}
-        <p className="empty-detail">还没有运行记录。扫描、识别、翻译和整理会显示在这里，可取消或登记重试。</p>
+        {replayPanel}
+      {offlinePanel}
+        <p className="empty-detail">还没有运行记录。扫描、识别、翻译和整理会显示在这里，可取消。失败的扫描和批量识别可以重试。</p>
       </div>
     );
   }
@@ -63,6 +79,7 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
   return (
     <div className="task-center">
       {offlinePanel}
+      {replayPanel}
       <div className="task-center-toolbar">
         <label>
           类型
@@ -118,7 +135,8 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
                     取消
                   </button>
                 )}
-                {task.finished_at && (
+                {task.finished_at && ["scan", "identify:library"].includes(task.kind) &&
+                  ["failed", "partial", "cancelled", "interrupted"].includes(task.status) && (
                   <button
                     type="button"
                     disabled={busy === `retry-${task.id}`}
@@ -126,7 +144,7 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
                       void (async () => {
                         try {
                           await api.retryTask(task.id);
-                          report(`已登记重试 ${task.kind}，请再次执行对应操作`);
+                          report(`已提交重试 ${task.kind}`);
                           await onChanged();
                         } catch (error) {
                           report(error instanceof Error ? error.message : String(error));
@@ -134,7 +152,7 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
                       })();
                     }}
                   >
-                    登记重试
+                    重试
                   </button>
                 )}
                 <time>{new Date(task.created_at).toLocaleString()}</time>

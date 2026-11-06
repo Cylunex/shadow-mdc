@@ -8,15 +8,17 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, func, select, union, update
+from sqlalchemy import Select, delete, func, select, union, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.orm import Session
 from sqlalchemy.sql.selectable import Subquery
 
 from .collection_names import normalize_collection_name
 from .db.models import (
     CatalogOrganization,
     CatalogPlaylist,
+    CatalogPlaylistRule,
     CatalogWorkOrganization,
     Collection,
     Work,
@@ -62,9 +64,33 @@ class OrganizationLink(BaseModel):
     role: Role
 
 
+class CatalogFilter(BaseModel):
+    q: str = Field(default="", max_length=200)
+    actors: list[str] = Field(default_factory=list)
+    actors_all: bool = False
+    actor_name: str = ""
+    studio_name: str = ""
+    tags: list[str] = Field(default_factory=list)
+    tags_all: bool = False
+    genres: list[str] = Field(default_factory=list)
+    forms: list[str] = Field(default_factory=list)
+    regions: list[str] = Field(default_factory=list)
+    exclude_tags: list[str] = Field(default_factory=list)
+    organizations: list[str] = Field(default_factory=list)
+    organization_role: str = ""
+    year_from: int | None = None
+    year_to: int | None = None
+    unknown_year: bool = False
+    status: Literal["all", "files", "emby", "metadata"] = "all"
+    sort: Literal["added", "newest", "oldest", "title"] = "added"
+    cursor: str | None = None
+    limit: int = Field(default=60, ge=1, le=100)
+
+
 class PlaylistEdit(BaseModel):
     name: str = Field(min_length=1, max_length=300)
     work_ids: list[str] = Field(default_factory=list, max_length=10000)
+    filters: CatalogFilter | None = None
     revision: int = Field(default=0, ge=0)
 
     @field_validator("name")
@@ -79,6 +105,12 @@ class PlaylistEdit(BaseModel):
 
 class PlaylistOut(PlaylistEdit):
     id: str
+    work_ids: list[str] = Field(default_factory=list)
+
+
+class PlaylistMember(BaseModel):
+    id: str
+    title: str
 
 
 
@@ -92,7 +124,9 @@ def organization_relationships() -> Subquery:
 
 
 def build_management_router(
-    runtime: Callable[[Request], Runtime], *, prefix: str, writable: bool,
+    runtime: Callable[[Request], Runtime],
+    ordered_works: Callable[[CatalogFilter, Request, Session], Select[tuple[Work]]],
+    *, prefix: str, writable: bool,
 ) -> APIRouter:
     router = APIRouter(prefix=prefix)
 
@@ -214,30 +248,53 @@ def build_management_router(
                 session.execute(statement.on_conflict_do_nothing())
             return {"work_id": payload.work_id, "role": payload.role}
 
+    def playlist_members(
+        row: CatalogPlaylist, rule: CatalogPlaylistRule | None, request: Request, session: Session,
+    ) -> list[PlaylistMember]:
+        if rule is not None:
+            statement = ordered_works(CatalogFilter.model_validate(rule.filters), request, session)
+            return [PlaylistMember(id=key, title=title) for key, title in
+                    session.execute(statement.with_only_columns(Work.id, Work.title))]
+        manual = select(Work.id, Work.title).where(Work.id.in_(row.work_ids))
+        titles = {key: title for key, title in session.execute(manual)}
+        return [PlaylistMember(id=key, title=titles[key]) for key in row.work_ids if key in titles]
+
+    def playlist_out(
+        row: CatalogPlaylist, rule: CatalogPlaylistRule | None, request: Request, session: Session,
+    ) -> PlaylistOut:
+        work_ids = (
+            [work.id for work in playlist_members(row, rule, request, session)] if rule else row.work_ids
+        )
+        return PlaylistOut(
+            id=row.id, name=row.name, revision=row.revision, work_ids=work_ids,
+            filters=CatalogFilter.model_validate(rule.filters) if rule else None,
+        )
+
     @router.get("/playlists")
     def playlists(
         request: Request, x_catalog_owner: str | None = Header(default=None),
     ) -> list[PlaylistOut]:
         namespace = owner(x_catalog_owner)
         with runtime(request).database.session() as session:
-            return [PlaylistOut(id=row.id, name=row.name, work_ids=row.work_ids, revision=row.revision)
-                    for row in session.scalars(select(CatalogPlaylist).where(
-                        CatalogPlaylist.owner == namespace,
-                    ).order_by(CatalogPlaylist.created_at, CatalogPlaylist.id))]
+            statement = select(CatalogPlaylist, CatalogPlaylistRule).outerjoin(
+                CatalogPlaylistRule, CatalogPlaylistRule.playlist_id == CatalogPlaylist.id,
+            ).where(CatalogPlaylist.owner == namespace).order_by(
+                CatalogPlaylist.created_at, CatalogPlaylist.id,
+            )
+            return [
+                playlist_out(row, rule, request, session) for row, rule in session.execute(statement).all()
+            ]
 
     @router.get("/playlists/{playlist_id}/works")
     def playlist_works(
         playlist_id: str, request: Request, x_catalog_owner: str | None = Header(default=None),
-    ) -> list[dict[str, str]]:
+    ) -> list[PlaylistMember]:
         namespace = owner(x_catalog_owner)
         with runtime(request).database.session() as session:
             row = session.get(CatalogPlaylist, playlist_id)
             if row is None or row.owner != namespace:
                 raise HTTPException(404, "playlist not found")
-            titles = {work.id: work.title for work in session.scalars(
-                select(Work).where(Work.id.in_(row.work_ids)),
-            )}
-            return [{"id": key, "title": titles[key]} for key in row.work_ids if key in titles]
+            return playlist_members(row, session.get(CatalogPlaylistRule, playlist_id), request, session)
 
     @router.post("/playlists", status_code=201)
     def create_playlist(
@@ -246,14 +303,20 @@ def build_management_router(
     ) -> PlaylistOut:
         namespace = owner(x_catalog_owner)
         with runtime(request).database.session() as session:
-            ids = list(dict.fromkeys(payload.work_ids))
+            ids = [] if payload.filters is not None else list(dict.fromkeys(payload.work_ids))
             known = set(session.scalars(select(Work.id).where(Work.id.in_(ids))))
             if set(ids) != known:
                 raise HTTPException(404, "one or more works no longer exist")
             row = CatalogPlaylist(name=payload.name, owner=namespace, work_ids=ids, revision=1)
             session.add(row)
             session.flush()
-            return PlaylistOut(id=row.id, name=row.name, work_ids=ids, revision=1)
+            rule = None
+            if payload.filters is not None:
+                rule = CatalogPlaylistRule(
+                    playlist_id=row.id, filters=payload.filters.model_dump(exclude={"cursor", "limit"}),
+                )
+                session.add(rule)
+            return playlist_out(row, rule, request, session)
 
     @router.put("/playlists/{playlist_id}")
     def edit_playlist(
@@ -267,7 +330,7 @@ def build_management_router(
                 raise HTTPException(404, "playlist not found")
             if row.revision != payload.revision:
                 raise HTTPException(409, "playlist changed; reload before saving")
-            ids = list(dict.fromkeys(payload.work_ids))
+            ids = [] if payload.filters is not None else list(dict.fromkeys(payload.work_ids))
             known = set(session.scalars(select(Work.id).where(Work.id.in_(ids))))
             if set(ids) != known:
                 raise HTTPException(404, "one or more works no longer exist")
@@ -277,8 +340,16 @@ def build_management_router(
             ).values(name=payload.name, work_ids=ids, revision=payload.revision + 1))
             if cast(CursorResult[tuple[object, ...]], changed).rowcount != 1:
                 raise HTTPException(409, "playlist changed; reload before saving")
-            return PlaylistOut(id=playlist_id, name=payload.name,
-                               work_ids=ids, revision=payload.revision + 1)
+            rule = session.get(CatalogPlaylistRule, playlist_id)
+            if payload.filters is not None:
+                rule = session.merge(CatalogPlaylistRule(
+                    playlist_id=playlist_id, filters=payload.filters.model_dump(exclude={"cursor", "limit"}),
+                ))
+            elif rule is not None:
+                session.delete(rule)
+                rule = None
+            session.refresh(row)
+            return playlist_out(row, rule, request, session)
 
     @router.delete("/playlists/{playlist_id}", status_code=204)
     def remove_playlist(
@@ -286,8 +357,10 @@ def build_management_router(
     ) -> None:
         namespace = owner(x_catalog_owner)
         with runtime(request).database.session() as session:
-            session.execute(delete(CatalogPlaylist).where(
+            owned = select(CatalogPlaylist.id).where(
                 CatalogPlaylist.id == playlist_id, CatalogPlaylist.owner == namespace,
-            ))
+            )
+            session.execute(delete(CatalogPlaylistRule).where(CatalogPlaylistRule.playlist_id.in_(owned)))
+            session.execute(delete(CatalogPlaylist).where(CatalogPlaylist.id.in_(owned)))
 
     return router

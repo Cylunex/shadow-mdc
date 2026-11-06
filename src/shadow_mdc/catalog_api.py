@@ -45,7 +45,7 @@ from sqlalchemy.engine import CursorResult, Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
-from .catalog_management import build_management_router, organization_relationships
+from .catalog_management import CatalogFilter, build_management_router, organization_relationships
 from .db.models import (
     Actor,
     CatalogPersonCredit,
@@ -86,32 +86,6 @@ if TYPE_CHECKING:
 
 _imported_sources: WeakKeyDictionary[Engine, tuple[int, tuple[tuple[int, int], ...]]] = WeakKeyDictionary()
 _imported_sources_lock = Lock()
-
-
-class CatalogFilter(BaseModel):
-    q: str = Field(default="", max_length=200)
-    actors: list[str] = Field(default_factory=list)
-    actors_all: bool = False
-    actor_name: str = ""
-    studio_name: str = ""
-    tags: list[str] = Field(default_factory=list)
-    tags_all: bool = False
-    genres: list[str] = Field(default_factory=list)
-    forms: list[str] = Field(default_factory=list)
-    regions: list[str] = Field(default_factory=list)
-    exclude_tags: list[str] = Field(default_factory=list)
-    organizations: list[str] = Field(default_factory=list)
-    organization_role: str = ""
-    year_from: int | None = None
-    year_to: int | None = None
-    unknown_year: bool = False
-    status: Literal["all", "files", "emby", "metadata"] = "all"
-    sort: Literal["added", "newest", "oldest", "title"] = "added"
-    cursor: str | None = None
-    limit: int = Field(default=60, ge=1, le=100)
-
-
-
 
 
 class PersonWorkEdit(BaseModel):
@@ -417,9 +391,9 @@ def build_catalog_router(
             statement = statement.where(~files, ~emby)
         return statement
 
-    def query_works(filters: CatalogFilter, request: Request, session: Session) -> CatalogPage:
-        statement = filtered_statement(filters, request, session)
-        total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
+    def work_order(
+        filters: CatalogFilter,
+    ) -> tuple[SQLColumnExpression[str] | SQLColumnExpression[datetime], bool]:
         order_column: SQLColumnExpression[str] | SQLColumnExpression[datetime]
         if filters.sort == "title":
             order_column = Work.title
@@ -437,6 +411,21 @@ def build_catalog_router(
         else:
             order_column = Work.created_at
             ascending = False
+        return order_column, ascending
+
+    def ordered_playlist_works(
+        filters: CatalogFilter, request: Request, session: Session,
+    ) -> Select[tuple[Work]]:
+        column, ascending = work_order(filters)
+        return filtered_statement(filters, request, session).order_by(
+            column.asc() if ascending else column.desc(),
+            Work.id.asc() if ascending else Work.id.desc(),
+        )
+
+    def query_works(filters: CatalogFilter, request: Request, session: Session) -> CatalogPage:
+        statement = filtered_statement(filters, request, session)
+        total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
+        order_column, ascending = work_order(filters)
         scope = hashlib.sha256(filters.model_dump_json(exclude={"cursor", "limit"}).encode()).hexdigest()
         if filters.cursor:
             try:
@@ -797,6 +786,6 @@ def build_catalog_router(
             return payload
 
     router.include_router(build_management_router(
-        runtime, prefix="", writable=prefix == "/api/catalog",
+        runtime, ordered_playlist_works, prefix="", writable=prefix == "/api/catalog",
     ))
     return router

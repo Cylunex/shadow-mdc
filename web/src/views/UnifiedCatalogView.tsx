@@ -10,7 +10,7 @@ import { CoverImage } from "../components/CoverImage";
 type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null };
 type Person = ManagedPerson;
 type Facet = { id: string; name: string; count: number; role: string };
-type Filters = { q: string; actors: string[]; actors_all: boolean; actor_name?: string; studio_name?: string; tags: string[]; tags_all: boolean; exclude_tags: string[]; genres: string[]; forms: string[]; regions: string[]; organizations: string[]; organization_role?: string; year_from?: number; year_to?: number; unknown_year: boolean; sort: string; status: string };
+export type Filters = { q: string; actors: string[]; actors_all: boolean; actor_name?: string; studio_name?: string; tags: string[]; tags_all: boolean; exclude_tags: string[]; genres: string[]; forms: string[]; regions: string[]; organizations: string[]; organization_role?: string; year_from?: number; year_to?: number; unknown_year: boolean; sort: string; status: string };
 export type CatalogFeedStart = { filters: Filters; items: Card[]; nextCursor: string | null; index?: number };
 const empty: Filters = { q: "", actors: [], actors_all: false, tags: [], tags_all: false, exclude_tags: [], genres: [], forms: [], regions: [], organizations: [], unknown_year: false, sort: "added", status: "all" };
 async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
@@ -269,7 +269,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     <div className="catalog-tools">
     <details open={mode === "categories"}><summary>标签 · {facets.tags?.length ?? 0}</summary><div className="tag-capsules">{(facets.tags ?? []).map(f => <button key={f.id} className={filters.tags.includes(f.id) ? "active" : "ghost"} onClick={() => patch({ tags: filters.tags.includes(f.id) ? filters.tags.filter(t => t !== f.id) : [...filters.tags, f.id] })}>{f.name} · {f.count}</button>)}</div></details>
     <CatalogOrganizations works={rows} onFilter={(id, role) => patch({ organizations: [id], organization_role: role ?? "" })} />
-    <CatalogPlaylists works={rows} onOpenWork={openWork} />
+    <CatalogPlaylists works={rows} onOpenWork={openWork} filters={filters} onApplyFilters={value => setFilters({ ...empty, ...value })} />
     <details><summary>保存的筛选</summary>{saved.map(item => <button key={item.name} onClick={() => setFilters(item.filters)}>{item.name}</button>)}<input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="筛选名称" /><button onClick={save}>保存到本机</button></details>
     </div>
     {loading && !workError && !error && <p role="status">正在读取…</p>}

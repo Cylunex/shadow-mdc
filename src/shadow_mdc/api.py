@@ -6,10 +6,12 @@ import mimetypes
 import re
 import tempfile
 import unicodedata
+from _thread import LockType
 from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Event, Lock
 from typing import Annotated
 
 import httpx
@@ -18,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from starlette.middleware.gzip import GZipMiddleware
 
 from . import __version__
@@ -156,13 +158,26 @@ from .db.models import (
     Actor,
     Collection,
     Library,
+    LibraryScanSchedule,
     MatchCandidateRow,
     MediaAsset,
     OrganizeJournalRecord,
+    TaskRun,
     Work,
     utc_now,
 )
 from .media.organize_journal import JournalEntry, OrganizeJournal, UndoReport, undo_entries
+from .services.library_jobs import (
+    CHECKPOINT_PREFIX,
+    LIBRARY_TASK_KINDS,
+    LibraryJobState,
+    LibraryWorkerStopped,
+    ScanSchedule,
+    active_library_task,
+    due_scans,
+    library_checkpoint,
+)
+from .services.matching_replay import MatchingReplay, capture_feedback, replay_feedback
 from .services.resumable_jobs import is_resumable_kind, mark_interrupted_task_runs
 from .services.rescrape_quota import RescrapeQuota
 from .services.subtitle_backfill import BackfillStatus, SubtitleBackfillJob
@@ -405,6 +420,9 @@ class Runtime:
     strm_relay: StrmRelay
     subtitle_backfill: SubtitleBackfillJob
     rescrape_quota: RescrapeQuota | None = None
+    library_workers: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    library_workers_stopping: Event = field(default_factory=Event)
+    library_scan_setup: LockType = field(default_factory=Lock)
 
 
 # Local/offline providers cost nothing upstream; never charge them.
@@ -640,9 +658,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Only continues a backfill the user started that was still running at shutdown.
         app.state.runtime.subtitle_backfill.resume_if_running()
     subscription_watch_poller.start()
+    app_runtime: Runtime = app.state.runtime
+    with database.session() as session:
+        recover = [
+            task.id for task in Repository(session).list_unfinished_task_runs()
+            if library_checkpoint(session, task.id) is not None
+        ]
+    for task_id in recover:
+        _start_library_worker(app_runtime, task_id)
+    schedule_poller = asyncio.create_task(_poll_library_scans(app_runtime), name="mdc-library-schedules")
     try:
         yield
     finally:
+        schedule_poller.cancel()
+        await asyncio.gather(schedule_poller, return_exceptions=True)
+        app_runtime.library_workers_stopping.set()
+        await asyncio.gather(*app_runtime.library_workers.values())
         await app.state.runtime.subtitle_backfill.shutdown()
         # Signal + join the r18 dump worker thread (bounded) before closing stores.
         for dump_provider in providers._providers.values():
@@ -1702,12 +1733,14 @@ def get_task_run(task_id: str, repo: Repo) -> TaskRunOut:
 
 
 @app.post("/api/tasks/{task_id}/retry", response_model=TaskRunOut)
-def retry_task_run(task_id: str, request: Request, repo: Repo) -> TaskRunOut:
+async def retry_task_run(task_id: str, request: Request, repo: Repo) -> TaskRunOut:
     task = repo.get_task_run(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
     if task.finished_at is None:
         raise HTTPException(status_code=409, detail="task is still running")
+    if task.kind in LIBRARY_TASK_KINDS:
+        return await _retry_library_task(runtime(request), task)
     retry = repo.create_task_run(kind=f"retry:{task.kind}", scope=task.scope)
     repo.update_task_progress(
         retry,
@@ -1760,6 +1793,9 @@ async def resume_task_run(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return TaskResumeOut(resumed_from=task.id, kind=task.kind, result=backfill.status().model_dump(mode="json"))
+    if task.summary.get("background"):
+        queued = await _retry_library_task(runtime(request), task, resume=True)
+        return TaskResumeOut(resumed_from=task.id, kind=task.kind, result=queued.model_dump(mode="json"))
     library = next(
         (item for item in repo.list_libraries() if item.root_path == task.scope),
         None,
@@ -3223,35 +3259,74 @@ def assign_directory_actor(
     )
 
 
-@app.post("/api/libraries/{library_id}/scan", response_model=ScanOut)
-def scan_library(
-    library_id: str,
-    request: Request,
-    repo: Repo,
-    payload: ScanRequest | None = None,
+def _admit_library_task(
+    app_runtime: Runtime, state: LibraryJobState, *, background: bool, retried_from: str | None = None,
+) -> tuple[TaskRunOut, bool]:
+    with app_runtime.database.session() as session:
+        repo = Repository(session)
+        library = repo.get_library(state.library_id)
+        if library is None:
+            raise HTTPException(404, "library not found")
+        active = active_library_task(session, library.root_path)
+        kind = "scan" if state.operation == "scan" else "identify:library"
+        if active is not None:
+            if background and active.kind == kind and active.summary.get("background"):
+                return TaskRunOut.model_validate(active), False
+            raise HTTPException(409, "this library already has an active scan or identify task")
+        task = repo.create_task_run(kind=kind, scope=library.root_path)
+        if background:
+            task.status = "queued"
+            task.summary = {"phase": "queued", "background": True, "retried_from": retried_from}
+            repo.save_checkpoint(
+                CHECKPOINT_PREFIX + task.id, kind=kind, status="queued",
+                cursor=state.model_dump(mode="json"), task_id=task.id,
+            )
+            if retried_from is not None and state.operation == "scan":
+                repo.inherit_library_scan_items(task.id, retried_from)
+        return TaskRunOut.model_validate(task), True
+
+
+def _task_cancelled(app_runtime: Runtime, repo: Repository, task_id: str, *, background: bool) -> bool:
+    if background and app_runtime.library_workers_stopping.is_set():
+        raise LibraryWorkerStopped
+    return repo.is_task_cancel_requested(task_id)
+
+
+def _execute_scan(
+    app_runtime: Runtime, repo: Repository, library: Library, options: ScanRequest,
+    task: TaskRun, *, background: bool,
 ) -> ScanOut:
-    library = repo.get_library(library_id)
-    if library is None:
-        raise HTTPException(status_code=404, detail="library not found")
-    options = payload or ScanRequest()
-    task = repo.create_task_run(kind="scan", scope=library.root_path)
+    completed = repo.library_scan_items(task.id) if background else []
+    completed_paths = {item.path_key for item in completed}
+    obsolete_codes = {code for item in completed for code in item.obsolete_codes}
+
+    def path_key(path: Path) -> str:
+        return hashlib.sha256(str(path).encode(errors="surrogatepass")).hexdigest()
+
+    def save_file(path: Path, obsolete: tuple[str, ...]) -> None:
+        repo.save_library_scan_item(task.id, path_key(path), obsolete)
+        obsolete_codes.update(obsolete)
+        repo.commit()
+
     try:
-        app_runtime = runtime(request)
-        alias_rules = app_runtime.alias_store.load()
-        actor_catalog = sync_actor_catalog_from_relations(
-            app_runtime.actor_store,
-            repo.list_actor_work_relations(),
-            alias_rules,
-        )
-        effective_alias_rules = enrich_non_jav_actor_aliases(
-            enrich_actor_aliases(alias_rules, actor_catalog),
-            app_runtime.non_jav_actor_store.load(),
-        )
-        with app_runtime.database.session() as catalog_session:
-            effective_alias_rules = enrich_catalog_aliases(catalog_session, effective_alias_rules)
-        non_jav_actor_catalog = app_runtime.non_jav_actor_store.load()
+        with app_runtime.library_scan_setup:
+            alias_rules = app_runtime.alias_store.load()
+            actor_catalog = sync_actor_catalog_from_relations(
+                app_runtime.actor_store,
+                repo.list_actor_work_relations(),
+                alias_rules,
+            )
+            effective_alias_rules = enrich_non_jav_actor_aliases(
+                enrich_actor_aliases(alias_rules, actor_catalog),
+                app_runtime.non_jav_actor_store.load(),
+            )
+            with app_runtime.database.session() as catalog_session:
+                effective_alias_rules = enrich_catalog_aliases(catalog_session, effective_alias_rules)
+            non_jav_actor_catalog = app_runtime.non_jav_actor_store.load()
         def _scan_progress(summary: dict[str, object]) -> None:
             repo.update_task_progress(task, summary)
+            if background:
+                repo.commit()
             app_runtime.task_events.notify()
 
         scanner = Scanner(
@@ -3266,16 +3341,21 @@ def scan_library(
             library,
             only_new=options.only_new,
             progress=_scan_progress,
-            cancelled=lambda: repo.is_task_cancel_requested(task.id),
+            cancelled=lambda: _task_cancelled(app_runtime, repo, task.id, background=background),
+            completed=(lambda path: path_key(path) in completed_paths) if background else None,
+            checkpoint=save_file if background else None,
         )
-        if scanner.last_obsolete_codes:
-            app_runtime.pan_poller.queue_obsolete_codes(scanner.last_obsolete_codes)
+        obsolete_codes.update(scanner.last_obsolete_codes)
+        if obsolete_codes:
+            app_runtime.pan_poller.queue_obsolete_codes(tuple(sorted(obsolete_codes)))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    cancelled = _task_cancelled(app_runtime, repo, task.id, background=background)
     repo.finish_task_run(
         task,
-        status="partial" if result.errors else "succeeded",
+        status="cancelled" if cancelled else "partial" if result.errors else "succeeded",
         summary={
+            **task.summary,
             "discovered": result.discovered,
             "updated": result.updated,
             "queued": result.queued,
@@ -3283,22 +3363,18 @@ def scan_library(
             "filtered": result.filtered,
             "skipped": result.skipped,
             "errors": len(result.errors),
-            "obsolete_codes": list(scanner.last_obsolete_codes),
+            "obsolete_codes": sorted(obsolete_codes),
+            "error_examples": list(result.errors[:2]),
+            "background": background,
         },
     )
     return ScanOut.model_validate(result.model_dump())
 
 
-@app.post("/api/libraries/{library_id}/identify", response_model=BulkIdentifyOut)
-async def identify_library(
-    library_id: str,
-    payload: BulkIdentifyRequest,
-    request: Request,
-    repo: Repo,
+async def _execute_identify(
+    app_runtime: Runtime, repo: Repository, library: Library, payload: BulkIdentifyRequest,
+    task: TaskRun, state: LibraryJobState | None,
 ) -> BulkIdentifyOut:
-    library = repo.get_library(library_id)
-    if library is None:
-        raise HTTPException(status_code=404, detail="library not found")
     groups: dict[str, PendingIdentityGroup] = {}
     assets = sorted(
         repo.list_library_assets(library.id),
@@ -3306,9 +3382,29 @@ async def identify_library(
     )
     scope_skipped = 0
     catalog_reused = 0
-    task = repo.create_task_run(kind="identify:library", scope=library.root_path)
     repo.update_task_progress(task, {"phase": "grouping", "assets": len(assets)})
-    for asset in assets:
+
+    def save_identify_progress() -> None:
+        if state is not None:
+            repo.save_checkpoint(
+                CHECKPOINT_PREFIX + task.id, kind=task.kind, status="running", cursor=state.model_dump(mode="json"),
+            )
+            repo.commit()
+
+    if state is not None:
+        repo.commit()
+    cancelled = False
+    for index, asset in enumerate(assets):
+        if state is not None:
+            if index % 128 == 0:
+                save_identify_progress()
+            if _task_cancelled(app_runtime, repo, task.id, background=True):
+                cancelled = True
+                break
+            if asset.id in state.completed_asset_ids or (
+                state.only_asset_ids is not None and asset.id not in state.only_asset_ids
+            ):
+                continue
         if payload.skip_identified and asset.state == "identified":
             continue
         if (
@@ -3316,7 +3412,11 @@ async def identify_library(
             and asset.work_id is not None
             and repo.work_has_external_identity(asset.work_id)
         ):
-            catalog_reused += 1
+            if state is None:
+                catalog_reused += 1
+            else:
+                state.catalog_reused += 1
+                state.completed_asset_ids.add(asset.id)
             continue
         if payload.continue_failed and asset.state not in {"error", "review"}:
             if asset.state != "new":
@@ -3333,7 +3433,11 @@ async def identify_library(
             existing = repo.find_work_by_code(hints.code)
             if existing is not None:
                 repo.attach_asset_to_work(asset, existing)
-                catalog_reused += 1
+                if state is None:
+                    catalog_reused += 1
+                else:
+                    state.catalog_reused += 1
+                    state.completed_asset_ids.add(asset.id)
                 continue
             key = part_group_key(Path(asset.path), hints.code)
             search_hints = hints
@@ -3353,7 +3457,11 @@ async def identify_library(
             )
             repo.update_asset_hints(asset, search_hints)
             normalized_title = normalize_title(local_record.title) or asset.id
-            key = f"text:{search_hints.category.value}:{normalized_title}"
+            evidence = search_hints.model_dump(mode="json", exclude={
+                "term", "title", "file_path", "media_locator", "alias_evidence",
+            })
+            evidence["actors"] = sorted({normalize_title(name) for name in search_hints.actors})
+            key = "text:" + normalized_title + ":" + json.dumps(evidence, sort_keys=True)
         if key in groups:
             groups[key].asset_ids.append(asset.id)
         else:
@@ -3362,18 +3470,22 @@ async def identify_library(
                 asset_ids=[asset.id],
                 local_fallback=local_fallback,
             )
-    selected = list(groups.values())[: payload.limit]
-    app_runtime = runtime(request)
+    queried = state.queried_groups if state is not None else 0
+    selected = list(groups.values())[:max(0, payload.limit - queried)]
+    total = queried + len(selected)
+    save_identify_progress()
     service = IdentifyService(repo, app_runtime.providers)
-    online_identified = 0
-    local_optimized = 0
-    failures = 0
-    attempted = 0
-    accepted_work_ids: set[str] = set()
+    online_identified = state.online_identified if state is not None else 0
+    local_optimized = state.local_optimized if state is not None else 0
+    failures = state.provider_failures if state is not None else 0
+    attempted = state.attempted if state is not None else 0
+    catalog_reused = state.catalog_reused if state is not None else catalog_reused
+    accepted_work_ids = state.pending_work_ids if state is not None else set()
     chunk_size = app_runtime.settings.identify_concurrency
-    cancelled = False
+    code_queries = state.code_queries if state is not None else 0
+    queried_at_start = queried
     for start in range(0, len(selected), chunk_size):
-        if repo.is_task_cancel_requested(task.id):
+        if cancelled or _task_cancelled(app_runtime, repo, task.id, background=state is not None):
             cancelled = True
             break
         chunk = selected[start : start + chunk_size]
@@ -3381,16 +3493,26 @@ async def identify_library(
             task,
             {
                 "phase": "identify",
-                "progress": start,
-                "total": len(selected),
+                "progress_current": queried,
+                "progress_total": total,
             },
         )
+        if state is not None:
+            repo.commit()
+            app_runtime.task_events.notify()
         batches = await asyncio.gather(*(app_runtime.providers.search(group.hints) for group in chunk))
+        if _task_cancelled(app_runtime, repo, task.id, background=state is not None):
+            cancelled = True
+            break
+        queried += len(chunk)
+        code_queries += sum(not group.local_fallback for group in chunk)
         for group, batch in zip(chunk, batches, strict=True):
             failures += sum(failure.reason != "cooldown" for failure in batch.failures)
             for asset_id in group.asset_ids:
                 attempted += 1
                 result = service.apply_batch(asset_id, batch)
+                if state is not None:
+                    state.completed_asset_ids.add(asset_id)
                 if result.accepted_work_id is not None:
                     online_identified += 1
                     accepted_work_ids.add(result.accepted_work_id)
@@ -3399,6 +3521,17 @@ async def identify_library(
                     if work is not None:
                         local_optimized += 1
                         accepted_work_ids.add(work.id)
+                        continue
+                if state is not None and result.accepted_work_id is None:
+                    state.failed_asset_ids.add(asset_id)
+        if state is not None:
+            state.queried_groups = queried
+            state.attempted = attempted
+            state.online_identified = online_identified
+            state.local_optimized = local_optimized
+            state.code_queries = code_queries
+            state.provider_failures = failures
+            save_identify_progress()
     translation_slots = asyncio.Semaphore(app_runtime.settings.translation_concurrency)
 
     async def translate(work_id: str) -> None:
@@ -3410,20 +3543,22 @@ async def identify_library(
             await _ensure_artwork_cached(work, app_runtime, repo)
 
     await asyncio.gather(*(translate(work_id) for work_id in accepted_work_ids))
-    remaining = max(0, len(groups) - len(selected))
+    remaining = max(0, len(groups) - (queried - queried_at_start))
     attempted += catalog_reused
     identified = online_identified + catalog_reused + local_optimized
-    code_queries = sum(not group.local_fallback for group in selected)
-    title_queries = len(selected) - code_queries
+    title_queries = queried - code_queries
+    unresolved = len(state.failed_asset_ids) if state is not None else attempted - identified
+    cancelled = cancelled or _task_cancelled(app_runtime, repo, task.id, background=state is not None)
     repo.finish_task_run(
         task,
         status=(
             "cancelled"
             if cancelled
-            else ("succeeded" if identified == attempted else "partial")
+            else ("succeeded" if not unresolved else "partial")
         ),
         summary={
-            "queried_identities": len(selected),
+            **task.summary,
+            "queried_identities": queried,
             "code_queries": code_queries,
             "title_queries": title_queries,
             "attempted_assets": attempted,
@@ -3431,15 +3566,18 @@ async def identify_library(
             "online_identified": online_identified,
             "catalog_reused": catalog_reused,
             "local_optimized": local_optimized,
-            "unresolved": attempted - identified,
+            "unresolved": unresolved,
             "provider_failures": failures,
             "remaining_identities": remaining,
             "scope_skipped": scope_skipped,
             "cancelled": cancelled,
+            "background": state is not None,
+            "progress_current": queried,
+            "progress_total": total,
         },
     )
     return BulkIdentifyOut(
-        queried_identities=len(selected),
+        queried_identities=queried,
         code_queries=code_queries,
         title_queries=title_queries,
         attempted_assets=attempted,
@@ -3447,11 +3585,217 @@ async def identify_library(
         online_identified=online_identified,
         catalog_reused=catalog_reused,
         local_optimized=local_optimized,
-        unresolved=attempted - identified,
+        unresolved=unresolved,
         provider_failures=failures,
         remaining_identities=remaining,
         scope_skipped=scope_skipped,
     )
+
+
+def _start_library_worker(app_runtime: Runtime, task_id: str) -> None:
+    if task_id in app_runtime.library_workers:
+        return
+    worker = asyncio.create_task(_run_library_worker(app_runtime, task_id), name=f"mdc-library-{task_id}")
+    app_runtime.library_workers[task_id] = worker
+    worker.add_done_callback(lambda _: app_runtime.library_workers.pop(task_id, None))
+
+
+async def _run_library_worker(app_runtime: Runtime, task_id: str) -> None:
+    try:
+        with app_runtime.database.session() as session:
+            checkpoint = library_checkpoint(session, task_id)
+            if checkpoint is None:
+                return
+            state = LibraryJobState.model_validate(checkpoint.cursor)
+        if state.operation == "scan":
+            await asyncio.to_thread(_run_background_scan, app_runtime, task_id, state)
+        else:
+            with app_runtime.database.session() as session:
+                repo = Repository(session)
+                task = repo.get_task_run(task_id)
+                library = repo.get_library(state.library_id)
+                if task is None or library is None:
+                    raise ValueError("library or task no longer exists")
+                await _execute_identify(app_runtime, repo, library, state.identify, task, state)
+                repo.save_checkpoint(CHECKPOINT_PREFIX + task_id, kind=task.kind, status=task.status)
+    except LibraryWorkerStopped:
+        pass
+    except Exception as exc:  # noqa: BLE001 - background task reports its own failure
+        logger.exception("library job %s failed", task_id)
+        with app_runtime.database.session() as session:
+            repo = Repository(session)
+            task = repo.get_task_run(task_id)
+            if task is not None:
+                repo.finish_task_run(task, status="failed", summary={
+                    **task.summary, "background": True, "phase": "failed",
+                }, error=str(exc.detail) if isinstance(exc, HTTPException) else str(exc))
+                repo.save_checkpoint(CHECKPOINT_PREFIX + task_id, kind=task.kind, status="failed")
+    finally:
+        app_runtime.task_events.notify()
+
+
+def _run_background_scan(app_runtime: Runtime, task_id: str, state: LibraryJobState) -> None:
+    with app_runtime.database.session() as session:
+        repo = Repository(session)
+        task = repo.get_task_run(task_id)
+        library = repo.get_library(state.library_id)
+        if task is None or library is None:
+            raise ValueError("library or task no longer exists")
+        _execute_scan(app_runtime, repo, library, state.scan, task, background=True)
+        repo.save_checkpoint(CHECKPOINT_PREFIX + task_id, kind=task.kind, status=task.status)
+        if task.status == "succeeded":
+            repo.clear_library_scan_items(task_id)
+
+
+async def _queue_library_task(
+    app_runtime: Runtime, state: LibraryJobState, *, retried_from: str | None = None,
+) -> TaskRunOut:
+    task, created = await asyncio.to_thread(
+        _admit_library_task, app_runtime, state, background=True, retried_from=retried_from,
+    )
+    if created:
+        _start_library_worker(app_runtime, task.id)
+        app_runtime.task_events.notify()
+    return task
+
+
+async def _retry_library_task(app_runtime: Runtime, task: TaskRun, *, resume: bool = False) -> TaskRunOut:
+    if task.status not in {"failed", "partial", "cancelled", "interrupted"}:
+        raise HTTPException(409, "task has no failed or unfinished work to retry")
+    with app_runtime.database.session() as session:
+        checkpoint = library_checkpoint(session, task.id)
+        if checkpoint is not None:
+            old = LibraryJobState.model_validate(checkpoint.cursor)
+            unfinished = task.status in {"cancelled", "interrupted", "failed"}
+            retry_ids = None
+            if old.operation == "identify":
+                if not (resume or unfinished):
+                    retry_ids = old.failed_asset_ids
+                elif old.only_asset_ids is not None:
+                    retry_ids = old.only_asset_ids - old.completed_asset_ids | old.failed_asset_ids
+            state = LibraryJobState(
+                library_id=old.library_id, operation=old.operation,
+                scan=old.scan, identify=old.identify.model_copy(update={"skip_identified": True}),
+                only_asset_ids=retry_ids,
+                completed_asset_ids=(old.completed_asset_ids - old.failed_asset_ids
+                                     if old.operation == "identify" and (resume or unfinished) else set()),
+            )
+        else:
+            library = next((row for row in Repository(session).list_libraries() if row.root_path == task.scope), None)
+            if library is None:
+                raise HTTPException(404, "library for this task no longer exists")
+            state = LibraryJobState(
+                library_id=library.id, operation="scan" if task.kind == "scan" else "identify",
+                scan=ScanRequest(only_new=True), identify=BulkIdentifyRequest(continue_failed=True),
+            )
+    return await _queue_library_task(app_runtime, state, retried_from=task.id)
+
+
+async def _poll_library_scans(app_runtime: Runtime) -> None:
+    while True:
+        try:
+            with app_runtime.database.session() as session:
+                due = due_scans(session, utc_now())
+        except SQLAlchemyError:
+            logger.exception("could not read library scan schedules")
+            due = []
+        for library_id in due:
+            try:
+                await _queue_library_task(app_runtime, LibraryJobState(
+                    library_id=library_id, operation="scan", scan=ScanRequest(only_new=True),
+                ))
+            except HTTPException as exc:
+                if exc.status_code not in {404, 409}:
+                    logger.warning("could not schedule library scan: %s", exc.status_code)
+            except SQLAlchemyError:
+                logger.exception("could not queue scheduled library scan")
+        await asyncio.sleep(60)
+
+
+@app.get("/api/libraries/{library_id}/scan/schedule", response_model=ScanSchedule)
+def get_scan_schedule(library_id: str, request: Request) -> ScanSchedule:
+    with runtime(request).database.session() as session:
+        if session.get(Library, library_id) is None:
+            raise HTTPException(404, "library not found")
+        row = session.get(LibraryScanSchedule, library_id)
+        return ScanSchedule(interval_hours=row.interval_hours if row else 0)
+
+
+@app.put("/api/libraries/{library_id}/scan/schedule", response_model=ScanSchedule)
+def set_scan_schedule(library_id: str, request: Request, payload: ScanSchedule) -> ScanSchedule:
+    with runtime(request).database.session() as session:
+        if session.get(Library, library_id) is None:
+            raise HTTPException(404, "library not found")
+        row = session.get(LibraryScanSchedule, library_id)
+        if payload.interval_hours:
+            session.merge(LibraryScanSchedule(
+                library_id=library_id, interval_hours=payload.interval_hours, enabled_at=utc_now(),
+            ))
+        elif row is not None:
+            session.delete(row)
+    return payload
+
+
+@app.post("/api/libraries/{library_id}/scan/jobs", response_model=TaskRunOut, status_code=202)
+async def queue_scan_library(library_id: str, request: Request, payload: ScanRequest) -> TaskRunOut:
+    return await _queue_library_task(runtime(request), LibraryJobState(library_id=library_id, operation="scan", scan=payload))
+
+
+@app.post("/api/libraries/{library_id}/identify/jobs", response_model=TaskRunOut, status_code=202)
+async def queue_identify_library(library_id: str, request: Request, payload: BulkIdentifyRequest) -> TaskRunOut:
+    return await _queue_library_task(runtime(request), LibraryJobState(
+        library_id=library_id, operation="identify", identify=payload,
+    ))
+
+
+@app.post("/api/libraries/{library_id}/scan", response_model=ScanOut)
+def scan_library(
+    library_id: str, request: Request, repo: Repo, payload: ScanRequest | None = None,
+) -> ScanOut:
+    app_runtime = runtime(request)
+    options = payload or ScanRequest()
+    task, _ = _admit_library_task(
+        app_runtime, LibraryJobState(library_id=library_id, operation="scan", scan=options), background=False,
+    )
+    return _execute_legacy_scan(app_runtime, repo, task.id, library_id, options)
+
+
+def _execute_legacy_scan(
+    app_runtime: Runtime, repo: Repository, task_id: str, library_id: str, options: ScanRequest,
+) -> ScanOut:
+    task = repo.get_task_run(task_id)
+    library = repo.get_library(library_id)
+    assert task is not None and library is not None
+    try:
+        return _execute_scan(app_runtime, repo, library, options, task, background=False)
+    except Exception as exc:
+        _fail_legacy_library_task(repo, task, exc)
+        raise
+
+
+@app.post("/api/libraries/{library_id}/identify", response_model=BulkIdentifyOut)
+async def identify_library(
+    library_id: str, payload: BulkIdentifyRequest, request: Request, repo: Repo,
+) -> BulkIdentifyOut:
+    app_runtime = runtime(request)
+    admitted, _ = _admit_library_task(app_runtime, LibraryJobState(
+        library_id=library_id, operation="identify", identify=payload,
+    ), background=False)
+    task = repo.get_task_run(admitted.id)
+    library = repo.get_library(library_id)
+    assert task is not None and library is not None
+    try:
+        return await _execute_identify(app_runtime, repo, library, payload, task, None)
+    except Exception as exc:
+        _fail_legacy_library_task(repo, task, exc)
+        raise
+
+
+def _fail_legacy_library_task(repo: Repository, task: TaskRun, error: Exception) -> None:
+    repo.rollback()
+    message = str(error.detail) if isinstance(error, HTTPException) else str(error)
+    repo.finish_task_run(task, status="failed", summary={}, error=message)
+    repo.commit()
 
 
 @app.get("/api/assets", response_model=list[AssetOut])
@@ -3741,10 +4085,24 @@ def create_manual_candidate(
     return _candidate_out(row)
 
 
+@app.get("/api/matching/replay", response_model=MatchingReplay)
+def matching_replay(repo: Repo) -> MatchingReplay:
+    return replay_feedback(repo.match_feedback())
+
+
 @app.post("/api/candidates/{candidate_id}/accept", response_model=WorkOut)
 async def accept_candidate(candidate_id: str, request: Request, repo: Repo) -> WorkOut:
     try:
+        candidate = repo.get_candidate(candidate_id)
+        if candidate is None:
+            raise LookupError(f"candidate {candidate_id} not found")
+        asset = repo.get_asset(candidate.asset_id)
+        if asset is None:
+            raise LookupError(f"asset {candidate.asset_id} not found")
+        feedback = capture_feedback(asset.hints, candidate, repo.list_candidates(asset.id))
         work = repo.accept_candidate(candidate_id)
+        if feedback is not None:
+            repo.save_match_feedback(feedback)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     app_runtime = runtime(request)

@@ -69,6 +69,11 @@ it("saves the user chosen playlist order within a stable preference namespace", 
       ? [{ id: "b", title: "B" }, { id: "a", title: "A" }] : [list]), { status: 200 });
   }));
   await act(async () => root.render(<CatalogPlaylists works={[{ id: "a", title: "A" }, { id: "b", title: "B" }]} onOpenWork={() => undefined} />));
+  await act(async () => {
+    const details = container.querySelector("details")!;
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+  });
   const select = container.querySelector<HTMLSelectElement>("select")!;
   await act(async () => { select.value = "list"; select.dispatchEvent(new Event("change", { bubbles: true })); });
   const up = container.querySelectorAll<HTMLButtonElement>('button[aria-label="上移"]')[1]!;

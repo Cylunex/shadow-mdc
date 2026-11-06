@@ -7,7 +7,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, event, exists, func, or_, select
+from sqlalchemy import Engine, create_engine, delete, event, exists, func, literal, or_, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, load_only, sessionmaker
 
 from ..actress_aliases import merge_actor_names
@@ -31,7 +32,9 @@ from .models import (
     ExternalIdentity,
     JobCheckpoint,
     Library,
+    LibraryScanItem,
     MatchCandidateRow,
+    MatchFeedback,
     MediaAsset,
     OrganizeJournalRecord,
     PanOfflineTask,
@@ -398,6 +401,22 @@ class Repository:
     def list_unfinished_task_runs(self) -> list[TaskRun]:
         return list(self._session.scalars(select(TaskRun).where(TaskRun.finished_at.is_(None))))
 
+    def library_scan_items(self, task_id: str) -> list[LibraryScanItem]:
+        return list(self._session.scalars(select(LibraryScanItem).where(LibraryScanItem.task_id == task_id)))
+
+    def save_library_scan_item(self, task_id: str, key: str, obsolete_codes: tuple[str, ...]) -> None:
+        self._session.add(LibraryScanItem(task_id=task_id, path_key=key, obsolete_codes=list(obsolete_codes)))
+
+    def inherit_library_scan_items(self, task_id: str, previous_task_id: str) -> None:
+        self._session.execute(sqlite_insert(LibraryScanItem).from_select(
+            ["task_id", "path_key", "obsolete_codes"],
+            select(literal(task_id), LibraryScanItem.path_key, LibraryScanItem.obsolete_codes)
+            .where(LibraryScanItem.task_id == previous_task_id),
+        ))
+
+    def clear_library_scan_items(self, task_id: str) -> None:
+        self._session.execute(delete(LibraryScanItem).where(LibraryScanItem.task_id == task_id))
+
     def get_checkpoint(self, key: str) -> JobCheckpoint | None:
         return self._session.get(JobCheckpoint, key)
 
@@ -477,14 +496,15 @@ class Repository:
         self._session.flush()
         return task
 
+    def commit(self) -> None:
+        self._session.commit()
+
+    def rollback(self) -> None:
+        self._session.rollback()
+
     def is_task_cancel_requested(self, task_id: str) -> bool:
-        task = self.get_task_run(task_id)
-        if task is None:
-            return False
-        if task.status == "cancel_requested":
-            return True
-        summary = task.summary or {}
-        return bool(summary.get("cancel_requested"))
+        row = self._session.execute(select(TaskRun.status, TaskRun.summary).where(TaskRun.id == task_id)).first()
+        return row is not None and (row.status == "cancel_requested" or bool((row.summary or {}).get("cancel_requested")))
 
     def upsert_asset(
         self,
@@ -641,6 +661,12 @@ class Repository:
 
     def get_candidate(self, candidate_id: str) -> MatchCandidateRow | None:
         return self._session.get(MatchCandidateRow, candidate_id)
+
+    def save_match_feedback(self, feedback: MatchFeedback) -> None:
+        self._session.merge(feedback)
+
+    def match_feedback(self) -> list[MatchFeedback]:
+        return list(self._session.scalars(select(MatchFeedback)))
 
     def accept_candidate(self, candidate_id: str) -> Work:
         candidate = self.get_candidate(candidate_id)

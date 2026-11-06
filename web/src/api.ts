@@ -18,7 +18,6 @@ import {
   artworkDownloadSchema,
   batchApplySchema,
   batchPlanSchema,
-  bulkIdentifySchema,
   bulkTranslateSchema,
   candidateSchema,
   candidatesSchema,
@@ -34,7 +33,6 @@ import {
   nonJavActorsSchema,
   providerListSchema,
   providerDiagnoseSchema,
-  scanSchema,
   sampleGenerateSchema,
   screenshotGenerateSchema,
   workSampleGenerateSchema,
@@ -148,10 +146,22 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   scan: (libraryId: string, options: { only_new?: boolean } = {}) =>
-    request(scanSchema, `/api/libraries/${libraryId}/scan`, {
+    request(taskRunSchema, `/api/libraries/${libraryId}/scan/jobs`, {
       method: "POST",
       body: JSON.stringify({ only_new: Boolean(options.only_new) })
     }),
+  scanSchedule: (libraryId: string) =>
+    request(z.object({ interval_hours: z.number() }), `/api/libraries/${libraryId}/scan/schedule`),
+  saveScanSchedule: (libraryId: string, intervalHours: number) =>
+    request(z.object({ interval_hours: z.number() }), `/api/libraries/${libraryId}/scan/schedule`, {
+      method: "PUT", body: JSON.stringify({ interval_hours: intervalHours }),
+    }),
+  matchingReplay: () => {
+    const counts = z.object({
+      samples: z.number(), manual_review: z.number(), automatic: z.number(), disagreed: z.number(),
+    });
+    return request(z.object({ code: counts, without_code: counts }), "/api/matching/replay");
+  },
   generateScreenshots: (libraryId: string, limit = 50) =>
     request(screenshotGenerateSchema, `/api/libraries/${libraryId}/screenshots`, {
       method: "POST",
@@ -171,7 +181,7 @@ export const api = {
     limit = 20,
     options: { continue_failed?: boolean; skip_identified?: boolean; skip_remote_when_identified?: boolean } = {}
   ) =>
-    request(bulkIdentifySchema, `/api/libraries/${libraryId}/identify`, {
+    request(taskRunSchema, `/api/libraries/${libraryId}/identify/jobs`, {
       method: "POST",
       body: JSON.stringify({
         limit,

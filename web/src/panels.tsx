@@ -1493,6 +1493,30 @@ export function Works(props: {
   </>;
 }
 
+
+function LibraryScanSchedule({ libraryId, report }: { libraryId: string; report: (message: string) => void }) {
+  const [interval, setIntervalHours] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  return <details onToggle={event => {
+    if (event.currentTarget.open && interval === null) {
+      api.scanSchedule(libraryId).then(value => setIntervalHours(value.interval_hours))
+        .catch(error => report(String(error)));
+    }
+  }}>
+    <summary>定时增量扫描</summary>
+    <label>每隔小时数（0 为关闭）<input type="number" min={0} max={168} step={1}
+      disabled={interval === null || busy} value={interval ?? ""}
+      onChange={event => setIntervalHours(Number(event.target.value))} /></label>
+    <button disabled={busy || interval === null || !Number.isInteger(interval) || interval < 0 || interval > 168}
+      onClick={() => {
+        if (interval === null) return;
+        setBusy(true);
+        api.saveScanSchedule(libraryId, interval)
+          .then(() => report(interval ? `定时增量扫描已保存，每 ${interval} 小时一次` : "定时增量扫描已关闭"))
+          .catch(error => report(String(error))).finally(() => setBusy(false));
+      }}>保存扫描周期</button>
+  </details>;
+}
 export function Libraries(props: {
   libraries: Library[];
   busy: string | null;
@@ -1592,44 +1616,28 @@ export function Libraries(props: {
             <button
               disabled={props.busy === `scan-${library.id}`}
               onClick={() => void props.run(`scan-${library.id}`, async () => {
-                const result = await api.scan(library.id, { only_new: false });
-                const errorSummary = result.errors.length > 0
-                  ? `；${result.errors.length} 个路径失败：${result.errors.slice(0, 2).join("；")}`
-                  : "";
-                props.report(
-                  `新增 ${result.discovered}，更新 ${result.updated}，已识别 ${result.identified}，` +
-                  `待确认 ${result.queued}，` +
-                  `过滤 ${result.filtered}，` +
-                  `跳过 ${result.skipped}${errorSummary}`
-                );
+                await api.scan(library.id, { only_new: false });
+                props.report("扫描已提交，进度可在任务中心查看");
               }, "tasks")}
             >扫描</button>
             <button
               className="secondary"
               disabled={props.busy === `identify-${library.id}`}
               onClick={() => void props.run(`identify-${library.id}`, async () => {
-                const result = await api.identifyLibrary(library.id);
-                props.report(
-                  `批量处理：番号 ${result.code_queries}、标题 ${result.title_queries}，` +
-                  `在线识别 ${result.online_identified}、作品库复用 ${result.catalog_reused}、` +
-                  `本地优化 ${result.local_optimized}，` +
-                  `待确认 ${result.unresolved}，来源失败 ${result.provider_failures} 次，` +
-                  `范围外跳过 ${result.scope_skipped}，剩余 ${result.remaining_identities} 组`
-                );
-              }, "all")}
+                await api.identifyLibrary(library.id);
+                props.report("识别已提交，进度可在任务中心查看");
+              }, "tasks")}
             >识别并优化媒体</button>
             <button
               className="ghost"
               disabled={props.busy === `identify-continue-${library.id}`}
               title="从剩余未处理身份继续，默认每批 50"
               onClick={() => void props.run(`identify-continue-${library.id}`, async () => {
-                const result = await api.identifyLibrary(library.id, 50, { continue_failed: false, skip_identified: true });
-                props.report(
-                  `继续识别：处理 ${result.attempted_assets}，剩余 ${result.remaining_identities} 组；` +
-                  `在线 ${result.online_identified} / 本地 ${result.local_optimized} / 待确认 ${result.unresolved}`
-                );
-              }, "all")}
+                await api.identifyLibrary(library.id, 50);
+                props.report("下一批识别已提交，进度可在任务中心查看");
+              }, "tasks")}
             >继续剩余识别</button>
+            <LibraryScanSchedule libraryId={library.id} report={props.report} />
             <button
               className="secondary"
               disabled={props.busy === `screenshots-${library.id}`}

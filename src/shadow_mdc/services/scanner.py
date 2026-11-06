@@ -114,6 +114,8 @@ class Scanner:
         only_new: bool = False,
         progress: Callable[[dict[str, object]], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
+        completed: Callable[[Path], bool] | None = None,
+        checkpoint: Callable[[Path, tuple[str, ...]], None] | None = None,
     ) -> ScanResult:
         root = _resolve_library_root(library.root_path)
         discovered = 0
@@ -134,6 +136,9 @@ class Scanner:
                 break
             if progress is not None and (index == 1 or index % 25 == 0 or index == total):
                 progress({"progress_current": index, "progress_total": total, "phase": "scan"})
+            if completed is not None and completed(path):
+                skipped += 1
+                continue
             if path.suffix.casefold() not in MEDIA_EXTENSIONS:
                 skipped += 1
                 continue
@@ -144,6 +149,8 @@ class Scanner:
                     f"filtered by path rule: {filter_match.word}",
                 )
                 filtered += 1
+                if checkpoint is not None:
+                    checkpoint(path, ())
                 continue
             if only_new:
                 existing = self._repository.get_asset_by_path(str(path))
@@ -170,6 +177,9 @@ class Scanner:
                 obsolete_codes.extend(obsolete)
             except (OSError, ValueError) as exc:
                 errors.append(f"{path}: {exc}")
+            else:
+                if checkpoint is not None:
+                    checkpoint(path, tuple(obsolete))
         self.last_obsolete_codes = tuple(dict.fromkeys(obsolete_codes))
         return ScanResult(
             discovered=discovered,

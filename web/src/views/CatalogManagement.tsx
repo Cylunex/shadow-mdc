@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { appUrl } from "../api";
 import { queryClient, queryKeys } from "../query/client";
+import type { Filters } from "./UnifiedCatalogView";
 
 export type ManagedPerson = {
   id: string; ref: string; refs: string[]; name: string; aliases: string[];
@@ -17,7 +18,7 @@ export type PersonCard = {
 type PeoplePage = { items: PersonCard[]; next_offset: number | null; labels: Record<string, string> };
 export const PEOPLE_PAGE_SIZE = 48;
 type Organization = { id: string; kind: string; name: string; aliases: string[]; description: string | null; parent_id: string | null; revision: number; work_count: number };
-type Playlist = { id: string; name: string; work_ids: string[]; revision: number };
+type Playlist = { id: string; name: string; work_ids: string[]; revision: number; filters?: Filters | null };
 type Merge = { id: string; target_id: string; members: string[]; undone: boolean };
 let fallbackOwner: string | undefined;
 export function catalogOwner(): string {
@@ -290,18 +291,27 @@ export function CatalogOrganizations({ works, onFilter }: {
   </details>;
 }
 
-export function CatalogPlaylists({ works, onOpenWork }: {
+export function CatalogPlaylists({ works, onOpenWork, filters, onApplyFilters }: {
   works: { id: string; title: string }[]; onOpenWork: (id: string) => void;
+  filters?: Filters; onApplyFilters?: (value: Filters) => void;
 }) {
+  const [open, setOpen] = useState(false);
   const [items, setItems] = useState<Playlist[]>([]);
   const [selected, setSelected] = useState<Playlist | null>(null);
   const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [workTitles, setWorkTitles] = useState<Record<string, string>>({});
-  useEffect(() => { catalogRequest<Playlist[]>("playlists").then(setItems).catch(e => setError(String(e))); }, []);
   useEffect(() => {
-    if (!selected?.id) return;
+    if (!open) return;
+    const controller = new AbortController();
+    catalogRequest<Playlist[]>("playlists", "GET", undefined, controller.signal)
+      .then(rows => { if (!controller.signal.aborted) setItems(rows); })
+      .catch(e => { if (!controller.signal.aborted) setError(String(e)); });
+    return () => controller.abort();
+  }, [open]);
+  useEffect(() => {
+    if (!selected?.id || selected.filters) return;
     catalogRequest<{ id: string; title: string }[]>("playlists/" + selected.id + "/works")
       .then(rows => setWorkTitles(Object.fromEntries(rows.map(row => [row.id, row.title]))))
       .catch(e => setError(String(e)));
@@ -310,7 +320,7 @@ export function CatalogPlaylists({ works, onOpenWork }: {
     setBusy(true); setError("");
     try {
       const result = await catalogRequest<Playlist>("playlists" + (playlist.id ? "/" + playlist.id : ""),
-        playlist.id ? "PUT" : "POST", playlist);
+        playlist.id ? "PUT" : "POST", { ...playlist, work_ids: playlist.filters ? [] : playlist.work_ids });
       setItems(await catalogRequest<Playlist[]>("playlists")); setSelected(result); setName("");
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
@@ -320,16 +330,24 @@ export function CatalogPlaylists({ works, onOpenWork }: {
     [ids[index], ids[index + delta]] = [ids[index + delta]!, ids[index]!];
     setSelected({ ...selected, work_ids: ids });
   }
-  return <details><summary>我的片单</summary>{error && <p role="alert">{error}</p>}
+  return <details onToggle={event => setOpen(event.currentTarget.open)}><summary>我的片单</summary>{error && <p role="alert">{error}</p>}
     <label>片单标识<input aria-label="片单标识" readOnly value={catalogOwner()} /></label>
     <p>在其他客户端填写同一片单标识，即可使用同一片单空间。</p>
     <input aria-label="新片单名称" value={name} onChange={e => setName(e.target.value)} placeholder="新片单名称" />
     <button disabled={busy || !name.trim()} onClick={() => void save({ id: "", name: name.trim(), work_ids: [], revision: 0 })}>创建片单</button>
+    {filters && <button disabled={busy || !name.trim()} onClick={() =>
+      void save({ id: "", name: name.trim(), work_ids: [], revision: 0, filters })}>用当前筛选创建动态片单</button>}
     <select value={selected?.id ?? ""} onChange={e => setSelected(items.find(item => item.id === e.target.value) ?? null)}>
-      <option value="">选择片单</option>{items.map(item => <option key={item.id} value={item.id}>{item.name} · {item.work_ids.length} 部 · {item.id.slice(-6)}</option>)}
+      <option value="">选择片单</option>{items.map(item => <option key={item.id} value={item.id}>{item.name} {item.filters ? "· 动态" : ""} · {item.work_ids.length} 部 · {item.id.slice(-6)}</option>)}
     </select>
     {selected && <article>
       <input aria-label="片单名称" value={selected.name} onChange={e => setSelected({ ...selected, name: e.target.value })} />
+      {selected.filters ? <>
+        <p>符合规则的新入库作品会自动加入。手机可在同一片单空间打开。</p>
+        <button onClick={() => { if (selected.filters) onApplyFilters?.(selected.filters); }}>应用片单筛选</button>
+        <button disabled={busy || !filters} onClick={() => setSelected({ ...selected, filters })}>替换为当前筛选</button>
+        <button disabled={busy} onClick={() => void save(selected)}>保存动态片单</button>
+      </> : <>
       <select value="" onChange={e => { if (e.target.value) setSelected({ ...selected, work_ids: [...new Set([...selected.work_ids, e.target.value])] }); }}>
         <option value="">添加当前结果中的作品</option>{works.map(work => <option key={work.id} value={work.id}>{work.title}</option>)}
       </select>
@@ -341,6 +359,7 @@ export function CatalogPlaylists({ works, onOpenWork }: {
         <button onClick={() => setSelected({ ...selected, work_ids: selected.work_ids.filter(work => work !== id) })}>移出片单</button>
       </li>)}</ol>
       <button disabled={busy} onClick={() => void save(selected)}>保存片单及顺序</button>
+      </>}
       <button disabled={busy} onClick={() => {
         if (!window.confirm("确认删除片单“" + selected.name + "”？共 " + selected.work_ids.length + " 个条目。")) return;
         setBusy(true);
