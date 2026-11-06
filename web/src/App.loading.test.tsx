@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { api } from "./api";
 import { libraryPrefsSchema, workSchema, type Work } from "./model";
+import { memoryStorage } from "./test/storage";
 
 vi.mock("./api", () => ({ appUrl: (path: string) => path, api: {
   libraries: vi.fn(), libraryPrefs: vi.fn(), tasks: vi.fn(), works: vi.fn(),
@@ -73,6 +74,15 @@ describe("page load request budget", () => {
     if (!button) throw new Error(`Missing nav: ${label}`);
     await act(async () => (button as HTMLElement).click());
   }
+
+  it("renders the first visit over LAN HTTP without the secure-context UUID API", async () => {
+    vi.stubGlobal("localStorage", memoryStorage());
+    vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
+    await act(async () => root.render(<App />));
+    expect(container.textContent).toContain("作品库");
+    expect(container.querySelector('input[aria-label="片单标识"]')).not.toBeNull();
+    expect(localStorage.getItem("mdc:catalog-owner")).toBeTruthy();
+  });
 
   async function openLegacy(label = "原有筛选与批量工具") {
     const summary = [...container.querySelectorAll("summary")].find(item => item.textContent === label)!;

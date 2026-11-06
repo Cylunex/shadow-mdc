@@ -21,17 +21,24 @@ type Organization = { id: string; kind: string; name: string; aliases: string[];
 type Playlist = { id: string; name: string; work_ids: string[]; revision: number; filters?: Filters | null };
 type Merge = { id: string; target_id: string; members: string[]; undone: boolean };
 let fallbackOwner: string | undefined;
+function createCatalogOwner(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  // LAN HTTP pages expose getRandomValues, but not the secure-context UUID API.
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 export function catalogOwner(): string {
   try {
     const stored = localStorage.getItem("mdc:catalog-owner");
     if (stored) return stored;
-    const owner = crypto.randomUUID();
-    localStorage.setItem("mdc:catalog-owner", owner);
-    return owner;
-  } catch {
-    fallbackOwner ??= crypto.randomUUID();
-    return fallbackOwner;
-  }
+  } catch { /* Storage is optional. */ }
+  fallbackOwner ??= createCatalogOwner();
+  try { localStorage.setItem("mdc:catalog-owner", fallbackOwner); }
+  catch { /* Keep a stable owner for this page when storage is unavailable. */ }
+  return fallbackOwner;
 }
 export async function catalogRequest<T>(path: string, method = "GET", body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(appUrl("/api/catalog/" + path)!, {
