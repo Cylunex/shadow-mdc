@@ -84,6 +84,36 @@ describe("page load request budget", () => {
     expect(localStorage.getItem("mdc:catalog-owner")).toBeTruthy();
   });
 
+  it("shortens old default links even when session storage is blocked", async () => {
+    window.history.replaceState({}, "", "/?catalog=" + encodeURIComponent(JSON.stringify({ q: "", actors: [], sort: "added", status: "all" })));
+    vi.stubGlobal("sessionStorage", {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("blocked"); },
+    });
+    await act(async () => root.render(<App />));
+    expect(window.location.search).toBe("");
+    expect(container.textContent).toContain("作品库");
+  });
+
+  it("does not resurrect a cached filter when opening the clean library URL", async () => {
+    const storage = memoryStorage();
+    storage.setItem("mdc:catalog-filter", JSON.stringify({ q: "old search" }));
+    vi.stubGlobal("sessionStorage", storage);
+    await act(async () => root.render(<App />));
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="检索作品"]')?.value).toBe("");
+    expect(window.location.search).toBe("");
+  });
+
+  it("restores filters from browser history without adding default JSON parameters", async () => {
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      window.history.pushState({}, "", "/?q=restored&year=2024");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="检索作品"]')?.value).toBe("restored");
+    expect(window.location.search).toBe("?q=restored&year=2024");
+  });
+
   async function openLegacy(label = "原有筛选与批量工具") {
     const summary = [...container.querySelectorAll("summary")].find(item => item.textContent === label)!;
     await act(async () => {

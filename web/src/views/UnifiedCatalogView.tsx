@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { appUrl } from "../api";
-import { readWorksFiltersFromSearch } from "../lib/worksFilters";
+import { applyCatalogFiltersToUrl, EMPTY_CATALOG_FILTERS, readCatalogFilters, type Filters } from "../lib/catalogFilters";
 import {
   CatalogPeopleEditor, CatalogOrganizations, CatalogPlaylists, PEOPLE_PAGE_SIZE, PersonPicker, catalogRequest,
   usePeopleCards, usePersonLabels, type ManagedPerson
@@ -11,28 +11,16 @@ import { CatalogTags } from "./CatalogTags";
 type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null };
 type Person = ManagedPerson;
 type Facet = { id: string; name: string; count: number; role: string };
-export type Filters = { q: string; actors: string[]; actors_all: boolean; actor_name?: string; studio_name?: string; tags: string[]; tags_all: boolean; exclude_tags: string[]; genres: string[]; forms: string[]; regions: string[]; organizations: string[]; organization_role?: string; year_from?: number; year_to?: number; unknown_year: boolean; sort: string; status: string };
+export type { Filters } from "../lib/catalogFilters";
 export type CatalogFeedStart = { filters: Filters; items: Card[]; nextCursor: string | null; index?: number };
-const empty: Filters = { q: "", actors: [], actors_all: false, tags: [], tags_all: false, exclude_tags: [], genres: [], forms: [], regions: [], organizations: [], unknown_year: false, sort: "added", status: "all" };
+const empty = EMPTY_CATALOG_FILTERS;
 async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(appUrl("/api/catalog/" + path)!, { signal, ...(body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}) });
   if (!response.ok) throw new Error("读取失败（" + response.status + "）");
   return response.json() as Promise<T>;
 }
 export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPersonRef, onStartFeed, refresh = 0 }: { mode: "works" | "actors" | "categories"; initialPersonRef?: string; refresh?: number; onStartFeed?: (state: CatalogFeedStart) => void; onOpenWork: (id: string) => void; onOpenActor: (id: string) => void }) {
-  const [filters, setFilters] = useState<Filters>(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const legacy = readWorksFiltersFromSearch();
-      if (["q", "tag", "year", "studio", "cast"].some(key => params.has(key))) {
-        return { ...empty, q: legacy.q, tags: legacy.tags, tags_all: true,
-          actor_name: legacy.cast, studio_name: legacy.studio,
-          year_from: legacy.year ? Number(legacy.year) : undefined,
-          year_to: legacy.year ? Number(legacy.year) : undefined };
-      }
-      return { ...empty, ...JSON.parse(params.get("catalog") ?? sessionStorage.getItem("mdc:catalog-filter") ?? "{}") };
-    } catch { return empty; }
-  });
+  const [filters, setFilters] = useState<Filters>(() => readCatalogFilters(window.location.search));
   const workRequest = useRef<AbortController | null>(null);
   const initialFilters = useRef(filters);
   const loadedFilters = useRef<Filters | null>(null);
@@ -106,12 +94,15 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     return () => controller.abort();
   }, [activePersonRef, revision, refresh]);
   useEffect(() => { try {
-      sessionStorage.setItem("mdc:catalog-filter", JSON.stringify(filters));
       const url = new URL(window.location.href);
-      for (const key of ["q", "tag", "year", "studio", "cast"]) url.searchParams.delete(key);
-      url.searchParams.set("catalog", JSON.stringify(filters));
-      history.replaceState(history.state, "", url);
-    } catch { /* Storage is optional. */ } }, [filters]);
+      applyCatalogFiltersToUrl(url, filters);
+      if (url.href !== window.location.href) history.replaceState(history.state, "", url);
+    } catch { /* Navigation can remain usable if history updates are blocked. */ } }, [filters]);
+  useEffect(() => {
+    const restore = () => setFilters(readCatalogFilters(window.location.search));
+    window.addEventListener("popstate", restore);
+    return () => window.removeEventListener("popstate", restore);
+  }, []);
   const waitingForPerson = Boolean(initialPersonRef && initialPersonRef !== resolvedRef);
   useEffect(() => {
     if (waitingForPerson) return;
@@ -252,8 +243,8 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
         <option value="">{field === "genres" ? "全部题材" : field === "forms" ? "全部作品形式" : "全部制作地区"}</option>
         {(facets[field] ?? []).map(f => <option key={f.id} value={f.id}>{f.name} · {f.count}</option>)}
       </select>)}
-      <select aria-label="播放状态" value={filters.status} onChange={e => patch({ status: e.target.value })}><option value="all">全部状态</option><option value="emby">已关联 Emby</option><option value="files">有关联文件</option><option value="metadata">仅资料</option></select>
-      <select aria-label="排序" value={filters.sort} onChange={e => patch({ sort: e.target.value })}><option value="added">最近入库</option><option value="newest">最新发行</option><option value="oldest">最早发行</option><option value="title">片名</option></select>
+      <select aria-label="播放状态" value={filters.status} onChange={e => patch({ status: e.target.value as Filters["status"] })}><option value="all">全部状态</option><option value="emby">已关联 Emby</option><option value="files">有关联文件</option><option value="metadata">仅资料</option></select>
+      <select aria-label="排序" value={filters.sort} onChange={e => patch({ sort: e.target.value as Filters["sort"] })}><option value="added">最近入库</option><option value="newest">最新发行</option><option value="oldest">最早发行</option><option value="title">片名</option></select>
       <PersonPicker label="追加演员" onSelect={person =>
         patch({ actors: [...new Set([...filters.actors, person.id])] })} />
       <label><input type="checkbox" checked={filters.actors_all} onChange={e => patch({ actors_all: e.target.checked })} />共同出演</label>
