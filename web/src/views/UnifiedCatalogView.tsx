@@ -6,6 +6,7 @@ import {
   usePeopleCards, usePersonLabels, type ManagedPerson
 } from "./CatalogManagement";
 import { CoverImage } from "../components/CoverImage";
+import { CatalogTags } from "./CatalogTags";
 
 type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null };
 type Person = ManagedPerson;
@@ -43,7 +44,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   const [loading, setLoading] = useState(true);
   const [workError, setWorkError] = useState("");
   const [facetError, setFacetError] = useState("");
-  const [showFilters, setShowFilters] = useState(() => typeof window !== "undefined" && window.innerWidth >= 800);
+  const [showFilters, setShowFilters] = useState(false);
   const [actorSort, setActorSort] = useState("works");
   const [followedOnly, setFollowedOnly] = useState(false);
   const [actorSearch, setActorSearch] = useState("");
@@ -180,20 +181,23 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     try { localStorage.setItem("mdc:saved-filters", JSON.stringify(next)); setSaved(next); setSaveName(""); } catch { setError("无法保存本机筛选"); }
   }
   return <section className="panel-section unified-catalog">
-    <h1>{mode === "actors" ? "演员库" : mode === "categories" ? "分类浏览" : "作品库"}</h1>
-    <p className="muted">统一作品目录 · {total} 部作品</p>
+    <div className="catalog-heading">
+    <div><h1>{mode === "actors" ? "演员库" : mode === "categories" ? "分类浏览" : "作品库"}</h1>
+    <p className="muted">统一作品目录 · {total} 部作品</p></div>
     {onStartFeed && <button disabled={rows.length === 0 || loading} onClick={() => {
       try { sessionStorage.setItem("mdc:catalog-return", JSON.stringify({
         filters, rows, cursor, total, scroll: window.scrollY, at: Date.now()
       })); } catch { /* Storage is optional. */ }
       onStartFeed({ filters, items: rows, nextCursor: cursor, index: 0 });
     }}>按当前筛选刷片</button>}
+    </div>
 
     {error && <p role="alert">{error}</p>}
     {workError && <p role="alert">{workError}</p>}
     {facetError && <p role="alert">{facetError}</p>}
     {mode === "actors" && <>
       {!initialPersonRef && <>
+        <div className="catalog-people-search">
         <select aria-label="演员排序" value={actorSort} onChange={e => { setActorSort(e.target.value); setActorOffset(0); }}>
           <option value="works">库内作品数</option><option value="name">姓名</option>
         </select>
@@ -201,6 +205,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
           onChange={e => { setFollowedOnly(e.target.checked); setActorOffset(0); }} />已关注</label>
         <input aria-label="搜索演员与别名" placeholder="演员、别名" value={actorSearch} maxLength={300}
           onChange={e => { setActorSearch(e.target.value); setActorOffset(0); }} />
+        </div>
         {peopleLoading && <p role="status">正在读取人物…</p>}
         {peopleError && <p role="alert">{peopleError.message}</p>}
         {people?.items.length === 0 && <p>没有匹配的演员。</p>}
@@ -266,11 +271,14 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       {filters.status !== "all" && <button onClick={() => patch({ status: "all" })}>{({ emby: "已关联 Emby", files: "有关联文件", metadata: "仅资料" })[filters.status]} ×</button>}
       {filters.exclude_tags.map(name => <button key={name}
       onClick={() => patch({ exclude_tags: filters.exclude_tags.filter(t => t !== name) })}>排除 {name} ×</button>)}{filters.actors.map(id => <button key={id} onClick={() => patch({ actors: filters.actors.filter(a => a !== id) })}>{actorNames?.[id] ?? id} ×</button>)}</div>
-    <div className="catalog-tools">
-    <details open={mode === "categories"}><summary>标签 · {facets.tags?.length ?? 0}</summary><div className="tag-capsules">{(facets.tags ?? []).map(f => <button key={f.id} className={filters.tags.includes(f.id) ? "active" : "ghost"} onClick={() => patch({ tags: filters.tags.includes(f.id) ? filters.tags.filter(t => t !== f.id) : [...filters.tags, f.id] })}>{f.name} · {f.count}</button>)}</div></details>
+    <div className="catalog-controls">
+    <CatalogTags tags={facets.tags ?? []} selected={filters.tags} preview={mode === "categories"}
+      onToggle={id => patch({ tags: filters.tags.includes(id) ? filters.tags.filter(t => t !== id) : [...filters.tags, id] })} />
+    <details className="catalog-management"><summary>片单与资料工具</summary><div className="catalog-tools">
     <CatalogOrganizations works={rows} onFilter={(id, role) => patch({ organizations: [id], organization_role: role ?? "" })} />
     <CatalogPlaylists works={rows} onOpenWork={openWork} filters={filters} onApplyFilters={value => setFilters({ ...empty, ...value })} />
     <details><summary>保存的筛选</summary>{saved.map(item => <button key={item.name} onClick={() => setFilters(item.filters)}>{item.name}</button>)}<input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="筛选名称" /><button onClick={save}>保存到本机</button></details>
+    </div></details>
     </div>
     {loading && !workError && !error && <p role="status">正在读取…</p>}
     <div className="work-grid">{rows.map(row => <article className="work-card" key={row.id}>

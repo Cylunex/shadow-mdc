@@ -2609,9 +2609,22 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .unified-catalog .works-extra-filters { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
 .unified-catalog .catalog-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
 .unified-catalog .works-extra-filters > label { display: flex; gap: 8px; align-items: center; color: var(--muted); }
-.unified-catalog > h1 { font-size: 32px; margin: 0; letter-spacing: -.035em; }
-.unified-catalog > p.muted { margin: 0; }
-.unified-catalog > button { justify-self: start; }
+.unified-catalog .catalog-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+.unified-catalog .catalog-heading h1 { font-size: 28px; margin: 0; letter-spacing: -.035em; }
+.unified-catalog .catalog-heading p { margin: 4px 0 0; }
+.unified-catalog .catalog-heading > button { padding: 8px 12px; font-size: 13px; }
+.unified-catalog .active-filter-chips:empty { display: none; }
+.unified-catalog .catalog-people-search { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.unified-catalog .catalog-people-search > input { flex: 1; min-width: 160px; }
+.unified-catalog .catalog-people-search > label { display: flex; align-items: center; gap: 6px; }
+.unified-catalog .catalog-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
+.unified-catalog .catalog-controls > details { border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; }
+.unified-catalog .catalog-controls > details[open] { grid-column: 1 / -1; }
+.unified-catalog .catalog-tag-preview { grid-column: 1 / -1; display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.unified-catalog .catalog-tag-preview button { flex: 0 0 auto; padding: 7px 10px; font-size: 13px; }
+.unified-catalog .catalog-tags .tag-capsules { max-height: min(16vh, 120px); overflow-y: auto; align-content: start; margin: 8px 0 0; }
+.unified-catalog .catalog-tags > input { width: calc(100% - 8px); }
+.unified-catalog .catalog-tags .tag-capsules button { margin: 0; }
 .unified-catalog .catalog-tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 10px; }
 .unified-catalog .catalog-tools > details { border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-width: 0; }
 .unified-catalog .catalog-tools > details[open] { grid-column: 1 / -1; }

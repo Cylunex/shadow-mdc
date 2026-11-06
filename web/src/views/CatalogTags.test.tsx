@@ -1,0 +1,43 @@
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { CatalogTags } from "./CatalogTags";
+
+let container: HTMLDivElement;
+let root: Root;
+const tags = Array.from({ length: 4500 }, (_, index) => ({ id: `tag-${index}`, name: `分类 ${index}`, count: index + 1 }));
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  container = document.createElement("div"); document.body.append(container);
+  root = createRoot(container);
+});
+afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
+
+it("bounds a large category directory and loads more tags on demand", async () => {
+  await act(async () => root.render(<CatalogTags tags={tags} selected={[]} preview={false} onToggle={() => undefined} />));
+  expect(container.querySelectorAll("button[aria-pressed]")).toHaveLength(48);
+  await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent?.startsWith("更多标签"))!.click());
+  expect(container.querySelectorAll("button[aria-pressed]")).toHaveLength(96);
+});
+
+it("searches the entire directory and toggles a result beyond the first page", async () => {
+  const toggle = vi.fn();
+  await act(async () => root.render(<CatalogTags tags={tags} selected={["tag-4499"]} preview={false} onToggle={toggle} />));
+  const input = container.querySelector("input")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "4499");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const buttons = container.querySelectorAll<HTMLButtonElement>("button[aria-pressed]");
+  expect(buttons).toHaveLength(1);
+  expect(buttons[0]!.getAttribute("aria-pressed")).toBe("true");
+  await act(async () => buttons[0]!.click());
+  expect(toggle).toHaveBeenCalledWith("tag-4499");
+});
+
+it("shows a small common-tag preview without expanding thousands of tags", async () => {
+  await act(async () => root.render(<CatalogTags tags={tags} selected={[]} preview onToggle={() => undefined} />));
+  expect(container.querySelectorAll(".catalog-tag-preview button")).toHaveLength(8);
+  expect(container.querySelector(".catalog-tag-preview")?.textContent).toContain("分类 4499");
+  expect(container.querySelector("details")?.open).toBe(false);
+});
