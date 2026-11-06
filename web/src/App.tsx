@@ -7,13 +7,9 @@ import { resources } from "./query/resources";
 import { TaskCenter } from "./components/TaskCenter";
 import { TopNav, type AppView } from "./components/TopNav";
 import type { Asset, Candidate, LibraryPrefs, TaskRun, Work } from "./model";
-import { Actors, Inbox, Works } from "./panels";
+import { Inbox } from "./panels";
 import { UnifiedCatalogView, type CatalogFeedStart } from "./views/UnifiedCatalogView";
 import { WorkDetailView } from "./views/WorkDetailView";
-import {
-  ActorDetailView,
-  resolveActorDetail
-} from "./views/ActorDetailView";
 import {
   patchWorksFilters,
   type WorksFilterState
@@ -118,7 +114,6 @@ export function App() {
   );
   const [selectedWorkId, setSelectedWorkId] = useState<string | null>(initialWorkId);
   const [selectedActorRef, setSelectedActorRef] = useState<string | null>(initialActorRef);
-  const [worksFilterEpoch, setWorksFilterEpoch] = useState(0);
   const [worksListScroll, setWorksListScroll] = useState(0);
   const [actorsListScroll, setActorsListScroll] = useState(0);
   const [detailReturnView, setDetailReturnView] = useState<"works" | "actors" | "actor-detail">(
@@ -131,16 +126,13 @@ export function App() {
     setCatalogFeed(state); setCatalogFeedReturn(view); setView("swipe");
   }
   const [swipeNeedsWorks, setSwipeNeedsWorks] = useState(false);
-  const [legacyWorksOpen, setLegacyWorksOpen] = useState(false);
-  const [legacyActorsOpen, setLegacyActorsOpen] = useState(false);
-  const [legacyActorDetailOpen, setLegacyActorDetailOpen] = useState(false);
   const [catalogRefresh, setCatalogRefresh] = useState(0);
   const refreshCatalog = useCallback(() => {
     try { sessionStorage.removeItem("mdc:catalog-return"); } catch { /* Storage is optional. */ }
     setCatalogRefresh(value => value + 1);
   }, []);
-  const showingActors = (view === "actors" && legacyActorsOpen) || (view === "actor-detail" && legacyActorDetailOpen);
-  const showingWorks = (view === "works" && legacyWorksOpen) || (view === "swipe" && swipeNeedsWorks);
+  const showingActors = view === "tasks" && taskTab === "inbox";
+  const showingWorks = view === "swipe" && swipeNeedsWorks;
   const libraryQuery = useQuery({ ...resources.libraries(), enabled: view === "settings" || view === "tasks" }, queryClient);
   const worksQuery = useQuery({ ...resources.works(), enabled: showingWorks }, queryClient);
   const actorsQuery = useQuery({ ...resources.actors(), enabled: showingActors }, queryClient);
@@ -151,7 +143,6 @@ export function App() {
   const libraries = libraryQuery.data ?? EMPTY_ROWS;
   const assets = inboxQuery.data ?? EMPTY_ROWS;
   const workRows = worksQuery.data ?? EMPTY_ROWS;
-  const actors = actorsQuery.data ?? EMPTY_ROWS;
   const nonJavActors = nonJavQuery.data ?? EMPTY_ROWS;
   const tasks = tasksQuery.data ?? EMPTY_ROWS;
   const prefs = prefsQuery.data ?? EMPTY_PREFS;
@@ -340,7 +331,6 @@ export function App() {
     setSelectedWorkId(null);
     setSelectedActorRef(null);
     applyWorksFilterPatch(patch, { replaceAll });
-    setWorksFilterEpoch((value) => value + 1);
     setView("works");
     setMessage(message);
     requestAnimationFrame(() => window.scrollTo(0, 0));
@@ -357,7 +347,6 @@ export function App() {
     setView(next);
     writeDetailToUrl({});
     if (next === "works") {
-      setWorksFilterEpoch((value) => value + 1);
       requestAnimationFrame(() => window.scrollTo(0, worksListScroll));
     } else if (next === "actors") {
       requestAnimationFrame(() => window.scrollTo(0, actorsListScroll));
@@ -369,7 +358,6 @@ export function App() {
     if (detailReturnView === "works") {
       setView("works");
       writeDetailToUrl({});
-      setWorksFilterEpoch((value) => value + 1);
       requestAnimationFrame(() => window.scrollTo(0, worksListScroll));
       return;
     }
@@ -455,166 +443,12 @@ export function App() {
         {(view === "actors" || view === "works" || view === "categories") && (
           <UnifiedCatalogView mode={view} refresh={catalogRefresh} onStartFeed={startCatalogFeed} onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
         )}
-        {view === "actors" && (<details open={legacyActorsOpen} onToggle={event => setLegacyActorsOpen(event.currentTarget.open)}>
-          <summary>维护演员资料</summary>
-          {legacyActorsOpen && <>
-          {(actorsQuery.isFetching || nonJavQuery.isFetching) && <p role="status">演员资料仍在更新…</p>}
-          {(actorsQuery.error || nonJavQuery.error) && <p role="alert">部分演员资料加载失败，可点击上方刷新重试。</p>}
-          {loaded.actors && <Actors
-            actors={actors}
-            nonJavActors={nonJavActors}
-            loadingActors={actorsQuery.isPending}
-            loadingNonJavActors={nonJavQuery.isPending}
-            busy={busy}
-            prefs={prefs}
-            onOpenWork={openWorkDetail}
-            onOpenActor={openActorDetail}
-            onActorTags={(actorKey, tags) => run(`tag-${actorKey}`, async () => {
-              let next = await api.setActorTags({ actor_key: actorKey, ...tags });
-              const existing = next.subscriptions.find((item) => item.actor_key === actorKey);
-              if (tags.subscribe) {
-                if (!existing) {
-                  const actor = actors.find((item) => item.id === actorKey || item.name === actorKey);
-                  const name = actor?.name ?? actorKey;
-                  next = await api.upsertSubscription({
-                    actor_key: actorKey,
-                    actor_name: name,
-                    start_date: new Date().toISOString().slice(0, 10),
-                    max_cast: 3,
-                    enabled: true
-                  });
-                } else if (!existing.enabled) {
-                  next = await api.upsertSubscription({ ...existing, enabled: true });
-                }
-              } else if (existing) {
-                next = await api.removeSubscription(actorKey);
-              }
-              setPrefs(next);
-              setMessage(`已更新 ${actorKey} 标签`);
-            }, "none")}
-            saveNonJavActor={(previousName, payload) => run(`actor-${previousName ?? "new"}`, async () => {
-              if (previousName) await api.updateNonJavActor(previousName, payload);
-              else await api.createNonJavActor(payload);
-              setMessage(previousName ? "演员资料已更新" : "演员档案已创建");
-            }, "actors")}
-            deleteNonJavActor={(actor) => run(`actor-delete-${actor.name}`, async () => {
-              await api.deleteNonJavActor(actor.name);
-              setMessage(`已移除演员档案 ${actor.name}`);
-            }, "actors")}
-            uploadActorImage={(actor, file) => run(`actor-image-${actor.name}`, async () => {
-              await api.uploadNonJavActorImage(actor.name, file);
-              setMessage(`${actor.name} 的头像已更新`);
-            }, "actors")}
-          />}
-          </>}
-        </details>
-        )}
-
-        {view === "actor-detail" && selectedActorRef && (
-          <>
+        {view === "actor-detail" && selectedActorRef && <>
           <button className="ghost" onClick={closeActorDetail}>返回演员库</button>
-          <UnifiedCatalogView mode="actors" initialPersonRef={selectedActorRef} refresh={catalogRefresh}
-            onStartFeed={startCatalogFeed} onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
-          <details open={legacyActorDetailOpen} onToggle={event => setLegacyActorDetailOpen(event.currentTarget.open)}>
-            <summary>关注、订阅和兼容资料</summary>{legacyActorDetailOpen && <ActorDetailView
-            model={selectedActorRef ? resolveActorDetail(selectedActorRef, actors, nonJavActors) : null}
-            loading={actorsQuery.isPending || nonJavQuery.isPending}
-            busy={busy}
-            tags={(() => {
-              if (!selectedActorRef) return undefined;
-              const model = resolveActorDetail(selectedActorRef, actors, nonJavActors);
-              if (!model) return undefined;
-              const tags = prefs.actor_tags ?? {};
-              return tags[model.tagKey] ?? tags[model.name] ?? { favorite: false, subscribe: false, blacklist: false };
-            })()}
-            onBack={closeActorDetail}
-            onOpenWork={openWorkDetail}
-            onFilterWorks={(name) => {
-              navigateToFilteredWorks({ cast: name }, `已筛选演员作品：${name}`, true);
-            }}
-            report={setMessage}
-            onActorTags={(actorKey, tags) => run(`tag-${actorKey}`, async () => {
-              let next = await api.setActorTags({ actor_key: actorKey, ...tags });
-              const existing = next.subscriptions.find((item) => item.actor_key === actorKey);
-              if (tags.subscribe) {
-                if (!existing) {
-                  const actor = actors.find((item) => item.id === actorKey || item.name === actorKey);
-                  const name = actor?.name ?? actorKey;
-                  next = await api.upsertSubscription({
-                    actor_key: actorKey,
-                    actor_name: name,
-                    start_date: new Date().toISOString().slice(0, 10),
-                    max_cast: 3,
-                    enabled: true
-                  });
-                } else if (!existing.enabled) {
-                  next = await api.upsertSubscription({ ...existing, enabled: true });
-                }
-              } else if (existing) {
-                next = await api.removeSubscription(actorKey);
-              }
-              setPrefs(next);
-              setMessage(`已更新 ${actorKey} 标签`);
-            }, "none")}
-          />}</details>
-          </>
-        )}
-
-
-
-        {view === "works" && (<details open={legacyWorksOpen} onToggle={event => setLegacyWorksOpen(event.currentTarget.open)}>
-          <summary>原有筛选与批量工具</summary>
-          {legacyWorksOpen && <>
-          {worksQuery.isFetching && <p role="status">正在读取原有片库…</p>}
-          {worksQuery.error && <p role="alert">影片加载失败：{worksQuery.error.message}，可点击上方刷新重试。</p>}
-          {loaded.works && <Works
-            works={works}
-            busy={busy}
-            filterEpoch={worksFilterEpoch}
-            onOpenWork={openWorkDetail}
-            onToggleWant={(work) => run(`want-${work.id}`, async () => {
-              const next = await api.setWantList(work.id, !work.want_list);
-              setPrefs(next);
-              setWorks((current) => current.map((item) => (
-                item.id === work.id ? { ...item, want_list: !work.want_list } : item
-              )));
-              setMessage(work.want_list ? "已移出想看" : "已加入想看");
-            }, "none")}
-            refreshMetadata={(work) => run(`work-${work.id}`, async () => {
-              const result = await api.refreshWork(work.id);
-              const failures = result.failures.map((failure) => failure.provider).join("、");
-              setMessage(
-                result.accepted_work_id
-                  ? `已更新 ${work.primary_code ?? work.title} 的在线元数据`
-                  : `未找到可自动接受的在线结果${failures ? `；失败来源：${failures}` : ""}`
-              );
-            }, "works")}
-            lookupWork={(query) => run("lookup-work", async () => {
-              const trimmed = query.trim();
-              const looksLikeUrl = /^https?:\/\//i.test(trimmed);
-              const result = await api.lookupWork(
-                looksLikeUrl ? { source_url: trimmed } : { code: trimmed }
-              );
-              const failed = result.failures.map((item) => `${item.provider}/${item.reason}`).join("、");
-              setMessage(
-                result.work
-                  ? `已按${looksLikeUrl ? "URL" : "番号"}建立或更新 ${result.work.primary_code ?? result.work.title}，聚合 ${result.matched_records} 个来源`
-                  : `没有找到可自动确认的结果${result.matched_records ? `；有 ${result.matched_records} 条低置信候选未采用` : ""}${failed ? `；${failed}` : ""}`
-              );
-            }, "works")}
-            translateWorks={() => run("translate-works", async () => {
-              const result = await api.translateWorks();
-              const error = result.errors.length > 0 ? `；${result.errors[0]}` : "";
-              setMessage(`补翻译（标题/剧情）：成功 ${result.translated}，无需翻译 ${result.skipped}，失败 ${result.failed}，剩余 ${result.remaining}${error}`);
-            }, "works")}
-            seedCollections={() => run("seed-collections", async () => {
-              const result = await api.seedCollections();
-              setMessage(`合集索引：共 ${result.collections_total}，新建 ${result.collections_created}`);
-            }, "works")}
-          />}
-          </>}
-        </details>
-        )}
+          <UnifiedCatalogView key={selectedActorRef} mode="actors" initialPersonRef={selectedActorRef}
+            refresh={catalogRefresh} onStartFeed={startCatalogFeed}
+            onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
+        </>}
 
         {view === "work-detail" && selectedWorkId && (
           <WorkDetailView

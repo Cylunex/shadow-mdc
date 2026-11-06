@@ -1,11 +1,12 @@
 import { CoverImage } from "./CoverImage";
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import { mediaUrl } from "../lib/mediaUrl";
 import type { Work } from "../model";
 import { StatusBadges } from "./StatusBadges";
 
 type Props = {
   work: Work;
+  actions?: ReactNode;
   selected?: boolean;
   busy?: string | null;
   /** Client search match score (0–100); shown when searching. */
@@ -27,6 +28,7 @@ function matchRankLabel(score: number): string {
 
 export const WorkCard = memo(function WorkCard({
   work,
+  actions,
   selected,
   busy,
   matchScore,
@@ -166,7 +168,8 @@ export const WorkCard = memo(function WorkCard({
               )
             )))}
         </div>
-        <div className="work-card-actions">
+        <div className="work-card-actions" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
+          {actions}
           {onToggleWant && (
             <button
               type="button"

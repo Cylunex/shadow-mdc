@@ -6,21 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
 import { api } from "./api";
-import { libraryPrefsSchema, workSchema, type Work } from "./model";
+import { libraryPrefsSchema, workSchema } from "./model";
 import { memoryStorage } from "./test/storage";
 
 vi.mock("./api", () => ({ appUrl: (path: string) => path, api: {
   libraries: vi.fn(), libraryPrefs: vi.fn(), tasks: vi.fn(), works: vi.fn(),
   actors: vi.fn(), nonJavActors: vi.fn(), assets: vi.fn(), setWantList: vi.fn(),
 } }));
-vi.mock("./panels", () => ({
-  Works: ({ works, onToggleWant }: { works: Work[]; onToggleWant: (work: Work) => void }) => (
-    <div data-works>{works.map((work) => (
-      <button key={work.id} onClick={() => onToggleWant(work)}>{work.id}:{String(work.want_list)}</button>
-    ))}</div>
-  ),
-  Actors: () => <div>actors-ready</div>, Inbox: () => null,
-}));
+vi.mock("./panels", () => ({ Inbox: () => null }));
 vi.mock("./views/WorkDetailView", () => ({ WorkDetailView: () => <div>detail-ready</div> }));
 vi.mock("./components/DiscoverPanel", () => ({ DiscoverPanel: ({ onToggleWant }: { onToggleWant: (id: string, wanted: boolean) => void }) => (
   <button onClick={() => onToggleWant("fixture", true)}>want-from-ranking</button>
@@ -43,10 +36,12 @@ describe("page load request budget", () => {
     queryClient.clear();
     notifyManager.setScheduler(queueMicrotask);
     vi.clearAllMocks();
+    vi.stubGlobal("sessionStorage", memoryStorage());
+    vi.stubGlobal("localStorage", memoryStorage());
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("fetch", vi.fn(async (url: string) =>
       new Response(JSON.stringify(url.endsWith("/works/query")
-        ? { items: [], next_cursor: null, total: 0 }
+        ? { items: [{ ...work, poster: "", year: 2024 }], next_cursor: null, total: 1 }
         : url.includes("/people-cards") ? { items: [], next_offset: null, labels: {} }
         : url.endsWith("/facets") ? {} : []))));
     vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
@@ -114,29 +109,15 @@ describe("page load request budget", () => {
     expect(window.location.search).toBe("?q=restored&year=2024");
   });
 
-  async function openLegacy(label = "原有筛选与批量工具") {
-    const summary = [...container.querySelectorAll("summary")].find(item => item.textContent === label)!;
-    await act(async () => {
-      const details = summary.parentElement as HTMLDetailsElement;
-      details.open = true;
-      details.dispatchEvent(new Event("toggle"));
-    });
-  }
-
-  it("does not refetch the library when preferences arrive during its first request", async () => {
+  it("overlays late preferences without fetching the whole library", async () => {
     const prefs = deferred<Awaited<ReturnType<typeof api.libraryPrefs>>>();
-    const rows = deferred<Work[]>();
     vi.mocked(api.libraryPrefs).mockReturnValue(prefs.promise);
-    vi.mocked(api.works).mockReturnValue(rows.promise);
-    // Unrelated slow task history must not delay the want-list overlay.
-    vi.mocked(api.tasks).mockReturnValue(new Promise(() => undefined));
     await act(async () => root.render(<App />));
-    await openLegacy();
+    expect(container.querySelectorAll(".work-grid .work")).toHaveLength(1);
     await act(async () => prefs.resolve(libraryPrefsSchema.parse({ want_list: [work.id] })));
-    expect(api.works).toHaveBeenCalledTimes(1);
-    await act(async () => rows.resolve([work]));
-    expect(container.querySelector("[data-works]")?.textContent).toBe("fixture:true");
-    expect(api.works).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".work-grid")?.textContent).toContain("取消想看");
+    expect(api.works).not.toHaveBeenCalled();
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/works/query"))).toHaveLength(1);
   });
 
   it("does not load the whole library for a work detail deep link", async () => {
@@ -200,17 +181,6 @@ describe("page load request budget", () => {
     expect(container.textContent).toContain("Full biography");
   });
 
-  it("shows actor content while the other directory is still pending", async () => {
-    window.history.replaceState({}, "", "/?view=actors");
-    vi.mocked(api.nonJavActors).mockReturnValue(new Promise(() => undefined));
-    await act(async () => root.render(<App />));
-    await openLegacy("维护演员资料");
-    expect(container.textContent).toContain("actors-ready");
-    expect(container.textContent).toContain("演员资料仍在更新");
-    expect(api.works).not.toHaveBeenCalled();
-    expect(api.tasks).not.toHaveBeenCalled();
-  });
-
   it("does not download the library until the local swipe feed is selected", async () => {
     window.history.replaceState({}, "", "/?view=swipe");
     await act(async () => root.render(<App />));
@@ -227,55 +197,47 @@ describe("page load request budget", () => {
     await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "want-from-ranking")!.click());
     expect(api.works).not.toHaveBeenCalled();
     await nav("影片");
-    await openLegacy();
-    expect(api.works).toHaveBeenCalledTimes(1);
-    expect(container.querySelector("[data-works]")?.textContent).toBe("fixture:true");
+    expect(api.works).not.toHaveBeenCalled();
+    expect(container.querySelector(".work-grid")?.textContent).toContain("取消想看");
   });
 
-  it("shares fulfilled resources across app remounts", async () => {
+  it("shares preferences across app remounts", async () => {
     await act(async () => root.render(<App />));
-    await openLegacy();
     await act(async () => root.render(null));
     await act(async () => root.render(<App />));
-    await openLegacy();
-    expect(container.querySelector("[data-works]")?.textContent).toBe("fixture:false");
-    expect(api.works).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".work-grid")?.textContent).toContain("Fixture");
+    expect(api.works).not.toHaveBeenCalled();
     expect(api.libraryPrefs).toHaveBeenCalledTimes(1);
   });
 
-  it("force-refreshes visible queries together without blanking existing content", async () => {
+  it("refreshes the visible catalog without blanking its cards", async () => {
     await act(async () => root.render(<App />));
-    await openLegacy();
-    const prefs = deferred<Awaited<ReturnType<typeof api.libraryPrefs>>>();
-    const rows = deferred<Work[]>();
-    vi.mocked(api.libraryPrefs).mockReturnValue(prefs.promise);
-    vi.mocked(api.works).mockReturnValue(rows.promise);
-    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "刷新")!.click());
-    expect(api.libraryPrefs).toHaveBeenCalledTimes(2);
-    expect(api.works).toHaveBeenCalledTimes(2);
-    expect(container.querySelector("[data-works]")).not.toBeNull();
+    const rows = deferred<Response>();
+    vi.mocked(fetch).mockImplementation(async () => rows.promise);
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "刷新")!.click());
+    expect(container.querySelector(".work-grid")?.textContent).toContain("Fixture");
+    expect(api.works).not.toHaveBeenCalled();
     expect(api.tasks).not.toHaveBeenCalled();
-    await act(async () => { prefs.resolve(libraryPrefsSchema.parse({})); rows.resolve([work]); });
+    await act(async () => rows.resolve(new Response(JSON.stringify({ items: [], next_cursor: null, total: 0 }))));
   });
 
-  it("deduplicates a pending list request when switching pages", async () => {
-    const rows = deferred<Work[]>();
-    vi.mocked(api.works).mockReturnValue(rows.promise);
-    await act(async () => root.render(<App />));
-    await openLegacy();
-    await nav("演员");
-    await nav("影片");
-    expect(api.works).toHaveBeenCalledTimes(1);
-    await act(async () => rows.resolve([work]));
-    expect(container.querySelector("[data-works]")?.textContent).toBe("fixture:false");
-  });
-
-  it("updates want-list state without downloading the library again", async () => {
+  it("updates want state on the only work list", async () => {
     vi.mocked(api.setWantList).mockResolvedValue(libraryPrefsSchema.parse({ want_list: [work.id] }));
     await act(async () => root.render(<App />));
-    await openLegacy();
-    await act(async () => container.querySelector<HTMLButtonElement>("[data-works] button")!.click());
-    expect(container.querySelector("[data-works]")?.textContent).toBe("fixture:true");
-    expect(api.works).toHaveBeenCalledTimes(1);
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>(".work-grid button")].find(button => button.textContent === "想看")!.click());
+    expect(container.querySelector(".work-grid")?.textContent).toContain("取消想看");
+    expect(api.setWantList).toHaveBeenCalledWith("fixture", true);
+    expect(api.works).not.toHaveBeenCalled();
+  });
+
+  it("keeps failed covers inside their own frame and leaves titles and actions mounted", async () => {
+    vi.mocked(fetch).mockImplementation(async (url) => new Response(JSON.stringify(String(url).endsWith("/works/query")
+      ? { items: [{ ...work, poster: "/broken.jpg" }], next_cursor: null, total: 1 } : String(url).endsWith("/facets") ? {} : [])));
+    await act(async () => root.render(<App />));
+    await act(async () => container.querySelector(".cover-main")!.dispatchEvent(new Event("error")));
+    expect(container.querySelector(".poster > .cover-frame > .poster-fallback")).not.toBeNull();
+    expect(container.querySelector(".work-grid")?.textContent).toContain("Fixture");
+    await act(async () => container.querySelector<HTMLElement>(".work")!.click());
+    expect(container.textContent).toContain("detail-ready");
   });
 });

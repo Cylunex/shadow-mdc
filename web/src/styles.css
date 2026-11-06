@@ -2593,19 +2593,13 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 }
 
 /* Unified catalog reuses the existing cover renderer with bounded card dimensions. */
-.unified-catalog .work-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
-.unified-catalog .work-card > button:first-child { display: flex; flex-direction: column; gap: 8px; text-align: left; width: 100%; }
-.unified-catalog .cover-frame { position: relative; inset: auto; width: 100%; aspect-ratio: 16 / 10; overflow: hidden; border-radius: 8px; }
-.unified-catalog .poster-fallback { width: 100%; aspect-ratio: 16 / 10; border-radius: 8px; }
-.unified-catalog .actor-card .cover-frame { aspect-ratio: 4 / 3; }
+.unified-catalog .actor-card .cover-frame { position: relative; inset: auto; width: 100%; aspect-ratio: 4 / 3; overflow: hidden; border-radius: 8px; }
+
 .unified-catalog .genre-sheet label { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
 .unified-catalog .work-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)) !important; gap: 16px; }
 .unified-catalog .actor-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 1fr)); }
 .unified-catalog .actor-card { display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 12px; text-align: left; color: inherit; }
-.unified-catalog .actor-card > span, .unified-catalog .work-card > span { color: var(--muted); font-size: 13px; line-height: 1.5; }
-.unified-catalog .work-card > button:first-child { background: transparent; color: inherit; padding: 0; }
-.unified-catalog .work-card strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; min-height: 2.8em; line-height: 1.4; }
-.unified-catalog .work-card > button:last-child { align-self: flex-start; margin-top: auto; }
+.unified-catalog .actor-card > span { color: var(--muted); font-size: 13px; line-height: 1.5; }
 .unified-catalog .works-extra-filters { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
 .unified-catalog .catalog-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
 .unified-catalog .works-extra-filters > label { display: flex; gap: 8px; align-items: center; color: var(--muted); }
@@ -2638,3 +2632,8 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   .unified-catalog .actor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .unified-catalog .actor-card { padding: 8px; }
 }
+
+.unified-catalog .work { min-width: 0; }
+.unified-catalog .catalog-person-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.unified-catalog form.genre-sheet { display: block; overflow-y: auto; max-height: 85dvh; padding: 20px; }

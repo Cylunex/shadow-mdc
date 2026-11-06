@@ -46,14 +46,14 @@ it("keeps legacy tag intersection and actor/studio/year links working", () => {
   });
 });
 
-it("preserves filters that belong to the legacy bulk-tools panel", () => {
+it("migrates legacy filters into the single paginated catalog", () => {
   const url = new URL("https://example.com/mdc/?cat=Japan&col=collection&page=2&sort=ranked&status=want");
   applyCatalogFiltersToUrl(url, readCatalogFilters(url.search));
   expect(url.searchParams.get("sort")).toBe("ranked");
   expect(url.searchParams.get("status")).toBe("want");
   expect(url.searchParams.get("cat")).toBe("Japan");
   expect(url.searchParams.get("col")).toBe("collection");
-  expect(url.searchParams.get("page")).toBe("2");
+  expect(url.searchParams.has("page")).toBe(false);
 });
 
 it("keeps JSON filters alongside legacy sorting and nullable year fields", () => {

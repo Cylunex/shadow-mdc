@@ -56,8 +56,10 @@ from .db.models import (
     MediaEmbyBinding,
     Work,
     WorkActor,
+    WorkCollection,
     WorkTaxonomy,
 )
+from .media.artwork import resolve_work_display_images
 from .services.actor_images import actor_images, valid_key
 from .services.catalog_people import (
     Collaboration,
@@ -76,6 +78,7 @@ from .services.catalog_people import (
 from .services.catalog_people import (
     person as stored_person,
 )
+from .services.javranking_client import JavRankingIndexCache
 from .services.library_prefs import LibraryPrefs
 from .tags import normalize_tags
 
@@ -120,6 +123,13 @@ class CatalogCard(BaseModel):
     overview: str | None = None
     duration_ms: int | None
     poster: str
+    category: str = "Other"
+    release_date: str | None = None
+    has_local_media: bool = False
+    rating_value: float | None = None
+    rating_max: float | None = None
+    javranking_rank: int | None = None
+    javranking_score: float | None = None
 
 
 class CatalogPage(BaseModel):
@@ -160,6 +170,8 @@ def _card(work: Work, prefix: str, *, detail: bool = False) -> CatalogCard:
         year=work.release_date.year if work.release_date else None,
         actors=work.actors, tags=list(normalize_tags(work.tags)), studio=work.studio,
         label=work.label, series=work.series, overview=work.plot if detail else None,
+        category=work.category, release_date=str(work.release_date) if work.release_date else None,
+        rating_value=work.rating_value, rating_max=work.rating_max,
         duration_ms=work.runtime_seconds * 1000 if work.runtime_seconds else None,
         poster=(f"/api/works/{work.id}/artwork/poster" if prefix == "/api"
                     else f"{prefix}/works/{work.id}/poster"),
@@ -307,6 +319,13 @@ def build_catalog_router(
         actor_profiles: dict[str, CatalogPerson] | None = None,
     ) -> Select[tuple[Work]]:
         statement = select(Work)
+        if filters.category != "all":
+            statement = statement.where(Work.category == filters.category)
+        if filters.collection:
+            kind, _, name = filters.collection.partition(":")
+            statement = statement.where(Work.id.in_(select(WorkCollection.work_id).join(
+                Collection, Collection.id == WorkCollection.collection_id,
+            ).where(Collection.kind == kind, Collection.name == name)))
         if filters.q.strip():
             q = filters.q.strip()
             profiles_for_search = (list(actor_profiles.values()) if actor_profiles is not None
@@ -383,7 +402,13 @@ def build_catalog_router(
             statement = statement.where(year <= filters.year_to)
         files = exists(select(1).where(MediaAsset.work_id == Work.id))
         emby = exists(select(1).where(MediaEmbyBinding.work_id == Work.id))
-        if filters.status == "files":
+        if filters.status == "want":
+            statement = statement.where(Work.id.in_(runtime(request).library_prefs_store.load().want_list))
+        elif filters.status == "downloaded":
+            statement = statement.where(files)
+        elif filters.status == "undownloaded":
+            statement = statement.where(~files)
+        elif filters.status == "files":
             statement = statement.where(files)
         elif filters.status == "emby":
             statement = statement.where(emby)
@@ -392,10 +417,24 @@ def build_catalog_router(
         return statement
 
     def work_order(
-        filters: CatalogFilter,
+        filters: CatalogFilter, request: Request,
     ) -> tuple[SQLColumnExpression[str] | SQLColumnExpression[datetime], bool]:
         order_column: SQLColumnExpression[str] | SQLColumnExpression[datetime]
-        if filters.sort == "title":
+        if filters.sort == "ranked":
+            honors = JavRankingIndexCache(runtime(request).settings.data_dir / "javranking").read_honors_map()
+            # Fixed-width keys keep cursor ordering stable, including unranked works.
+            order_column = case({code: f"{info.rank or 999999999:09d}" for code, info in honors.items()},
+                                value=Work.primary_code, else_="999999999") if honors else cast(
+                                    "999999999", String,
+                                )
+            ascending = True
+        elif filters.sort == "random":
+            order_column = func.substr(Work.id, filters.seed % 24 + 1)
+            ascending = True
+        elif filters.sort == "code":
+            order_column = func.coalesce(Work.primary_code, "")
+            ascending = True
+        elif filters.sort == "title":
             order_column = Work.title
             ascending = True
         elif filters.sort in ("newest", "oldest"):
@@ -416,7 +455,7 @@ def build_catalog_router(
     def ordered_playlist_works(
         filters: CatalogFilter, request: Request, session: Session,
     ) -> Select[tuple[Work]]:
-        column, ascending = work_order(filters)
+        column, ascending = work_order(filters, request)
         return filtered_statement(filters, request, session).order_by(
             column.asc() if ascending else column.desc(),
             Work.id.asc() if ascending else Work.id.desc(),
@@ -425,7 +464,7 @@ def build_catalog_router(
     def query_works(filters: CatalogFilter, request: Request, session: Session) -> CatalogPage:
         statement = filtered_statement(filters, request, session)
         total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
-        order_column, ascending = work_order(filters)
+        order_column, ascending = work_order(filters, request)
         scope = hashlib.sha256(filters.model_dump_json(exclude={"cursor", "limit"}).encode()).hexdigest()
         if filters.cursor:
             try:
@@ -450,8 +489,8 @@ def build_catalog_router(
         next_cursor = None
         if len(rows) > filters.limit:
             last = rows[filters.limit - 1]
-            if filters.sort == "title":
-                value = last.title
+            if filters.sort in ("title", "code", "random", "ranked"):
+                value = str(session.scalar(select(order_column).where(Work.id == last.id)))
             elif filters.sort in ("newest", "oldest"):
                 explicit = taxonomies.get(last.id)
                 value = (f"{explicit.release_year:04d}-01-01"
@@ -468,6 +507,20 @@ def build_catalog_router(
         }) if w.id in taxonomies else _card(w, poster_prefix) for w in rows[:filters.limit]]
         cards = [card.model_copy(update={"actors": names[card.id]})
                  if card.id in names else card for card in cards]
+        if prefix == "/api/catalog":
+            images = resolve_work_display_images(
+                rows[:filters.limit], data_dir=runtime(request).settings.data_dir,
+            )
+            local_ids = set(session.scalars(select(MediaAsset.work_id).where(
+                MediaAsset.work_id.in_([card.id for card in cards]),
+            )))
+            ranking = JavRankingIndexCache(runtime(request).settings.data_dir / "javranking")
+            for card in cards:
+                card.poster = images.get(card.id) or ""
+                card.has_local_media = card.id in local_ids
+                honor = ranking.lookup_honors(card.code)
+                if honor:
+                    card.javranking_rank, card.javranking_score = honor.rank, honor.score
         return CatalogPage(items=cards, next_cursor=next_cursor, total=total)
 
     @router.post("/works/query")
@@ -577,7 +630,16 @@ def build_catalog_router(
                     .join(values, true()).group_by(values.c.value),
                 )
                 taxonomy[key] = [Facet(id=k, name=k, count=v) for k, v in counts]
+            collection_base = filtered_statement(filters.model_copy(update={"collection": ""}), request,
+                                                 session, actor_profiles).subquery()
+            collections = session.execute(select(Collection.kind, Collection.name, func.count()).join(
+                WorkCollection, WorkCollection.collection_id == Collection.id,
+            ).join(collection_base, collection_base.c.id == WorkCollection.work_id).group_by(
+                Collection.kind, Collection.name,
+            )).all()
             return {
+                "collections": [Facet(id=f"{kind}:{name}", name=name, count=count)
+                                for kind, name, count in collections],
                 **taxonomy,
                 "years": [Facet(id=k, name=k, count=v) for k, v in year_counts],
                 "decades": [Facet(id=k, name=k, count=v) for k, v in sorted(decades.items(), reverse=True)],

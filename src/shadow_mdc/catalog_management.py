@@ -66,6 +66,9 @@ class OrganizationLink(BaseModel):
 
 class CatalogFilter(BaseModel):
     q: str = Field(default="", max_length=200)
+    category: Literal["all", "Japan", "China", "Korea", "Europe", "Other"] = "all"
+    collection: str = ""
+    seed: int = Field(default=0, ge=0, le=1000000)
     actors: list[str] = Field(default_factory=list)
     actors_all: bool = False
     actor_name: str = ""
@@ -81,8 +84,8 @@ class CatalogFilter(BaseModel):
     year_from: int | None = None
     year_to: int | None = None
     unknown_year: bool = False
-    status: Literal["all", "files", "emby", "metadata"] = "all"
-    sort: Literal["added", "newest", "oldest", "title"] = "added"
+    status: Literal["all", "files", "emby", "metadata", "want", "downloaded", "undownloaded"] = "all"
+    sort: Literal["added", "newest", "oldest", "title", "code", "ranked", "random"] = "added"
     cursor: str | None = None
     limit: int = Field(default=60, ge=1, le=100)
 

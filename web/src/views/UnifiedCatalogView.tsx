@@ -5,10 +5,13 @@ import {
   CatalogPeopleEditor, CatalogOrganizations, CatalogPlaylists, PEOPLE_PAGE_SIZE, PersonPicker, catalogRequest,
   usePeopleCards, usePersonLabels, type ManagedPerson
 } from "./CatalogManagement";
+import { workSchema } from "../model";
+import { WorkCard } from "../components/WorkCard";
+import { CatalogLibraryTools, CatalogPersonActions, useCatalogActions } from "./CatalogActions";
 import { CoverImage } from "../components/CoverImage";
 import { CatalogTags } from "./CatalogTags";
 
-type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null };
+type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null; code?: string | null; category?: string; release_date?: string | null; has_local_media?: boolean; rating_value?: number | null; rating_max?: number | null; javranking_rank?: number | null; javranking_score?: number | null };
 type Person = ManagedPerson;
 type Facet = { id: string; name: string; count: number; role: string };
 export type { Filters } from "../lib/catalogFilters";
@@ -37,8 +40,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   const [followedOnly, setFollowedOnly] = useState(false);
   const [actorSearch, setActorSearch] = useState("");
   const [actorOffset, setActorOffset] = useState(0);
-  const [personRef, setPersonRef] = useState("");
-  const activePersonRef = initialPersonRef ?? personRef;
+  const activePersonRef = initialPersonRef;
   const [resolvedRef, setResolvedRef] = useState("");
   const { page: people, error: peopleError, loading: peopleLoading } =
     usePeopleCards(actorSearch, actorSort, followedOnly, actorOffset, mode === "actors" && !initialPersonRef);
@@ -51,6 +53,8 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   const [editing, setEditing] = useState<Card | null>(null);
   const [taxonomy, setTaxonomy] = useState({ genres: "", forms: "", regions: "", release_year: "" });
   const [revision, setRevision] = useState(0);
+  const actions = useCatalogActions(() => setRevision(value => value + 1));
+  const showingWorks = mode !== "actors" || Boolean(initialPersonRef);
   async function edit(row: Card) {
     try {
       const value = await request<{ genres: string[]; forms: string[]; regions: string[]; release_year: number | null }>("works/" + row.id + "/taxonomy");
@@ -105,7 +109,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   }, []);
   const waitingForPerson = Boolean(initialPersonRef && initialPersonRef !== resolvedRef);
   useEffect(() => {
-    if (waitingForPerson) return;
+    if (waitingForPerson || !showingWorks) { setLoading(false); return; }
     const controller = new AbortController();
     workRequest.current = controller;
     const { signal } = controller;
@@ -145,7 +149,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     }
     const timer = setTimeout(loadWorks, 180);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [filters, revision, refresh, waitingForPerson]);
+  }, [filters, revision, refresh, waitingForPerson, showingWorks]);
   async function more() {
     const signal = workRequest.current?.signal;
     if (!cursor || loading || !signal || signal.aborted) return;
@@ -174,8 +178,8 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   return <section className="panel-section unified-catalog">
     <div className="catalog-heading">
     <div><h1>{mode === "actors" ? "演员库" : mode === "categories" ? "分类浏览" : "作品库"}</h1>
-    <p className="muted">统一作品目录 · {total} 部作品</p></div>
-    {onStartFeed && <button disabled={rows.length === 0 || loading} onClick={() => {
+    <p className="muted">{showingWorks ? `${total} 部作品` : "演员档案与参演作品"}</p></div>
+    {showingWorks && onStartFeed && <button disabled={rows.length === 0 || loading} onClick={() => {
       try { sessionStorage.setItem("mdc:catalog-return", JSON.stringify({
         filters, rows, cursor, total, scroll: window.scrollY, at: Date.now()
       })); } catch { /* Storage is optional. */ }
@@ -183,6 +187,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     }}>按当前筛选刷片</button>}
     </div>
 
+    {actions.message && <p role="status">{actions.message}</p>}
     {error && <p role="alert">{error}</p>}
     {workError && <p role="alert">{workError}</p>}
     {facetError && <p role="alert">{facetError}</p>}
@@ -201,10 +206,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
         {peopleError && <p role="alert">{peopleError.message}</p>}
         {people?.items.length === 0 && <p>没有匹配的演员。</p>}
         <div className="actor-grid">{people?.items.map(p =>
-          <button key={p.id} className="actor-card" onClick={() => {
-            if (personRef !== p.id) setSelectedPerson(null);
-            setError(""); setPersonRef(p.id); patch({ actors: [p.id], actor_name: "" });
-          }}>
+          <button key={p.id} className="actor-card" onClick={() => onOpenActor(p.id)}>
             <CoverImage src={appUrl(p.image_url) ?? ""} /><strong>{p.name}</strong>
             {p.same_name && <span>档案 {p.id.slice(-6)}</span>}
             <span>{p.aliases.join(" / ")} · {p.work_count} 部</span>
@@ -216,7 +218,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       {selectedPerson && <article><h2>{selectedPerson.name}</h2><p>{selectedPerson.biography}</p>
         {selectedPerson.x_handle && <a href={"https://x.com/" + encodeURIComponent(selectedPerson.x_handle)}
           target="_blank" rel="noreferrer">X · {selectedPerson.x_handle}</a>}
-        {!selectedPerson.ref.startsWith("person:") && <button onClick={() => onOpenActor(selectedPerson.ref)}>原有关注与订阅</button>}
+        <CatalogPersonActions person={selectedPerson} actions={actions} />
         <p>常合作演员</p>{selectedPerson.collaborators?.map(other => <button key={other.id}
           onClick={() => patch({ actors: [selectedPerson.id, other.id], actors_all: true })}>{other.name} · {other.count}</button>)}
         <p>合作机构</p>{selectedPerson.organizations?.map(other => <button key={other.id}
@@ -227,11 +229,16 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
         setRevision(value => value + 1);
       }} />
     </>}
+    {showingWorks && <>
     <div className="catalog-search">
       <input value={filters.q} aria-label="检索作品" placeholder="片名、番号、演员、片商" onChange={e => patch({ q: e.target.value })} />
       <button className="ghost" aria-expanded={showFilters} onClick={() => setShowFilters(value => !value)}>{showFilters ? "收起筛选" : "分类与筛选"}</button>
     </div>
     {showFilters && <div className="works-extra-filters">
+      <select aria-label="作品地区" value={filters.category ?? "all"} onChange={e => patch({ category: e.target.value as Filters["category"] })}>
+        <option value="all">全部地区</option><option value="Japan">JAV</option><option value="China">国产</option><option value="Korea">韩国</option><option value="Europe">欧美</option><option value="Other">其他</option>
+      </select>
+      <select aria-label="合集" value={filters.collection ?? ""} onChange={e => patch({ collection: e.target.value })}><option value="">全部合集</option>{(facets.collections ?? []).map(f => <option key={f.id} value={f.id}>{f.name} · {f.count}</option>)}</select>
       <select aria-label="年代" value={filters.unknown_year ? "unknown" : filters.year_from && filters.year_to === filters.year_from + 9 ? String(filters.year_from) : ""} onChange={e => patch(e.target.value === "unknown" ? { unknown_year: true, year_from: undefined, year_to: undefined } : { unknown_year: false, year_from: e.target.value ? Number(e.target.value) : undefined, year_to: e.target.value ? Number(e.target.value) + 9 : undefined })}>
         <option value="">全部年代</option>{(facets.decades ?? []).map(f => <option key={f.id} value={f.id}>{f.id === "unknown" ? "年份待补" : f.name + " 年代"} · {f.count}</option>)}
       </select>
@@ -243,8 +250,8 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
         <option value="">{field === "genres" ? "全部题材" : field === "forms" ? "全部作品形式" : "全部制作地区"}</option>
         {(facets[field] ?? []).map(f => <option key={f.id} value={f.id}>{f.name} · {f.count}</option>)}
       </select>)}
-      <select aria-label="播放状态" value={filters.status} onChange={e => patch({ status: e.target.value as Filters["status"] })}><option value="all">全部状态</option><option value="emby">已关联 Emby</option><option value="files">有关联文件</option><option value="metadata">仅资料</option></select>
-      <select aria-label="排序" value={filters.sort} onChange={e => patch({ sort: e.target.value as Filters["sort"] })}><option value="added">最近入库</option><option value="newest">最新发行</option><option value="oldest">最早发行</option><option value="title">片名</option></select>
+      <select aria-label="播放状态" value={filters.status} onChange={e => patch({ status: e.target.value as Filters["status"] })}><option value="all">全部状态</option><option value="want">想看</option><option value="downloaded">已下载</option><option value="undownloaded">全部未下载</option><option value="emby">已关联 Emby</option><option value="files">有关联文件</option><option value="metadata">仅资料</option></select>
+      <select aria-label="排序" value={filters.sort} onChange={e => patch({ sort: e.target.value as Filters["sort"], seed: e.target.value === "random" ? Math.floor(Math.random() * 1000000) : undefined })}><option value="added">最近入库</option><option value="newest">最新发行</option><option value="oldest">最早发行</option><option value="title">片名</option><option value="code">番号</option><option value="ranked">榜单热度</option><option value="random">随机</option></select>
       <PersonPicker label="追加演员" onSelect={person =>
         patch({ actors: [...new Set([...filters.actors, person.id])] })} />
       <label><input type="checkbox" checked={filters.actors_all} onChange={e => patch({ actors_all: e.target.checked })} />共同出演</label>
@@ -252,31 +259,39 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       <select aria-label="排除标签" value="" onChange={e => { if (e.target.value) patch({ exclude_tags: [...new Set([...filters.exclude_tags, e.target.value])] }); }}>
         <option value="">排除某标签</option>{(facets.tags ?? []).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
       </select>
-      <button onClick={() => { setFilters(empty); setSelectedPerson(null); setPersonRef(""); }}>清除条件</button>
+      <button onClick={() => { setFilters(empty); setSelectedPerson(null); }}>清除条件</button>
     </div>}
     <div className="active-filter-chips">
+      {filters.category && filters.category !== "all" && <button onClick={() => patch({ category: "all" })}>{filters.category} ×</button>}
+      {filters.collection && <button onClick={() => patch({ collection: "" })}>{filters.collection} ×</button>}
+      {filters.actor_name && <button onClick={() => patch({ actor_name: "" })}>{filters.actor_name} ×</button>}
+      {filters.studio_name && <button onClick={() => patch({ studio_name: "" })}>{filters.studio_name} ×</button>}
       {filters.tags.map(name => <button key={"tag:" + name} onClick={() => patch({ tags: filters.tags.filter(t => t !== name) })}>{name} ×</button>)}
       {(["genres", "forms", "regions", "organizations"] as const).flatMap(field => filters[field].map(id =>
         <button key={field + id} onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
       {(filters.year_from || filters.unknown_year) && <button onClick={() => patch({ year_from: undefined, year_to: undefined, unknown_year: false })}>{filters.unknown_year ? "年份待补" : filters.year_from === filters.year_to ? filters.year_from : `${filters.year_from}–${filters.year_to}`} ×</button>}
-      {filters.status !== "all" && <button onClick={() => patch({ status: "all" })}>{({ emby: "已关联 Emby", files: "有关联文件", metadata: "仅资料" })[filters.status]} ×</button>}
+      {filters.status !== "all" && <button onClick={() => patch({ status: "all" })}>{({ emby: "已关联 Emby", files: "有关联文件", metadata: "仅资料", want: "想看", downloaded: "已下载", undownloaded: "全部未下载" })[filters.status]} ×</button>}
       {filters.exclude_tags.map(name => <button key={name}
       onClick={() => patch({ exclude_tags: filters.exclude_tags.filter(t => t !== name) })}>排除 {name} ×</button>)}{filters.actors.map(id => <button key={id} onClick={() => patch({ actors: filters.actors.filter(a => a !== id) })}>{actorNames?.[id] ?? id} ×</button>)}</div>
     <div className="catalog-controls">
     <CatalogTags tags={facets.tags ?? []} selected={filters.tags} preview={mode === "categories"}
       onToggle={id => patch({ tags: filters.tags.includes(id) ? filters.tags.filter(t => t !== id) : [...filters.tags, id] })} />
     <details className="catalog-management"><summary>片单与资料工具</summary><div className="catalog-tools">
+    <CatalogLibraryTools actions={actions} />
     <CatalogOrganizations works={rows} onFilter={(id, role) => patch({ organizations: [id], organization_role: role ?? "" })} />
     <CatalogPlaylists works={rows} onOpenWork={openWork} filters={filters} onApplyFilters={value => setFilters({ ...empty, ...value })} />
     <details><summary>保存的筛选</summary>{saved.map(item => <button key={item.name} onClick={() => setFilters(item.filters)}>{item.name}</button>)}<input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="筛选名称" /><button onClick={save}>保存到本机</button></details>
     </div></details>
     </div>
     {loading && !workError && !error && <p role="status">正在读取…</p>}
-    <div className="work-grid">{rows.map(row => <article className="work-card" key={row.id}>
-      <button onClick={() => openWork(row.id)}><CoverImage src={appUrl(row.poster) ?? ""} /><strong>{row.title}</strong></button>
-      <span>{row.year ?? "年份待补"} · {row.studio}</span><span>{row.actors.slice(0, 2).join(" / ")}</span>
-      <button className="ghost" onClick={() => void edit(row)}>编辑分类</button>
-    </article>)}</div>
+    <div className="work-grid">{rows.map(row => <WorkCard key={row.id} work={workSchema.parse({
+      ...row, family: "", category: row.category ?? "Other", created_at: "", updated_at: "",
+      primary_code: row.code, image_url: row.poster, want_list: actions.prefs?.want_list.includes(row.id) ?? false,
+      release_date: row.release_date ?? (row.year ? String(row.year) : null),
+    })} onSelect={openWork} busy={actions.busy} onToggleWant={actions.toggleWant}
+      onRefresh={actions.refreshWork} onFilterCast={name => patch({ actor_name: name })}
+      onFilterStudio={name => patch({ studio_name: name })}
+      actions={<button className="ghost" onClick={() => void edit(row)}>编辑分类</button>} />)}</div>
     {editing && <div className="genre-sheet-backdrop"><form className="genre-sheet" role="dialog" aria-modal="true" aria-label="编辑作品分类" onSubmit={e => { e.preventDefault(); void saveTaxonomy(); }}>
       <h2>{editing.title}</h2>{(["genres", "forms", "regions", "release_year"] as const).map(field =>
         <label key={field}>{({ genres: "题材", forms: "形式", regions: "制作地区", release_year: "发行年" })[field]}
@@ -288,5 +303,6 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
 
     {!loading && !workError && rows.length === 0 && <p>没有符合条件的作品，可移除部分条件后再试。</p>}
     {cursor && <button disabled={loading} onClick={() => void more()}>加载下一页</button>}
+    </>}
   </section>;
 }

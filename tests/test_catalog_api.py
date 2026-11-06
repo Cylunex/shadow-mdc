@@ -324,3 +324,54 @@ def test_dynamic_playlist_reuses_mobile_contract_and_tracks_new_works(
         assert mobile_playlists[0]["work_ids"] == ["added", "first"]
         assert client.delete("/api/catalog/playlists/" + playlist["id"], headers=owner).status_code == 204
         assert client.get(path, headers=mobile).status_code == 404
+
+
+def test_web_catalog_uses_existing_artwork_and_legacy_filters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{tmp_path / 'catalog.db'}")
+    with TestClient(app) as client:
+        with app.state.runtime.database.session() as session:
+            session.add_all([
+                Work(id="a", title="Local thumbnail", category="Japan", primary_code="AAA-001"),
+                Work(id="b", title="Remote cover", category="China", primary_code="BBB-002",
+                     artwork=[{"kind": "poster", "url": "https://example.com/cover.jpg"}]),
+                Work(id="c", title="No cover", category="Europe"),
+                Collection(id="series", name="Fixture", normalized_name="fixture", kind="series"),
+            ])
+            session.flush()
+            session.add(WorkCollection(work_id="a", collection_id="series"))
+        image_dir = tmp_path / "artwork" / "a"
+        image_dir.mkdir(parents=True)
+        Image.new("RGB", (8, 8)).save(image_dir / "thumb.jpg")
+        app.state.runtime.library_prefs_store.set_want("a", True)
+        response = client.post("/api/catalog/works/query", json={})
+        assert response.status_code == 200, response.text
+        rows = {row["id"]: row for row in response.json()["items"]}
+        assert rows["a"]["poster"] == "/api/works/a/artwork/thumb"
+        assert client.get(rows["a"]["poster"]).status_code == 200
+        assert rows["b"]["poster"] == "https://example.com/cover.jpg"
+        assert rows["c"]["poster"] == ""
+        assert client.post("/api/catalog/works/query", json={"status": "want"}).json()["total"] == 1
+        assert client.post("/api/catalog/works/query", json={"category": "China"}).json()["total"] == 1
+        assert client.post("/api/catalog/works/query", json={
+            "collection": "series:Fixture",
+        }).json()["total"] == 1
+        assert client.post("/api/catalog/facets", json={}).json()["collections"] == [
+            {"id": "series:Fixture", "name": "Fixture", "count": 1, "role": ""},
+        ]
+        assert client.post("/api/catalog/works/query", json={"status": "downloaded"}).json()["total"] == 0
+        assert client.post("/api/catalog/works/query", json={"status": "undownloaded"}).json()["total"] == 3
+        for sort in ("code", "ranked", "random"):
+            ids: list[str] = []
+            cursor = None
+            for _ in range(3):
+                page = client.post("/api/catalog/works/query", json={
+                    "sort": sort, "seed": 10, "limit": 1, "cursor": cursor,
+                })
+                assert page.status_code == 200, page.text
+                ids.extend(row["id"] for row in page.json()["items"])
+                cursor = page.json()["next_cursor"]
+            assert len(set(ids)) == 3, (sort, ids)
+            assert cursor is None

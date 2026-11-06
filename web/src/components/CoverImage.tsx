@@ -33,7 +33,6 @@ export function CoverImage({ src, className, frontCrop, loading = "lazy" }: Prop
 function CoverImageContent({ src, className, frontCrop, loading = "lazy" }: Props) {
   const [shape, setShape] = useState<CoverShape | null>(null);
   const [broken, setBroken] = useState(false);
-  if (!src || broken) return <div className="poster-fallback" aria-hidden />;
   const onLoad = (event: SyntheticEvent<HTMLImageElement>) => {
     const img = event.currentTarget;
     setShape(classifyCover(img.naturalWidth, img.naturalHeight));
@@ -46,6 +45,7 @@ function CoverImageContent({ src, className, frontCrop, loading = "lazy" }: Prop
       data-shape={shape ?? "pending"}
       data-crop={crop ? "front" : undefined}
     >
+      {!src || broken ? <div className="poster-fallback" aria-hidden /> : <>
       <div
         className="cover-bg"
         aria-hidden
@@ -59,7 +59,7 @@ function CoverImageContent({ src, className, frontCrop, loading = "lazy" }: Prop
         decoding="async"
         onLoad={onLoad}
         onError={() => setBroken(true)}
-      />
+      /></>}
     </div>
   );
 }
