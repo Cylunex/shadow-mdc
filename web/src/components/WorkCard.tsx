@@ -45,7 +45,11 @@ export const WorkCard = memo(function WorkCard({
       className={selected ? "work selected" : "work"}
       onClick={() => onSelect(work.id)}
       onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") onSelect(work.id);
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect(work.id);
+        }
       }}
       role="button"
       tabIndex={0}
@@ -87,6 +91,7 @@ export const WorkCard = memo(function WorkCard({
                 className="work-code code-chip-copyable"
                 title="点击复制番号"
                 role="button"
+                tabIndex={0}
                 onClick={(event) => {
                   event.stopPropagation();
                   void navigator.clipboard.writeText(work.primary_code!).catch(() => undefined);

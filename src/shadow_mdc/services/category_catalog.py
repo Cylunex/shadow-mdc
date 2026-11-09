@@ -274,6 +274,11 @@ def build_category_list(
     for entry in entries:
         if entry.label not in ordered_labels:
             ordered_labels.append(entry.label)
+    # Library tags remain discoverable even without a curated cover entry.
+    for label, count in counts.items():
+        if count > 0 and label not in by_label:
+            by_label[label] = CategoryCoverEntry(slug=slugify_label(label), label=label, image_file=None)
+            ordered_labels.append(label)
 
     results: list[CategoryOutData] = []
     for label in ordered_labels:

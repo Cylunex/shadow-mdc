@@ -69,11 +69,15 @@ def test_unified_catalog_facets_and_actor_intersection(
         assert next(p for p in people if p["id"] == "aa")["work_ids"] == ["a", "b"]
         page = client.get("/api/catalog/people-cards", params={"limit": 1}).json()
         assert page["next_offset"] == 1
+        assert page["total"] == 2
         assert [(p["id"], p["work_count"]) for p in page["items"]] == [("aa", 2)]
         assert "work_ids" not in page["items"][0]
         second_page = client.get("/api/catalog/people-cards", params={"limit": 1, "offset": 1}).json()
         assert [p["id"] for p in second_page["items"]] == ["bb"]
         assert second_page["next_offset"] is None
+        assert second_page["total"] == 2
+        beyond = client.get("/api/catalog/people-cards", params={"offset": 100}).json()
+        assert beyond["items"] == [] and beyond["total"] == 2
         assert client.get("/api/catalog/people-cards", params={"limit": 101}).status_code == 422
 
 
@@ -113,11 +117,14 @@ def test_persistent_people_merge_undo_and_private_fields(
         assert [(p["id"], p["same_name"], p["work_count"]) for p in found["items"]] == [
             (second["id"], True, 0),
         ]
+        assert found["total"] == 1
+        assert client.get("/api/catalog/people-cards", params={"q": "no match"}).json()["total"] == 0
         assert client.put(f"/api/catalog/people/{first['id']}/preference", json={
             "favorite": True, "blacklist": False,
         }).status_code == 200
         followed = client.get("/api/catalog/people-cards", params={"followed": True}).json()
         assert [p["id"] for p in followed["items"]] == [first["id"]]
+        assert followed["total"] == 1
         assert len(client.get("/api/catalog/people").json()) == 2
         merged = client.post("/api/catalog/people-merge", json={
             "target_id": first["id"], "source_id": second["id"],

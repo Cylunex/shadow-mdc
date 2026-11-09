@@ -11,7 +11,7 @@ import { memoryStorage } from "./test/storage";
 
 vi.mock("./api", () => ({ appUrl: (path: string) => path, api: {
   libraries: vi.fn(), libraryPrefs: vi.fn(), tasks: vi.fn(), works: vi.fn(),
-  actors: vi.fn(), nonJavActors: vi.fn(), assets: vi.fn(), setWantList: vi.fn(),
+  actors: vi.fn(), nonJavActors: vi.fn(), assets: vi.fn(), setWantList: vi.fn(), categories: vi.fn(),
 } }));
 vi.mock("./panels", () => ({ Inbox: () => null }));
 vi.mock("./views/WorkDetailView", () => ({ WorkDetailView: () => <div>detail-ready</div> }));
@@ -52,6 +52,9 @@ describe("page load request budget", () => {
     vi.mocked(api.works).mockResolvedValue([work]);
     vi.mocked(api.actors).mockResolvedValue([]);
     vi.mocked(api.nonJavActors).mockResolvedValue([]);
+    vi.mocked(api.categories).mockResolvedValue({ categories: [
+      { slug: "fixture-tag", label: "Fixture tag", aliases: [], image_url: null, work_count: 1 },
+    ] });
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -159,7 +162,7 @@ describe("page load request budget", () => {
         const name = second ? "Second" : "First";
         return new Response(JSON.stringify({
           items: [{ id: name, name, aliases: [], work_count: 1 }],
-          next_offset: second ? null : 48,
+          next_offset: second ? null : 48, total: 49,
         }));
       }
       if (url.endsWith("/people/Second")) return new Response(JSON.stringify({
@@ -175,10 +178,34 @@ describe("page load request budget", () => {
     expect(api.nonJavActors).not.toHaveBeenCalled();
     expect(fetch.mock.calls.some(([url]) => url.endsWith("/people/First"))).toBe(false);
     await act(async () => [...container.querySelectorAll("button")]
-      .find(button => button.textContent === "下一页演员")!.click());
+      .find(button => button.getAttribute("aria-label") === "下一页演员")!.click());
     expect(container.querySelector(".actor-grid")?.textContent).toContain("Second");
     await act(async () => container.querySelector<HTMLButtonElement>(".actor-card")!.click());
     expect(container.textContent).toContain("Full biography");
+    await act(async () => [...container.querySelectorAll("button")]
+      .find(button => button.textContent === "返回演员库")!.click());
+    expect(container.querySelector(".actor-grid")?.textContent).toContain("Second");
+    expect(container.querySelector('[aria-current="page"]')?.textContent).toBe("2");
+  });
+
+  it("opens categories as a separate list and applies the chosen tag to works", async () => {
+    window.history.replaceState({}, "", "/?view=categories&q=old&genre=old");
+    await act(async () => root.render(<App />));
+    expect(container.querySelector(".category-grid")?.textContent).toContain("Fixture tag");
+    expect(container.querySelector(".work-grid")).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith("/works/query"))).toBe(false);
+    await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
+    expect(container.querySelector(".work-grid")).not.toBeNull();
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("tag")).toBe("Fixture tag");
+    expect(params.has("view")).toBe(false);
+    expect(params.has("genre")).toBe(false);
+    expect(params.has("q")).toBe(false);
+    await act(async () => {
+      window.history.replaceState({}, "", "/?view=categories");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(container.querySelector(".category-grid")).not.toBeNull();
   });
 
   it("does not download the library until the local swipe feed is selected", async () => {

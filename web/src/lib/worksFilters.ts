@@ -1,5 +1,7 @@
 /** URL-synced works list filter state (q/cat/tag/studio/cast/year/col/page). */
 
+import { applyCatalogFiltersToUrl, EMPTY_CATALOG_FILTERS } from "./catalogFilters";
+
 export type WorksCategory = "all" | "Japan" | "China" | "Korea" | "Europe" | "Other";
 
 /** Quick status chips (JHS-inspired 「全部未下载」). */
@@ -185,8 +187,9 @@ export function worksFiltersEqual(a: WorksFilterState, b: WorksFilterState): boo
 export function applyWorksFiltersToUrl(
   url: URL,
   state: WorksFilterState,
-  options: { clearDetail?: boolean } = {}
+  options: { clearDetail?: boolean; replaceAll?: boolean } = {}
 ): void {
+  if (options.replaceAll) applyCatalogFiltersToUrl(url, EMPTY_CATALOG_FILTERS);
   for (const key of ["q", "cat", "status", "sort", "tag", "studio", "cast", "year", "col", "page"] as const) {
     url.searchParams.delete(key);
   }
@@ -211,7 +214,7 @@ export function applyWorksFiltersToUrl(
 export function writeWorksFiltersToUrl(
   state: WorksFilterState,
   mode: "replace" | "push" = "replace",
-  options: { clearDetail?: boolean } = {}
+  options: { clearDetail?: boolean; replaceAll?: boolean } = {}
 ): void {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
@@ -247,6 +250,6 @@ export function patchWorksFilters(
     collection: patch.collection !== undefined ? patch.collection : base.collection,
     page: patch.page !== undefined ? patch.page : touchesNonPage ? 1 : base.page
   };
-  writeWorksFiltersToUrl(next, options.mode ?? "replace", { clearDetail: options.clearDetail });
+  writeWorksFiltersToUrl(next, options.mode ?? "replace", { clearDetail: options.clearDetail, replaceAll: options.replaceAll });
   return next;
 }

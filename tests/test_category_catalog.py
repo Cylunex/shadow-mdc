@@ -151,3 +151,14 @@ def test_categories_api_returns_manifest_and_cover(
         assert image_response.content.startswith(b"\xff\xd8\xff")
         missing = client.get("/api/category-covers/nope.jpg")
         assert missing.status_code == 404
+
+
+def test_categories_include_library_tags_missing_from_curated_manifest(tmp_path: Path) -> None:
+    write_manifest(tmp_path, [CategoryCoverEntry(slug="pov", label="POV", image_file=None)])
+    rows = build_category_list(tmp_path, facet_counts={"POV": 2, "自定义分类": 5, "空分类": 0})
+    assert [(row.label, row.work_count) for row in rows] == [("POV", 2), ("自定义分类", 5)]
+    assert rows[1].image_url is None
+    assert rows[1].slug == slugify_label("自定义分类")
+    assert any(row.label == "自定义分类" for row in build_category_list(
+        tmp_path / "without-manifest", facet_counts={"自定义分类": 5}, only_with_works=True,
+    ))

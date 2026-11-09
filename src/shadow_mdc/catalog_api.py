@@ -154,6 +154,7 @@ class PersonCard(BaseModel):
 class PeoplePage(BaseModel):
     items: list[PersonCard]
     next_offset: int | None
+    total: int = 0
     labels: dict[str, str] = Field(default_factory=dict)
 
 
@@ -576,6 +577,7 @@ def build_catalog_router(
                         revision=p.revision, same_name=names[p.name] > 1,
                     ) for p in matches[offset:offset + limit]],
                     next_offset=offset + limit if offset + limit < len(matches) else None,
+                    total=len(matches),
                 )
 
     @router.post("/facets")

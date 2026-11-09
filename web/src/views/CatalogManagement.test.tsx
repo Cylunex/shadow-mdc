@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { queryClient } from "../query/client";
 import { memoryStorage } from "../test/storage";
-import { CatalogPeopleEditor, CatalogPlaylists, type ManagedPerson } from "./CatalogManagement";
+import { CatalogPeopleEditor, CatalogOrganizations, CatalogPlaylists, type ManagedPerson } from "./CatalogManagement";
 
 vi.mock("../api", () => ({ appUrl: (path: string) => path }));
 let container: HTMLDivElement;
@@ -24,6 +24,22 @@ const person = (id: string): ManagedPerson => ({
   aliases: [], biography: null, image_url: null, notes: "",
   groups: [], match_names: [], work_ids: [], revision: 1,
   favorite: false, blacklist: false
+});
+
+it("loads organization tools only when opened and cancels a closed read", async () => {
+  let signal: AbortSignal | undefined;
+  const fetch = vi.fn((_url: string, init: RequestInit) => {
+    signal = init.signal ?? undefined;
+    return new Promise<Response>(() => undefined);
+  });
+  vi.stubGlobal("fetch", fetch);
+  await act(async () => root.render(<CatalogOrganizations works={[]} onFilter={vi.fn()} />));
+  expect(fetch).not.toHaveBeenCalled();
+  const details = container.querySelector("details")!;
+  await act(async () => { details.open = true; details.dispatchEvent(new Event("toggle")); });
+  expect(fetch).toHaveBeenCalledOnce();
+  await act(async () => { details.open = false; details.dispatchEvent(new Event("toggle")); });
+  expect(signal?.aborted).toBe(true);
 });
 
 it("merges only after inline confirmation and sends both revisions", async () => {

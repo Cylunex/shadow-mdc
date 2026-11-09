@@ -10,6 +10,7 @@ import type { Asset, Candidate, LibraryPrefs, TaskRun, Work } from "./model";
 import { Inbox } from "./panels";
 import { UnifiedCatalogView, type CatalogFeedStart } from "./views/UnifiedCatalogView";
 import { WorkDetailView } from "./views/WorkDetailView";
+import { CategoriesView } from "./views/CategoriesView";
 import {
   patchWorksFilters,
   type WorksFilterState
@@ -331,6 +332,7 @@ export function App() {
     setSelectedWorkId(null);
     setSelectedActorRef(null);
     applyWorksFilterPatch(patch, { replaceAll });
+    writeViewToUrl("works");
     setView("works");
     setMessage(message);
     requestAnimationFrame(() => window.scrollTo(0, 0));
@@ -377,10 +379,12 @@ export function App() {
         setSelectedActorRef(actorRef);
         setSelectedWorkId(null);
         setView("actor-detail");
-      } else if (view === "work-detail" || view === "actor-detail") {
+      } else {
         setSelectedWorkId(null);
         setSelectedActorRef(null);
-        setView(detailReturnView === "actor-detail" ? "actors" : detailReturnView);
+        const fallback = view === "work-detail" || view === "actor-detail"
+          ? detailReturnView === "actor-detail" ? "actors" : detailReturnView : "works";
+        setView(readViewFromUrl() ?? fallback);
       }
     }
     window.addEventListener("popstate", onPopState);
@@ -412,6 +416,11 @@ export function App() {
             writeDetailToUrl({});
           }
           setView(next);
+          const labels: Partial<Record<AppView, string>> = {
+            actors: "演员库", works: "作品库", categories: "分类浏览", rankings: "榜单",
+            swipe: "刷流", subscriptions: "订阅", tasks: "任务", settings: "设置",
+          };
+          if (labels[next]) setMessage(`已切换到${labels[next]}`);
           if (next !== "work-detail" && next !== "actor-detail") writeViewToUrl(next);
           if (next === "tasks" && inbox.length > 0) setTaskTab("inbox");
         }}
@@ -440,9 +449,11 @@ export function App() {
           </button>
         </div>
 
-        {(view === "actors" || view === "works" || view === "categories") && (
-          <UnifiedCatalogView mode={view} refresh={catalogRefresh} onStartFeed={startCatalogFeed} onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
+        {(view === "actors" || view === "works") && (
+          <UnifiedCatalogView key={view} mode={view} refresh={catalogRefresh} onStartFeed={startCatalogFeed} onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
         )}
+        {view === "categories" && <CategoriesView report={setMessage}
+          onOpenTag={tag => navigateToFilteredWorks({ tags: [tag] }, `正在查看分类：${tag}`)} />}
         {view === "actor-detail" && selectedActorRef && <>
           <button className="ghost" onClick={closeActorDetail}>返回演员库</button>
           <UnifiedCatalogView key={selectedActorRef} mode="actors" initialPersonRef={selectedActorRef}

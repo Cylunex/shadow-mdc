@@ -15,7 +15,7 @@ export type PersonCard = {
   id: string; name: string; aliases: string[]; image_url: string | null;
   work_count: number; revision: number; same_name: boolean;
 };
-type PeoplePage = { items: PersonCard[]; next_offset: number | null; labels: Record<string, string> };
+type PeoplePage = { items: PersonCard[]; next_offset: number | null; total: number; labels: Record<string, string> };
 export const PEOPLE_PAGE_SIZE = 48;
 type Organization = { id: string; kind: string; name: string; aliases: string[]; description: string | null; parent_id: string | null; revision: number; work_count: number };
 type Playlist = { id: string; name: string; work_ids: string[]; revision: number; filters?: Filters | null };
@@ -52,21 +52,23 @@ export async function catalogRequest<T>(path: string, method = "GET", body?: unk
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }
 
-export function usePeopleCards(q: string, sort: string, followed: boolean, offset: number, enabled: boolean) {
+export function usePeopleCards(q: string, sort: string, followed: boolean, offset: number, enabled: boolean,
+  limit = PEOPLE_PAGE_SIZE) {
   const [search, setSearch] = useState(q);
   useEffect(() => {
     const timer = setTimeout(() => setSearch(q), 180);
     return () => clearTimeout(timer);
   }, [q]);
   const params = new URLSearchParams({
-    q: search, sort, followed: String(followed), offset: String(offset), limit: String(PEOPLE_PAGE_SIZE),
+    q: search, sort, followed: String(followed), offset: String(offset), limit: String(limit),
   });
   const result = useQuery({
     queryKey: [...queryKeys.personCards, params.toString()],
     queryFn: ({ signal }) => catalogRequest<PeoplePage>("people-cards?" + params, "GET", undefined, signal),
     enabled: enabled && q === search,
   }, queryClient);
-  return { page: q === search ? result.data : undefined, error: result.error, loading: q !== search || result.isPending };
+  return { page: q === search ? result.data : undefined, error: result.error,
+    loading: q !== search || result.isPending || result.isFetching, retry: result.refetch };
 }
 
 export function usePersonLabels(ids: string[]) {
@@ -240,6 +242,7 @@ export function CatalogOrganizations({ works, onFilter }: {
   works: { id: string; title: string }[];
   onFilter: (id: string, role?: string) => void;
 }) {
+  const [open, setOpen] = useState(false);
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [selected, setSelected] = useState<Organization | null>(null);
   const [aliasesText, setAliasesText] = useState("");
@@ -249,7 +252,15 @@ export function CatalogOrganizations({ works, onFilter }: {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const roles = { studio: "制作", distributor: "发行", label: "厂牌", platform: "发布平台", series: "系列", credited: "原始署名" };
-  useEffect(() => { catalogRequest<Organization[]>("organizations").then(setOrganizations).catch(e => setError(String(e))); }, []);
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    setError("");
+    catalogRequest<Organization[]>("organizations", "GET", undefined, controller.signal)
+      .then(items => { if (!controller.signal.aborted) setOrganizations(items); })
+      .catch(e => { if (!controller.signal.aborted) setError(String(e)); });
+    return () => controller.abort();
+  }, [open]);
   async function save() {
     if (!selected) return;
     setBusy(true); setError("");
@@ -260,7 +271,7 @@ export function CatalogOrganizations({ works, onFilter }: {
       setSelected(result); setOrganizations(await catalogRequest<Organization[]>("organizations"));
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
-  return <details><summary>片商、工作室、厂牌与系列档案</summary>
+  return <details onToggle={event => setOpen(event.currentTarget.open)}><summary>片商、工作室、厂牌与系列档案</summary>
     {error && <p role="alert">{error}</p>}
     <button onClick={() => { setSelected({ id: "", kind: "organization", name: "", aliases: [],
       description: "", parent_id: null, revision: 0, work_count: 0 }); setAliasesText(""); }}>新增机构或系列</button>

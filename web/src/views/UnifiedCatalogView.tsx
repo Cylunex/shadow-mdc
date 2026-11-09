@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { z } from "zod";
 import { appUrl } from "../api";
 import { applyCatalogFiltersToUrl, EMPTY_CATALOG_FILTERS, readCatalogFilters, type Filters } from "../lib/catalogFilters";
 import {
-  CatalogPeopleEditor, CatalogOrganizations, CatalogPlaylists, PEOPLE_PAGE_SIZE, PersonPicker, catalogRequest,
+  CatalogPeopleEditor, CatalogOrganizations, CatalogPlaylists, PersonPicker, catalogRequest,
   usePeopleCards, usePersonLabels, type ManagedPerson
 } from "./CatalogManagement";
 import { workSchema } from "../model";
@@ -10,6 +11,8 @@ import { WorkCard } from "../components/WorkCard";
 import { CatalogLibraryTools, CatalogPersonActions, useCatalogActions } from "./CatalogActions";
 import { CoverImage } from "../components/CoverImage";
 import { CatalogTags } from "./CatalogTags";
+import { Pagination } from "../components/Pagination";
+import { useSessionState } from "../hooks/useSessionState";
 
 type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null; code?: string | null; category?: string; release_date?: string | null; has_local_media?: boolean; rating_value?: number | null; rating_max?: number | null; javranking_rank?: number | null; javranking_score?: number | null };
 type Person = ManagedPerson;
@@ -17,12 +20,17 @@ type Facet = { id: string; name: string; count: number; role: string };
 export type { Filters } from "../lib/catalogFilters";
 export type CatalogFeedStart = { filters: Filters; items: Card[]; nextCursor: string | null; index?: number };
 const empty = EMPTY_CATALOG_FILTERS;
+const actorBrowsingSchema = z.object({
+  search: z.string().max(300), sort: z.enum(["works", "name"]), followed: z.boolean(),
+  page: z.number().int().min(1), pageSize: z.union([z.literal(24), z.literal(48), z.literal(96)]),
+});
+const actorDefaults: z.infer<typeof actorBrowsingSchema> = { search: "", sort: "works", followed: false, page: 1, pageSize: 48 };
 async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(appUrl("/api/catalog/" + path)!, { signal, ...(body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}) });
   if (!response.ok) throw new Error("读取失败（" + response.status + "）");
   return response.json() as Promise<T>;
 }
-export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPersonRef, onStartFeed, refresh = 0 }: { mode: "works" | "actors" | "categories"; initialPersonRef?: string; refresh?: number; onStartFeed?: (state: CatalogFeedStart) => void; onOpenWork: (id: string) => void; onOpenActor: (id: string) => void }) {
+export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPersonRef, onStartFeed, refresh = 0 }: { mode: "works" | "actors"; initialPersonRef?: string; refresh?: number; onStartFeed?: (state: CatalogFeedStart) => void; onOpenWork: (id: string) => void; onOpenActor: (id: string) => void }) {
   const [filters, setFilters] = useState<Filters>(() => readCatalogFilters(window.location.search));
   const workRequest = useRef<AbortController | null>(null);
   const initialFilters = useRef(filters);
@@ -34,17 +42,31 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [workError, setWorkError] = useState("");
+  const [appendFailed, setAppendFailed] = useState(false);
   const [facetError, setFacetError] = useState("");
   const [showFilters, setShowFilters] = useState(false);
-  const [actorSort, setActorSort] = useState("works");
-  const [followedOnly, setFollowedOnly] = useState(false);
-  const [actorSearch, setActorSearch] = useState("");
-  const [actorOffset, setActorOffset] = useState(0);
+  const [actorBrowsing, setActorBrowsing] = useSessionState("mdc:actor-browsing", actorBrowsingSchema, actorDefaults);
+  const actorHeading = useRef<HTMLDivElement>(null);
+  const actorOffset = (actorBrowsing.page - 1) * actorBrowsing.pageSize;
   const activePersonRef = initialPersonRef;
   const [resolvedRef, setResolvedRef] = useState("");
-  const { page: people, error: peopleError, loading: peopleLoading } =
-    usePeopleCards(actorSearch, actorSort, followedOnly, actorOffset, mode === "actors" && !initialPersonRef);
-  const nextActorOffset = people?.next_offset;
+  const { page: people, error: peopleError, loading: peopleLoading, retry: retryPeople } =
+    usePeopleCards(actorBrowsing.search, actorBrowsing.sort, actorBrowsing.followed, actorOffset,
+      mode === "actors" && !initialPersonRef, actorBrowsing.pageSize);
+  useEffect(() => {
+    if (!people) return;
+    const lastPage = Math.max(1, Math.ceil(people.total / actorBrowsing.pageSize));
+    if (actorBrowsing.page > lastPage) setActorBrowsing(previous => ({ ...previous, page: lastPage }));
+  }, [people, actorBrowsing.page, actorBrowsing.pageSize, setActorBrowsing]);
+  const actorPagination = {
+    label: "演员", page: actorBrowsing.page, pageSize: actorBrowsing.pageSize, total: people?.total ?? 0,
+    busy: peopleLoading,
+    onPageChange: (page: number) => {
+      setActorBrowsing(previous => ({ ...previous, page }));
+      actorHeading.current?.scrollIntoView?.({ block: "start" });
+    },
+    onPageSizeChange: (pageSize: number) => setActorBrowsing(previous => ({ ...previous, page: 1, pageSize: pageSize as 24 | 48 | 96 })),
+  };
   const actorNames = usePersonLabels(filters.actors);
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
   const [saved, setSaved] = useState<{ name: string; filters: Filters }[]>(() => {
@@ -78,6 +100,8 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     } catch (e) { setError(String(e)); }
   }
   const [saveName, setSaveName] = useState("");
+  const [workRetry, setWorkRetry] = useState(0);
+  const [facetRetry, setFacetRetry] = useState(0);
   const patch = (value: Partial<Filters>) => setFilters(previous => ({ ...previous, ...value }));
   useEffect(() => {
     if (!activePersonRef) return;
@@ -97,11 +121,11 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       }).catch(e => { if (!controller.signal.aborted) setError(String(e)); });
     return () => controller.abort();
   }, [activePersonRef, revision, refresh]);
-  useEffect(() => { try {
+  useEffect(() => { if (!showingWorks) return; try {
       const url = new URL(window.location.href);
       applyCatalogFiltersToUrl(url, filters);
       if (url.href !== window.location.href) history.replaceState(history.state, "", url);
-    } catch { /* Navigation can remain usable if history updates are blocked. */ } }, [filters]);
+    } catch { /* Navigation can remain usable if history updates are blocked. */ } }, [filters, showingWorks]);
   useEffect(() => {
     const restore = () => setFilters(readCatalogFilters(window.location.search));
     window.addEventListener("popstate", restore);
@@ -113,18 +137,12 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     const controller = new AbortController();
     workRequest.current = controller;
     const { signal } = controller;
-    setWorkError(""); setFacetError("");
+    setWorkError(""); setAppendFailed(false);
     let snapshot: { filters: Filters; rows: Card[]; cursor: string | null; total: number; scroll: number; at: number } | null = null;
     try { snapshot = JSON.parse(sessionStorage.getItem("mdc:catalog-return") ?? "null"); } catch { /* Optional cache. */ }
-    function loadFacets() {
-      return request<Record<string, Facet[]>>("facets", filters, signal)
-        .then(values => { if (!signal.aborted) setFacets(values); })
-        .catch(e => { if (!signal.aborted) setFacetError("分类统计读取失败 · " + String(e)); });
-    }
     if (snapshot && Date.now() - snapshot.at < 300000 && JSON.stringify(snapshot.filters) === JSON.stringify(filters)) {
       loadedFilters.current = filters;
       setRows(snapshot.rows); setCursor(snapshot.cursor); setTotal(snapshot.total); setLoading(false);
-      void loadFacets();
       const position = snapshot.scroll;
       const frame = requestAnimationFrame(() => window.scrollTo(0, position));
       return () => { controller.abort(); cancelAnimationFrame(frame); };
@@ -141,7 +159,6 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
           setRows(page.items); setCursor(page.next_cursor); setTotal(page.total);
         }).catch(e => { if (!signal.aborted) setWorkError(String(e)); })
         .finally(() => { if (!signal.aborted) setLoading(false); });
-      void loadFacets();
     }
     if (filters === initialFilters.current) {
       loadWorks();
@@ -149,18 +166,36 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     }
     const timer = setTimeout(loadWorks, 180);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [filters, revision, refresh, waitingForPerson, showingWorks]);
+  }, [filters, revision, refresh, waitingForPerson, showingWorks, workRetry]);
+  useEffect(() => {
+    if (!showingWorks || waitingForPerson) return;
+    const controller = new AbortController();
+    setFacetError("");
+    const load = () => {
+      void request<Record<string, Facet[]>>("facets", filters, controller.signal)
+        .then(values => { if (!controller.signal.aborted) setFacets(values); })
+        .catch(e => { if (!controller.signal.aborted) setFacetError("分类统计读取失败 · " + String(e)); });
+    };
+    if (filters === initialFilters.current) {
+      load();
+      return () => controller.abort();
+    }
+    const timer = setTimeout(load, 180);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [facetRetry, filters, revision, refresh, showingWorks, waitingForPerson]);
+  const loadingMore = useRef(false);
   async function more() {
     const signal = workRequest.current?.signal;
-    if (!cursor || loading || !signal || signal.aborted) return;
-    setLoading(true); setWorkError("");
+    if (!cursor || loading || loadingMore.current || !signal || signal.aborted) return;
+    loadingMore.current = true;
+    setLoading(true); setWorkError(""); setAppendFailed(true);
     try {
       const page = await request<{ items: Card[]; next_cursor: string | null }>("works/query", { ...filters, cursor }, signal);
       if (signal.aborted) return;
       setRows(previous => [...new Map([...previous, ...page.items].map(row => [row.id, row])).values()]);
       setCursor(page.next_cursor);
     } catch (e) { if (!signal.aborted) setWorkError(String(e)); }
-    finally { if (!signal.aborted) setLoading(false); }
+    finally { loadingMore.current = false; if (!signal.aborted) setLoading(false); }
   }
   function openWork(id: string) {
     try {
@@ -177,8 +212,8 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   }
   return <section className="panel-section unified-catalog">
     <div className="catalog-heading">
-    <div><h1>{mode === "actors" ? "演员库" : mode === "categories" ? "分类浏览" : "作品库"}</h1>
-    <p className="muted">{showingWorks ? `${total} 部作品` : "演员档案与参演作品"}</p></div>
+    <div><h1>{mode === "actors" ? selectedPerson?.name ?? "演员库" : "作品库"}</h1>
+    <p className="muted">{showingWorks ? `${total} 部作品` : people ? `${people.total} 位演员 · 查看档案与参演作品` : "演员档案与参演作品"}</p></div>
     {showingWorks && onStartFeed && <button disabled={rows.length === 0 || loading} onClick={() => {
       try { sessionStorage.setItem("mdc:catalog-return", JSON.stringify({
         filters, rows, cursor, total, scroll: window.scrollY, at: Date.now()
@@ -189,31 +224,37 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
 
     {actions.message && <p role="status">{actions.message}</p>}
     {error && <p role="alert">{error}</p>}
-    {workError && <p role="alert">{workError}</p>}
-    {facetError && <p role="alert">{facetError}</p>}
+    {workError && <div className="catalog-error" role="alert"><span>{workError}</span>
+      <button className="ghost" disabled={loading} onClick={() => appendFailed ? void more() : setWorkRetry(value => value + 1)}>重试作品</button></div>}
+    {facetError && <div className="catalog-error" role="alert"><span>{facetError}</span>
+      <button className="ghost" onClick={() => setFacetRetry(value => value + 1)}>重试统计</button></div>}
     {mode === "actors" && <>
       {!initialPersonRef && <>
-        <div className="catalog-people-search">
-        <select aria-label="演员排序" value={actorSort} onChange={e => { setActorSort(e.target.value); setActorOffset(0); }}>
+        <div className="catalog-people-search" ref={actorHeading}>
+        <select aria-label="演员排序" value={actorBrowsing.sort} onChange={e => setActorBrowsing(previous => ({ ...previous, sort: e.target.value as "works" | "name", page: 1 }))}>
           <option value="works">库内作品数</option><option value="name">姓名</option>
         </select>
-        <label><input type="checkbox" checked={followedOnly}
-          onChange={e => { setFollowedOnly(e.target.checked); setActorOffset(0); }} />已关注</label>
-        <input aria-label="搜索演员与别名" placeholder="演员、别名" value={actorSearch} maxLength={300}
-          onChange={e => { setActorSearch(e.target.value); setActorOffset(0); }} />
+        <label><input type="checkbox" checked={actorBrowsing.followed}
+          onChange={e => setActorBrowsing(previous => ({ ...previous, followed: e.target.checked, page: 1 }))} />仅已关注</label>
+        <input id="shadow-mdc-search" aria-label="搜索演员与别名" placeholder="演员、别名" value={actorBrowsing.search} maxLength={300}
+          onChange={e => setActorBrowsing(previous => ({ ...previous, search: e.target.value, page: 1 }))} />
+        {(actorBrowsing.search || actorBrowsing.followed) && <button className="ghost"
+          onClick={() => setActorBrowsing(previous => ({ ...previous, search: "", followed: false, page: 1 }))}>清除演员筛选</button>}
         </div>
         {peopleLoading && <p role="status">正在读取人物…</p>}
-        {peopleError && <p role="alert">{peopleError.message}</p>}
-        {people?.items.length === 0 && <p>没有匹配的演员。</p>}
-        <div className="actor-grid">{people?.items.map(p =>
+        {peopleError && <div className="catalog-error" role="alert"><span>{peopleError.message}</span>
+          <button className="ghost" disabled={peopleLoading} onClick={() => void retryPeople()}>重试演员</button></div>}
+        {people && <Pagination {...actorPagination} />}
+        {!peopleLoading && people?.items.length === 0 && <div className="empty"><h2>没有匹配的演员</h2>
+          <p>试试姓名或别名，或关闭“仅已关注”。</p></div>}
+        <div className="actor-grid" aria-label="演员列表" aria-busy={peopleLoading}>{people?.items.map(p =>
           <button key={p.id} className="actor-card" onClick={() => onOpenActor(p.id)}>
             <CoverImage src={appUrl(p.image_url) ?? ""} /><strong>{p.name}</strong>
             {p.same_name && <span>档案 {p.id.slice(-6)}</span>}
-            <span>{p.aliases.join(" / ")} · {p.work_count} 部</span>
+            {p.aliases.length > 0 && <span className="actor-card-aliases" title={p.aliases.join(" / ")}>{p.aliases.join(" / ")}</span>}
+            <span className="actor-card-count">{p.work_count} 部作品</span>
           </button>)}</div>
-        {actorOffset > 0 && <button disabled={peopleLoading}
-          onClick={() => setActorOffset(Math.max(0, actorOffset - PEOPLE_PAGE_SIZE))}>上一页演员</button>}
-        {nextActorOffset != null && <button onClick={() => setActorOffset(nextActorOffset)}>下一页演员</button>}
+        {people && people.total > actorBrowsing.pageSize && <Pagination {...actorPagination} position="底部" />}
       </>}
       {selectedPerson && <article><h2>{selectedPerson.name}</h2><p>{selectedPerson.biography}</p>
         {selectedPerson.x_handle && <a href={"https://x.com/" + encodeURIComponent(selectedPerson.x_handle)}
@@ -231,7 +272,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     </>}
     {showingWorks && <>
     <div className="catalog-search">
-      <input value={filters.q} aria-label="检索作品" placeholder="片名、番号、演员、片商" onChange={e => patch({ q: e.target.value })} />
+      <input id="shadow-mdc-search" value={filters.q} maxLength={200} aria-label="检索作品" placeholder="片名、番号、演员、片商" onChange={e => patch({ q: e.target.value })} />
       <button className="ghost" aria-expanded={showFilters} onClick={() => setShowFilters(value => !value)}>{showFilters ? "收起筛选" : "分类与筛选"}</button>
     </div>
     {showFilters && <div className="works-extra-filters">
@@ -259,10 +300,10 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       <select aria-label="排除标签" value="" onChange={e => { if (e.target.value) patch({ exclude_tags: [...new Set([...filters.exclude_tags, e.target.value])] }); }}>
         <option value="">排除某标签</option>{(facets.tags ?? []).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
       </select>
-      <button onClick={() => { setFilters(empty); setSelectedPerson(null); }}>清除条件</button>
+      <button onClick={() => setFilters({ ...empty, actors: selectedPerson ? [selectedPerson.id] : [] })}>清除条件</button>
     </div>}
     <div className="active-filter-chips">
-      {filters.category && filters.category !== "all" && <button onClick={() => patch({ category: "all" })}>{filters.category} ×</button>}
+      {filters.category && filters.category !== "all" && <button onClick={() => patch({ category: "all" })}>{({ Japan: "JAV", China: "国产", Korea: "韩国", Europe: "欧美", Other: "其他" })[filters.category]} ×</button>}
       {filters.collection && <button onClick={() => patch({ collection: "" })}>{filters.collection} ×</button>}
       {filters.actor_name && <button onClick={() => patch({ actor_name: "" })}>{filters.actor_name} ×</button>}
       {filters.studio_name && <button onClick={() => patch({ studio_name: "" })}>{filters.studio_name} ×</button>}
@@ -274,7 +315,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       {filters.exclude_tags.map(name => <button key={name}
       onClick={() => patch({ exclude_tags: filters.exclude_tags.filter(t => t !== name) })}>排除 {name} ×</button>)}{filters.actors.map(id => <button key={id} onClick={() => patch({ actors: filters.actors.filter(a => a !== id) })}>{actorNames?.[id] ?? id} ×</button>)}</div>
     <div className="catalog-controls">
-    <CatalogTags tags={facets.tags ?? []} selected={filters.tags} preview={mode === "categories"}
+    <CatalogTags tags={facets.tags ?? []} selected={filters.tags} preview={false}
       onToggle={id => patch({ tags: filters.tags.includes(id) ? filters.tags.filter(t => t !== id) : [...filters.tags, id] })} />
     <details className="catalog-management"><summary>片单与资料工具</summary><div className="catalog-tools">
     <CatalogLibraryTools actions={actions} />
@@ -284,7 +325,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     </div></details>
     </div>
     {loading && !workError && !error && <p role="status">正在读取…</p>}
-    <div className="work-grid">{rows.map(row => <WorkCard key={row.id} work={workSchema.parse({
+    <div className="work-grid" aria-label="作品列表" aria-busy={loading}>{rows.map(row => <WorkCard key={row.id} work={workSchema.parse({
       ...row, family: "", category: row.category ?? "Other", created_at: "", updated_at: "",
       primary_code: row.code, image_url: row.poster, want_list: actions.prefs?.want_list.includes(row.id) ?? false,
       release_date: row.release_date ?? (row.year ? String(row.year) : null),
@@ -302,7 +343,11 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     </form></div>}
 
     {!loading && !workError && rows.length === 0 && <p>没有符合条件的作品，可移除部分条件后再试。</p>}
-    {cursor && <button disabled={loading} onClick={() => void more()}>加载下一页</button>}
+    <div className="catalog-load-more">
+      <span className="muted" role="status">已显示 {rows.length} / {total} 部作品</span>
+      {cursor ? <button disabled={loading} onClick={() => void more()}>{loading ? "正在加载…" : "加载下一页"}</button>
+        : !loading && rows.length > 0 && !workError && <span className="muted">已显示全部作品</span>}
+    </div>
     </>}
   </section>;
 }
