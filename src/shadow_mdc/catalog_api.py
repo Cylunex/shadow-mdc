@@ -80,7 +80,7 @@ from .services.catalog_people import (
 )
 from .services.javranking_client import JavRankingIndexCache
 from .services.library_prefs import LibraryPrefs
-from .tags import normalize_tags
+from .tags import canonicalize_tag, normalize_tags
 
 if TYPE_CHECKING:
     from .api import Runtime
@@ -366,7 +366,10 @@ def build_catalog_router(
             # SQLite json_each avoids materializing every work in Python.
             def tagged(tag: str) -> ColumnElement[bool]:
                 values = func.json_each(Work.tags).table_valued("value")
-                return exists(select(1).select_from(values).where(values.c.value == tag))
+                canonical = canonicalize_tag(tag)
+                match = (func.mdc_canonical_tag(values.c.value) == canonical
+                         if canonical is not None else values.c.value == tag)
+                return exists(select(1).select_from(values).where(match))
             predicates = [tagged(tag) for tag in filters.tags]
             if predicates:
                 statement = (statement.where(*predicates) if filters.tags_all
@@ -601,9 +604,11 @@ def build_catalog_router(
             tag_filters = filters if filters.tags_all else filters.model_copy(update={"tags": []})
             tag_base = filtered_statement(tag_filters, request, session, actor_profiles).subquery()
             tag_rows = func.json_each(tag_base.c.tags).table_valued("value")
+            canonical_tag = func.mdc_canonical_tag(tag_rows.c.value)
             tags = list(session.execute(
-                select(tag_rows.c.value, func.count(func.distinct(tag_base.c.id)))
-                .select_from(tag_base).join(tag_rows, true()).group_by(tag_rows.c.value),
+                select(canonical_tag, func.count(func.distinct(tag_base.c.id)))
+                .select_from(tag_base).join(tag_rows, true()).where(canonical_tag.is_not(None))
+                .group_by(canonical_tag),
             ))
             organization_filters = filters.model_copy(update={"organizations": [], "organization_role": ""})
             organization_rows = filtered_statement(

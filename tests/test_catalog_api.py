@@ -81,6 +81,42 @@ def test_unified_catalog_facets_and_actor_intersection(
         assert client.get("/api/catalog/people-cards", params={"limit": 101}).status_code == 422
 
 
+def test_category_counts_and_tag_queries_share_canonical_aliases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{tmp_path / 'aliases.db'}")
+    monkeypatch.setenv("SHADOW_MDC_REDIS_URL", "")
+    with TestClient(app) as client:
+        with app.state.runtime.database.session() as session:
+            session.add_all([
+                Work(id="a", title="A", tags=["素人", "Amateur", " Amateur ", "POV", "jav"]),
+                Work(id="b", title="B", tags=["\uff21\uff2d\uff21\uff34\uff25\uff35\uff32"]),
+                Work(id="c", title="C", tags=["素人", "主観"]),
+                Work(id="d", title="D", tags=["自定义", "jav"]),
+            ])
+        categories = client.get("/api/categories").json()["categories"]
+        assert next(row["work_count"] for row in categories if row["label"] == "素人") == 3
+        for selected in ["素人", "Amateur"]:
+            first = client.post("/api/catalog/works/query", json={"tags": [selected], "limit": 1}).json()
+            assert first["total"] == 3
+            second = client.post("/api/catalog/works/query", json={
+                "tags": [selected], "limit": 1, "cursor": first["next_cursor"],
+            }).json()
+            assert first["items"][0]["id"] != second["items"][0]["id"]
+        assert client.post("/api/catalog/works/query", json={
+            "tags": ["素人", "POV"], "tags_all": True,
+        }).json()["total"] == 2
+        assert client.post("/api/catalog/works/query", json={
+            "tags": ["自定义", "素人"],
+        }).json()["total"] == 4
+        assert client.post("/api/catalog/works/query", json={
+            "exclude_tags": ["素人"],
+        }).json()["total"] == 1
+        facets = client.post("/api/catalog/facets", json={}).json()["tags"]
+        assert {row["name"]: row["count"] for row in facets} == {"素人": 3, "POV": 2, "自定义": 1}
+
+
 @pytest.mark.asyncio
 async def test_online_candidates_require_exact_identity_and_isolate_parts() -> None:
     def response(request: httpx.Request) -> httpx.Response:
