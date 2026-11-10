@@ -32,11 +32,12 @@ from .api_models import (
     WorkLookupRequest,
     WorkUpdateRequest,
 )
-from .catalog_api import TaxonomyEdit
+from .catalog_api import ClassificationTermCreate, ClassificationTermEdit, TaxonomyEdit
 from .catalog_management import CatalogFilter, PlaylistEdit
 from .db.models import Work
 from .intake_core import SubscribeRequest
 from .skill_operations import ClassificationFill, FillInput, IntakeItem, LinkInput, RecoverInput, TagsEdit
+from .tag_dictionary_api import RulesEdit, TagCreate, TagEdit
 
 if TYPE_CHECKING:
     from .api import Runtime
@@ -90,6 +91,43 @@ class ActorsInput(EmptyInput):
 
 class TagsInput(EmptyInput):
     only_with_works: bool = False
+
+
+class TagDictionaryInput(EmptyInput):
+    q: str = Field(default="", max_length=300)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+class TagCreateInput(TagCreate, EmptyInput):
+    pass
+
+
+class TagEditInput(TagEdit, EmptyInput):
+    tag_id: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("tag_id")
+    @classmethod
+    def safe_identifier(cls, value: str) -> str:
+        return safe_id(value)
+
+
+class TagRulesInput(RulesEdit, EmptyInput):
+    pass
+
+
+class ClassificationCreateInput(ClassificationTermCreate, EmptyInput):
+    pass
+
+
+class ClassificationEditInput(ClassificationTermEdit, EmptyInput):
+    term_id: str = Field(min_length=1, max_length=240)
+    revision: int = Field(ge=1)
+
+    @field_validator("term_id")
+    @classmethod
+    def safe_identifier(cls, value: str) -> str:
+        return safe_id(value)
 
 
 class TasksInput(EmptyInput):
@@ -293,6 +331,8 @@ RouteKey = Literal[
     "candidate_id",
     "person_id",
     "actor_key",
+    "tag_id",
+    "term_id",
 ]
 
 
@@ -555,6 +595,51 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
 )
 CAPABILITIES += (
+    Capability(
+        "tags.dictionary",
+        "分页读取可管理的标签词条、别名、隐藏状态和修订号。",
+        "read",
+        TagDictionaryInput,
+        "GET",
+        "/api/catalog/tags",
+    ),
+    Capability("tags.create", "新增持久化标签词条。", "write", TagCreateInput, "POST", "/api/catalog/tags"),
+    Capability(
+        "tags.update",
+        "修改标签名、别名或隐藏状态,保持 ID。携带当前 revision。",
+        "write",
+        TagEditInput,
+        "PUT",
+        "/api/catalog/tags",
+    ),
+    Capability(
+        "tags.rules", "读取持久化的标签展示和噪声规则。", "read", EmptyInput, "GET", "/api/catalog/tags/rules"
+    ),
+    Capability(
+        "tags.rules.update",
+        "按明确要求修改展示和噪声规则,携带字典 revision。",
+        "write",
+        TagRulesInput,
+        "PUT",
+        "/api/catalog/tags/rules",
+    ),
+    Capability(
+        "classifications.create",
+        "在指定七维分类中新增正式词条。",
+        "write",
+        ClassificationCreateInput,
+        "POST",
+        "/api/catalog/classifications/terms",
+    ),
+    Capability(
+        "classifications.update",
+        "修改分类词条名与别名,保留 ID。携带当前 revision。",
+        "write",
+        ClassificationEditInput,
+        "PUT",
+        "/api/catalog/classifications/terms/{term_id}",
+        "term_id",
+    ),
     Capability(
         "intake.health",
         "检查离线后端连接、目标目录与元数据回退状态。",
@@ -931,7 +1016,11 @@ def build_skill_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                         result={"detail": "work not found"},
                     )
         values = parsed.model_dump(
-            mode="json", exclude_unset=isinstance(parsed, (TaxonomyInput, WorkEditInput, ClassificationFill))
+            mode="json",
+            exclude_unset=isinstance(
+                parsed,
+                (TaxonomyInput, WorkEditInput, ClassificationFill, TagEditInput, ClassificationEditInput),
+            ),
         )
         path = capability.path
         if capability.path_key:

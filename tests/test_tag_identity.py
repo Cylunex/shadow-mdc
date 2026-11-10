@@ -12,7 +12,8 @@ from shadow_mdc.api import app
 from shadow_mdc.db.models import Work
 from shadow_mdc.services.category_catalog import CategoryCoverEntry, write_manifest
 from shadow_mdc.services.media_server import MediaServerSettings
-from shadow_mdc.tag_registry import TAG_DEFINITIONS, TagDefinition, TagRegistry
+from shadow_mdc.services.tag_dictionary import TagDictionaryStore
+from shadow_mdc.tag_models import TagDefinition, TagRegistry
 
 
 def test_id_aliases_unknown_values_and_noise() -> None:
@@ -77,10 +78,8 @@ def test_renaming_keeps_queries_covers_playlists_and_source_values(
             "tags": ["tag:amateur"], "limit": 1,
         }).json()["next_cursor"]
 
-    renamed = TagRegistry(tuple(
-        replace(tag, name="爱好者") if tag.id == "tag:amateur" else tag for tag in TAG_DEFINITIONS
-    ))
-    monkeypatch.setattr(tags, "TAG_REGISTRY", renamed)
+    store = TagDictionaryStore(tmp_path / "tag-dictionary.json")
+    store.update("tag:amateur", "爱好者", aliases=None, hidden=None, revision=1)
     tags._display_chips_cached.cache_clear()
     try:
         with TestClient(app) as client:

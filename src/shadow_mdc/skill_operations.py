@@ -30,7 +30,8 @@ from .media.artwork import ArtworkStore
 from .services.catalog_classifications import validate_selection, work_classifications
 from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
 from .services.translation import WorkTranslator
-from .tags import normalize_tags
+from .tag_models import fold_tag
+from .tags import current_registry
 
 if TYPE_CHECKING:
     from .api import Runtime
@@ -93,11 +94,23 @@ def apply_tags(repo: Repository, work_id: str, add: list[str], remove: list[str]
     work = repo.get_work(work_id)
     if work is None:
         raise HTTPException(404, "work not found")
-    removed = set(normalize_tags(remove))
-    tags = normalize_tags([tag for tag in normalize_tags(work.tags) if tag not in removed] + add)
+
+    def identity(value: str) -> str:
+        tag = current_registry().resolve(value)
+        return tag.id if tag is not None else "source:" + fold_tag(value)
+
+    removed = {identity(value) for value in remove}
+    tags = [value for value in (work.tags or []) if identity(value) not in removed]
+    present = {identity(value) for value in tags}
+    for value in add:
+        key = identity(value)
+        if key not in present and value.strip():
+            tag = current_registry().resolve(value)
+            tags.append(tag.name if tag is not None else value.strip())
+            present.add(key)
     if tags != work.tags:
-        repo.update_work_fields(work, tags=list(tags))
-    return list(tags)
+        repo.update_work_fields(work, tags=tags)
+    return tags
 
 
 def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:

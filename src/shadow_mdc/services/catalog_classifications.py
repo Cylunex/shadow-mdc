@@ -12,7 +12,7 @@ from sqlalchemy.sql.selectable import Subquery
 
 from ..classifications import DIMENSION_KEYS, FAMILY_CONTENTS, ClassificationSelection, DimensionKey
 from ..db.models import CatalogClassificationTerm, Work, WorkClassification
-from ..tag_registry import TagReference
+from ..tag_models import TagReference
 
 
 def classification_rows(dimension: str) -> Subquery:

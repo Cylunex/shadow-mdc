@@ -9,7 +9,7 @@ from sqlalchemy import Connection, Engine, select, update
 from sqlalchemy.dialects.sqlite import insert
 
 from ..classifications import DEFINITION_ALIASES, DEFINITIONS, DIMENSION_KEYS
-from ..tag_registry import fold_tag
+from ..tag_models import fold_tag
 from .models import CatalogClassificationTerm, CatalogPlaylistRule, Work, WorkClassification
 
 

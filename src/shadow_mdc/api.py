@@ -7,7 +7,7 @@ import re
 import tempfile
 import unicodedata
 from _thread import LockType
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,12 +28,6 @@ from .api_models import (
     ActorMergeRequest,
     ActorSubscriptionEdit,
     ActorSummaryOut,
-    SubtitleLookupOut,
-    OrganizeJournalOut,
-    OrganizeUndoRequest,
-    SubtitleBackfillRequest,
-    TaskResumeOut,
-    TaskResumeRequest,
     ActorTagsEdit,
     ActorWorkRefOut,
     ActorWorksOut,
@@ -95,9 +89,6 @@ from .api_models import (
     MagnetLinkOut,
     ManualCandidateRequest,
     MediaServerSettingsPayload,
-    PlayProbeFailureOut,
-    PlayResolveOut,
-    PlaySourceOut,
     MultiSiteSearchOut,
     NfoImportRequest,
     NfoImportResultOut,
@@ -109,7 +100,9 @@ from .api_models import (
     OpenListCredentialsRequest,
     OpenListTestOut,
     OrganizeApplyRequest,
+    OrganizeJournalOut,
     OrganizeRequest,
+    OrganizeUndoRequest,
     PanCredentialsImportRequest,
     PanDirectoryRequest,
     PanLoginOut,
@@ -118,6 +111,9 @@ from .api_models import (
     PanSettingsPayload,
     PanSettingsUpdatePayload,
     PlanOut,
+    PlayProbeFailureOut,
+    PlayResolveOut,
+    PlaySourceOut,
     ProviderDiagnoseOut,
     ProviderDiagnoseRequest,
     ProviderDiagnostic,
@@ -136,6 +132,10 @@ from .api_models import (
     StrmMigrateRequest,
     SubscriptionScanOut,
     SubscriptionWatchStatusOut,
+    SubtitleBackfillRequest,
+    SubtitleLookupOut,
+    TaskResumeOut,
+    TaskResumeRequest,
     TaskRunOut,
     WantListEdit,
     WorkDetailOut,
@@ -153,6 +153,7 @@ from .api_models import (
     WorkTagFacetsOut,
     WorkUpdateRequest,
 )
+from .catalog_api import build_catalog_router
 from .config import Settings
 from .db.models import (
     Actor,
@@ -166,21 +167,6 @@ from .db.models import (
     Work,
     utc_now,
 )
-from .media.organize_journal import JournalEntry, OrganizeJournal, UndoReport, undo_entries
-from .services.library_jobs import (
-    CHECKPOINT_PREFIX,
-    LIBRARY_TASK_KINDS,
-    LibraryJobState,
-    LibraryWorkerStopped,
-    ScanSchedule,
-    active_library_task,
-    due_scans,
-    library_checkpoint,
-)
-from .services.matching_replay import MatchingReplay, capture_feedback, replay_feedback
-from .services.resumable_jobs import is_resumable_kind, mark_interrupted_task_runs
-from .services.rescrape_quota import RescrapeQuota
-from .services.subtitle_backfill import BackfillStatus, SubtitleBackfillJob
 from .db.repository import LOCKABLE_WORK_FIELDS, Database, Repository
 from .domain import (
     FileOperation,
@@ -204,16 +190,18 @@ from .enums import (
 from .identity import IdentityAliasRules, build_identity_hints, extract_code, normalize_identity_value
 from .matching import normalize_title, rank_candidates, score_candidate
 from .media.artwork import (
-    ArtworkDownloadResult, ArtworkStore, resolve_work_display_image, resolve_work_display_images,
+    ArtworkDownloadResult,
+    ArtworkStore,
+    resolve_work_display_image,
+    resolve_work_display_images,
 )
 from .media.magnets import MagnetLink
 from .media.nfo import build_nfo, parse_nfo
+from .media.organize_journal import JournalEntry, OrganizeJournal, UndoReport, undo_entries
 from .media.organizer import Organizer, plan_move_cleanup
 from .media.parts import part_group_key
 from .media.screenshots import capture_screenshot
 from .media_api import build_media_router
-from .catalog_api import build_catalog_router
-from .services.catalog_people import enrich_catalog_aliases, register_renamed_reference
 from .providers import (
     AirAvProvider,
     AvSoxProvider,
@@ -257,6 +245,7 @@ from .services.actor_images import (
 from .services.alias_store import IdentityAliasStore
 from .services.catalog_export import export_catalog_bundle, state_path
 from .services.catalog_import import CatalogImportRequest, import_catalog_bundle
+from .services.catalog_people import enrich_catalog_aliases, register_renamed_reference
 from .services.category_catalog import (
     build_category_list,
     facet_count_map,
@@ -296,6 +285,16 @@ from .services.javranking_client import (
     top250_year_slugs,
 )
 from .services.javranking_seed import seed_javranking
+from .services.library_jobs import (
+    CHECKPOINT_PREFIX,
+    LIBRARY_TASK_KINDS,
+    LibraryJobState,
+    LibraryWorkerStopped,
+    ScanSchedule,
+    active_library_task,
+    due_scans,
+    library_checkpoint,
+)
 from .services.library_prefs import ActorTagState, LibraryPrefsStore, new_queue_id
 from .services.library_search import rank_work_dicts
 from .services.local_catalog import (
@@ -304,17 +303,12 @@ from .services.local_catalog import (
     is_generic_file_name,
     local_context_names,
 )
+from .services.matching_replay import MatchingReplay, capture_feedback, replay_feedback
 from .services.media_server import (
     MediaServerSettings,
     MediaServerStore,
     build_media_server_deep_link,
     refresh_media_server,
-)
-from .services.playback import (
-    PlaybackSettings,
-    load_sites_from_settings,
-    render_player_page,
-    resolve_play,
 )
 from .services.non_jav_actor_catalog import (
     NonJavActorCatalogStore,
@@ -345,6 +339,13 @@ from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offl
 from .services.pan_poller import PanOfflinePoller
 from .services.path_filter import FilterWords, FilterWordsStore, MediaPathFilter
 from .services.pipeline_status import build_pipeline_status
+from .services.playback import (
+    PlaybackSettings,
+    load_sites_from_settings,
+    render_player_page,
+    resolve_play,
+)
+from .services.rescrape_quota import RescrapeQuota
 from .services.response_cache import (
     TTL_ACTORS,
     TTL_CATEGORIES,
@@ -362,6 +363,7 @@ from .services.response_cache import (
     works_list_key,
     works_tags_key,
 )
+from .services.resumable_jobs import is_resumable_kind, mark_interrupted_task_runs
 from .services.scanner import Scanner
 from .services.strm_export import StrmConfigError
 from .services.strm_relay import RelayError, StrmRelay, token_ok
@@ -380,6 +382,8 @@ from .services.subscriptions import (
     merge_seen_codes,
     queue_item_seen_key,
 )
+from .services.subtitle_backfill import BackfillStatus, SubtitleBackfillJob
+from .services.tag_dictionary import TagDictionaryStore
 from .services.task_events import TaskEventHub
 from .services.translation import (
     GoogleTitleTranslator,
@@ -395,13 +399,23 @@ from .services.x_handle import (
 )
 from .skill_api import build_skill_router
 from .skill_operations import build_operator_router
-from .tags import display_chips, facet_tags, normalize_tags, resolve_tag, tag_refs, work_matches_tags
+from .tag_dictionary_api import build_tag_dictionary_router
+from .tags import (
+    display_chips,
+    facet_tags,
+    normalize_tags,
+    resolve_tag,
+    tag_refs,
+    use_registry,
+    work_matches_tags,
+)
 
 
 @dataclass(frozen=True)
 class Runtime:
     settings: Settings
     database: Database
+    tag_dictionary: TagDictionaryStore
     http: httpx.AsyncClient
     providers: ProviderRegistry
     translator: object
@@ -465,6 +479,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = Settings()
     settings.ensure_directories()
     set_default_proxy(settings.proxy_url)
+    tag_dictionary = TagDictionaryStore(settings.data_dir / "tag-dictionary.json")
+    tag_dictionary.initialize()
     database = Database(settings.database_url)
     database.initialize()
     mark_interrupted_task_runs(database)
@@ -607,6 +623,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     subscription_watch_poller = SubscriptionWatchPoller(subscription_watch_service)
     response_cache = ResponseCache(settings.redis_url)
+    _invalidate_library_caches(response_cache)
 
     def _remote_actor_image_urls() -> list[str]:
         with database.session() as session:
@@ -626,6 +643,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     )
     app.state.runtime = Runtime(
+        tag_dictionary=tag_dictionary,
         settings=settings,
         database=database,
         http=client,
@@ -774,6 +792,14 @@ def runtime(request: Request) -> Runtime:
 def repository(request: Request) -> Iterator[Repository]:
     with runtime(request).database.session() as session:
         yield Repository(session)
+
+
+@app.middleware("http")
+async def bind_tag_dictionary(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    with use_registry(runtime(request).tag_dictionary.registry()):
+        return await call_next(request)
 
 
 Repo = Annotated[Repository, Depends(repository)]
@@ -6217,11 +6243,12 @@ def swipe_feed_entry() -> HTMLResponse:
     return HTMLResponse(content=_SWIPE_ENTRY_HTML)
 
 
-from .intake_core import router as _intake_core_router  # noqa: E402 - needs route helpers above
 from .intake_api import router as _intake_router  # noqa: E402
+from .intake_core import router as _intake_core_router  # noqa: E402 - needs route helpers above
 from .swipe_proxy import create_swipe_proxy_router  # noqa: E402
 
 app.include_router(build_catalog_router(runtime))
+app.include_router(build_tag_dictionary_router(runtime))
 app.include_router(build_media_router(runtime))
 app.include_router(build_skill_router(runtime))
 app.include_router(build_operator_router(runtime))

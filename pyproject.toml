@@ -42,6 +42,8 @@ packages = ["src/shadow_mdc"]
 "src/shadow_mdc/data/actress_name_map.json.gz" = "shadow_mdc/data/actress_name_map.json.gz"
 "src/shadow_mdc/data/dmm_content_id_prefixes.json.gz" = "shadow_mdc/data/dmm_content_id_prefixes.json.gz"
 "src/shadow_mdc/data/README.md" = "shadow_mdc/data/README.md"
+"src/shadow_mdc/data/tag-dictionary.seed.json" = "shadow_mdc/data/tag-dictionary.seed.json"
+"src/shadow_mdc/data/classifications.seed.json" = "shadow_mdc/data/classifications.seed.json"
 
 [tool.pytest.ini_options]
 addopts = "-q --basetemp=.pytest-tmp"

@@ -92,3 +92,16 @@ it("keeps dimension dictionaries available in works tools and loads them only wh
   expect(container.querySelector('[aria-label="管理分类项"]')?.textContent).toContain("剧情");
   expect(container.querySelector('[aria-label="管理分类项"]')?.textContent).toContain("喜剧");
 });
+
+it("keeps a newly created classification selectable for subsequent edits", async () => {
+  const created = { id: "genres:custom-fixture", name: "新题材", aliases: [], count: 0, revision: 1 };
+  vi.mocked(api.createClassification).mockResolvedValue(created);
+  vi.mocked(api.editClassification).mockResolvedValue({ ...created, name: "再次改名", revision: 2 });
+  await act(async () => root.render(<ClassificationTermEditor dimension="genres" terms={[]} />));
+  await input("分类展示名称", "新题材");
+  await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(container.querySelector<HTMLSelectElement>("select")?.value).toBe(created.id);
+  await input("分类展示名称", "再次改名");
+  await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(api.editClassification).toHaveBeenCalledWith(created.id, "再次改名", [], 1);
+});

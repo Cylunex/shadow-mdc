@@ -13,7 +13,7 @@ from .domain import (
 from .enums import CollectionKind, MediaCategory, NfoPolicy, OutputMode, RecognitionScope
 from .media.organize_journal import JournalEntry
 from .providers.base import ProviderFailure
-from .tag_registry import TagReference
+from .tag_models import TagReference
 
 
 class LibraryCreate(BaseModel):

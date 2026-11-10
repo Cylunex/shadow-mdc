@@ -85,7 +85,7 @@ from .services.catalog_people import (
 )
 from .services.javranking_client import JavRankingIndexCache
 from .services.library_prefs import LibraryPrefs
-from .tag_registry import TagReference, fold_tag
+from .tag_models import TagReference, fold_tag
 from .tags import normalize_tags, resolve_tag, tag_id, tag_refs
 
 if TYPE_CHECKING:

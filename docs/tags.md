@@ -1,47 +1,45 @@
-# 标签标识与展示
+# 标签词典数据与展示
 
-标签采用独立的 `id`、`name` 和 `aliases`。例如：
+标签词条、名称、别名、隐藏状态和展示规则属于运行数据，不在 Python 源码中维护。
 
-```json
-{
-  "id": "tag:amateur",
-  "name": "素人",
-  "aliases": ["素人", "amateur"]
-}
-```
+- 运行词典保存在 `<data_dir>/tag-dictionary.json`，文件权限 0600，随片库数据一起备份。
+- `data/tag-dictionary.seed.json` 是随包提供的首次初始化数据；只在运行词典不存在时导入。
+  重启和升级不会覆盖已修改的词条或规则。以后日常新增、改名都通过接口维护运行数据。
+- 七维分类的首次数据在 `data/classifications.seed.json`，运行词条继续保存于已有分类数据库表。
+- Python 的 `tag_models.py` 仅保留模型、身份解析和加载校验，`services/tag_dictionary.py` 负责持久化。
+  原 `tag_registry.py` 已删除。
 
-`id` 用于筛选、链接、动态片单、计数去重和分类封面关联。`name` 用于界面展示，
-`aliases` 接收不同来源、语言和历史名称。来源标签继续原样保存在 `Work.tags`，无需改写历史作品。
+每个标签有稳定 `id`、展示 `name`、搜索 `aliases`、`hidden` 与 `revision`。
+内置标签保留原 `tag:` ID；未登记来源标签保留 `raw:` 身份。把已有来源标签纳入管理、改名时仍保留原 ID，
+旧名称自动进入别名，不改写作品原始 `Work.tags`、封面关联或片单中的 ID。
 
-原「分类」页面作为主题标签图卡入口保留，展示这类大标签的封面、名称和作品数量，点击后按标签筛选作品。
-标签封面通过分类封面 manifest 的 `tag_id` 关联；内容体系、类型、语言等多维分类在作品筛选、详情与编辑中使用。
+来源标记可以隐藏于分类与筛选，但仍保存在作品数据中。给作品增删标签只处理明确的增量，
+不会借展示过滤删除 `forum`、seed 等原始来源标记。对既有词条设定的显隐优先于通用噪声规则。
 
-## 维护字典
+## 管理入口
 
-内置标签集中定义在 `src/shadow_mdc/tag_registry.py` 的 `TAG_DEFINITIONS`，使用显式固定的 ID。
-调整展示名称时只修改 `name`，把旧名称继续保留在 `aliases` 中，不修改 ID。
-别名比较统一执行 NFKC、首尾空白清理和大小写折叠；重复 ID、空名称和跨标签歧义别名会在加载时被拒绝。
-既有重叠别名“4時間以上作品”继续归入“合集”，保留原来的匹配结果。
+作品库 → 片单与资料工具 → 标签字典，支持搜索、分页、新增、改名、别名与显隐修改。
+七维词条继续在同处的分类字典管理，均支持通过 skill 操作：
 
-没有收录的标签继续展示，并获得 `raw:` 命名空间下的确定性 ID，后半部分是经过 URL 编码的比较文本。
-这类标签可浏览、筛选和保存到片单；重复大小写和全角写法按同一 ID 去重。
-保留源词意味着自定义标签直接修改源词会改变其身份；需要独立改名的常用标签应先加入字典维护固定 ID 和别名。
-`tag:` 与 `raw:` 为保留的标识前缀，来源标签不应使用这两个前缀命名。
-内部来源、种子和噪声标签仍不进入展示和统计。
+| HTTP 接口 | Skill 能力 | 用途 |
+| --- | --- | --- |
+| `GET /api/catalog/tags` | `tags.dictionary` | 词条、别名、显隐、作品计数及修订号，q/offset/limit 分页 |
+| `POST /api/catalog/tags` | `tags.create` | 新增词条 |
+| `PUT /api/catalog/tags` | `tags.update` | 请求体携带 tag_id、name、revision，按需修改 aliases/hidden |
+| `GET /api/catalog/tags/rules` | `tags.rules` | 读取展示优先级、常用筛选、主题封面顺序和噪声规则 |
+| `PUT /api/catalog/tags/rules` | `tags.rules.update` | 用当前字典 revision 更新规则数据 |
+| `POST /api/catalog/classifications/terms` | `classifications.create` | 七维分类新增词条 |
+| `PUT /api/catalog/classifications/terms/{id}` | `classifications.update` | 七维分类词条改名、别名维护 |
 
-字典随代码加载，修改后重启服务生效；当前没有新增标签管理页面。
+标签更新把 ID 放 JSON 请求体，避免旧 raw ID 中编码的空格或斜杠被 URL 路由二次解码。
+省略 aliases/hidden 保持原值；修改携带当前 revision，冲突返回 409 后回读，不覆盖其它会话的新修改。
+同一名称或别名不能指向多个词条。写入先验证完整词典，再加锁原子替换文件，不写入半份数据。
 
-## 接口与兼容
+## 读取与兼容
 
-- 作品详情和卡片增加轻量 `tag_refs`，每项包含 `id`、`name`；别名通过分类统计共享，避免每部作品重复携带整份别名。原 `tags`、`display_tags` 字符串字段继续提供。
-- `/api/works/tags` 增加 `id` 和 `aliases`，保留 `name`、`count`。
-- `/api/categories` 增加 `id`，保留 `slug`、`label`、图片和计数；封面 manifest 写入 `tag_id`，旧 manifest 可继续读取。
-- `/api/catalog/facets` 及移动端同名接口的标签使用稳定 `id`，展示字段为 `name`。
-- 标签筛选和排除同时接受 ID、当前名称、历史名称及来源别名；新页面选择使用 ID。
-- 前端按名称或别名搜索、识别旧链接的选中状态，并使用名称显示已选条件；无匹配作品时仍返回选中标签的名称。
+`tag_refs` 返回 id/name；`/api/works/tags`、分类图卡、facets、作品详情和移动目录使用同一运行词典。
+改名和显隐修改成功后清理响应缓存；请求使用独立词典快照，多片库数据目录互不影响。
+来源词保留原文，展示和筛选接受 ID、当前名称及历史别名；未知标签仍能被发现与管理。
+`display_tags` 还包含地区、片商等信息，不能整体作为题材标签写回作品。
 
-旧客户端可继续读取原有字符串字段并提交名称。新客户端应使用 `tag_refs` 或 facets 的 ID 构造筛选，
-使用名称展示，避免从展示字符串推导身份。`display_tags` 还可能包含地区、片商和系列等信息，不能整体视为题材标签。
-
-修改标签接口结构时同步升级对应响应缓存键，避免沿用缺少 ID 的旧缓存。
-回归测试包含字典改名、服务重启、旧链接、别名去重、包含/排除筛选、分页、封面、动态片单和移动端目录。
+词典、隐藏规则和实际片库文件均不进入 Git；仓库只保留通用初始化数据与加载实现。

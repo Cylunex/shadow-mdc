@@ -13,128 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from shadow_mdc.tags import normalize_tags, resolve_tag, tag_id
+from shadow_mdc.tags import current_registry, normalize_tags, resolve_tag, tag_id
 
 MANIFEST_NAME = "manifest.json"
 COVERS_DIRNAME = "category-covers"
 
-# Curated featured labels (~40-80). Prefer COMMON_FILTER_TAGS + popular PH/XH genres.
-FEATURED_CATEGORY_LABELS: tuple[str, ...] = (
-    "素人",
-    "巨乳",
-    "美尻",
-    "贫乳",
-    "口交",
-    "深喉",
-    "乳交",
-    "中出",
-    "颜射",
-    "射精",
-    "吞精",
-    "潮吹",
-    "自慰",
-    "手交",
-    "足交",
-    "肛交",
-    "双龙",
-    "后入",
-    "骑乘",
-    "反骑乘",
-    "正常位",
-    "POV",
-    "MILF",
-    "熟女",
-    "人妻",
-    "美少女",
-    "学生",
-    "OL",
-    "护士",
-    "女仆",
-    "老师",
-    "继母",
-    "姐姐",
-    "姐妹",
-    "女同",
-    "多人",
-    "情侣",
-    "Cosplay",
-    "角色扮演",
-    "制服",
-    "黑丝",
-    "丝袜",
-    "网袜",
-    "高跟鞋",
-    "内衣",
-    "无文胸",
-    "眼镜",
-    "美腿",
-    "痴女",
-    "娇小",
-    "苗条",
-    "微胖",
-    "刮毛",
-    "多毛",
-    "亚洲",
-    "日本",
-    "韩国",
-    "BBC",
-    "BBW",
-    "BDSM",
-    "捆绑",
-    "玩具",
-    "按摩",
-    "露出",
-    "户外",
-    "NTR",
-    "不倫",
-    "近亲",
-    "里番",
-    "动漫",
-    "VR",
-    "4K",
-    "高清",
-    "单体作品",
-    "独占配信",
-    "出道作",
-    "Interracial",
-    "Latina",
-    "Ebony",
-    "Blonde",
-    "Brunette",
-    "Redhead",
-    "Shemale",
-    "合集",
-    "试镜",
-    "酒店",
-    "浴室",
-    "淋浴",
-    "海滩",
-    "厨房",
-    "车震",
-    "摄像头",
-    "自拍",
-    "孕妇",
-    "母乳",
-    "纹身",
-    "穿孔",
-    "癖好",
-    "高潮",
-    "接吻",
-    "淫语",
-    "羞辱",
-    "戏剧",
-    "偶像",
-    "空姐",
-    "女医",
-    "女搜查官",
-    "ギャル",
-    "泡泡浴",
-    "油腻",
-    "童贞",
-    "M女",
-    "M男",
-)
-
+FEATURED_CATEGORY_LABELS = tuple(current_registry().rules.featured_labels)
 
 def covers_dir(data_dir: Path) -> Path:
     return Path(data_dir) / COVERS_DIRNAME
@@ -278,14 +162,14 @@ def build_category_list(
     if not entries:
         entries = [
             CategoryCoverEntry(slug=slugify_label(label), label=label, image_file=None)
-            for label in FEATURED_CATEGORY_LABELS
+            for label in current_registry().rules.featured_labels
         ]
 
     # Prefer featured order; append any extra manifest entries.
-    order = {tag_id(label): index for index, label in enumerate(FEATURED_CATEGORY_LABELS)}
+    order = {tag_id(label): index for index, label in enumerate(current_registry().rules.featured_labels)}
     by_id = {entry.id: entry for entry in entries if entry.id}
     ordered_ids: list[str] = []
-    for label in FEATURED_CATEGORY_LABELS:
+    for label in current_registry().rules.featured_labels:
         identity = tag_id(label)
         if identity in by_id and identity not in ordered_ids:
             ordered_ids.append(identity)

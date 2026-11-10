@@ -29,8 +29,12 @@ description: 通过 Shadow MDC CLI 管理个人片库：单条和批量入库、
 - `works.query/detail/facets` 查作品；沿 `next_cursor` 翻页，保持其它筛选不变。只用真实 `work_id`。
 - `actors.query/detail` 查演员，姓名不能冒充档案 ID；查询按 `offset/limit` 翻页。
 - `tags.list` 是原“分类”页的大标签。查询使用其固定 ID；`works.tags` 增删标签并保留其它标签。
-  `works.update` 修改展示名和明确提供的字段，默认锁定手改字段。
+  `works.update` 修改的是作品展示名和明确字段，默认锁定手改字段。
+  标签词条本身用 `tags.dictionary/create/update` 维护名称、别名和隐藏状态；更新携带真实 tag_id/revision，
+  省略 aliases/hidden 保持原值。`tags.rules` 读取持久化展示规则，只在明确要求改规则时用 `tags.rules.update`。
+  词条是运行数据，禁止通过改 Python 源码或初始化数据文件来执行日常维护。
 - 七维字典使用 `classifications.list` 的正式 ID。先读 `classifications.work`；
+  七维词条本身用 `classifications.create/update` 新增或改名，更新携带真实 term_id/revision。
   `assign` 只传明确修改的维度，省略保持原值，空数组清空；`fill` 只补待补维度。
   同维度任一匹配，不同维度同时匹配。音轨、字幕和制作地区分别取证，未知保持待补。
 - `works.want` 设定最终想看状态；回读 `works.detail.want_list`。这不提交下载。

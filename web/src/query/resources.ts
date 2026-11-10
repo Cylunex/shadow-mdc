@@ -67,6 +67,10 @@ export const resources = {
     queryKey: queryKeys.categories(onlyWithWorks),
     queryFn: ({ signal }) => api.categories({ onlyWithWorks }, signal),
   }),
+  tagDictionary: (q: string, offset: number) => queryOptions({
+    queryKey: queryKeys.tagDictionary(q, offset),
+    queryFn: ({ signal }) => api.tagDictionary(q, offset, signal),
+  }),
   classifications: () => queryOptions({
     queryKey: queryKeys.classifications,
     queryFn: ({ signal }) => api.classifications(signal),

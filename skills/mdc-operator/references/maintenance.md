@@ -13,6 +13,31 @@
 也支持明确给出的演员、剧情、制作商、系列或整组标签，默认 `lock_edited=true`。
 整组 `tags` 是替换，普通补库追加标记应使用 `works.tags`。编辑后读 `works.detail` 核对。
 
+## 维护标签和分类词条
+
+作品标签增删与词条管理是两件事。`tags.dictionary {"q":"REPLACE_QUERY","offset":0,"limit":100}`
+分页查询词条，包含来源标签、隐藏状态、别名和 revision。新增用 `tags.create`：
+
+```json
+{"name":"REPLACE_NAME","aliases":["REPLACE_ALIAS"],"hidden":false}
+```
+
+改名或显隐用 `tags.update`，保留真实 ID，并提交当前 revision：
+
+```json
+{"tag_id":"REPLACE_TAG_ID","name":"REPLACE_NEW_NAME","revision":1}
+```
+
+省略 aliases/hidden 保持原值，旧名称会自动保留为别名。修改后重新查询并用作品筛选核对。
+已隐藏的来源标记仍保存在作品原始标签中，不批量删库或重写历史标签。
+七维词条用 `classifications.create {"dimension":"genres","name":"REPLACE_NAME"}`，
+或 `classifications.update {"term_id":"REPLACE_TERM_ID","name":"REPLACE_NEW_NAME","revision":1}`。
+分类更新省略 aliases 保留原值；冲突回读，不自动采用较大修订号覆盖他人修改。
+
+`tags.rules` 返回展示顺序、常用筛选和噪声规则以及字典 revision；用户明确要求修改全局规则时，
+将读取结果中的 rules 按要求最小修改，再用 `tags.rules.update` 提交。普通标签改名不修改全局规则。
+这些数据保存于运行词典/数据库，不通过改源码、改 seed 或重启服务完成。
+
 ## 只补空
 
 ```json

@@ -17,6 +17,7 @@ import { CLASSIFICATION_KEYS, CLASSIFICATION_NAMES, migrateSavedClassifications 
 import { queryClient } from "../query/client";
 import { resources } from "../query/resources";
 import { TaxonomyEditor } from "./TaxonomyEditor";
+import { TagManagement } from "./TagManagement";
 import { ClassificationManagement } from "./ClassificationManagement";
 
 type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null; code?: string | null; category?: string; release_date?: string | null; has_local_media?: boolean; rating_value?: number | null; rating_max?: number | null; javranking_rank?: number | null; javranking_score?: number | null };
@@ -323,6 +324,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       }} />
     <details className="catalog-management"><summary>片单与资料工具</summary><div className="catalog-tools">
     <CatalogLibraryTools actions={actions} />
+    <TagManagement />
     <ClassificationManagement />
     <CatalogOrganizations works={rows} onFilter={(id, role) => patch({ organizations: [id], organization_role: role ?? "" })} />
     <CatalogPlaylists works={rows} onOpenWork={openWork} filters={filters} onApplyFilters={value => setFilters({ ...empty, ...value })} />

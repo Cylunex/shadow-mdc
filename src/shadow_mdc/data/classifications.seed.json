@@ -1,0 +1,832 @@
+{
+  "dimensions": [
+    {
+      "id": "contents",
+      "name": "内容体系",
+      "description": "按 JAV、国产原创、欧美等内容体系归类。与制作地区及音轨语言分别保存。"
+    },
+    {
+      "id": "types",
+      "name": "作品类型",
+      "description": "电影、剧集、动画、纪录片等作品大类。"
+    },
+    {
+      "id": "genres",
+      "name": "题材",
+      "description": "剧情、喜剧、悬疑等内容题材。支持多选。"
+    },
+    {
+      "id": "forms",
+      "name": "表现形式",
+      "description": "长片、短片、合集、自拍、VR 等呈现形式。"
+    },
+    {
+      "id": "languages",
+      "name": "音轨语言",
+      "description": "作品中实际使用的语言。不会根据内容体系或制作地区推断。"
+    },
+    {
+      "id": "subtitle_languages",
+      "name": "字幕语言",
+      "description": "字幕提供的语言、与音轨语言独立。"
+    },
+    {
+      "id": "regions",
+      "name": "制作地区",
+      "description": "作品明确的制作国家或地区。与音轨语言分别保存。"
+    }
+  ],
+  "terms": [
+    {
+      "id": "contents:jav",
+      "dimension": "contents",
+      "name": "JAV",
+      "aliases": [
+        "jav"
+      ]
+    },
+    {
+      "id": "contents:chinese",
+      "dimension": "contents",
+      "name": "国产原创",
+      "aliases": [
+        "chinese"
+      ]
+    },
+    {
+      "id": "contents:western",
+      "dimension": "contents",
+      "name": "欧美内容",
+      "aliases": [
+        "western"
+      ]
+    },
+    {
+      "id": "contents:korean",
+      "dimension": "contents",
+      "name": "韩系内容",
+      "aliases": [
+        "korean"
+      ]
+    },
+    {
+      "id": "contents:animation",
+      "dimension": "contents",
+      "name": "动画内容",
+      "aliases": [
+        "animation"
+      ]
+    },
+    {
+      "id": "types:movie",
+      "dimension": "types",
+      "name": "电影",
+      "aliases": [
+        "movie",
+        "film"
+      ]
+    },
+    {
+      "id": "types:series",
+      "dimension": "types",
+      "name": "剧集",
+      "aliases": [
+        "series",
+        "电视剧"
+      ]
+    },
+    {
+      "id": "types:animation",
+      "dimension": "types",
+      "name": "动画",
+      "aliases": [
+        "animation",
+        "动漫"
+      ]
+    },
+    {
+      "id": "types:documentary",
+      "dimension": "types",
+      "name": "纪录片",
+      "aliases": [
+        "documentary"
+      ]
+    },
+    {
+      "id": "types:variety",
+      "dimension": "types",
+      "name": "综艺",
+      "aliases": [
+        "variety"
+      ]
+    },
+    {
+      "id": "types:music-video",
+      "dimension": "types",
+      "name": "音乐视频",
+      "aliases": [
+        "MV",
+        "music video"
+      ]
+    },
+    {
+      "id": "types:live",
+      "dimension": "types",
+      "name": "直播录像",
+      "aliases": [
+        "live"
+      ]
+    },
+    {
+      "id": "genres:drama",
+      "dimension": "genres",
+      "name": "剧情",
+      "aliases": [
+        "drama",
+        "戏剧"
+      ]
+    },
+    {
+      "id": "genres:comedy",
+      "dimension": "genres",
+      "name": "喜剧",
+      "aliases": [
+        "comedy"
+      ]
+    },
+    {
+      "id": "genres:romance",
+      "dimension": "genres",
+      "name": "爱情",
+      "aliases": [
+        "romance"
+      ]
+    },
+    {
+      "id": "genres:action",
+      "dimension": "genres",
+      "name": "动作",
+      "aliases": [
+        "action"
+      ]
+    },
+    {
+      "id": "genres:thriller",
+      "dimension": "genres",
+      "name": "惊悚",
+      "aliases": [
+        "thriller"
+      ]
+    },
+    {
+      "id": "genres:mystery",
+      "dimension": "genres",
+      "name": "悬疑",
+      "aliases": [
+        "mystery"
+      ]
+    },
+    {
+      "id": "genres:horror",
+      "dimension": "genres",
+      "name": "恐怖",
+      "aliases": [
+        "horror"
+      ]
+    },
+    {
+      "id": "genres:documentary",
+      "dimension": "genres",
+      "name": "纪录",
+      "aliases": [
+        "documentary",
+        "纪录片"
+      ]
+    },
+    {
+      "id": "genres:fantasy",
+      "dimension": "genres",
+      "name": "奇幻",
+      "aliases": [
+        "fantasy"
+      ]
+    },
+    {
+      "id": "genres:sci-fi",
+      "dimension": "genres",
+      "name": "科幻",
+      "aliases": [
+        "sci-fi",
+        "science fiction"
+      ]
+    },
+    {
+      "id": "genres:historical",
+      "dimension": "genres",
+      "name": "历史",
+      "aliases": [
+        "history"
+      ]
+    },
+    {
+      "id": "genres:reality",
+      "dimension": "genres",
+      "name": "纪实",
+      "aliases": [
+        "reality"
+      ]
+    },
+    {
+      "id": "forms:feature",
+      "dimension": "forms",
+      "name": "长片",
+      "aliases": [
+        "feature"
+      ]
+    },
+    {
+      "id": "forms:short",
+      "dimension": "forms",
+      "name": "短片",
+      "aliases": [
+        "short"
+      ]
+    },
+    {
+      "id": "forms:compilation",
+      "dimension": "forms",
+      "name": "合集",
+      "aliases": [
+        "compilation",
+        "总集篇"
+      ]
+    },
+    {
+      "id": "forms:episode",
+      "dimension": "forms",
+      "name": "单集",
+      "aliases": [
+        "episode"
+      ]
+    },
+    {
+      "id": "forms:selfie",
+      "dimension": "forms",
+      "name": "自拍",
+      "aliases": [
+        "selfie"
+      ]
+    },
+    {
+      "id": "forms:vr",
+      "dimension": "forms",
+      "name": "VR",
+      "aliases": [
+        "vr",
+        "虚拟现实"
+      ]
+    },
+    {
+      "id": "forms:interview",
+      "dimension": "forms",
+      "name": "访谈",
+      "aliases": [
+        "interview"
+      ]
+    },
+    {
+      "id": "forms:behind-scenes",
+      "dimension": "forms",
+      "name": "花絮",
+      "aliases": [
+        "behind the scenes"
+      ]
+    },
+    {
+      "id": "languages:zh",
+      "dimension": "languages",
+      "name": "中文",
+      "aliases": [
+        "zh",
+        "zho",
+        "chi",
+        "Chinese",
+        "汉语",
+        "普通话",
+        "Mandarin"
+      ]
+    },
+    {
+      "id": "languages:yue",
+      "dimension": "languages",
+      "name": "粤语",
+      "aliases": [
+        "yue",
+        "Cantonese",
+        "广东话"
+      ]
+    },
+    {
+      "id": "languages:ja",
+      "dimension": "languages",
+      "name": "日语",
+      "aliases": [
+        "ja",
+        "jpn",
+        "Japanese",
+        "日本語"
+      ]
+    },
+    {
+      "id": "languages:en",
+      "dimension": "languages",
+      "name": "英语",
+      "aliases": [
+        "en",
+        "eng",
+        "English"
+      ]
+    },
+    {
+      "id": "languages:ko",
+      "dimension": "languages",
+      "name": "韩语",
+      "aliases": [
+        "ko",
+        "kor",
+        "Korean",
+        "한국어"
+      ]
+    },
+    {
+      "id": "languages:fr",
+      "dimension": "languages",
+      "name": "法语",
+      "aliases": [
+        "fr",
+        "fra",
+        "fre",
+        "French"
+      ]
+    },
+    {
+      "id": "languages:de",
+      "dimension": "languages",
+      "name": "德语",
+      "aliases": [
+        "de",
+        "deu",
+        "ger",
+        "German"
+      ]
+    },
+    {
+      "id": "languages:es",
+      "dimension": "languages",
+      "name": "西班牙语",
+      "aliases": [
+        "es",
+        "spa",
+        "Spanish"
+      ]
+    },
+    {
+      "id": "languages:it",
+      "dimension": "languages",
+      "name": "意大利语",
+      "aliases": [
+        "it",
+        "ita",
+        "Italian"
+      ]
+    },
+    {
+      "id": "languages:pt",
+      "dimension": "languages",
+      "name": "葡萄牙语",
+      "aliases": [
+        "pt",
+        "por",
+        "Portuguese"
+      ]
+    },
+    {
+      "id": "languages:ru",
+      "dimension": "languages",
+      "name": "俄语",
+      "aliases": [
+        "ru",
+        "rus",
+        "Russian"
+      ]
+    },
+    {
+      "id": "languages:th",
+      "dimension": "languages",
+      "name": "泰语",
+      "aliases": [
+        "th",
+        "tha",
+        "Thai"
+      ]
+    },
+    {
+      "id": "languages:vi",
+      "dimension": "languages",
+      "name": "越南语",
+      "aliases": [
+        "vi",
+        "vie",
+        "Vietnamese"
+      ]
+    },
+    {
+      "id": "languages:hi",
+      "dimension": "languages",
+      "name": "印地语",
+      "aliases": [
+        "hi",
+        "hin",
+        "Hindi"
+      ]
+    },
+    {
+      "id": "languages:none",
+      "dimension": "languages",
+      "name": "无对白",
+      "aliases": [
+        "zxx",
+        "silent"
+      ]
+    },
+    {
+      "id": "subtitle_languages:zh",
+      "dimension": "subtitle_languages",
+      "name": "中文",
+      "aliases": [
+        "zh",
+        "zho",
+        "chi",
+        "Chinese",
+        "汉语",
+        "普通话",
+        "Mandarin"
+      ]
+    },
+    {
+      "id": "subtitle_languages:yue",
+      "dimension": "subtitle_languages",
+      "name": "粤语",
+      "aliases": [
+        "yue",
+        "Cantonese",
+        "广东话"
+      ]
+    },
+    {
+      "id": "subtitle_languages:ja",
+      "dimension": "subtitle_languages",
+      "name": "日语",
+      "aliases": [
+        "ja",
+        "jpn",
+        "Japanese",
+        "日本語"
+      ]
+    },
+    {
+      "id": "subtitle_languages:en",
+      "dimension": "subtitle_languages",
+      "name": "英语",
+      "aliases": [
+        "en",
+        "eng",
+        "English"
+      ]
+    },
+    {
+      "id": "subtitle_languages:ko",
+      "dimension": "subtitle_languages",
+      "name": "韩语",
+      "aliases": [
+        "ko",
+        "kor",
+        "Korean",
+        "한국어"
+      ]
+    },
+    {
+      "id": "subtitle_languages:fr",
+      "dimension": "subtitle_languages",
+      "name": "法语",
+      "aliases": [
+        "fr",
+        "fra",
+        "fre",
+        "French"
+      ]
+    },
+    {
+      "id": "subtitle_languages:de",
+      "dimension": "subtitle_languages",
+      "name": "德语",
+      "aliases": [
+        "de",
+        "deu",
+        "ger",
+        "German"
+      ]
+    },
+    {
+      "id": "subtitle_languages:es",
+      "dimension": "subtitle_languages",
+      "name": "西班牙语",
+      "aliases": [
+        "es",
+        "spa",
+        "Spanish"
+      ]
+    },
+    {
+      "id": "subtitle_languages:it",
+      "dimension": "subtitle_languages",
+      "name": "意大利语",
+      "aliases": [
+        "it",
+        "ita",
+        "Italian"
+      ]
+    },
+    {
+      "id": "subtitle_languages:pt",
+      "dimension": "subtitle_languages",
+      "name": "葡萄牙语",
+      "aliases": [
+        "pt",
+        "por",
+        "Portuguese"
+      ]
+    },
+    {
+      "id": "subtitle_languages:ru",
+      "dimension": "subtitle_languages",
+      "name": "俄语",
+      "aliases": [
+        "ru",
+        "rus",
+        "Russian"
+      ]
+    },
+    {
+      "id": "subtitle_languages:th",
+      "dimension": "subtitle_languages",
+      "name": "泰语",
+      "aliases": [
+        "th",
+        "tha",
+        "Thai"
+      ]
+    },
+    {
+      "id": "subtitle_languages:vi",
+      "dimension": "subtitle_languages",
+      "name": "越南语",
+      "aliases": [
+        "vi",
+        "vie",
+        "Vietnamese"
+      ]
+    },
+    {
+      "id": "subtitle_languages:hi",
+      "dimension": "subtitle_languages",
+      "name": "印地语",
+      "aliases": [
+        "hi",
+        "hin",
+        "Hindi"
+      ]
+    },
+    {
+      "id": "subtitle_languages:none",
+      "dimension": "subtitle_languages",
+      "name": "无字幕",
+      "aliases": [
+        "none",
+        "无字"
+      ]
+    },
+    {
+      "id": "regions:jp",
+      "dimension": "regions",
+      "name": "日本",
+      "aliases": [
+        "JP",
+        "JPN",
+        "Japan",
+        "日本国"
+      ]
+    },
+    {
+      "id": "regions:cn",
+      "dimension": "regions",
+      "name": "中国大陆",
+      "aliases": [
+        "CN",
+        "CHN",
+        "China",
+        "中国",
+        "大陆"
+      ]
+    },
+    {
+      "id": "regions:hk",
+      "dimension": "regions",
+      "name": "中国香港",
+      "aliases": [
+        "HK",
+        "Hong Kong",
+        "香港"
+      ]
+    },
+    {
+      "id": "regions:tw",
+      "dimension": "regions",
+      "name": "中国台湾",
+      "aliases": [
+        "TW",
+        "Taiwan",
+        "台湾"
+      ]
+    },
+    {
+      "id": "regions:kr",
+      "dimension": "regions",
+      "name": "韩国",
+      "aliases": [
+        "KR",
+        "KOR",
+        "Korea",
+        "South Korea"
+      ]
+    },
+    {
+      "id": "regions:us",
+      "dimension": "regions",
+      "name": "美国",
+      "aliases": [
+        "US",
+        "USA",
+        "United States"
+      ]
+    },
+    {
+      "id": "regions:gb",
+      "dimension": "regions",
+      "name": "英国",
+      "aliases": [
+        "GB",
+        "GBR",
+        "UK",
+        "United Kingdom"
+      ]
+    },
+    {
+      "id": "regions:fr",
+      "dimension": "regions",
+      "name": "法国",
+      "aliases": [
+        "FR",
+        "France"
+      ]
+    },
+    {
+      "id": "regions:de",
+      "dimension": "regions",
+      "name": "德国",
+      "aliases": [
+        "DE",
+        "Germany"
+      ]
+    },
+    {
+      "id": "regions:es",
+      "dimension": "regions",
+      "name": "西班牙",
+      "aliases": [
+        "ES",
+        "Spain"
+      ]
+    },
+    {
+      "id": "regions:it",
+      "dimension": "regions",
+      "name": "意大利",
+      "aliases": [
+        "IT",
+        "Italy"
+      ]
+    },
+    {
+      "id": "regions:ca",
+      "dimension": "regions",
+      "name": "加拿大",
+      "aliases": [
+        "CA",
+        "Canada"
+      ]
+    },
+    {
+      "id": "regions:au",
+      "dimension": "regions",
+      "name": "澳大利亚",
+      "aliases": [
+        "AU",
+        "Australia"
+      ]
+    },
+    {
+      "id": "regions:ru",
+      "dimension": "regions",
+      "name": "俄罗斯",
+      "aliases": [
+        "RU",
+        "Russia"
+      ]
+    },
+    {
+      "id": "regions:th",
+      "dimension": "regions",
+      "name": "泰国",
+      "aliases": [
+        "TH",
+        "Thailand"
+      ]
+    },
+    {
+      "id": "regions:in",
+      "dimension": "regions",
+      "name": "印度",
+      "aliases": [
+        "IN",
+        "India"
+      ]
+    },
+    {
+      "id": "contents:unknown",
+      "dimension": "contents",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    },
+    {
+      "id": "types:unknown",
+      "dimension": "types",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    },
+    {
+      "id": "genres:unknown",
+      "dimension": "genres",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    },
+    {
+      "id": "forms:unknown",
+      "dimension": "forms",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    },
+    {
+      "id": "languages:unknown",
+      "dimension": "languages",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    },
+    {
+      "id": "subtitle_languages:unknown",
+      "dimension": "subtitle_languages",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    },
+    {
+      "id": "regions:unknown",
+      "dimension": "regions",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    }
+  ]
+}

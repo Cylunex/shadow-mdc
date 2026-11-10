@@ -9,11 +9,11 @@
 | 场景 | 能力 |
 | --- | --- |
 | 作品、演员、标签、七维筛选 | `works.query/facets/detail`、`actors.query/detail`、`tags.list`、`classifications.list/work` |
-| 标签与展示名 | `works.tags` 增删标签，`works.update` 编辑明确字段并默认锁定 |
+| 标签与展示名 | `works.tags` 增删标签，`works.update` 编辑作品明确字段并默认锁定；`tags.dictionary/create/update` 维护词条，`tags.rules` 读写规则 |
 | 单条入库 | `intake.code.*`、`intake.magnet.*`、`intake.link.submit`、`intake.item` |
 | 日榜、论坛和片单批量补库 | `discover.browse/search`、`rankings.seed`、CLI `prepare/batch` |
 | 元数据、缺译缺图缺演员 | `metadata.lookup`、`works.lookup/refresh/fill`、`actors.images.fill` |
-| 分类回填 | `classifications.assign/fill`，配合 `prepare/batch` 处理大库 |
+| 分类回填 | `classifications.create/update` 新增改名词条；`classifications.assign/fill`，配合 `prepare/batch` 处理大库 |
 | 想看、片单和演员盯磁 | `works.want`、`playlists.list/works/create/update`、`subscriptions.*` |
 | 下载与导出收口 | `intake.jobs/job/recover/next/cancel/pipeline`、`strm.status/rewrite/notify` |
 | 播放 | `playback.code/work` 解析已配置的 Emby 与外站源 |
