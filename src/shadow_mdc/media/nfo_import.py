@@ -18,6 +18,7 @@ from ..db.repository import Repository
 from ..domain import MatchEvidence, ProviderRecord, ScoredCandidate
 from ..enums import ContentFamily, MatchDecision, MediaCategory
 from ..identity import extract_code
+from ..normalize_code import is_format_equivalent
 from ..remaster import parse_remaster_identity
 
 _CODE_TAG = re.compile(r"(?i)^(?:num|id|code|jav)$")
@@ -113,6 +114,16 @@ class NfoImporter:
                 continue
             try:
                 parsed = parse_movie_nfo(nfo_path)
+                expected = asset.hints.get("code")
+                if not expected and asset.work_id is not None:
+                    work = self.repository.get_work(asset.work_id)
+                    expected = work.primary_code if work is not None else None
+                if (
+                    isinstance(expected, str)
+                    and parsed.code
+                    and not is_format_equivalent(expected, parsed.code)
+                ):
+                    raise ValueError(f"NFO code conflict: expected={expected}; received={parsed.code}")
             except (OSError, ElementTree.ParseError, ValueError) as exc:
                 errors.append(f"{nfo_path}: {exc}")
                 continue

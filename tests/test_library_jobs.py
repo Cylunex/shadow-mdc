@@ -49,10 +49,11 @@ def test_queue_deduplicates_and_cancel_has_a_terminal_state(
 
     def pause(
         self: Scanner, library: Library, base: Path, path: Path, *, volume_code: str | None = None,
+        diagnostics: list[str] | None = None,
     ) -> tuple[bool, bool, tuple[str, ...]]:
         started.set()
         assert release.wait(5)
-        return original(self, library, base, path, volume_code=volume_code)
+        return original(self, library, base, path, volume_code=volume_code, diagnostics=diagnostics)
 
     monkeypatch.setattr(Scanner, "_scan_asset", pause)
     with TestClient(app) as client:

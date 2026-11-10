@@ -6,6 +6,10 @@ Shadow MDC 的代码与数据模型从零实现。下列项目只用于确认常
 
 - [JavSP](https://github.com/Yuukiy/JavSP)、[MDCX](https://github.com/sqzw-x/mdcx)：番号扫描、NFO 与本地整理的基础场景。
 - [OpenAver](https://github.com/slive777/OpenAver)：来源状态、人工浏览和本地桌面体验。
+- [Kura](https://github.com/p-nickzhang-q/kura)：扫描、刮削、整理分离，卷身份、辅助媒体过滤及 NFO 互操作。
+- [JavLibrarian](https://github.com/syy674998887/JavLibrarian)：来源番号验收、补空合并与 NAS 整理边界。
+- [MediaClinic](https://github.com/junqueirach/mediaclinic)：离线片库的 NFO、封面与资料健康检查；作为后续只读诊断的参考。
+- [Javinizer-JS](https://github.com/AlaricRomeo/Javinizer-JS)：人物别名、本地人物复用和 NFO 可迁移性；只参考公开行为说明。
 - [Javinizer Go](https://github.com/javinizer/javinizer-go)：CLI、Web、容器和预览式整理。
 - [Stash](https://github.com/stashapp/stash) 与 [CommunityScrapers](https://github.com/stashapp/CommunityScrapers)：场景模型、指纹候选与站点适配器边界。
 - [FSS](https://github.com/Anastylosis/FSS)：片商目录增量导入，适合作为独立 catalogue provider。

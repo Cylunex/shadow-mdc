@@ -70,9 +70,18 @@ IGNORED_DIRECTORY_NAMES = frozenset(
         ".actors",
         ".amane_trash",
         "@eadir",
+        "backdrops",
+        "behind the scenes",
+        "deleted scenes",
+        "extras",
         "extrafanart",
+        "featurettes",
+        "interviews",
         "lost+found",
         "system volume information",
+        "scenes",
+        "shorts",
+        "trailers",
     }
 )
 
@@ -169,6 +178,7 @@ class Scanner:
                     root,
                     path,
                     volume_code=volume_codes.get(path.parent),
+                    diagnostics=errors,
                 )
                 discovered += int(created)
                 updated += int(not created)
@@ -198,6 +208,7 @@ class Scanner:
         path: Path,
         *,
         volume_code: str | None = None,
+        diagnostics: list[str] | None = None,
     ) -> tuple[bool, bool, tuple[str, ...]]:
         stat = path.stat()
         is_strm = path.suffix.casefold() == ".strm"
@@ -315,16 +326,23 @@ class Scanner:
             if existing_work is not None:
                 self._repository.attach_asset_to_work(asset, existing_work)
         # NFO-first rebuild: trust sidecar metadata before remote scrape (miyabi-inspired).
+        sibling_artwork_allowed = True
         if asset.work_id is None and resolve_sidecar_nfo(path) is not None:
             result = NfoImporter(
                 self._repository,
                 policy=NfoImportPolicy(mode="trust"),
             ).import_library_assets([asset])
+            sibling_artwork_allowed = not result.errors
+            if diagnostics is not None:
+                diagnostics.extend(result.errors)
             if result.trusted:
                 asset = self._repository.get_asset(asset.id) or asset
         elif asset.work_id is not None and (nfo_path := resolve_sidecar_nfo(path)) is not None:
-            _adopt_nfo_manual_fields(self._repository, asset.work_id, nfo_path)
-        if asset.work_id is not None and self._artwork_dir is not None:
+            warning = _adopt_nfo_manual_fields(self._repository, asset.work_id, nfo_path)
+            sibling_artwork_allowed = warning is None
+            if warning is not None and diagnostics is not None:
+                diagnostics.append(warning)
+        if sibling_artwork_allowed and asset.work_id is not None and self._artwork_dir is not None:
             work = self._repository.get_work(asset.work_id)
             if work is not None:
                 _adopt_sibling_artwork(self._repository, work, path, self._artwork_dir)
@@ -462,22 +480,25 @@ def _walk_files(
                 errors.append(f"{entry.path}: cannot inspect entry: {exc}")
 
 
-def _adopt_nfo_manual_fields(repository: Repository, work_id: str, nfo_path: Path) -> None:
+def _adopt_nfo_manual_fields(repository: Repository, work_id: str, nfo_path: Path) -> str | None:
     """Re-scan: NFO fields the user marked manual become locked Work values (best-effort)."""
 
     work = repository.get_work(work_id)
     if work is None:
-        return
+        return None
     try:
         parsed = parse_movie_nfo(nfo_path)
     except (OSError, ElementTree.ParseError, ValueError):
-        return
+        return None
+    if work.primary_code and parsed.code and not is_format_equivalent(work.primary_code, parsed.code):
+        return f"{nfo_path}: NFO code conflict: expected={work.primary_code}; received={parsed.code}"
     if not parsed.locked_fields:
-        return
+        return None
     try:
         apply_nfo_locked_fields(repository, work, parsed)
     except ValueError:
-        return
+        return None
+    return None
 
 
 def _adopt_sibling_artwork(repository: Repository, work: Work, media_path: Path, artwork_dir: Path) -> None:

@@ -5,6 +5,7 @@ from difflib import SequenceMatcher
 from .domain import IdentityHints, MatchEvidence, ProviderRecord, ScoredCandidate
 from .enums import MatchDecision
 from .identity import normalize_identity_value
+from .normalize_code import is_format_equivalent
 
 AUTO_ACCEPT_SCORE = 0.86
 REVIEW_SCORE = 0.48
@@ -39,6 +40,18 @@ def _duration_similarity(expected: float, actual: int) -> float:
 
 def score_candidate(hints: IdentityHints, record: ProviderRecord) -> ScoredCandidate:
     evidence: list[MatchEvidence] = []
+
+    if hints.code and record.code and not is_format_equivalent(hints.code, record.code):
+        return ScoredCandidate(
+            record=record,
+            score=0,
+            decision=MatchDecision.REJECT,
+            evidence=(MatchEvidence(
+                kind="code_conflict",
+                contribution=0,
+                detail=f"expected={hints.code}; received={record.code}",
+            ),),
+        )
 
     for algorithm, value in hints.fingerprints.items():
         if normalize_identity_value(record.fingerprints.get(algorithm, "")) == normalize_identity_value(

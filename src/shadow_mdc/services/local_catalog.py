@@ -6,6 +6,7 @@ from pathlib import Path
 from ..classification import classify_media
 from ..domain import IdentityHints, ProviderRecord
 from ..enums import ContentFamily, MediaCategory
+from ..filename_tags import filename_tags
 from ..identity import clean_stem, normalize_identity_value
 
 _HANDLE = re.compile(r"@([A-Za-z][A-Za-z0-9_]{1,31})")
@@ -109,7 +110,9 @@ def build_local_catalog_record(
     title = hierarchical[0] or _local_title(path.stem, hints, subject)
     family = hints.family if hints.family is not ContentFamily.UNKNOWN else family_for_category(category)
     external_id = hashlib.sha256(f"{library_id}\0{relative.as_posix().casefold()}".encode()).hexdigest()
-    confirmed_directory_actor = bool({"directory-actor:confirmed", "batch-actor:confirmed"} & set(hints.alias_evidence))
+    confirmed_directory_actor = bool(
+        {"directory-actor:confirmed", "batch-actor:confirmed"} & set(hints.alias_evidence)
+    )
     actors = (
         hints.actors
         if confirmed_directory_actor and hints.actors
@@ -132,7 +135,7 @@ def build_local_catalog_record(
         studio=hints.studio,
         series=series,
         actors=actors,
-        tags=tuple(dict.fromkeys((category.value, *hierarchical[1]))),
+        tags=tuple(dict.fromkeys((category.value, *hierarchical[1], *filename_tags(path)))),
         fingerprints=hints.fingerprints,
         language=_language_for_category(category),
     )

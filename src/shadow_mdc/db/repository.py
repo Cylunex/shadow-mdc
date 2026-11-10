@@ -24,6 +24,7 @@ from ..enums import (
     MediaCategory,
     RecognitionScope,
 )
+from ..filename_tags import filename_tags
 from ..identity import normalize_identity_value
 from ..tags import canonicalize_tag, tag_id
 from .classification_migration import migrate_classifications
@@ -535,6 +536,12 @@ class Repository:
             if existing.state == AssetState.IGNORED.value:
                 existing.state = AssetState.NEW.value
                 existing.error = None
+            if (
+                filename_tags(absolute)
+                and existing.work_id is not None
+                and (work := self.get_work(existing.work_id)) is not None
+            ):
+                self._merge_filename_tags(work, (absolute,))
             return existing, False
         asset = MediaAsset(
             library_id=library_id,
@@ -688,9 +695,7 @@ class Repository:
             self._merge_provider_record(work, record)
         self._add_record_identities(work, record)
         self._upsert_snapshot(work, record)
-        asset.work_id = work.id
-        asset.state = AssetState.IDENTIFIED.value
-        asset.error = None
+        self.attach_asset_to_work(asset, work)
         candidate.state = CandidateState.ACCEPTED.value
         for other in self.list_candidates(asset.id):
             if other.id != candidate.id and other.state == CandidateState.PENDING.value:
@@ -723,9 +728,7 @@ class Repository:
             self._merge_local_record(work, record)
         self._add_record_identities(work, record)
         self._upsert_snapshot(work, record)
-        asset.work_id = work.id
-        asset.state = AssetState.IDENTIFIED.value
-        asset.error = None
+        self.attach_asset_to_work(asset, work)
         self._session.flush()
         return work
 
@@ -1478,7 +1481,24 @@ class Repository:
         asset.work_id = work.id
         asset.state = AssetState.IDENTIFIED.value
         asset.error = None
+        self._merge_filename_tags(work, (asset.path,))
         self._session.flush()
+
+    def _merge_filename_tags(self, work: Work, paths: Iterable[str]) -> None:
+        if _field_locked(work, "tags"):
+            return
+        markers = {tag for path in paths for tag in filename_tags(path)}
+        if not markers:
+            return
+        current = list(work.tags or [])
+        known = {tag_id(tag) or tag.casefold() for tag in current}
+        for tag in sorted(markers):
+            key = tag_id(tag) or tag.casefold()
+            if key not in known:
+                current.append(canonicalize_tag(tag) or tag)
+                known.add(key)
+        if current != list(work.tags or []):
+            work.tags = current
 
     def identities_for_work(self, work_id: str) -> list[ExternalIdentity]:
         return list(
@@ -1872,6 +1892,8 @@ class Repository:
             work.tags = _merge_unique(work.tags, record.tags, replace=overwrite)
             if overwrite or "tags" not in sources:
                 sources["tags"] = record.provider
+            if overwrite:
+                self._merge_filename_tags(work, (asset.path for asset in self.list_assets_for_work(work.id)))
         if record.artwork:
             if not work.artwork:
                 work.artwork = _merge_artwork(work.artwork, record, replace=False)
