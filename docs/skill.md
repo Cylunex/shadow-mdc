@@ -16,10 +16,21 @@
 | `works.want` | 设置或取消真实作品的想看状态 |
 | `playlists.list` / `playlists.works` | 查询指定空间的人工与动态片单 |
 | `tasks.list` / `tasks.get` | 读取执行状态和结果 |
+| `intake.status` | 按番号区分建档、媒体就绪和离线任务 |
+| `intake.code.preview` / `intake.code.submit` | 番号入库预览与实际提交，复用已有作品和运行任务 |
+| `intake.magnet.inspect` / `intake.magnet.preview` / `intake.magnet.submit` | 磁力解析、预览及入库；无番号时使用哈希身份 |
+| `intake.jobs` / `intake.job` | 下载、STRM 导出与现有任务结果 |
+| `works.lookup` / `works.refresh` | 仅刮削建档或重刮已有作品，沿用字段锁和配额 |
+| `libraries.list` / `libraries.assets` | 已配置媒体库与资产分页，含未识别条目 |
+| `libraries.scan` / `libraries.identify` | 提交可恢复的后台扫描与批量识别任务 |
+| `assets.get` / `assets.identify` / `assets.candidates` | 单项资产状态、识别及匹配证据 |
+| `candidates.accept` | 接受用户明确选定的候选并关联作品 |
 
 每项能力的真实参数通过 `catalog` 或 `describe` 读取。查询有分页时保留原筛选并沿游标或 offset 翻页。
 片单空间来自配置的 `owner`；想看沿用个人片库的共同列表。写入结果未知时先读取目标，核对后再决定是否重试。
-本 skill 不提交下载、不执行文件删除或对外发送，也不管理服务部署。
+共 32 项能力，22 项读取与 10 项写入。入库沿用已有下载、导出及媒体服务器通知流程，不执行原媒体文件删除或服务部署。
+入库的预览与提交使用不同能力，预览的 `dry_run` 固定为 true，无法通过输入切换成写入。
+具体步骤与结果含义见 [入库流程](../skills/mdc-operator/references/intake.md)。
 
 ## 连接
 
@@ -39,8 +50,10 @@ CLI 也支持已有 SSH 别名和远端绝对启动器、配置路径；输入 J
 - `POST /api/skill/v1/call` 接收 `name` 和 `arguments`，返回 `ok/capability/status/result`。
 - 两个入口都复用已有机器服务凭据进行 Bearer 校验，未配置返回 503，匿名及错误凭据返回 401。
 - 旧配置项 `mcp_token` 保持原名；新接口不使用 MCP 协议，不注册新 MCP 工具。
+- 入库 HTTP 路由位于 `/api/intake/v1`，复用既有入库实现和队列；媒体库资产读取按库、状态及 offset/limit 分页。
 - 服务端只转发固定能力对应的域内端点，不接受任意 URL、HTTP 方法或路径。
 - 原页面的作品详情使用前端偏好覆盖；skill 详情合并实际想看状态，便于写后核验。
 - CLI 不跟随 HTTP 重定向，不输出凭据、连接配置正文或原始 SSH 错误，不自动重放写入。
 
-普通授权的分类与想看修改直接执行，使用实际作品 ID 和正式分类 ID，完成后读取核验。
+普通授权的入库、分类与想看修改直接执行，使用实际作品 ID 和正式分类 ID，完成后读取核验。
+入库 `action=error` 会使 `ok=false` 与 CLI 非零退出；`hunting` 是已加入盯磁，`submitted` 是已提交，均不代表媒体就绪。

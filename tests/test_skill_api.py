@@ -26,10 +26,18 @@ def test_skill_auth_catalog_reads_and_idempotent_domain_changes(
         client.headers.update({"Authorization": "Bearer REPLACE_TEST_TOKEN", "X-Catalog-Owner": "test-owner"})
         catalog = client.get(path + "/catalog").json()
         capabilities = {item["name"]: item for item in catalog["capabilities"]}
-        assert len(capabilities) == 14
+        assert len(capabilities) == 32
         assert {key for key, item in capabilities.items() if item["effect"] == "write"} == {
             "works.want",
             "classifications.assign",
+            "intake.code.submit",
+            "intake.magnet.submit",
+            "works.lookup",
+            "works.refresh",
+            "libraries.scan",
+            "libraries.identify",
+            "assets.identify",
+            "candidates.accept",
         }
         assert "work_id" in capabilities["works.detail"]["input_schema"]["required"]
 

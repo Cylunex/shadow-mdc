@@ -6217,11 +6217,13 @@ def swipe_feed_entry() -> HTMLResponse:
 
 
 from .mcp_api import router as _mcp_router  # noqa: E402 - needs route helpers above
+from .intake_api import router as _intake_router  # noqa: E402
 from .swipe_proxy import create_swipe_proxy_router  # noqa: E402
 
 app.include_router(build_catalog_router(runtime))
 app.include_router(build_media_router(runtime))
 app.include_router(build_skill_router(runtime))
+app.include_router(_intake_router)
 app.include_router(_mcp_router)
 app.include_router(create_swipe_proxy_router(Settings()))
 
