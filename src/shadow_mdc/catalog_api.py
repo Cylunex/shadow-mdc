@@ -80,7 +80,8 @@ from .services.catalog_people import (
 )
 from .services.javranking_client import JavRankingIndexCache
 from .services.library_prefs import LibraryPrefs
-from .tags import canonicalize_tag, normalize_tags
+from .tag_registry import TagReference
+from .tags import normalize_tags, resolve_tag, tag_id, tag_refs
 
 if TYPE_CHECKING:
     from .api import Runtime
@@ -117,6 +118,7 @@ class CatalogCard(BaseModel):
     year: int | None
     actors: list[str]
     tags: list[str]
+    tag_refs: list[TagReference] = Field(default_factory=list)
     studio: str | None
     label: str | None
     series: str | None
@@ -165,11 +167,16 @@ class Facet(BaseModel):
     role: str = ""
 
 
+class TagFacet(Facet):
+    aliases: list[str] = Field(default_factory=list)
+
+
 def _card(work: Work, prefix: str, *, detail: bool = False) -> CatalogCard:
     return CatalogCard(
         id=work.id, title=work.title, code=work.primary_code,
         year=work.release_date.year if work.release_date else None,
-        actors=work.actors, tags=list(normalize_tags(work.tags)), studio=work.studio,
+        actors=work.actors, tags=list(normalize_tags(work.tags)), tag_refs=tag_refs(work.tags),
+        studio=work.studio,
         label=work.label, series=work.series, overview=work.plot if detail else None,
         category=work.category, release_date=str(work.release_date) if work.release_date else None,
         rating_value=work.rating_value, rating_max=work.rating_max,
@@ -366,9 +373,9 @@ def build_catalog_router(
             # SQLite json_each avoids materializing every work in Python.
             def tagged(tag: str) -> ColumnElement[bool]:
                 values = func.json_each(Work.tags).table_valued("value")
-                canonical = canonicalize_tag(tag)
-                match = (func.mdc_canonical_tag(values.c.value) == canonical
-                         if canonical is not None else values.c.value == tag)
+                identity = tag_id(tag)
+                match = (func.mdc_tag_id(values.c.value) == identity
+                         if identity is not None else values.c.value == tag)
                 return exists(select(1).select_from(values).where(match))
             predicates = [tagged(tag) for tag in filters.tags]
             if predicates:
@@ -584,7 +591,7 @@ def build_catalog_router(
                 )
 
     @router.post("/facets")
-    def facets(filters: CatalogFilter, request: Request) -> dict[str, list[Facet]]:
+    def facets(filters: CatalogFilter, request: Request) -> dict[str, list[Facet | TagFacet]]:
         with runtime(request).database.session() as session:
             actor_profiles = _person_index(people(request, session)) if filters.actors or filters.q else None
             year_filters = filters.model_copy(update={
@@ -604,12 +611,23 @@ def build_catalog_router(
             tag_filters = filters if filters.tags_all else filters.model_copy(update={"tags": []})
             tag_base = filtered_statement(tag_filters, request, session, actor_profiles).subquery()
             tag_rows = func.json_each(tag_base.c.tags).table_valued("value")
-            canonical_tag = func.mdc_canonical_tag(tag_rows.c.value)
+            identity = func.mdc_tag_id(tag_rows.c.value)
             tags = list(session.execute(
-                select(canonical_tag, func.count(func.distinct(tag_base.c.id)))
-                .select_from(tag_base).join(tag_rows, true()).where(canonical_tag.is_not(None))
-                .group_by(canonical_tag),
+                select(identity, func.min(tag_rows.c.value), func.count(func.distinct(tag_base.c.id)))
+                .select_from(tag_base).join(tag_rows, true()).where(identity.is_not(None))
+                .group_by(identity),
             ))
+            tag_facets = {
+                key: TagFacet(id=key, name=tag.name, count=count, aliases=list(tag.aliases))
+                for key, raw, count in tags if (tag := resolve_tag(raw)) is not None
+            }
+            # Keep selected/excluded labels readable even when other filters hide all their works.
+            for raw in [*filters.tags, *filters.exclude_tags]:
+                tag = resolve_tag(raw)
+                if tag is not None and tag.id not in tag_facets:
+                    tag_facets[tag.id] = TagFacet(
+                        id=tag.id, name=tag.name, count=0, aliases=list(tag.aliases),
+                    )
             organization_filters = filters.model_copy(update={"organizations": [], "organization_role": ""})
             organization_rows = filtered_statement(
                 organization_filters, request, session, actor_profiles,
@@ -650,7 +668,7 @@ def build_catalog_router(
                 **taxonomy,
                 "years": [Facet(id=k, name=k, count=v) for k, v in year_counts],
                 "decades": [Facet(id=k, name=k, count=v) for k, v in sorted(decades.items(), reverse=True)],
-                "tags": [Facet(id=k, name=k, count=v) for k, v in tags],
+                "tags": sorted(tag_facets.values(), key=lambda tag: (-tag.count, tag.name.casefold())),
                 "organizations": [Facet(id=k, name=n, role=r, count=v) for k, n, r, v in organizations],
             }
 

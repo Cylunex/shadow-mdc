@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from shadow_mdc.tags import canonicalize_tag, normalize_tags
+from shadow_mdc.tags import normalize_tags, resolve_tag, tag_id
 
 MANIFEST_NAME = "manifest.json"
 COVERS_DIRNAME = "category-covers"
@@ -162,6 +162,11 @@ class CategoryCoverEntry:
     aliases: tuple[str, ...] = ()
     source: str | None = None
     source_title: str | None = None
+    tag_id: str | None = None
+
+    @property
+    def id(self) -> str:
+        return tag_id(self.tag_id or self.label) or ""
 
     @property
     def image_url(self) -> str | None:
@@ -172,6 +177,7 @@ class CategoryCoverEntry:
 
 @dataclass(frozen=True)
 class CategoryOutData:
+    id: str
     slug: str
     label: str
     image_url: str | None
@@ -192,9 +198,12 @@ def load_manifest(data_dir: Path) -> list[CategoryCoverEntry]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        label = canonicalize_tag(str(item.get("label") or "")) or str(item.get("label") or "").strip()
-        if not label:
+        tag = resolve_tag(str(item.get("tag_id") or item.get("label") or ""))
+        if tag is None:
             continue
+        label = tag.name if tag.id.startswith("tag:") else unicodedata.normalize(
+            "NFKC", str(item.get("label") or tag.name),
+        ).strip()
         slug = str(item.get("slug") or slugify_label(label))
         if slug in seen:
             continue
@@ -218,6 +227,7 @@ def load_manifest(data_dir: Path) -> list[CategoryCoverEntry]:
                 aliases=aliases,
                 source=str(item["source"]) if item.get("source") else None,
                 source_title=str(item["source_title"]) if item.get("source_title") else None,
+                tag_id=tag.id,
             )
         )
     return entries
@@ -231,6 +241,7 @@ def write_manifest(data_dir: Path, entries: list[CategoryCoverEntry]) -> Path:
         "version": 1,
         "categories": [
             {
+                "tag_id": entry.id,
                 "slug": entry.slug,
                 "label": entry.label,
                 "image_file": entry.image_file,
@@ -256,7 +267,13 @@ def build_category_list(
     When no manifest exists, fall back to FEATURED_CATEGORY_LABELS with null images.
     """
 
-    counts = facet_counts or {}
+    counts: dict[str, int] = {}
+    library_names: dict[str, str] = {}
+    for value, count in (facet_counts or {}).items():
+        tag = resolve_tag(value)
+        if tag is not None:
+            counts[tag.id] = counts.get(tag.id, 0) + count
+            library_names.setdefault(tag.id, tag.name)
     entries = load_manifest(data_dir)
     if not entries:
         entries = [
@@ -265,40 +282,48 @@ def build_category_list(
         ]
 
     # Prefer featured order; append any extra manifest entries.
-    order = {label: index for index, label in enumerate(FEATURED_CATEGORY_LABELS)}
-    by_label = {entry.label: entry for entry in entries}
-    ordered_labels: list[str] = []
+    order = {tag_id(label): index for index, label in enumerate(FEATURED_CATEGORY_LABELS)}
+    by_id = {entry.id: entry for entry in entries if entry.id}
+    ordered_ids: list[str] = []
     for label in FEATURED_CATEGORY_LABELS:
-        if label in by_label:
-            ordered_labels.append(label)
+        identity = tag_id(label)
+        if identity in by_id and identity not in ordered_ids:
+            ordered_ids.append(identity)
     for entry in entries:
-        if entry.label not in ordered_labels:
-            ordered_labels.append(entry.label)
+        if entry.id and entry.id not in ordered_ids:
+            ordered_ids.append(entry.id)
     # Library tags remain discoverable even without a curated cover entry.
-    for label, count in counts.items():
-        if count > 0 and label not in by_label:
-            by_label[label] = CategoryCoverEntry(slug=slugify_label(label), label=label, image_file=None)
-            ordered_labels.append(label)
+    for identity, count in counts.items():
+        if count > 0 and identity not in by_id:
+            label = library_names[identity]
+            by_id[identity] = CategoryCoverEntry(
+                slug=slugify_label(label), label=label, image_file=None, tag_id=identity,
+            )
+            ordered_ids.append(identity)
 
     results: list[CategoryOutData] = []
-    for label in ordered_labels:
-        entry = by_label[label]
-        count = int(counts.get(label, 0))
+    for identity in ordered_ids:
+        entry = by_id[identity]
+        tag = resolve_tag(identity)
+        if tag is None:
+            continue
+        count = int(counts.get(identity, 0))
         if only_with_works and count <= 0:
             continue
         results.append(
             CategoryOutData(
+                id=identity,
                 slug=entry.slug,
-                label=entry.label,
+                label=tag.name if identity.startswith("tag:") else entry.label,
                 image_url=entry.image_url,
                 work_count=count,
-                aliases=entry.aliases,
+                aliases=tuple(dict.fromkeys((*entry.aliases, *tag.aliases))),
             )
         )
     # Stable secondary sort within equal featured rank by count desc
     results.sort(
         key=lambda item: (
-            order.get(item.label, 10_000),
+            order.get(item.id, 10_000),
             -item.work_count,
             item.label.casefold(),
         )

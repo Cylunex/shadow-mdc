@@ -293,11 +293,11 @@ def javranking_list_key(slug: str) -> str:
 
 
 def categories_key(*, only_with_works: bool) -> str:
-    return f"categories:list:with_works={int(only_with_works)}"
+    return f"categories:list:v2:with_works={int(only_with_works)}"
 
 
 def works_tags_key(limit: int) -> str:
-    return f"works:tags:limit={limit}"
+    return f"works:tags:v2:limit={limit}"
 
 
 def actors_list_key() -> str:
@@ -313,7 +313,7 @@ def works_list_key(
 ) -> str:
     tag_part = ",".join(sorted(tags))
     return (
-        f"works:list:v2:cid={collection_id or ''}:"
+        f"works:list:v3:cid={collection_id or ''}:"
         f"ck={collection_kind or ''}:"
         f"cn={collection or ''}:"
         f"tags={tag_part}"

@@ -15,7 +15,7 @@ const browsingSchema = z.object({
 const defaults: z.infer<typeof browsingSchema> = { query: "", onlyWithWorks: false, sort: "featured", page: 1, pageSize: 24 };
 
 type Props = {
-  onOpenTag: (tag: string) => void;
+  onOpenTag: (id: string, name?: string) => void;
   report?: (message: string) => void;
 };
 
@@ -34,7 +34,7 @@ export function CategoriesView({ onOpenTag, report }: Props) {
     const q = query.trim().toLocaleLowerCase();
     const items = (result.data?.categories ?? []).filter(item =>
       (!onlyWithWorks || item.work_count > 0) && (!q ||
-        [item.label, item.slug, ...item.aliases].join(" ").toLocaleLowerCase().includes(q)));
+        [item.id, item.label, item.slug, ...item.aliases].join(" ").toLocaleLowerCase().includes(q)));
     if (sort === "count") items.sort((a, b) => b.work_count - a.work_count || a.label.localeCompare(b.label, "zh-CN"));
     if (sort === "name") items.sort((a, b) => a.label.localeCompare(b.label, "zh-CN"));
     return items;
@@ -86,8 +86,8 @@ export function CategoriesView({ onOpenTag, report }: Props) {
         <h2>{filtered ? "没有匹配的分类" : "暂无分类"}</h2>
         <p>{filtered ? "试试其他关键词，或清除筛选查看全部分类。" : "作品入库后，可在这里按分类浏览。"}</p>
       </div> : <div className="category-grid" aria-label="分类网格" aria-busy={result.isFetching}>
-        {items.map(item => <button key={item.label} type="button" className="category-card"
-          onClick={() => onOpenTag(item.label)} title={`查看「${item.label}」的 ${item.work_count} 部作品`}>
+        {items.map(item => <button key={item.id ?? item.label} type="button" className="category-card"
+          onClick={() => onOpenTag(item.id ?? item.label, item.label)} title={`查看「${item.label}」的 ${item.work_count} 部作品`}>
           <div className="category-cover"><CoverImage src={appUrl(item.image_url) ?? ""} />
             {!item.image_url && <span className="category-cover-label" aria-hidden="true">{item.label}</span>}
           </div>

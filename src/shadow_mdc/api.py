@@ -393,7 +393,7 @@ from .services.x_handle import (
     sanitize_stored_x_handle,
     x_profile_url,
 )
-from .tags import display_chips, facet_tags, normalize_tags, work_matches_tags
+from .tags import display_chips, facet_tags, normalize_tags, resolve_tag, tag_refs, work_matches_tags
 
 
 @dataclass(frozen=True)
@@ -4315,7 +4315,8 @@ def list_work_tag_facets(
         return WorkTagFacetsOut.model_validate(cached)
     facets = facet_tags(repo.work_tags(), limit=limit)
     output = WorkTagFacetsOut(
-        tags=[WorkTagFacetOut(name=name, count=count) for name, count in facets]
+        tags=[WorkTagFacetOut(id=tag.id, name=tag.name, count=count, aliases=list(tag.aliases))
+              for name, count in facets if (tag := resolve_tag(name)) is not None]
     )
     cache.set_json(cache_key, output.model_dump(mode="json"), ttl_seconds=TTL_TAGS)
     return output
@@ -4344,6 +4345,7 @@ def list_categories(
     output = CategoriesOut(
         categories=[
             CategoryOut(
+                id=row.id,
                 slug=row.slug,
                 label=row.label,
                 image_url=row.image_url,
@@ -5512,6 +5514,7 @@ def _work_list_out(
         javranking_score=None if ranking is None else ranking.score,
         reviews=[],
         display_tags=_display_tags(work)[:24],
+        tag_refs=tag_refs(work.tags),
         field_sources={},
         field_locks=[],
         identities=[],
@@ -5647,6 +5650,7 @@ def _work_out(
         rating_source=getattr(work, "rating_source", None),
         reviews=list(getattr(work, "reviews", None) or []),
         display_tags=_display_tags(work),
+        tag_refs=tag_refs(work.tags),
         field_sources=dict(work.field_sources or {}),
         field_locks=list(work.field_locks or []),
         identities=identities,

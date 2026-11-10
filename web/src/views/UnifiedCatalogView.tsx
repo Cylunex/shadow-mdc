@@ -10,13 +10,13 @@ import { workSchema } from "../model";
 import { WorkCard } from "../components/WorkCard";
 import { CatalogLibraryTools, CatalogPersonActions, useCatalogActions } from "./CatalogActions";
 import { CoverImage } from "../components/CoverImage";
-import { CatalogTags } from "./CatalogTags";
+import { CatalogTags, matchesTag } from "./CatalogTags";
 import { Pagination } from "../components/Pagination";
 import { useSessionState } from "../hooks/useSessionState";
 
 type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null; code?: string | null; category?: string; release_date?: string | null; has_local_media?: boolean; rating_value?: number | null; rating_max?: number | null; javranking_rank?: number | null; javranking_score?: number | null };
 type Person = ManagedPerson;
-type Facet = { id: string; name: string; count: number; role: string };
+type Facet = { id: string; name: string; count: number; role: string; aliases?: string[] };
 export type { Filters } from "../lib/catalogFilters";
 export type CatalogFeedStart = { filters: Filters; items: Card[]; nextCursor: string | null; index?: number };
 const empty = EMPTY_CATALOG_FILTERS;
@@ -307,16 +307,20 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       {filters.collection && <button onClick={() => patch({ collection: "" })}>{filters.collection} ×</button>}
       {filters.actor_name && <button onClick={() => patch({ actor_name: "" })}>{filters.actor_name} ×</button>}
       {filters.studio_name && <button onClick={() => patch({ studio_name: "" })}>{filters.studio_name} ×</button>}
-      {filters.tags.map(name => <button key={"tag:" + name} onClick={() => patch({ tags: filters.tags.filter(t => t !== name) })}>{name} ×</button>)}
+      {filters.tags.map(id => <button key={"tag:" + id} onClick={() => patch({ tags: filters.tags.filter(t => t !== id) })}>{facets.tags?.find(tag => matchesTag(tag, id))?.name ?? id} ×</button>)}
       {(["genres", "forms", "regions", "organizations"] as const).flatMap(field => filters[field].map(id =>
         <button key={field + id} onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
       {(filters.year_from || filters.unknown_year) && <button onClick={() => patch({ year_from: undefined, year_to: undefined, unknown_year: false })}>{filters.unknown_year ? "年份待补" : filters.year_from === filters.year_to ? filters.year_from : `${filters.year_from}–${filters.year_to}`} ×</button>}
       {filters.status !== "all" && <button onClick={() => patch({ status: "all" })}>{({ emby: "已关联 Emby", files: "有关联文件", metadata: "仅资料", want: "想看", downloaded: "已下载", undownloaded: "全部未下载" })[filters.status]} ×</button>}
-      {filters.exclude_tags.map(name => <button key={name}
-      onClick={() => patch({ exclude_tags: filters.exclude_tags.filter(t => t !== name) })}>排除 {name} ×</button>)}{filters.actors.map(id => <button key={id} onClick={() => patch({ actors: filters.actors.filter(a => a !== id) })}>{actorNames?.[id] ?? id} ×</button>)}</div>
+      {filters.exclude_tags.map(id => <button key={id}
+      onClick={() => patch({ exclude_tags: filters.exclude_tags.filter(t => t !== id) })}>排除 {facets.tags?.find(tag => matchesTag(tag, id))?.name ?? id} ×</button>)}{filters.actors.map(id => <button key={id} onClick={() => patch({ actors: filters.actors.filter(a => a !== id) })}>{actorNames?.[id] ?? id} ×</button>)}</div>
     <div className="catalog-controls">
     <CatalogTags tags={facets.tags ?? []} selected={filters.tags} preview={false}
-      onToggle={id => patch({ tags: filters.tags.includes(id) ? filters.tags.filter(t => t !== id) : [...filters.tags, id] })} />
+      onToggle={id => {
+        const tag = facets.tags?.find(value => value.id === id);
+        const selected = tag ? filters.tags.some(value => matchesTag(tag, value)) : filters.tags.includes(id);
+        patch({ tags: selected ? filters.tags.filter(value => tag ? !matchesTag(tag, value) : value !== id) : [...filters.tags, id] });
+      }} />
     <details className="catalog-management"><summary>片单与资料工具</summary><div className="catalog-tools">
     <CatalogLibraryTools actions={actions} />
     <CatalogOrganizations works={rows} onFilter={(id, role) => patch({ organizations: [id], organization_role: role ?? "" })} />

@@ -37,9 +37,9 @@ from shadow_mdc.services.category_catalog import (  # noqa: E402
     write_manifest,
 )
 from shadow_mdc.tags import (  # noqa: E402
-    _CANONICAL_SYNONYMS,
     canonicalize_tag,
     synonyms_for,
+    tag_id,
 )
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -144,7 +144,7 @@ def _build_source_index(
             # Only keep featured + known taxonomy
             if (
                 canonical not in FEATURED_CATEGORY_LABELS
-                and canonical not in _CANONICAL_SYNONYMS
+                and not (tag_id(canonical) or "").startswith("tag:")
             ):
                 continue
             index.setdefault(canonical, []).append((source_name, title, image))

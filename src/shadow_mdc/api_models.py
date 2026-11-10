@@ -13,6 +13,7 @@ from .domain import (
 from .enums import CollectionKind, MediaCategory, NfoPolicy, OutputMode, RecognitionScope
 from .media.organize_journal import JournalEntry
 from .providers.base import ProviderFailure
+from .tag_registry import TagReference
 
 
 class LibraryCreate(BaseModel):
@@ -220,6 +221,7 @@ class WorkOut(BaseModel):
     javranking_score: float | None = None
     reviews: list[dict[str, object]] = Field(default_factory=list)
     display_tags: list[str] = Field(default_factory=list)
+    tag_refs: list[TagReference] = Field(default_factory=list)
     field_sources: dict[str, str] = Field(default_factory=dict)
     field_locks: list[str] = Field(default_factory=list)
     identities: list[IdentityOut] = Field(default_factory=list)
@@ -1118,8 +1120,10 @@ class LibraryPrefsOut(BaseModel):
 
 
 class WorkTagFacetOut(BaseModel):
+    id: str
     name: str
     count: int
+    aliases: list[str] = Field(default_factory=list)
 
 
 class WorkTagFacetsOut(BaseModel):
@@ -1127,6 +1131,7 @@ class WorkTagFacetsOut(BaseModel):
 
 
 class CategoryOut(BaseModel):
+    id: str
     slug: str
     label: str
     image_url: str | None = None

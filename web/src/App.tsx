@@ -453,7 +453,7 @@ export function App() {
           <UnifiedCatalogView key={view} mode={view} refresh={catalogRefresh} onStartFeed={startCatalogFeed} onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
         )}
         {view === "categories" && <CategoriesView report={setMessage}
-          onOpenTag={tag => navigateToFilteredWorks({ tags: [tag] }, `正在查看分类：${tag}`)} />}
+          onOpenTag={(id, name) => navigateToFilteredWorks({ tags: [id] }, `正在查看分类：${name ?? id}`)} />}
         {view === "actor-detail" && selectedActorRef && <>
           <button className="ghost" onClick={closeActorDetail}>返回演员库</button>
           <UnifiedCatalogView key={selectedActorRef} mode="actors" initialPersonRef={selectedActorRef}
@@ -468,8 +468,8 @@ export function App() {
             onBack={closeWorkDetail}
             onOpenWork={openWorkDetail}
             report={setMessage}
-            onSelectGenreTag={(tag) => {
-              navigateToFilteredWorks({ tags: [tag] }, `已筛选标签：${tag}`, true);
+            onSelectGenreTag={(id, name) => {
+              navigateToFilteredWorks({ tags: [id] }, `已筛选标签：${name ?? id}`, true);
             }}
             onSelectStudio={(studio) => {
               navigateToFilteredWorks({ studio }, `已筛选片商：${studio}`, true);

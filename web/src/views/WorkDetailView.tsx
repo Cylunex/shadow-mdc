@@ -148,7 +148,7 @@ export function WorkDetailView(props: {
   onDeleteMagnet: (workId: string, magnetId: string) => Promise<void>;
   onRefresh: (workId: string) => void;
   onDownload: (workId: string) => void;
-  onSelectGenreTag?: (tag: string) => void;
+  onSelectGenreTag?: (id: string, name?: string) => void;
   onSelectStudio?: (studio: string) => void;
   onSelectSeries?: (series: string) => void;
   onSelectYear?: (year: string) => void;
@@ -326,6 +326,16 @@ export function WorkDetailView(props: {
   }
 
   const displayTags = work.display_tags ?? work.tags ?? [];
+  const currentWork = work;
+  function displayTagAction(name: string): (() => void) | undefined {
+    const ref = currentWork.tag_refs.find(tag => tag.name === name);
+    if (ref && props.onSelectGenreTag) return () => props.onSelectGenreTag?.(ref.id, name);
+    if (name === currentWork.category && props.onSelectCategory) return () => props.onSelectCategory?.(name);
+    if (name === currentWork.studio && props.onSelectStudio) return () => props.onSelectStudio?.(name);
+    if (name === currentWork.series && props.onSelectSeries) return () => props.onSelectSeries?.(name);
+    if (!currentWork.tag_refs.length && props.onSelectGenreTag) return () => props.onSelectGenreTag?.(name, name);
+    return undefined;
+  }
 
   return (
     <section className="work-page">
@@ -515,19 +525,20 @@ export function WorkDetailView(props: {
               <MetaRow label="标签" empty={displayTags.length === 0}>
                 {displayTags.length === 0 ? "—" : (
                   <div className="tags display-tags" aria-label="作品标签">
-                    {displayTags.map((tag) => (
-                      props.onSelectGenreTag ? (
+                    {displayTags.map((tag) => {
+                      const action = displayTagAction(tag);
+                      return action ? (
                         <button
                           key={tag}
                           type="button"
                           className="display-tag-chip"
-                          onClick={() => props.onSelectGenreTag?.(tag)}
+                          onClick={action}
                           title={`按「${tag}」筛选影片`}
                         >{tag}</button>
                       ) : (
                         <span key={tag}>{tag}</span>
-                      )
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </MetaRow>

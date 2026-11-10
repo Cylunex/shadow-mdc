@@ -45,6 +45,7 @@ just build
 - [播放连接器](docs/playback.md)
 - [Media 原生片库与 Emby 播放](docs/media-client.md)
 - [统一作品、人物、机构与播放](docs/unified-library.md)
+- [标签标识、展示名称与兼容](docs/tags.md)
 - [刷流与解析生命周期](docs/swipe.md)
 - [MCP 接口](docs/mcp.md)
 - [开发文档](docs/dev/index.md)

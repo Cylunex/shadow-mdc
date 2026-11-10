@@ -41,3 +41,19 @@ it("shows a small common-tag preview without expanding thousands of tags", async
   expect(container.querySelector(".catalog-tag-preview")?.textContent).toContain("分类 4499");
   expect(container.querySelector("details")?.open).toBe(false);
 });
+
+it("finds aliases, highlights old selections, and emits a stable ID after a rename", async () => {
+  const toggle = vi.fn();
+  const renamed = [{ id: "tag:amateur", name: "爱好者", aliases: ["素人", "Amateur"], count: 3 }];
+  await act(async () => root.render(<CatalogTags tags={renamed} selected={["ＡＭＡＴＥＵＲ"]} preview={false} onToggle={toggle} />));
+  const input = container.querySelector("input")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, " ＡＭＡＴＥＵＲ ");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const button = container.querySelector<HTMLButtonElement>("button[aria-pressed]")!;
+  expect(button.textContent).toBe("爱好者 · 3");
+  expect(button.getAttribute("aria-pressed")).toBe("true");
+  await act(async () => button.click());
+  expect(toggle).toHaveBeenCalledWith("tag:amateur");
+});

@@ -84,6 +84,33 @@ it("retries a failed category load without claiming the catalog is empty", async
   expect(container.querySelectorAll(".category-card")).toHaveLength(24);
 });
 
+it("opens a category by its stable ID while displaying its name", async () => {
+  const open = vi.fn();
+  vi.mocked(api.categories).mockResolvedValue({ categories: [
+    { ...categories[0]!, id: "tag:amateur", label: "爱好者", aliases: ["素人", "Amateur"] },
+  ] });
+  await act(async () => root.render(<CategoriesView onOpenTag={open} />));
+  await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
+  expect(open).toHaveBeenCalledWith("tag:amateur", "爱好者");
+});
+
+it("keeps a legacy tag selection readable and removes it when toggling the new ID", async () => {
+  window.history.replaceState({}, "", "/?tag=Amateur");
+  const fetch = vi.fn(async (url: string, init?: RequestInit) => new Response(JSON.stringify(
+    url.endsWith("/facets") ? { tags: [{ id: "tag:amateur", name: "爱好者", aliases: ["素人", "Amateur"], count: 1 }] }
+    : { items: [], next_cursor: null, total: 0, filters: JSON.parse(String(init?.body)) },
+  )));
+  vi.stubGlobal("fetch", fetch);
+  await act(async () => root.render(<UnifiedCatalogView mode="works" onOpenWork={vi.fn()} onOpenActor={vi.fn()} />));
+  expect(container.querySelector(".active-filter-chips")?.textContent).toContain("爱好者 ×");
+  const tag = container.querySelector<HTMLButtonElement>('[aria-pressed="true"]')!;
+  await act(async () => tag.click());
+  expect(new URLSearchParams(window.location.search).has("tag")).toBe(false);
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-pressed]')!.click());
+  expect(new URLSearchParams(window.location.search).get("tag")).toBe("tag:amateur");
+  expect(container.querySelector(".active-filter-chips")?.textContent).toContain("爱好者 ×");
+});
+
 it("jumps actor pages, resets offsets on sort and search, and requests only the chosen page size", async () => {
   const fetch = vi.fn(async (url: string) => {
     const params = new URL(url, "https://example.com").searchParams;

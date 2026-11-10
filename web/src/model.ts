@@ -243,6 +243,9 @@ export const workSchema = z.object({
   javranking_score: z.number().nullable().optional().default(null),
   reviews: z.array(z.record(z.string(), z.unknown())).optional().default([]),
   display_tags: z.array(z.string()).optional().default([]),
+  tag_refs: z.array(z.object({
+    id: z.string(), name: z.string(),
+  })).default([]),
   field_sources: z.record(z.string(), z.string()).default({}),
   field_locks: z.array(z.string()).default([]),
   identities: z.array(identitySchema).default([]),
@@ -281,8 +284,10 @@ export type ActorWorks = z.infer<typeof actorWorksSchema>;
 
 
 export const workTagFacetSchema = z.object({
+  id: z.string().optional(),
   name: z.string(),
-  count: z.number()
+  count: z.number(),
+  aliases: z.array(z.string()).default([]),
 });
 export const workTagFacetsSchema = z.object({
   tags: z.array(workTagFacetSchema).default([])
@@ -290,6 +295,7 @@ export const workTagFacetsSchema = z.object({
 export type WorkTagFacet = z.infer<typeof workTagFacetSchema>;
 
 export const categoryItemSchema = z.object({
+  id: z.string().optional(),
   slug: z.string(),
   label: z.string(),
   image_url: z.string().nullable().optional().default(null),

@@ -25,7 +25,7 @@ from ..enums import (
     RecognitionScope,
 )
 from ..identity import normalize_identity_value
-from ..tags import canonicalize_tag
+from ..tags import canonicalize_tag, tag_id
 from .models import (
     Actor,
     Base,
@@ -103,6 +103,7 @@ def _apply_sqlite_pragmas(dbapi_connection: Any, _connection_record: Any) -> Non
     """
 
     dbapi_connection.create_function("mdc_canonical_tag", 1, canonicalize_tag, deterministic=True)
+    dbapi_connection.create_function("mdc_tag_id", 1, tag_id, deterministic=True)
     cursor = dbapi_connection.cursor()
     try:
         for statement in _SQLITE_CONNECTION_PRAGMAS:

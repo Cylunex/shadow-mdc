@@ -12,6 +12,8 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from functools import lru_cache
 
+from .tag_registry import TAG_REGISTRY, TagDefinition, TagReference, fold_tag
+
 # Costume / preference tags the filter bar should keep visible when count > 0.
 COMMON_FILTER_TAGS: tuple[str, ...] = (
     "黑丝",
@@ -173,861 +175,6 @@ _PREFIX_BLACKLIST: tuple[str, ...] = (
     "jav-vr-yearly-",
 )
 
-# Canonical CN label -> synonym forms (JP / EN / CN variants). Keys are display order.
-_CANONICAL_SYNONYMS: dict[str, tuple[str, ...]] = {
-    "黑丝": (
-        "黑丝",
-        "黑丝袜",
-        "黒ストッキング",
-        "黒スト",
-        "黒タイツ",
-        "黑色丝袜",
-        "black stockings",
-        "black pantyhose",
-    ),
-    "丝袜": (
-        "丝袜",
-        "絲襪",
-        "パンスト",
-        "パンスト・タイツ",
-        "ストッキング",
-        "タイツ",
-        "pantyhose",
-        "stockings",
-        "tights",
-    ),
-    "网袜": (
-        "网袜",
-        "網襪",
-        "網タイツ",
-        "fishnet",
-        "fishnets",
-        "fishnet stockings",
-    ),
-    "高跟鞋": (
-        "高跟鞋",
-        "ハイヒール",
-        "ピンヒール",
-        "high heels",
-        "high-heels",
-        "heels",
-    ),
-    "内衣": (
-        "内衣",
-        "內衣",
-        "ランジェリー",
-        "lingerie",
-    ),
-    "巨乳": (
-        "巨乳",
-        "大奶",
-        "爆乳",
-        "超乳",
-        "美乳",
-        "おっぱい",
-        "巨乳フェチ",
-        "big tits",
-        "big-tits",
-        "big-boobs",
-        "big boobs",
-        "busty",
-        "huge breasts",
-    ),
-    "贫乳": (
-        "贫乳",
-        "貧乳",
-        "貧乳・微乳",
-        "微乳",
-        "petite breasts",
-        "small tits",
-    ),
-    "美尻": (
-        "美尻",
-        "巨尻",
-        "尻フェチ",
-        "美臀",
-        "big ass",
-        "big-ass",
-        "booty",
-        "肥臀",
-        "ass",
-    ),
-    "美腿": (
-        "美腿",
-        "脚フェチ",
-        "美脚",
-        "長身",
-        "legs",
-        "beautiful legs",
-    ),
-    "娇小": (
-        "娇小",
-        "嬌小",
-        "petite",
-    ),
-    "苗条": (
-        "苗条",
-        "苗條",
-        "スレンダー",
-        "slender",
-        "skinny",
-    ),
-    "微胖": (
-        "微胖",
-        "ぽっちゃり",
-        "chubby",
-    ),
-    "多毛": (
-        "多毛",
-        "剛毛",
-        "hairy",
-        "bush",
-    ),
-    "刮毛": (
-        "刮毛",
-        "パイパン",
-        "shaved",
-        "shaved pussy",
-        "shaving",
-    ),
-    "制服": (
-        "制服",
-        "uniform",
-        "school uniform",
-    ),
-    "Cosplay": (
-        "Cosplay",
-        "コスプレ",
-        "cosplay",
-        "コスプ",
-    ),
-    "眼镜": (
-        "眼镜",
-        "眼鏡",
-        "メガネ",
-        "glasses",
-    ),
-    "口交": (
-        "口交",
-        "フェラ",
-        "フェラチオ",
-        "blowjob",
-        "oral",
-    ),
-    "深喉": (
-        "深喉",
-        "イラマチオ",
-        "deepthroat",
-        "deep throat",
-        "deep-throat",
-    ),
-    "吞精": (
-        "吞精",
-        "ごっくん",
-        "swallow",
-        "cum swallow",
-        "cum swallowing",
-        "gokkun",
-    ),
-    "中出": (
-        "中出",
-        "中出し",
-        "内射",
-        "內射",
-        "孕ませ",
-        "creampie",
-        "nakadashi",
-        "内射中出",
-    ),
-    "颜射": (
-        "颜射",
-        "顏射",
-        "顔射",
-        "ぶっかけ",
-        "facial",
-        "bukkake",
-        "集体颜射",
-        "集體顏射",
-    ),
-    "射精": (
-        "射精",
-        "cumshot",
-        "cum shot",
-        "cum-shot",
-    ),
-    "潮吹": (
-        "潮吹",
-        "潮吹き",
-        "squirting",
-        "squirt",
-    ),
-    "痴女": (
-        "痴女",
-        "ビッチ",
-        "淫乱・ハード系",
-        "slut",
-        "nympho",
-    ),
-    "人妻": (
-        "人妻",
-        "人妻・主婦",
-        "既婚婦女",
-        "人妇",
-        "主婦",
-        "married woman",
-        "wife",
-        "義母",
-        "housewife",
-        "housewives",
-    ),
-    "MILF": (
-        "MILF",
-        "milf",
-        "辣妈",
-        "辣媽",
-    ),
-    "熟女": (
-        "熟女",
-        "mature",
-        "mature woman",
-    ),
-    "继母": (
-        "继母",
-        "繼母",
-        "stepmom",
-        "step-mom",
-        "stepmother",
-        "step mother",
-    ),
-    "OL": (
-        "OL",
-        "女上司",
-        "秘书",
-        "秘書",
-        "office lady",
-        "office",
-        "secretary",
-    ),
-    "护士": (
-        "护士",
-        "護士",
-        "看護婦・ナース",
-        "ナース",
-        "nurse",
-        "nurses",
-    ),
-    "学生": (
-        "学生",
-        "學生",
-        "女子校生",
-        "女子大生",
-        "女学生",
-        "schoolgirl",
-        "student",
-        "students",
-        "校园",
-        "校園",
-        "大学",
-        "大學",
-    ),
-    "女仆": (
-        "女仆",
-        "女僕",
-        "メイド",
-        "maid",
-        "火辣保姆",
-        "保姆",
-        "babysitter",
-    ),
-    "老师": (
-        "老师",
-        "老師",
-        "女教師",
-        "女教师",
-        "teacher",
-        "female teacher",
-    ),
-    "多人": (
-        "多人",
-        "3P・4P",
-        "3P",
-        "4P",
-        "乱交",
-        "亂交",
-        "ハーレム",
-        "gangbang",
-        "threesome",
-        "orgy",
-        "harem",
-        "乱交群欢",
-        "亂交群歡",
-        "轮交",
-        "輪交",
-    ),
-    "女同": (
-        "女同",
-        "レズビアン",
-        "レズキス",
-        "lesbian",
-        "yuri",
-        "girl-on-girl",
-        "girl on girl",
-    ),
-    "情侣": (
-        "情侣",
-        "情侶",
-        "カップル",
-        "couple",
-        "couples",
-    ),
-    "素人": (
-        "素人",
-        "amateur",
-    ),
-    "亚洲": (
-        "亚洲",
-        "亞洲",
-        "アジア",
-        "アジア系",
-        "asian",
-        "asia",
-        "亚洲人",
-        "亞洲人",
-    ),
-    "日本": (
-        "日本",
-        "日本人",
-        "japanese",
-        "japan",
-    ),
-    "VR": (
-        "VR",
-        "vr",
-        "VR専用",
-        "ハイクオリティVR",
-        "8KVR",
-        "虚拟现实",
-        "虛擬現實",
-        "VR Porn",
-        "vr porn",
-    ),
-    "4K": (
-        "4K",
-        "4k",
-        "UHD",
-        "4k Ultra HD",
-        "4K Ultra HD",
-        "4k-porn",
-    ),
-    "单体作品": (
-        "单体作品",
-        "單體作品",
-        "単体作品",
-        "単体",
-    ),
-    "高清": (
-        "高清",
-        "ハイビジョン",
-        "HD",
-        "hd",
-        "デジモ",
-        "ギリモザ",
-    ),
-    "独占配信": (
-        "独占配信",
-        "獨占配信",
-        "独占",
-    ),
-    "美少女": (
-        "美少女",
-        "かわいい",
-        "可愛い",
-        "美女",
-        "美人",
-        "cute",
-        "beautiful girl",
-        "风情少女",
-        "風情少女",
-    ),
-    "接吻": (
-        "接吻",
-        "キス・接吻",
-        "キス",
-        "kiss",
-        "kissing",
-    ),
-    "高潮": (
-        "高潮",
-        "アクメ・オーガズム",
-        "オーガズム",
-        "orgasm",
-        "女性高潮",
-    ),
-    "后入": (
-        "后入",
-        "後入",
-        "バック",
-        "後背位",
-        "doggystyle",
-        "doggy style",
-        "doggy-style",
-    ),
-    "骑乘": (
-        "骑乘",
-        "骑乘位",
-        "騎乗位",
-        "cowgirl",
-        "riding",
-    ),
-    "反骑乘": (
-        "反骑乘",
-        "逆騎乗位",
-        "reverse-cowgirl",
-        "reverse cowgirl",
-    ),
-    "正常位": (
-        "正常位",
-        "missionary",
-    ),
-    "乳交": (
-        "乳交",
-        "パイズリ",
-        "paizuri",
-        "titjob",
-        "titty fucking",
-        "tittyfuck",
-        "tit fuck",
-        "cum on tits",
-    ),
-    "NTR": (
-        "NTR",
-        "寝取り・寝取られ・NTR",
-        "寝取り",
-        "寝取られ",
-        "netorare",
-        "cuckold",
-        "绿帽",
-        "綠帽",
-        "娇妻偷吃",
-        "嬌妻偷吃",
-    ),
-    "POV": (
-        "POV",
-        "pov",
-        "主观",
-        "主觀",
-        "主観",
-        "第一视角",
-        "第一視角",
-    ),
-    "BBC": (
-        "BBC",
-        "bbc",
-        "big black cock",
-        "big-black-cock",
-    ),
-    "BBW": (
-        "BBW",
-        "bbw",
-        "大号美女",
-        "大號美女",
-    ),
-    "Interracial": (
-        "Interracial",
-        "interracial",
-        "異人種",
-        "跨种族",
-        "跨種族",
-    ),
-    "Latina": (
-        "Latina",
-        "latina",
-        "latino",
-        "latin",
-        "拉丁裔美女",
-        "拉丁裔",
-        "拉丁",
-    ),
-    "Ebony": (
-        "Ebony",
-        "ebony",
-        "black girl",
-        "黑人女",
-    ),
-    "Blonde": (
-        "Blonde",
-        "blonde",
-        "blond",
-        "金髪",
-        "金发女",
-        "金髮女",
-        "金发",
-        "金髮",
-    ),
-    "Brunette": (
-        "Brunette",
-        "brunette",
-        "brown hair",
-        "黒髪",
-        "深发女",
-        "深髮女",
-    ),
-    "Redhead": (
-        "Redhead",
-        "redhead",
-        "red hair",
-        "赤髪",
-        "红毛",
-        "紅毛",
-        "红发",
-        "紅髮",
-    ),
-    "Shemale": (
-        "Shemale",
-        "shemale",
-        "transexual",
-        "transsexual",
-        "Trans",
-        "trans",
-        "TS",
-        "ts",
-        "ニューハーフ",
-        "跨性别",
-        "跨性別",
-    ),
-    "姐姐": (
-        "姐姐",
-        "お姉さん",
-        "oneesan",
-    ),
-    "出汗": (
-        "出汗",
-        "汗だく",
-        "sweaty",
-    ),
-    "足交": (
-        "足交",
-        "足コキ",
-        "footjob",
-        "恋足",
-        "戀足",
-    ),
-    "手交": (
-        "手交",
-        "手コキ",
-        "handjob",
-    ),
-    "戏剧": (
-        "戏剧",
-        "戲劇",
-        "ドラマ",
-        "drama",
-    ),
-    "羞辱": (
-        "羞辱",
-        "辱め",
-        "羞恥",
-        "humiliation",
-    ),
-    "不倫": (
-        "不倫",
-        "不伦",
-        "出轨",
-        "出軌",
-        "affair",
-        "affairs",
-        "cheating",
-    ),
-    "合集": (
-        "合集",
-        "ベスト・総集編",
-        "女優ベスト・総集編",
-        "4時間以上作品",
-        "16時間以上作品",
-        "best",
-        "compilation",
-    ),
-    "出道作": (
-        "出道作",
-        "デビュー作品",
-        "debut",
-    ),
-    "姐妹": (
-        "姐妹",
-        "姉・妹",
-        "sister",
-        "stepsister",
-        "step-sister",
-        "step sister",
-    ),
-    "自拍": (
-        "自拍",
-        "ハメ撮り",
-        "個人撮影",
-        "gonzo",
-        "真人实拍",
-    ),
-    "淫语": (
-        "淫语",
-        "淫語",
-        "dirty talk",
-    ),
-    "偶像": (
-        "偶像",
-        "アイドル・芸能人",
-        "アイドル",
-        "idol",
-    ),
-    "捆绑": (
-        "捆绑",
-        "捆綁",
-        "拘束",
-        "監禁",
-        "bondage",
-        "restrained",
-    ),
-    "癖好": (
-        "癖好",
-        "フェチ",
-        "fetish",
-        "恋物癖",
-        "戀物癖",
-    ),
-    "肛交": (
-        "肛交",
-        "アナル",
-        "anal",
-        "爆菊",
-    ),
-    "BDSM": (
-        "BDSM",
-        "bdsm",
-        "SM",
-        "sm",
-    ),
-    "按摩": (
-        "按摩",
-        "マッサージ・リフレ",
-        "massage",
-    ),
-    "近亲": (
-        "近亲",
-        "近親",
-        "近親相姦",
-        "incest",
-        "继家庭幻想",
-        "繼家庭幻想",
-    ),
-    "空姐": (
-        "空姐",
-        "スチュワーデス",
-        "stewardess",
-        "flight attendant",
-    ),
-    "女医": (
-        "女医",
-        "女醫生",
-        "女医生",
-        "doctor",
-    ),
-    "女搜查官": (
-        "女搜查官",
-        "女捜査官",
-        "investigator",
-    ),
-    "泡泡浴": (
-        "泡泡浴",
-        "ヘルス・ソープ",
-        "soapland",
-        "soap",
-    ),
-    "无文胸": (
-        "无文胸",
-        "ノーブラ",
-        "no bra",
-    ),
-    "油腻": (
-        "油腻",
-        "油膩",
-        "ローション・オイル",
-        "lotion",
-        "oil",
-        "oiled",
-        "oily",
-    ),
-    "自慰": (
-        "自慰",
-        "オナニー",
-        "masturbation",
-        "solo",
-        "独自",
-        "女性自慰",
-        "female masturbation",
-        "手淫",
-        "男性自慰",
-    ),
-    "玩具": (
-        "玩具",
-        "おもちゃ",
-        "toys",
-        "dildo",
-        "vibrator",
-        "バイブ",
-        "ディルド",
-        "性玩具",
-        "佩戴式阳具",
-        "佩戴式陽具",
-    ),
-    "试镜": (
-        "试镜",
-        "試鏡",
-        "オーディション",
-        "casting",
-    ),
-    "酒店": (
-        "酒店",
-        "ホテル",
-        "hotel",
-    ),
-    "海滩": (
-        "海滩",
-        "海灘",
-        "ビーチ",
-        "beach",
-    ),
-    "淋浴": (
-        "淋浴",
-        "シャワー",
-        "shower",
-    ),
-    "浴室": (
-        "浴室",
-        "風呂",
-        "bathroom",
-        "bath",
-    ),
-    "厨房": (
-        "厨房",
-        "廚房",
-        "キッチン",
-        "kitchen",
-    ),
-    "车震": (
-        "车震",
-        "車震",
-        "車内",
-        "car",
-        "car sex",
-    ),
-    "露出": (
-        "露出",
-        "公衆",
-        "public",
-        "公共",
-        "公众野战",
-        "公眾野戰",
-    ),
-    "户外": (
-        "户外",
-        "戶外",
-        "野外",
-        "outdoor",
-        "outdoors",
-    ),
-    "摄像头": (
-        "摄像头",
-        "攝像頭",
-        "webcam",
-        "cam",
-    ),
-    "里番": (
-        "里番",
-        "裏番",
-        "hentai",
-        "色情日漫",
-    ),
-    "动漫": (
-        "动漫",
-        "動漫",
-        "アニメ",
-        "anime",
-        "cartoon",
-        "卡通",
-    ),
-    "孕妇": (
-        "孕妇",
-        "孕婦",
-        "妊婦",
-        "pregnant",
-    ),
-    "母乳": (
-        "母乳",
-        "授乳",
-        "lactation",
-        "lactating",
-        "breastfeeding",
-    ),
-    "纹身": (
-        "纹身",
-        "紋身",
-        "タトゥー",
-        "tattoo",
-        "tattoos",
-        "纹身女",
-        "紋身女",
-    ),
-    "穿孔": (
-        "穿孔",
-        "ピアス",
-        "piercing",
-        "piercings",
-    ),
-    "童贞": (
-        "童贞",
-        "童貞",
-        "virgin",
-    ),
-    "M女": (
-        "M女",
-        "masochist",
-        "female masochist",
-    ),
-    "M男": (
-        "M男",
-        "男M",
-        "male masochist",
-    ),
-    "ギャル": (
-        "ギャル",
-        "gal",
-        "gyaru",
-    ),
-    "韩国": (
-        "韩国",
-        "韓國",
-        "韩国人",
-        "韓國人",
-    ),
-    "角色扮演": (
-        "角色扮演",
-        "roleplay",
-        "role play",
-        "role-play",
-    ),
-    "双龙": (
-        "双龙",
-        "雙龍",
-        "双龙入洞",
-        "雙龍入洞",
-        "double penetration",
-        "dp",
-        "DP",
-    ),
-    "长篇": (
-        "长篇",
-        "4時間以上作品",
-    ),
-}
 
 
 # Preferred display order for known genres (then remaining alpha).
@@ -1099,22 +246,13 @@ _DISPLAY_PRIORITY: tuple[str, ...] = (
 
 
 def _fold(value: str) -> str:
-    return unicodedata.normalize("NFKC", value).strip().casefold()
+    return fold_tag(value)
 
 
-def _build_alias_index() -> dict[str, str]:
-    index: dict[str, str] = {}
-    for canonical, synonyms in _CANONICAL_SYNONYMS.items():
-        index[_fold(canonical)] = canonical
-        for synonym in synonyms:
-            key = _fold(synonym)
-            # First canonical wins for overlapping aliases (e.g. 4時間以上作品).
-            index.setdefault(key, canonical)
-    return index
-
-
-_ALIAS_TO_CANONICAL: dict[str, str] = _build_alias_index()
-_PRIORITY_RANK: dict[str, int] = {name: index for index, name in enumerate(_DISPLAY_PRIORITY)}
+_PRIORITY_RANK: dict[str, int] = {
+    tag.id: index for index, name in enumerate(_DISPLAY_PRIORITY)
+    if (tag := TAG_REGISTRY.resolve(name)) is not None
+}
 
 
 def is_noise_tag(raw: str | None) -> bool:
@@ -1131,50 +269,50 @@ def is_noise_tag(raw: str | None) -> bool:
     return any(key.startswith(prefix) for prefix in _PREFIX_BLACKLIST)
 
 
-def synonyms_for(canonical: str) -> tuple[str, ...]:
-    """Return known synonym forms for a canonical label (excluding itself)."""
+def resolve_tag(raw: str | None) -> TagDefinition | None:
+    """Resolve a stable identity without changing stored provider values."""
+    if raw is None or is_noise_tag(raw):
+        return None
+    tag = TAG_REGISTRY.resolve(raw)
+    return tag if tag is not None and not is_noise_tag(tag.name) else None
 
-    values = _CANONICAL_SYNONYMS.get(canonical, ())
-    return tuple(item for item in values if item != canonical)
+
+def tag_id(raw: str | None) -> str | None:
+    """Stable ID for a source value, historical name, alias or existing ID."""
+    tag = resolve_tag(raw)
+    return tag.id if tag else None
 
 
-@lru_cache(maxsize=16_384)
+def synonyms_for(raw: str) -> tuple[str, ...]:
+    """Known alias forms for any ID/name; excludes the current display name."""
+    tag = resolve_tag(raw)
+    return tuple(item for item in tag.aliases if item != tag.name) if tag else ()
+
+
 def canonicalize_tag(raw: str | None) -> str | None:
-    """Map one raw tag to a canonical display label, or None if noise / empty.
+    """Compatibility display label; use tag_id for identity comparisons."""
+    tag = resolve_tag(raw)
+    return tag.name if tag else None
 
-    Unknown non-noise tags are returned unchanged (trimmed NFKC) so provider
-    genres without a synonym still appear. Pure in the raw value, so the result
-    is memoized: list payloads rebuild chips for thousands of works that share
-    the same provider genres.
-    """
 
-    if raw is None:
-        return None
-    text = unicodedata.normalize("NFKC", str(raw)).strip()
-    if not text or is_noise_tag(text):
-        return None
-    mapped = _ALIAS_TO_CANONICAL.get(_fold(text))
-    return mapped if mapped is not None else text
+def tag_refs(raw: Iterable[str] | None) -> list[TagReference]:
+    """Deterministic, deduplicated identities and names, with noise excluded."""
+    by_id: dict[str, TagDefinition] = {}
+    for item in raw or ():
+        tag = resolve_tag(item)
+        if tag is not None:
+            previous = by_id.get(tag.id)
+            if previous is None or tag.name < previous.name:
+                by_id[tag.id] = tag
+    ordered = sorted(by_id.values(), key=lambda tag: (_PRIORITY_RANK.get(tag.id, 10_000), _fold(tag.name)))
+    # Per-work responses carry references; aliases belong in the shared facet dictionary.
+    return [TagReference(tag.id, tag.name) for tag in ordered]
 
 
 def normalize_tags(raw: Iterable[str] | None) -> list[str]:
     """Translate / alias / filter tags → deterministic, deduped display list."""
 
-    if not raw:
-        return []
-    seen: set[str] = set()
-    values: list[str] = []
-    for item in raw:
-        canonical = canonicalize_tag(item)
-        if canonical is None:
-            continue
-        key = _fold(canonical)
-        if key in seen:
-            continue
-        seen.add(key)
-        values.append(canonical)
-    values.sort(key=lambda name: (_PRIORITY_RANK.get(name, 10_000), _fold(name)))
-    return values
+    return [tag.name for tag in tag_refs(raw)]
 
 
 def work_matches_tags(work_tags: Sequence[str] | None, selected: Sequence[str]) -> bool:
@@ -1183,11 +321,13 @@ def work_matches_tags(work_tags: Sequence[str] | None, selected: Sequence[str]) 
     Selected values may be JP/EN/CN synonyms — they are canonicalized first.
     """
 
-    wanted = [canonicalize_tag(item) for item in selected]
+    wanted = [tag_id(item) for item in selected if not is_noise_tag(item)]
+    if any(item is None for item in wanted):
+        return False
     wanted_clean = [item for item in wanted if item]
     if not wanted_clean:
         return True
-    available = set(normalize_tags(work_tags))
+    available = {tag.id for tag in tag_refs(work_tags)}
     return all(tag in available for tag in wanted_clean)
 
 
@@ -1204,19 +344,26 @@ def facet_tags(
     """
 
     counter: Counter[str] = Counter()
+    names: dict[str, str] = {}
     for tags in works_tags:
-        for name in normalize_tags(tags):
-            counter[name] += 1
-    ranked = sorted(counter.items(), key=lambda item: (-item[1], _fold(item[0])))
+        for tag in tag_refs(tags):
+            counter[tag.id] += 1
+            names.setdefault(tag.id, tag.name)
+    ranked = sorted(counter.items(), key=lambda item: (-item[1], _fold(names[item[0]])))
     selected: list[tuple[str, int]] = ranked[: max(0, limit)]
     present = {name for name, _ in selected}
     for name in always_include:
-        count = counter.get(name, 0)
-        if count > 0 and name not in present:
-            selected.append((name, count))
-            present.add(name)
-    selected.sort(key=lambda item: (-item[1], _PRIORITY_RANK.get(item[0], 10_000), _fold(item[0])))
-    return selected
+        identity = tag_id(name)
+        if identity is None:
+            continue
+        count = counter.get(identity, 0)
+        if count > 0 and identity not in present:
+            selected.append((identity, count))
+            present.add(identity)
+    selected.sort(key=lambda item: (
+        -item[1], _PRIORITY_RANK.get(item[0], 10_000), _fold(names[item[0]]),
+    ))
+    return [(names[identity], count) for identity, count in selected]
 
 
 _META_SKIP = frozenset({"unknown", "other", ""})

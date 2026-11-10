@@ -162,3 +162,13 @@ def test_categories_include_library_tags_missing_from_curated_manifest(tmp_path:
     assert any(row.label == "自定义分类" for row in build_category_list(
         tmp_path / "without-manifest", facet_counts={"自定义分类": 5}, only_with_works=True,
     ))
+
+
+def test_custom_manifest_preserves_display_spelling_with_a_stable_id(tmp_path: Path) -> None:
+    write_manifest(tmp_path, [CategoryCoverEntry(slug="custom", label="Custom Genre", image_file=None)])
+    loaded = load_manifest(tmp_path)
+    assert loaded[0].label == "Custom Genre"
+    assert loaded[0].id == "raw:custom%20genre"
+    rows = build_category_list(tmp_path, facet_counts={"custom genre": 2, "CUSTOM GENRE": 1})
+    assert len(rows) == 1
+    assert (rows[0].id, rows[0].label, rows[0].work_count) == ("raw:custom%20genre", "Custom Genre", 3)
