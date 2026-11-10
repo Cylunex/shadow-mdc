@@ -29,11 +29,11 @@ Schema 示例（示例域名为 `example.invalid`，**勿提交真实站点**）
 | GET | `/api/works/{id}/emby-link` | 仅媒体库搜索深链（兼容旧 UI） |
 | GET | `/api/works/{id}/play` | 完整解析：preferred + sources |
 | GET | `/api/works/{id}/player` | 应用内 HLS 播放页 |
-| GET | `/api/mcp/v1/play/{code}` | MCP：按番号解析（需 MCP token） |
+| GET | `/api/intake/v1/play/{code}` | Skill `playback.code`：按番号解析（需服务令牌） |
 
 ## 安全与合规
 
-- 片源 URL / API base **禁止**写入仓库、PR、MCP 描述或公开文档。
+- 片源 URL / API base **禁止**写入仓库、PR、skill 描述或公开文档。
 - 运行时与探测阶段均过滤分类名命中萝莉/童颜/学生校园/李宗瑞等暗示词的 type；VOD 须配置 `whitelist_type_ids`。
 - GPL/AGPL 参考项目只借思路，不拷代码。
 

@@ -1,3 +1,3 @@
 interface:
   display_name: "MDC 片库操作"
-  short_description: "通过 MDC CLI 查询片库、番号与磁力入库、扫描识别媒体，并整理分类和想看"
+  short_description: "通过 MDC CLI 批量入库、打标补空、分类回填、离线收口、盯磁和播放解析"

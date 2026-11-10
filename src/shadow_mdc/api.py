@@ -394,6 +394,7 @@ from .services.x_handle import (
     x_profile_url,
 )
 from .skill_api import build_skill_router
+from .skill_operations import build_operator_router
 from .tags import display_chips, facet_tags, normalize_tags, resolve_tag, tag_refs, work_matches_tags
 
 
@@ -6209,22 +6210,23 @@ def swipe_feed_entry() -> HTMLResponse:
     """Swipe-feed entry (SPA ``?view=swipe``: 外站 tube + 本库).
 
     Served as HTML (relative redirect) so the nginx ``/mdc/`` prefix is preserved.
-    Same OIDC cookie/session as the main UI; MCP Bearer token is not required for
-    this page (MCP covers ``/api/mcp/v1`` only — see docs/mcp.md).
+    Same OIDC cookie/session as the main UI. Service Bearer authentication is
+    used only by the CLI HTTP endpoints.
     """
 
     return HTMLResponse(content=_SWIPE_ENTRY_HTML)
 
 
-from .mcp_api import router as _mcp_router  # noqa: E402 - needs route helpers above
+from .intake_core import router as _intake_core_router  # noqa: E402 - needs route helpers above
 from .intake_api import router as _intake_router  # noqa: E402
 from .swipe_proxy import create_swipe_proxy_router  # noqa: E402
 
 app.include_router(build_catalog_router(runtime))
 app.include_router(build_media_router(runtime))
 app.include_router(build_skill_router(runtime))
+app.include_router(build_operator_router(runtime))
 app.include_router(_intake_router)
-app.include_router(_mcp_router)
+app.include_router(_intake_core_router)
 app.include_router(create_swipe_proxy_router(Settings()))
 
 source_web_dist = Path(__file__).resolve().parents[2] / "web" / "dist"

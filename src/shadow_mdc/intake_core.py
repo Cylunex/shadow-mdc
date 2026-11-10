@@ -1,27 +1,13 @@
-"""Machine-to-machine API for the MCP server: ``/api/mcp/v1``.
+"""Supported code/magnet intake, subscriptions, metadata and playback HTTP API.
 
-Concise JSON in/out, keyed by 番号. Every route requires
-``Authorization: Bearer $SHADOW_MDC_MCP_TOKEN`` (constant-time compare); the
-whole router answers 503 when the token is unset. This never touches the web
-UI's own auth (nginx OIDC) — it is a separate token for MCP clients only.
-
-All heavy lifting reuses existing services:
-
-* code normalisation → :func:`identity.extract_code`
-* catalog create → :meth:`DiscoverService.seed` (JavDB, r18 dump fallback)
-* magnets / best pick / 115|OpenList submit → ``seed_auto_offline`` +
-  ``pan_offline_enqueue`` (code match → 中字/HD quality → size)
-* download completion → :class:`PanOfflinePoller` already exports STRM + NFO +
-  artwork + SubtitleCat subtitle and notifies Emby, so the "job" is the
-  ``PanOfflineTask`` row (``job_id`` == task id).
+Uses the existing offline queue and completion pipeline; no MCP transport.
 """
 
 from __future__ import annotations
 
-import re
-
 import hmac
 import logging
+import re
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -31,7 +17,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from .api_models import ActorSubscriptionEdit, DiscoverSeedRequest, PlayProbeFailureOut, PlayResolveOut, PlaySourceOut
+from .api_models import (
+    ActorSubscriptionEdit,
+    DiscoverSeedRequest,
+    PlayProbeFailureOut,
+    PlayResolveOut,
+    PlaySourceOut,
+)
 from .db.models import PanOfflineTask, Work
 from .db.repository import Repository
 from .domain import IdentityHints, ProviderRecord
@@ -68,13 +60,13 @@ def _repository(request: Request):  # type: ignore[no-untyped-def]
         yield Repository(session)
 
 
-McpRepo = Annotated[Repository, Depends(_repository)]
+IntakeRepo = Annotated[Repository, Depends(_repository)]
 
 
-def require_mcp_token(request: Request) -> None:
+def require_service_token(request: Request) -> None:
     expected = _core().runtime(request).settings.mcp_token
     if not expected:
-        raise HTTPException(status_code=503, detail="MCP API disabled (SHADOW_MDC_MCP_TOKEN unset)")
+        raise HTTPException(status_code=503, detail="MDC service credential is not configured")
     header = request.headers.get("authorization") or ""
     scheme, _, supplied = header.partition(" ")
     if scheme.lower() != "bearer" or not supplied.strip():
@@ -85,7 +77,7 @@ def require_mcp_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="invalid token", headers={"WWW-Authenticate": "Bearer"})
 
 
-router = APIRouter(prefix="/api/mcp/v1", tags=["mcp"], dependencies=[Depends(require_mcp_token)])
+router = APIRouter(prefix="/api/intake/v1", tags=["intake"], dependencies=[Depends(require_service_token)])
 
 
 # ---------------------------------------------------------------- models
@@ -668,12 +660,12 @@ async def _preview_magnets(
                 )
                 break
     except Exception as exc:
-        logger.info("mcp dry-run javdb magnets %s: %s", code, type(exc).__name__)
+        logger.info("intake dry-run javdb magnets %s: %s", code, type(exc).__name__)
     if not found and discover.sukebei_available:
         try:
             found.extend(await discover.list_magnets(provider="sukebei", external_id=code))
         except Exception as exc:
-            logger.info("mcp dry-run sukebei magnets %s: %s", code, type(exc).__name__)
+            logger.info("intake dry-run sukebei magnets %s: %s", code, type(exc).__name__)
     return found
 
 
@@ -700,7 +692,7 @@ def _rank(items: list[Any], code: str) -> list[Any]:
 
 
 @router.get("/health")
-def mcp_health(request: Request) -> dict[str, object]:
+def intake_health(request: Request) -> dict[str, object]:
     app_runtime = _core().runtime(request)
     pan_status = app_runtime.pan_service.status()
     return {
@@ -713,7 +705,7 @@ def mcp_health(request: Request) -> dict[str, object]:
 
 
 @router.get("/library/{code}", response_model=LibraryOut)
-def mcp_library(code: str, request: Request, repo: McpRepo) -> LibraryOut:
+def intake_library(code: str, request: Request, repo: IntakeRepo) -> LibraryOut:
     """Is 番号 in the catalog / library (STRM or local file)? Metadata + subtitle + jobs."""
 
     normalized = normalize_code_or_422(code)
@@ -724,7 +716,7 @@ def mcp_library(code: str, request: Request, repo: McpRepo) -> LibraryOut:
 
 
 @router.get("/play/{code}", response_model=PlayResolveOut)
-async def mcp_play_resolve(code: str, request: Request, repo: McpRepo) -> PlayResolveOut:
+async def intake_play_resolve(code: str, request: Request, repo: IntakeRepo) -> PlayResolveOut:
     """Resolve Emby deep link + local play-sites / VOD m3u8 for a 番号 (no media byte proxy)."""
 
     from .services.playback import (
@@ -767,10 +759,10 @@ async def mcp_play_resolve(code: str, request: Request, repo: McpRepo) -> PlayRe
     )
 
 @router.get("/metadata/{code}", response_model=MetadataOut)
-async def mcp_metadata(
+async def intake_metadata(
     code: str,
     request: Request,
-    repo: McpRepo,
+    repo: IntakeRepo,
     providers: bool = Query(False, description="also query remote providers (slower, network)"),
 ) -> MetadataOut:
     """Metadata by 番号 without adding anything: catalog + r18 dump (+ providers)."""
@@ -795,7 +787,7 @@ async def mcp_metadata(
 
 
 @router.post("/offline", response_model=OfflineAddOut)
-async def mcp_offline_add(payload: OfflineAddRequest, request: Request, repo: McpRepo) -> OfflineAddOut:
+async def intake_offline_add(payload: OfflineAddRequest, request: Request, repo: IntakeRepo) -> OfflineAddOut:
     """番号 → (catalog seed) → best magnet → 115/OpenList offline → poller organizes STRM/NFO/subtitle.
 
     Idempotent: returns the existing library entry or running job instead of resubmitting.
@@ -1073,8 +1065,8 @@ def analyze_magnet(
 
 
 @router.post("/magnet/inspect", response_model=MagnetInspectOut)
-def mcp_magnet_inspect(
-    payload: MagnetInspectRequest, request: Request, repo: McpRepo
+def intake_magnet_inspect(
+    payload: MagnetInspectRequest, request: Request, repo: IntakeRepo
 ) -> MagnetInspectOut:
     """Parse/analyze a magnet URI without submitting offline. Preview may be absent."""
 
@@ -1089,8 +1081,8 @@ def mcp_magnet_inspect(
 
 
 @router.post("/offline/magnet", response_model=OfflineAddOut)
-async def mcp_offline_add_magnet(
-    payload: OfflineMagnetAddRequest, request: Request, repo: McpRepo
+async def intake_offline_add_magnet(
+    payload: OfflineMagnetAddRequest, request: Request, repo: IntakeRepo
 ) -> OfflineAddOut:
     """Magnet-first offline: parse dn/title for 番号; else create non-JAV Work and enqueue.
 
@@ -1129,7 +1121,7 @@ async def mcp_offline_add_magnet(
 
     if code is not None:
         # Reuse the existing code-based offline path with magnet override.
-        return await mcp_offline_add(
+        return await intake_offline_add(
             OfflineAddRequest(code=code, magnet=magnet, dry_run=payload.dry_run), request, repo
         )
 
@@ -1223,8 +1215,8 @@ async def mcp_offline_add_magnet(
 
 
 @router.get("/jobs", response_model=list[JobOut])
-def mcp_jobs(
-    repo: McpRepo,
+def intake_jobs(
+    repo: IntakeRepo,
     status: str | None = Query(None, pattern="^(running|done|failed|cancelled)$"),
     limit: int = Query(20, ge=1, le=100),
 ) -> list[JobOut]:
@@ -1239,7 +1231,7 @@ def mcp_jobs(
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
-def mcp_job(job_id: str, repo: McpRepo) -> JobOut:
+def intake_job(job_id: str, repo: IntakeRepo) -> JobOut:
     task = repo.get_pan_offline_task(job_id)
     if task is None:
         raise HTTPException(status_code=404, detail="job not found")
@@ -1247,7 +1239,7 @@ def mcp_job(job_id: str, repo: McpRepo) -> JobOut:
 
 
 @router.post("/subscribe", response_model=SubscribeOut)
-async def mcp_subscribe(payload: SubscribeRequest, request: Request, repo: McpRepo) -> SubscribeOut:
+async def intake_subscribe(payload: SubscribeRequest, request: Request, repo: IntakeRepo) -> SubscribeOut:
     """盯磁: 番号 → want_list (watcher refreshes magnets & auto-offlines); 演员 → actor subscription."""
 
     core = _core()
@@ -1301,7 +1293,7 @@ async def mcp_subscribe(payload: SubscribeRequest, request: Request, repo: McpRe
 
 
 @router.post("/rescrape", response_model=RescrapeOut)
-async def mcp_rescrape(payload: RescrapeRequest, request: Request, repo: McpRepo) -> RescrapeOut:
+async def intake_rescrape(payload: RescrapeRequest, request: Request, repo: IntakeRepo) -> RescrapeOut:
     """Forced rescrape by 番号 (respects field locks → 409 and daily quota → 429)."""
 
     code = normalize_code_or_422(payload.code)

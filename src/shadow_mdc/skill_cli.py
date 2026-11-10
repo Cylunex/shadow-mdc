@@ -17,6 +17,8 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
+from .skill_batch import prepare_batch, run_batch
+
 _MAX_RESPONSE = 8 * 1024 * 1024
 _JSON: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 
@@ -123,6 +125,28 @@ def main(argv: list[str] | None = None) -> int:
     call = commands.add_parser("call", help="execute a capability; JSON file or stdin")
     call.add_argument("capability")
     call.add_argument("input_file", nargs="?", default="-")
+    prepare = commands.add_parser(
+        "prepare", help="freeze matching work IDs or discover pages into a manifest"
+    )
+    prepare.add_argument("capability")
+    prepare.add_argument("--query", required=True, help="JSON catalog filter or discover.browse input")
+    prepare.add_argument(
+        "--arguments", required=True, help="JSON operation arguments shared by all selected works"
+    )
+    prepare.add_argument("--manifest", required=True)
+    prepare.add_argument(
+        "--source-pages", type=int, default=0, help="discover pages instead of catalog query"
+    )
+    batch = commands.add_parser("batch", help="execute a JSON manifest with a durable per-item receipt")
+    batch.add_argument("manifest")
+    batch.add_argument("--receipt", required=True)
+    batch.add_argument("--retry-failed", action="store_true")
+    batch.add_argument(
+        "--retry-unknown",
+        action="store_true",
+        help="only after reading original target/task state and reconciling the unknown write",
+    )
+    batch.add_argument("--pace-seconds", type=float, default=0.25)
     args = parser.parse_args(argv)
     output: JsonValue
     try:
@@ -130,6 +154,37 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("set --config or MDC_SKILL_CONFIG to a private JSON file")
         config_path = Path(args.config).expanduser().resolve()
         config = _read_config(config_path)
+
+        def execute(name: str, values: dict[str, JsonValue]) -> JsonValue:
+            if config.transport == "ssh":
+                return _ssh_call(config, "call", name, values)
+            return _http_call(config, config_path, json.dumps({"name": name, "arguments": values}).encode())
+
+        if args.command == "prepare":
+            if not 0 <= args.source_pages <= 100:
+                raise ValueError("source-pages must be between 0 and 100")
+            query = _JSON.validate_json(Path(args.query).read_text())
+            common = _JSON.validate_json(Path(args.arguments).read_text())
+            if not isinstance(query, dict) or not isinstance(common, dict):
+                raise ValueError("query and arguments must be JSON objects")
+            output = prepare_batch(
+                query, common, args.capability, Path(args.manifest), execute, source_pages=args.source_pages
+            )
+            print(json.dumps(output, ensure_ascii=False))
+            return 0
+        if args.command == "batch":
+            if not 0 <= args.pace_seconds <= 60:
+                raise ValueError("pace-seconds must be between 0 and 60")
+            output = run_batch(
+                Path(args.manifest),
+                Path(args.receipt),
+                execute,
+                retry_failed=args.retry_failed,
+                retry_unknown=args.retry_unknown,
+                pace_seconds=args.pace_seconds,
+            )
+            print(json.dumps(output, ensure_ascii=False))
+            return 0 if output["ok"] else 1
         arguments: JsonValue = {}
         body = None
         if args.command == "call":

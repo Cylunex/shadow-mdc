@@ -257,7 +257,7 @@ def magnet_quality_score(
     has_subtitle: bool,
     hd: bool,
 ) -> int:
-    """0–100 quality score: subtitle 20, 4K 25 / 1080p 20 / 720p 15 / unknown 5, sample −40."""
+    """0-100 quality score: subtitle 20, 4K 25 / 1080p 20 / 720p 15 / unknown 5, sample -40."""
 
     text = name or ""
     name_subtitle, name_hd = magnet_quality_flags(text)
@@ -284,11 +284,14 @@ def magnet_sort_key(
     has_subtitle: bool,
     hd: bool,
     expected_code: str | None = None,
-) -> tuple[int, int, int]:
-    """Sort key (descending): code match, quality score, then larger size."""
+) -> tuple[int, int, int, int]:
+    """Best first: code match, full LTX releases, quality score, then size."""
 
     return (
         _code_match_rank(name, expected_code),
+        int(bool(re.search(r"(?i)(?<![a-z0-9])ltx(?![a-z])", name or ""))
+            and not _SAMPLE_NAME.search(name or "")
+            and not (size_bytes is not None and 0 < size_bytes < _TINY_RELEASE_BYTES)),
         magnet_quality_score(name=name, size_bytes=size_bytes, has_subtitle=has_subtitle, hd=hd),
         size_bytes or 0,
     )

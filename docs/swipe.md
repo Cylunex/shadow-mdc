@@ -55,7 +55,7 @@ SHADOW_MDC_SWIPE_UPSTREAM_URL=http://127.0.0.1:8791
 
 - 成人白名单 + 未成年/李宗瑞等排除：沿用 playback / 站内规则；勿新增 VIP/解锁绕过。  
 - 真实站点 URL、cookie、token **只**放 NAS/本机 local 文件。  
-- AUTH/OIDC 与主站相同；MCP Bearer 仍仅 `/api/mcp/v1`。
+- AUTH/OIDC 与主站相同；服务 Bearer 用于 `/api/skill/v1`、`/api/intake/v1` 和 `/api/operator/v1`。
 
 ## 与独立 swipefeed-web
 

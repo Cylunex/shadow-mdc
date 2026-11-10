@@ -1,6 +1,6 @@
 """Shared post-ingest hook: translate freshly ingested works (title/plot → zh).
 
-Every ingest path (API discover seed, seed_* scripts, catalog import, MCP offline
+Every ingest path (API discover seed, seed_* scripts, catalog import, skill offline
 add) should call into here so bilingual metadata does not depend on which entry
 point created the work. Translation failures never propagate to the caller.
 """

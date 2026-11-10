@@ -49,5 +49,4 @@ just build
 - [多维分类与数据迁移](docs/classifications.md)
 - [MDC skill 与受支持 CLI](docs/skill.md)
 - [刷流与解析生命周期](docs/swipe.md)
-- [MCP 接口](docs/mcp.md)
 - [开发文档](docs/dev/index.md)

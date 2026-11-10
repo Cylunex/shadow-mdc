@@ -1,4 +1,4 @@
-"""/api/mcp/v1: token auth, library/metadata lookup, offline_add (mock 115 + magnets)."""
+"""/api/intake/v1: token auth, library/metadata lookup, offline_add (mock 115 + magnets)."""
 
 from __future__ import annotations
 
@@ -103,10 +103,10 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-
 
 
 def test_auth_required(client: TestClient) -> None:
-    assert client.get("/api/mcp/v1/health").status_code == 401
-    assert client.get("/api/mcp/v1/health", headers={"Authorization": "Bearer wrong"}).status_code == 401
-    assert client.get("/api/mcp/v1/health", headers={"Authorization": f"Basic {TOKEN}"}).status_code == 401
-    ok = client.get("/api/mcp/v1/health", headers=AUTH)
+    assert client.get("/api/intake/v1/health").status_code == 401
+    assert client.get("/api/intake/v1/health", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert client.get("/api/intake/v1/health", headers={"Authorization": f"Basic {TOKEN}"}).status_code == 401
+    ok = client.get("/api/intake/v1/health", headers=AUTH)
     assert ok.status_code == 200 and ok.json()["ok"] is True
 
 
@@ -116,25 +116,25 @@ def test_disabled_without_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{data_dir / 'x.db'}")
     monkeypatch.delenv("SHADOW_MDC_MCP_TOKEN", raising=False)
     with TestClient(app) as c:
-        assert c.get("/api/mcp/v1/health", headers=AUTH).status_code == 503
+        assert c.get("/api/intake/v1/health", headers=AUTH).status_code == 503
 
 
 def test_invalid_code_422(client: TestClient) -> None:
-    assert client.get("/api/mcp/v1/library/%E4%BD%A0%E5%A5%BD", headers=AUTH).status_code == 422
+    assert client.get("/api/intake/v1/library/%E4%BD%A0%E5%A5%BD", headers=AUTH).status_code == 422
 
 
 def test_metadata_and_library_not_in_catalog(client: TestClient) -> None:
-    meta = client.get("/api/mcp/v1/metadata/ssis123", headers=AUTH).json()
+    meta = client.get("/api/intake/v1/metadata/ssis123", headers=AUTH).json()
     assert meta["code"] == "SSIS-123"
     assert meta["in_catalog"] is False
     assert meta["providers"][0]["title"] == "Fixture title"
-    lib = client.get("/api/mcp/v1/library/SSIS-123", headers=AUTH).json()
+    lib = client.get("/api/intake/v1/library/SSIS-123", headers=AUTH).json()
     assert lib == {**lib, "in_catalog": False, "in_library": False}
 
 
 def test_offline_dry_run_plans_without_writes(client: TestClient) -> None:
     out = client.post(
-        "/api/mcp/v1/offline", json={"code": "ｓｓｉｓ－１２３", "dry_run": True}, headers=AUTH  # noqa: RUF001
+        "/api/intake/v1/offline", json={"code": "ｓｓｉｓ－１２３", "dry_run": True}, headers=AUTH  # noqa: RUF001
     ).json()
     assert out["code"] == "SSIS-123"
     assert out["action"] == "planned"
@@ -147,7 +147,7 @@ def test_offline_dry_run_plans_without_writes(client: TestClient) -> None:
 
 
 def test_offline_add_submits_then_idempotent(client: TestClient) -> None:
-    first = client.post("/api/mcp/v1/offline", json={"code": "SSIS-123"}, headers=AUTH)
+    first = client.post("/api/intake/v1/offline", json={"code": "SSIS-123"}, headers=AUTH)
     assert first.status_code == 200, first.text
     body = first.json()
     assert body["action"] == "submitted"
@@ -155,15 +155,15 @@ def test_offline_add_submits_then_idempotent(client: TestClient) -> None:
     assert job_id and body["job"]["stage"] == "downloading"
     assert client.submitted and client.submitted[0].endswith(HASH_GOOD)  # type: ignore[attr-defined]
 
-    again = client.post("/api/mcp/v1/offline", json={"code": "SSIS-123"}, headers=AUTH).json()
+    again = client.post("/api/intake/v1/offline", json={"code": "SSIS-123"}, headers=AUTH).json()
     assert again["action"] == "running" and again["job_id"] == job_id
     assert len(client.submitted) == 1  # type: ignore[attr-defined]
 
-    job = client.get(f"/api/mcp/v1/jobs/{job_id}", headers=AUTH).json()
+    job = client.get(f"/api/intake/v1/jobs/{job_id}", headers=AUTH).json()
     assert job["code"] == "SSIS-123" and job["status"] == "running"
-    jobs = client.get("/api/mcp/v1/jobs", headers=AUTH).json()
+    jobs = client.get("/api/intake/v1/jobs", headers=AUTH).json()
     assert [j["job_id"] for j in jobs] == [job_id]
-    assert client.get("/api/mcp/v1/jobs/nope", headers=AUTH).status_code == 404
+    assert client.get("/api/intake/v1/jobs/nope", headers=AUTH).status_code == 404
 
     # Simulate poller completion → in library with subtitle.
     rt = client.app.state.runtime
@@ -177,16 +177,16 @@ def test_offline_add_submits_then_idempotent(client: TestClient) -> None:
         assert task is not None
         task.status = "done"
         task.strm_path = str(strm_dir / "SSIS-123.strm")
-    lib = client.get("/api/mcp/v1/library/SSIS-123", headers=AUTH).json()
+    lib = client.get("/api/intake/v1/library/SSIS-123", headers=AUTH).json()
     assert lib["in_library"] is True and lib["subtitle"] is True
-    exists = client.post("/api/mcp/v1/offline", json={"code": "SSIS-123"}, headers=AUTH).json()
+    exists = client.post("/api/intake/v1/offline", json={"code": "SSIS-123"}, headers=AUTH).json()
     assert exists["action"] == "exists"
 
 
 def test_offline_add_hunting_goes_to_want_list(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     rt = client.app.state.runtime
     monkeypatch.setattr(rt.discover, "list_magnets", AsyncMock(return_value=()))
-    out = client.post("/api/mcp/v1/offline", json={"code": "SSIS-123"}, headers=AUTH).json()
+    out = client.post("/api/intake/v1/offline", json={"code": "SSIS-123"}, headers=AUTH).json()
     assert out["action"] == "hunting"
     assert out["work_id"] in rt.library_prefs_store.load().want_list
 
@@ -206,23 +206,25 @@ def test_offline_add_existing_magnet_rows(client: TestClient) -> None:
                 size_bytes=1 << 30,
             )
         )
-    out = client.post("/api/mcp/v1/offline", json={"code": "SSIS-123", "dry_run": True}, headers=AUTH).json()
+    out = client.post(
+        "/api/intake/v1/offline", json={"code": "SSIS-123", "dry_run": True}, headers=AUTH
+    ).json()
     assert out["action"] == "planned" and out["work_id"]
     assert out["magnet"]["info_hash"] == HASH_GOOD
 
 
 def test_subscribe_code_and_actor(client: TestClient) -> None:
-    code = client.post("/api/mcp/v1/subscribe", json={"code": "SSIS-123"}, headers=AUTH).json()
+    code = client.post("/api/intake/v1/subscribe", json={"code": "SSIS-123"}, headers=AUTH).json()
     assert code["kind"] == "code" and code["created"] is True
-    actor = client.post("/api/mcp/v1/subscribe", json={"actor": "Actress A"}, headers=AUTH).json()
+    actor = client.post("/api/intake/v1/subscribe", json={"actor": "Actress A"}, headers=AUTH).json()
     assert actor["created"] is True
-    again = client.post("/api/mcp/v1/subscribe", json={"actor": "Actress A"}, headers=AUTH).json()
+    again = client.post("/api/intake/v1/subscribe", json={"actor": "Actress A"}, headers=AUTH).json()
     assert again["created"] is False
-    assert client.post("/api/mcp/v1/subscribe", json={}, headers=AUTH).status_code == 422
+    assert client.post("/api/intake/v1/subscribe", json={}, headers=AUTH).status_code == 422
 
 
 def test_rescrape_requires_catalog(client: TestClient) -> None:
-    assert client.post("/api/mcp/v1/rescrape", json={"code": "SSIS-123"}, headers=AUTH).status_code == 404
+    assert client.post("/api/intake/v1/rescrape", json={"code": "SSIS-123"}, headers=AUTH).status_code == 404
 
 
 HASH_MAG = "C" * 40
@@ -242,7 +244,7 @@ def test_offline_magnet_dry_run_jav_dn(client: TestClient) -> None:
 
     magnet = _magnet_uri(HASH_MAG, dn="SSIS-123-C.mp4")
     out = client.post(
-        "/api/mcp/v1/offline/magnet",
+        "/api/intake/v1/offline/magnet",
         json={"magnet": magnet, "dry_run": True},
         headers=AUTH,
     ).json()
@@ -259,7 +261,7 @@ def test_offline_magnet_dry_run_jav_dn(client: TestClient) -> None:
 def test_offline_magnet_dry_run_non_jav(client: TestClient) -> None:
     magnet = _magnet_uri(HASH_MAG, dn="My Homemade Clip Vol.3")
     out = client.post(
-        "/api/mcp/v1/offline/magnet",
+        "/api/intake/v1/offline/magnet",
         json={"magnet": magnet, "title": "Homemade Clip Special", "dry_run": True},
         headers=AUTH,
     ).json()
@@ -290,7 +292,7 @@ def test_offline_magnet_submit_non_jav_and_dedup(client: TestClient) -> None:
     monkey_pan.submit_offline_url = AsyncMock(side_effect=fake_submit)  # type: ignore[method-assign]
 
     first = client.post(
-        "/api/mcp/v1/offline/magnet",
+        "/api/intake/v1/offline/magnet",
         json={"magnet": magnet, "title": "Western Scene NoCode", "dry_run": False},
         headers=AUTH,
     )
@@ -310,7 +312,7 @@ def test_offline_magnet_submit_non_jav_and_dedup(client: TestClient) -> None:
         assert work.primary_code is None
 
     again = client.post(
-        "/api/mcp/v1/offline/magnet",
+        "/api/intake/v1/offline/magnet",
         json={"magnet": magnet, "dry_run": False},
         headers=AUTH,
     ).json()
@@ -322,7 +324,7 @@ def test_offline_magnet_submit_non_jav_and_dedup(client: TestClient) -> None:
 def test_offline_magnet_code_override(client: TestClient) -> None:
     magnet = _magnet_uri(HASH_MAG, dn="totally-unrelated-name")
     out = client.post(
-        "/api/mcp/v1/offline/magnet",
+        "/api/intake/v1/offline/magnet",
         json={"magnet": magnet, "code": "ｓｓｉｓ１２３", "dry_run": True},  # noqa: RUF001
         headers=AUTH,
     ).json()
@@ -332,7 +334,7 @@ def test_offline_magnet_code_override(client: TestClient) -> None:
 
 def test_offline_magnet_rejects_bad_uri(client: TestClient) -> None:
     bad = client.post(
-        "/api/mcp/v1/offline/magnet",
+        "/api/intake/v1/offline/magnet",
         json={"magnet": "https://example.com/not-a-magnet-link", "dry_run": True},
         headers=AUTH,
     )
@@ -344,7 +346,7 @@ def test_magnet_inspect_jav_dn(client: TestClient) -> None:
         dn="SSIS-123-C.1080p.中字",
     ) + "&tr=udp%3A%2F%2Ftracker.example%3A80&xl=6442450944"
     out = client.post(
-        "/api/mcp/v1/magnet/inspect",
+        "/api/intake/v1/magnet/inspect",
         json={"magnet": magnet},
         headers=AUTH,
     ).json()
@@ -363,7 +365,7 @@ def test_magnet_inspect_jav_dn(client: TestClient) -> None:
 def test_magnet_inspect_non_jav_dn(client: TestClient) -> None:
     magnet = _magnet_uri(HASH_MAG, dn="My Homemade Clip Vol.3 VR")
     out = client.post(
-        "/api/mcp/v1/magnet/inspect",
+        "/api/intake/v1/magnet/inspect",
         json={"magnet": magnet, "title": "Homemade Clip Special"},
         headers=AUTH,
     ).json()
@@ -386,7 +388,7 @@ def test_magnet_inspect_known_code_with_poster(client: TestClient, monkeypatch: 
     )
     magnet = _magnet_uri(HASH_MAG, dn="ssis123-4k-C")
     out = client.post(
-        "/api/mcp/v1/magnet/inspect",
+        "/api/intake/v1/magnet/inspect",
         json={"magnet": magnet},
         headers=AUTH,
     ).json()
@@ -420,7 +422,7 @@ def test_magnet_inspect_already_in_library(client: TestClient) -> None:
         work_id = work.id
 
     out = client.post(
-        "/api/mcp/v1/magnet/inspect",
+        "/api/intake/v1/magnet/inspect",
         json={"magnet": magnet},
         headers=AUTH,
     ).json()

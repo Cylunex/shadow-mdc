@@ -7,14 +7,17 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import HttpUrl
 
 from shadow_mdc.api import app
 from shadow_mdc.db.repository import Repository
-from shadow_mdc.domain import ProviderRecord
+from shadow_mdc.domain import Artwork, ProviderRecord
 from shadow_mdc.enums import ContentFamily, MediaCategory
+from shadow_mdc.media.artwork import ArtworkDownloadResult, ArtworkStore
 from shadow_mdc.media.magnets import MagnetLink, info_hash_from_uri
 from shadow_mdc.providers.base import SearchBatch
 from shadow_mdc.services.discover import DiscoverSeedResult
+from shadow_mdc.services.translation import TranslationResult
 
 HASH = "B" * 40
 MAGNET = f"magnet:?xt=urn:btih:{HASH}&dn=SSIS-123"
@@ -261,3 +264,199 @@ def test_intake_routes_require_auth_and_inputs_stay_bounded(client: TestClient) 
         },
     ).json()
     assert not missing["ok"] and missing["status"] == 404
+
+
+def test_operator_tags_title_and_batch_intake_preserve_existing_metadata(client: TestClient) -> None:
+    first = call(client, "intake.item", {"code": "SSIS-123", "tags": ["LTX"]})
+    assert first["outcome"] == "created"
+    work_id = first["work_id"]
+    call(client, "works.update", {"work_id": work_id, "title": "Personal display title"})
+    repeated = call(client, "intake.item", {"code": "ssis123", "tags": ["forum"]})
+    assert repeated["outcome"] == "skipped" and repeated["work_id"] == work_id
+    tags = call(client, "works.tags", {"work_id": work_id, "add": ["经典"], "remove": ["forum"]})
+    assert isinstance(tags["tags"], list)
+    assert "forum" not in tags["tags"] and "LTX" in tags["tags"] and "经典" in tags["tags"]
+    detail = call(client, "works.detail", {"work_id": work_id})
+    assert isinstance(detail["field_locks"], list)
+    assert detail["title"] == "Personal display title" and "title" in detail["field_locks"]
+    app.state.runtime.pan_service.submit_offline_url.assert_not_called()
+
+
+def test_fill_only_missing_fields_respects_locks(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_id = call(client, "intake.item", {"code": "SSIS-123"})["work_id"]
+    with app.state.runtime.database.session() as session:
+        repo = Repository(session)
+        work = repo.get_work(str(work_id))
+        assert work is not None
+        work.actors = []
+        work.plot = None
+        work.field_locks = ["title"]
+    incoming = record().model_copy(update={"title": "Replacement title", "plot": "Verified plot"})
+    monkeypatch.setattr(
+        app.state.runtime.providers,
+        "search",
+        AsyncMock(return_value=SearchBatch(records=(incoming,), failures=())),
+    )
+    result = call(client, "works.fill", {"work_id": work_id, "fields": ["actors", "title", "plot"]})
+    assert isinstance(result["changed"], list)
+    assert set(result["changed"]) == {"actors", "plot"}
+    detail = call(client, "works.detail", {"work_id": work_id})
+    assert detail["title"] == "Fixture title" and detail["plot"] == "Verified plot"
+    assert detail["actors"] == ["Fixture actor"]
+    call(client, "works.update", {"work_id": work_id, "plot": "Manual plot"})
+    again = call(client, "works.fill", {"work_id": work_id, "fields": ["actors", "title", "plot"]})
+    assert again["outcome"] == "skipped"
+    app.state.runtime.providers.search.assert_awaited_once()
+    app.state.runtime.pan_service.submit_offline_url.assert_not_called()
+
+
+def test_classification_fill_preserves_explicit_dimensions_and_can_be_repeated(client: TestClient) -> None:
+    work_id = call(client, "intake.item", {"code": "SSIS-123"})["work_id"]
+    call(
+        client,
+        "classifications.assign",
+        {"work_id": work_id, "languages": ["languages:en"], "genres": ["genres:unknown"]},
+    )
+    payload = {"work_id": work_id, "languages": ["languages:ja"], "genres": ["genres:drama"]}
+    assert call(client, "classifications.fill", payload)["changed"] == ["genres"]
+    assert call(client, "classifications.fill", payload)["outcome"] == "skipped"
+    actual = call(client, "classifications.work", {"work_id": work_id})
+    assert actual["languages"] == ["languages:en"] and actual["genres"] == ["genres:drama"]
+    assert actual["subtitle_languages"] == [] and actual["regions"] == []
+
+
+def test_recover_rechecks_existing_result_without_resubmitting(client: TestClient, tmp_path: Path) -> None:
+    first = call(client, "intake.code.submit", {"code": "SSIS-123"})
+    with app.state.runtime.database.session() as session:
+        repo = Repository(session)
+        task = repo.get_pan_offline_task(str(first["job_id"]))
+        assert task is not None
+        repo.update_pan_offline_task(task, status="done", strm_path=str(tmp_path / "missing.strm"))
+    result = call(client, "intake.recover", {"task_id": first["job_id"]})
+    assert result["outcome"] == "rechecking"
+    assert call(client, "intake.job", {"job_id": first["job_id"]})["status"] == "running"
+    app.state.runtime.pan_service.submit_offline_url.assert_awaited_once()
+
+
+def test_legacy_capabilities_use_skill_and_mcp_route_is_removed(client: TestClient) -> None:
+    assert client.get("/api/mcp/v1/health").status_code == 404
+    assert call(client, "metadata.lookup", {"code": "SSIS-123"})["code"] == "SSIS-123"
+    assert call(client, "subscriptions.add", {"actor": "Fixture actor"})["created"] is True
+    assert call(client, "subscriptions.add", {"actor": "Fixture actor"})["created"] is False
+    assert call(client, "subscriptions.list", {})["subscriptions"]
+    assert call(client, "playback.code", {"code": "SSIS-123"})["code"] == "SSIS-123"
+    created = call(client, "playlists.create", {"name": "Fixture list"})
+    assert created["name"] == "Fixture list"
+    call(client, "subscriptions.remove", {"actor_key": "Fixture actor"})
+    assert call(client, "subscriptions.list", {})["subscriptions"] == []
+    app.state.runtime.pan_service.submit_offline_url.assert_not_called()
+
+
+def test_ed2k_boundary_and_operator_auth(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    first = call(client, "intake.item", {"code": "SSIS-123"})
+    monkeypatch.setattr(app.state.runtime.pan_service, "backend", lambda: "115_open")
+    response = client.post(
+        "/api/skill/v1/call",
+        json={
+            "name": "intake.link.submit",
+            "arguments": {"work_id": first["work_id"], "url": "ed2k://|file|fixture.mp4|1234|REPLACE_HASH|/"},
+        },
+    ).json()
+    assert response["ok"] is False and response["status"] == 422
+    assert (
+        client.post(
+            "/api/operator/v1/tags",
+            json={"work_id": first["work_id"], "add": ["forum"]},
+            headers={"Authorization": "Bearer wrong"},
+        ).status_code
+        == 401
+    )
+    app.state.runtime.pan_service.submit_offline_url.assert_not_called()
+
+
+def test_fill_caches_missing_cover_and_keeps_existing_title_and_cast(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_id = str(call(client, "intake.item", {"code": "SSIS-123"})["work_id"])
+    incoming = record().model_copy(
+        update={
+            "title": "Other title",
+            "actors": ("Other actor",),
+            "artwork": (Artwork(url=HttpUrl("https://example.com/poster.jpg"), kind="poster"),),
+        }
+    )
+    monkeypatch.setattr(
+        app.state.runtime.providers,
+        "search",
+        AsyncMock(return_value=SearchBatch(records=(incoming,), failures=())),
+    )
+    acquire = AsyncMock(
+        return_value=(
+            ArtworkDownloadResult(work_id=work_id, downloaded=1, cached=0, failed=0, errors=()),
+            {"https://example.com/poster.jpg": "/REPLACE_CACHE/poster.jpg"},
+        )
+    )
+    monkeypatch.setattr(ArtworkStore, "acquire", acquire)
+    result = call(client, "works.fill", {"work_id": work_id, "fields": ["artwork", "actors"]})
+    assert result["changed"] == ["artwork", "artwork:cache"]
+    detail = call(client, "works.detail", {"work_id": work_id})
+    assert detail["title"] == "Fixture title" and detail["actors"] == ["Fixture actor"]
+    artwork = detail["artwork"]
+    assert isinstance(artwork, list) and isinstance(artwork[0], dict)
+    assert artwork[0]["local_path"] == "/REPLACE_CACHE/poster.jpg"
+    acquire.assert_awaited_once()
+    app.state.runtime.pan_service.submit_offline_url.assert_not_called()
+
+
+def test_fill_translates_only_untranslated_unlocked_fields(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_id = str(call(client, "intake.item", {"code": "SSIS-123"})["work_id"])
+    call(client, "works.update", {"work_id": work_id, "plot": "Keep manual plot"})
+
+    async def translate(
+        repo: Repository, work: object, *, fields: tuple[str, ...]
+    ) -> list[TranslationResult]:
+        assert fields == ("title",)
+        target = repo.get_work(work_id)
+        assert target is not None
+        target.title = "Translated fixture"
+        target.field_sources = {**target.field_sources, "title": "translation:fixture"}
+        return [
+            TranslationResult(
+                work_id=work_id, source="Fixture title", status="translated", field_name="title"
+            )
+        ]
+
+    translator = AsyncMock(side_effect=translate)
+    monkeypatch.setattr(app.state.runtime.translator, "translate_fields", translator)
+    assert call(client, "works.fill", {"work_id": work_id, "fields": ["translation"]})["changed"] == [
+        "translation:title"
+    ]
+    assert call(client, "works.fill", {"work_id": work_id, "fields": ["translation"]})["outcome"] == "skipped"
+    translator.assert_awaited_once()
+    detail = call(client, "works.detail", {"work_id": work_id})
+    assert detail["title"] == "Translated fixture" and detail["plot"] == "Keep manual plot"
+
+
+def test_fill_rejects_conflicting_source_identity(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work_id = str(call(client, "intake.item", {"code": "SSIS-123"})["work_id"])
+    conflicting = record().model_copy(update={"code": "OTHER-999", "plot": "Wrong work plot"})
+    monkeypatch.setattr(
+        app.state.runtime.providers,
+        "search",
+        AsyncMock(return_value=SearchBatch(records=(conflicting,), failures=())),
+    )
+    result = client.post(
+        "/api/skill/v1/call",
+        json={"name": "works.fill", "arguments": {"work_id": work_id, "fields": ["plot"]}},
+    ).json()
+    assert result["ok"] is False and result["result"]["changed"] == []
+    assert call(client, "works.detail", {"work_id": work_id})["plot"] is None

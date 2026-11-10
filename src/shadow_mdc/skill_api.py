@@ -21,10 +21,22 @@ from pydantic import (
     model_validator,
 )
 
-from .api_models import BulkIdentifyRequest, IdentifyRequest, WorkLookupRequest
+from .api_models import (
+    ActorSubscriptionEdit,
+    BulkIdentifyRequest,
+    GfriendsFillRequest,
+    IdentifyRequest,
+    JavRankingSeedRequest,
+    SaveMagnetsRequest,
+    TaskResumeRequest,
+    WorkLookupRequest,
+    WorkUpdateRequest,
+)
 from .catalog_api import TaxonomyEdit
-from .catalog_management import CatalogFilter
+from .catalog_management import CatalogFilter, PlaylistEdit
 from .db.models import Work
+from .intake_core import SubscribeRequest
+from .skill_operations import ClassificationFill, FillInput, IntakeItem, LinkInput, RecoverInput, TagsEdit
 
 if TYPE_CHECKING:
     from .api import Runtime
@@ -89,6 +101,82 @@ class WantedInput(WorkInput):
 
 
 class TaxonomyInput(TaxonomyEdit, WorkInput):
+    pass
+
+
+class WorkEditInput(WorkUpdateRequest, WorkInput):
+    pass
+
+
+class MagnetsInput(SaveMagnetsRequest, WorkInput):
+    pass
+
+
+class SubscriptionInput(ActorSubscriptionEdit, EmptyInput):
+    pass
+
+
+class SubscribeInput(SubscribeRequest, EmptyInput):
+    pass
+
+
+class ActorInput(EmptyInput):
+    person_id: str = Field(min_length=1, max_length=240)
+
+    @field_validator("person_id")
+    @classmethod
+    def safe_identifier(cls, value: str) -> str:
+        return safe_id(value)
+
+
+class ActorKeyInput(EmptyInput):
+    actor_key: str = Field(min_length=1, max_length=240)
+
+    @field_validator("actor_key")
+    @classmethod
+    def safe_identifier(cls, value: str) -> str:
+        return safe_id(value)
+
+
+class PlaylistCreateInput(PlaylistEdit, EmptyInput):
+    pass
+
+
+class PlaylistEditInput(PlaylistEdit, PlaylistInput):
+    pass
+
+
+class BrowseInput(EmptyInput):
+    provider: str = Field(default="javdb", max_length=100)
+    list: str = Field(default="rankings_daily", max_length=100)
+    page: int = Field(default=1, ge=1, le=1000)
+
+
+class SearchInput(EmptyInput):
+    provider: str = Field(default="javdb", max_length=100)
+    q: str = Field(min_length=1, max_length=500)
+    page: int = Field(default=1, ge=1, le=1000)
+
+
+class MetadataInput(EmptyInput):
+    code: str = Field(min_length=2, max_length=100)
+    providers: str | None = Field(default=None, max_length=500)
+
+    @field_validator("code")
+    @classmethod
+    def safe_identifier(cls, value: str) -> str:
+        return safe_id(value)
+
+
+class GfriendsInput(GfriendsFillRequest, EmptyInput):
+    pass
+
+
+class RankingSeedInput(JavRankingSeedRequest, EmptyInput):
+    pass
+
+
+class ResumeInput(TaskResumeRequest, TaskInput):
     pass
 
 
@@ -195,7 +283,16 @@ class CandidateInput(EmptyInput):
 
 
 RouteKey = Literal[
-    "work_id", "task_id", "playlist_id", "code", "job_id", "library_id", "asset_id", "candidate_id"
+    "work_id",
+    "task_id",
+    "playlist_id",
+    "code",
+    "job_id",
+    "library_id",
+    "asset_id",
+    "candidate_id",
+    "person_id",
+    "actor_key",
 ]
 
 
@@ -205,7 +302,7 @@ class Capability:
     description: str
     effect: Literal["read", "write"]
     model: type[BaseModel]
-    method: Literal["GET", "POST", "PUT"]
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
     path: str
     path_key: RouteKey | None = None
 
@@ -457,6 +554,289 @@ CAPABILITIES: tuple[Capability, ...] = (
         "candidate_id",
     ),
 )
+CAPABILITIES += (
+    Capability(
+        "intake.health",
+        "检查离线后端连接、目标目录与元数据回退状态。",
+        "read",
+        EmptyInput,
+        "GET",
+        "/api/intake/v1/health",
+    ),
+    Capability(
+        "intake.link.submit",
+        "给已有作品提交下载链接。ed2k 仅限支持它的 OpenList 后端。",
+        "write",
+        LinkInput,
+        "POST",
+        "/api/operator/v1/link",
+    ),
+    Capability(
+        "works.update",
+        "修改展示名、演员、剧情和标签。默认锁定手改字段。",
+        "write",
+        WorkEditInput,
+        "PATCH",
+        "/api/works/{work_id}",
+        "work_id",
+    ),
+    Capability(
+        "works.tags",
+        "增删指定标签并保留其它标签。支持别名归一。",
+        "write",
+        TagsEdit,
+        "POST",
+        "/api/operator/v1/tags",
+    ),
+    Capability(
+        "works.fill",
+        "只补指定的空元数据、缺译或缺图。保护已有值与字段锁。",
+        "write",
+        FillInput,
+        "POST",
+        "/api/operator/v1/fill",
+    ),
+    Capability(
+        "works.magnets",
+        "读取作品已有磁力和质量线索。",
+        "read",
+        WorkInput,
+        "GET",
+        "/api/works/{work_id}/magnets",
+        "work_id",
+    ),
+    Capability(
+        "works.magnets.save",
+        "保存明确给出的磁力,不提交下载。",
+        "write",
+        MagnetsInput,
+        "POST",
+        "/api/works/{work_id}/magnets",
+        "work_id",
+    ),
+    Capability(
+        "classifications.fill",
+        "仅回填待补维度。已有明确分类保持原值。",
+        "write",
+        ClassificationFill,
+        "POST",
+        "/api/operator/v1/classifications/fill",
+    ),
+    Capability(
+        "intake.item",
+        "处理批量清单中的单项:建档或离线入库并追加标签。",
+        "write",
+        IntakeItem,
+        "POST",
+        "/api/operator/v1/intake",
+    ),
+    Capability(
+        "intake.recover",
+        "重新核对既有离线结果并补导出,不新提交下载。",
+        "write",
+        RecoverInput,
+        "POST",
+        "/api/operator/v1/recover",
+    ),
+    Capability(
+        "intake.next",
+        "按明确要求切换失败或运行任务的下一磁力。",
+        "write",
+        TaskInput,
+        "POST",
+        "/api/pan/offline/tasks/{task_id}/next",
+        "task_id",
+    ),
+    Capability(
+        "intake.cancel",
+        "按明确要求取消离线任务。",
+        "write",
+        TaskInput,
+        "POST",
+        "/api/pan/offline/tasks/{task_id}/cancel",
+        "task_id",
+    ),
+    Capability(
+        "intake.pipeline",
+        "读取 115/OpenList、STRM、NFO 与 Emby 收口状态。",
+        "read",
+        EmptyInput,
+        "GET",
+        "/api/pan/pipeline",
+    ),
+    Capability(
+        "metadata.lookup",
+        "只读查询番号元数据,可选来源。",
+        "read",
+        MetadataInput,
+        "GET",
+        "/api/intake/v1/metadata/{code}",
+        "code",
+    ),
+    Capability(
+        "playback.code",
+        "按番号解析 Emby 及已配置外站播放源。",
+        "read",
+        CodeInput,
+        "GET",
+        "/api/intake/v1/play/{code}",
+        "code",
+    ),
+    Capability(
+        "playback.work",
+        "按作品 ID 解析现有播放源。",
+        "read",
+        WorkInput,
+        "GET",
+        "/api/works/{work_id}/play",
+        "work_id",
+    ),
+    Capability(
+        "subscriptions.add",
+        "按番号或演员名新增盯磁,二者只传一个。",
+        "write",
+        SubscribeInput,
+        "POST",
+        "/api/intake/v1/subscribe",
+    ),
+    Capability(
+        "subscriptions.list",
+        "读取想看、演员订阅和发现队列。",
+        "read",
+        EmptyInput,
+        "GET",
+        "/api/library-prefs",
+    ),
+    Capability(
+        "subscriptions.set",
+        "设定演员盯磁、起始日期与人数限制。",
+        "write",
+        SubscriptionInput,
+        "PUT",
+        "/api/library-prefs/subscriptions",
+    ),
+    Capability(
+        "subscriptions.remove",
+        "按明确要求取消演员订阅。",
+        "write",
+        ActorKeyInput,
+        "DELETE",
+        "/api/library-prefs/subscriptions/{actor_key}",
+        "actor_key",
+    ),
+    Capability(
+        "subscriptions.scan",
+        "扫描订阅演员的新作品。",
+        "write",
+        EmptyInput,
+        "POST",
+        "/api/library-prefs/subscriptions/scan",
+    ),
+    Capability(
+        "subscriptions.status",
+        "读取盯磁最近运行与错误。",
+        "read",
+        EmptyInput,
+        "GET",
+        "/api/pan/subscription-watch/status",
+    ),
+    Capability(
+        "subscriptions.run",
+        "执行一次既有盯磁策略,可能自动提交离线。",
+        "write",
+        EmptyInput,
+        "POST",
+        "/api/pan/subscription-watch/run",
+    ),
+    Capability(
+        "actors.detail",
+        "读取统一演员档案和作品关联。",
+        "read",
+        ActorInput,
+        "GET",
+        "/api/catalog/people/{person_id}",
+        "person_id",
+    ),
+    Capability(
+        "actors.images.fill",
+        "沿用头像库补演员图片,默认不强制刷新。",
+        "write",
+        GfriendsInput,
+        "POST",
+        "/api/actors/fill-gfriends-images",
+    ),
+    Capability(
+        "playlists.create",
+        "创建人工或动态片单。",
+        "write",
+        PlaylistCreateInput,
+        "POST",
+        "/api/catalog/playlists",
+    ),
+    Capability(
+        "playlists.update",
+        "带 revision 更新片单,冲突后先回读。",
+        "write",
+        PlaylistEditInput,
+        "PUT",
+        "/api/catalog/playlists/{playlist_id}",
+        "playlist_id",
+    ),
+    Capability(
+        "discover.browse",
+        "只读浏览日榜和来源片单。尚未入库。",
+        "read",
+        BrowseInput,
+        "GET",
+        "/api/discover/browse",
+    ),
+    Capability("discover.search", "只读搜索来源作品。", "read", SearchInput, "GET", "/api/discover/search"),
+    Capability(
+        "rankings.seed",
+        "从受支持榜单批量建档,返回新建、跳过和失败明细。",
+        "write",
+        RankingSeedInput,
+        "POST",
+        "/api/javranking/seed",
+    ),
+    Capability(
+        "strm.status", "读取 STRM 维护、配置和通知结果。", "read", EmptyInput, "GET", "/api/pan/strm/status"
+    ),
+    Capability(
+        "strm.rewrite", "按当前配置重写已管理 STRM。", "write", EmptyInput, "POST", "/api/pan/strm/rewrite"
+    ),
+    Capability(
+        "strm.notify", "重试已有 Emby 待通知路径。", "write", EmptyInput, "POST", "/api/pan/strm/notify/retry"
+    ),
+    Capability(
+        "tasks.retry",
+        "重试支持重试的失败任务。",
+        "write",
+        TaskInput,
+        "POST",
+        "/api/tasks/{task_id}/retry",
+        "task_id",
+    ),
+    Capability(
+        "tasks.resume",
+        "恢复服务支持的持久任务。",
+        "write",
+        ResumeInput,
+        "POST",
+        "/api/tasks/{task_id}/resume",
+        "task_id",
+    ),
+    Capability(
+        "tasks.cancel",
+        "按明确要求取消通用任务。",
+        "write",
+        TaskInput,
+        "POST",
+        "/api/tasks/{task_id}/cancel",
+        "task_id",
+    ),
+)
+
 _INDEX = {capability.name: capability for capability in CAPABILITIES}
 _JSON: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 
@@ -550,13 +930,15 @@ def build_skill_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                         status=404,
                         result={"detail": "work not found"},
                     )
-        values = parsed.model_dump(mode="json", exclude_unset=isinstance(parsed, TaxonomyInput))
+        values = parsed.model_dump(
+            mode="json", exclude_unset=isinstance(parsed, (TaxonomyInput, WorkEditInput, ClassificationFill))
+        )
         path = capability.path
         if capability.path_key:
             identity = values.pop(capability.path_key)
             path = path.format(**{capability.path_key: quote(str(identity), safe="")})
         headers = {"X-Catalog-Owner": owner}
-        if path.startswith("/api/intake/v1/"):
+        if path.startswith(("/api/intake/v1/", "/api/operator/v1/")):
             headers["Authorization"] = request.headers["authorization"]
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=request.app), base_url="http://mdc"
@@ -570,16 +952,21 @@ def build_skill_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                 else None,
                 json=values if capability.method != "GET" else None,
             )
-        result = _JSON.validate_python(response.json())
+        result = _JSON.validate_python(response.json()) if response.content else None
         if capability.name == "works.detail" and response.is_success and isinstance(result, dict):
             assert isinstance(parsed, WorkInput)
             result["want_list"] = parsed.work_id in runtime(request).library_prefs_store.load().want_list
         return SkillResult(
             ok=response.is_success
             and not (
-                capability.name.startswith("intake.")
-                and isinstance(result, dict)
-                and result.get("action") == "error"
+                isinstance(result, dict)
+                and (
+                    result.get("action") == "error"
+                    or result.get("outcome") == "failed"
+                    or (capability.name == "works.lookup" and result.get("work") is None)
+                    or (capability.name == "works.refresh" and result.get("accepted_work_id") is None)
+                    or (capability.name == "rankings.seed" and bool(result.get("failure_count")))
+                )
             ),
             capability=capability.name,
             status=response.status_code,

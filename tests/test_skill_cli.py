@@ -132,3 +132,36 @@ def test_cli_ssh_keeps_json_in_stdin(
     assert json.loads(calls[0][1])["q"] == "$(echo do-not-execute)"
     assert "fixture root/scripts/mdc'" in calls[0][0][-1]
     assert json.loads(capsys.readouterr().out)["ok"]
+
+
+def test_cli_batch_executes_over_http_and_resumes_without_duplicate_calls(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Server)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        path = config(tmp_path, f"http://127.0.0.1:{server.server_port}")
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text('{"calls":[{"arguments":{"code":"A-001"}},{"arguments":{"code":"B-002"}}]}')
+        args = [
+            "--config",
+            str(path),
+            "batch",
+            str(manifest),
+            "--receipt",
+            str(tmp_path / "receipt.jsonl"),
+            "--pace-seconds",
+            "0",
+        ]
+        before = len(Server.requests)
+        assert main(args) == 0
+        assert json.loads(capsys.readouterr().out)["counts"] == {"completed": 2}
+        assert main(args) == 0
+        assert len(Server.requests) - before == 2
+        assert "REPLACE_PRIVATE_TEST" not in capsys.readouterr().out
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
