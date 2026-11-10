@@ -97,25 +97,20 @@ it("opens a category by its stable ID while displaying its name", async () => {
   expect(open).toHaveBeenCalledWith("tag:amateur", "爱好者");
 });
 
-it("starts with content and opens an independent audio-language classification", async () => {
-  sessionStorage.removeItem("mdc:category-browsing");
+it("keeps the category page as a tag gallery with covers and stable tag navigation", async () => {
+  sessionStorage.setItem("mdc:category-browsing", JSON.stringify({ dimension: "contents", query: "", onlyWithWorks: false, sort: "featured", page: 1, pageSize: 24 }));
   const open = vi.fn();
-  vi.mocked(api.classifications).mockResolvedValue({ dimensions: [
-    { id: "contents", name: "内容体系", description: "内容体系说明", values: [
-      { id: "contents:jav", name: "JAV", aliases: [], count: 4, revision: 1 },
-    ] },
-    { id: "languages", name: "音轨语言", description: "实际音轨语言", values: [
-      { id: "languages:ja", name: "日语", aliases: ["Japanese"], count: 2, revision: 1 },
-    ] },
+  vi.mocked(api.categories).mockResolvedValue({ categories: [
+    { ...categories[0]!, id: "tag:amateur", label: "素人", image_url: "/api/category-covers/amateur.jpg" },
   ] });
-  await act(async () => root.render(<CategoriesView onOpenTag={vi.fn()} onOpenClassification={open} />));
-  expect(container.querySelector(".category-card strong")?.textContent).toBe("JAV");
-  expect(api.categories).not.toHaveBeenCalled();
-  await act(async () => button("音轨语言").click());
-  await change("搜索分类", "Japanese");
-  expect(container.querySelector(".category-card strong")?.textContent).toBe("日语");
+  await act(async () => root.render(<CategoriesView onOpenTag={open} />));
+  expect(api.categories).toHaveBeenCalledOnce();
+  expect(api.classifications).not.toHaveBeenCalled();
+  expect(container.querySelector('[aria-label="分类维度"]')).toBeNull();
+  expect(container.querySelector(".category-card strong")?.textContent).toBe("素人");
+  expect(container.querySelector(".category-card img")?.getAttribute("src")).toBe("/api/category-covers/amateur.jpg");
   await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
-  expect(open).toHaveBeenCalledWith("languages", "languages:ja", "日语");
+  expect(open).toHaveBeenCalledWith("tag:amateur", "素人");
 });
 
 it("migrates local saved classifications once under StrictMode", async () => {

@@ -17,6 +17,7 @@ import { CLASSIFICATION_KEYS, CLASSIFICATION_NAMES, migrateSavedClassifications 
 import { queryClient } from "../query/client";
 import { resources } from "../query/resources";
 import { TaxonomyEditor } from "./TaxonomyEditor";
+import { ClassificationManagement } from "./ClassificationManagement";
 
 type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null; code?: string | null; category?: string; release_date?: string | null; has_local_media?: boolean; rating_value?: number | null; rating_max?: number | null; javranking_rank?: number | null; javranking_score?: number | null };
 type Person = ManagedPerson;
@@ -322,6 +323,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       }} />
     <details className="catalog-management"><summary>片单与资料工具</summary><div className="catalog-tools">
     <CatalogLibraryTools actions={actions} />
+    <ClassificationManagement />
     <CatalogOrganizations works={rows} onFilter={(id, role) => patch({ organizations: [id], organization_role: role ?? "" })} />
     <CatalogPlaylists works={rows} onOpenWork={openWork} filters={filters} onApplyFilters={value => setFilters({ ...empty, ...value })} />
     <details><summary>保存的筛选</summary>{saved.map(item => <button key={item.name} disabled={migratingSaved} onClick={() => setFilters(item.filters)}>{item.name}</button>)}<input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="筛选名称" /><button disabled={migratingSaved} onClick={save}>保存到本机</button></details>

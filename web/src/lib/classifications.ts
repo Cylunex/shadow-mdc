@@ -26,7 +26,6 @@ export const taxonomySchema = z.object({
 export type Taxonomy = z.infer<typeof taxonomySchema>;
 export const taxonomyEditSchema = taxonomySchema.omit({ classification_refs: true });
 export type TaxonomyEdit = Pick<Taxonomy, ClassificationKey | "release_year">;
-export type BrowsingDimension = ClassificationKey | "tags" | "decades";
 
 export async function migrateSavedClassifications(
   saved: { name: string; filters: Filters }[],

@@ -192,7 +192,6 @@ describe("page load request budget", () => {
   it("opens categories as a separate list and applies the chosen tag to works", async () => {
     window.history.replaceState({}, "", "/?view=categories&q=old&genre=old");
     await act(async () => root.render(<App />));
-    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "主题标签")!.click());
     expect(container.querySelector(".category-grid")?.textContent).toContain("Fixture tag");
     expect(container.querySelector(".work-grid")).toBeNull();
     expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith("/works/query"))).toBe(false);

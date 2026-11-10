@@ -2683,7 +2683,6 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   .unified-catalog .catalog-search { grid-template-columns: minmax(0, 1fr); }
 }
 
-.classification-dimensions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 18px; }
 .taxonomy-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
 .taxonomy-editor.genre-sheet { display: block; overflow-y: auto; max-height: 85dvh; padding: 20px; width: min(860px, calc(100vw - 24px)); }
 .taxonomy-editor label { display: flex; flex-direction: column; gap: 6px; }

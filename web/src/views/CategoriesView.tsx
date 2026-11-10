@@ -7,49 +7,38 @@ import { Pagination } from "../components/Pagination";
 import { useSessionState } from "../hooks/useSessionState";
 import { queryClient } from "../query/client";
 import { resources } from "../query/resources";
-import { CLASSIFICATION_KEYS, CLASSIFICATION_NAMES, type BrowsingDimension } from "../lib/classifications";
-import { ClassificationTermEditor } from "./ClassificationTermEditor";
 
 const browsingSchema = z.object({
-  dimension: z.enum([...CLASSIFICATION_KEYS, "tags", "decades"]).default("contents"),
   query: z.string(), onlyWithWorks: z.boolean(), sort: z.enum(["featured", "count", "name"]),
   page: z.number().int().min(1), pageSize: z.union([z.literal(24), z.literal(48), z.literal(96)]),
 });
-const defaults: z.infer<typeof browsingSchema> = { dimension: "contents", query: "", onlyWithWorks: false, sort: "featured", page: 1, pageSize: 24 };
+const defaults: z.infer<typeof browsingSchema> = { query: "", onlyWithWorks: false, sort: "featured", page: 1, pageSize: 24 };
 
 type Props = {
   onOpenTag: (id: string, name?: string) => void;
-  onOpenClassification?: (dimension: BrowsingDimension, id: string, name: string) => void;
   report?: (message: string) => void;
 };
 
-export function CategoriesView({ onOpenTag, onOpenClassification, report }: Props) {
+export function CategoriesView({ onOpenTag, report }: Props) {
   const [browsing, setBrowsing] = useSessionState("mdc:category-browsing", browsingSchema, defaults);
-  const { dimension, query, onlyWithWorks, sort, pageSize } = browsing;
+  const { query, onlyWithWorks, sort, pageSize } = browsing;
   const heading = useRef<HTMLDivElement>(null);
-  const catalog = useQuery(resources.classifications(), queryClient);
-  const tags = useQuery({ ...resources.categories(), enabled: dimension === "tags" }, queryClient);
-  const result = dimension === "tags" ? tags : catalog;
-  const selectedDimension = catalog.data?.dimensions.find(item => item.id === dimension);
-  const entries = useMemo(() => dimension === "tags" ? tags.data?.categories ?? []
-    : (selectedDimension?.values ?? []).map(term => ({
-      id: term.id, label: term.name, slug: term.id, aliases: term.aliases, image_url: null, work_count: term.count,
-    })), [dimension, tags.data, selectedDimension]);
+  const result = useQuery(resources.categories(), queryClient);
   const loading = result.isPending;
   useEffect(() => {
     if (result.error) report?.(result.error.message);
-    else if (result.data) report?.(`分类 ${entries.length} 个`);
-  }, [result.data, result.error, entries.length, report]);
+    else if (result.data) report?.(`分类 ${result.data.categories.length} 个`);
+  }, [result.data, result.error, report]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLocaleLowerCase();
-    const items = entries.filter(item =>
+    const items = (result.data?.categories ?? []).filter(item =>
       (!onlyWithWorks || item.work_count > 0) && (!q ||
         [item.id, item.label, item.slug, ...item.aliases].join(" ").toLocaleLowerCase().includes(q)));
     if (sort === "count") items.sort((a, b) => b.work_count - a.work_count || a.label.localeCompare(b.label, "zh-CN"));
     if (sort === "name") items.sort((a, b) => a.label.localeCompare(b.label, "zh-CN"));
     return items;
-  }, [entries, query, onlyWithWorks, sort]);
+  }, [result.data, query, onlyWithWorks, sort]);
   const page = Math.min(browsing.page, Math.max(1, Math.ceil(visible.length / pageSize)));
   useEffect(() => {
     if (result.data && page !== browsing.page) setBrowsing(previous => ({ ...previous, page }));
@@ -68,17 +57,9 @@ export function CategoriesView({ onOpenTag, onOpenClassification, report }: Prop
   return <section className="panel-section categories-view">
     <div className="catalog-heading" ref={heading}>
       <div><p className="eyebrow">CATEGORIES</p><div className="category-heading-title"><h1>分类浏览</h1>
-        <span className="muted">{loading ? "正在读取分类…" : `${visible.length} / ${entries.length} 个分类`}</span>
-      </div><p className="muted">{selectedDimension?.description ?? "按主题标签查找作品，选择卡片进入对应影片。"}</p></div>
+        <span className="muted">{loading ? "正在读取分类…" : `${visible.length} / ${result.data?.categories.length ?? 0} 个分类`}</span>
+      </div><p className="muted">按主题标签浏览作品，选择图卡查看对应影片。</p></div>
     </div>
-    <div className="classification-dimensions" role="group" aria-label="分类维度">
-      {[...CLASSIFICATION_KEYS, "decades", "tags"].map(key => <button key={key} type="button"
-        aria-pressed={dimension === key} className={dimension === key ? "active" : "ghost"}
-        onClick={() => setBrowsing(previous => ({ ...previous, dimension: key as BrowsingDimension, page: 1, query: "" }))}>
-        {key === "tags" ? "主题标签" : key === "decades" ? "年代" : CLASSIFICATION_NAMES[key as keyof typeof CLASSIFICATION_NAMES]}
-      </button>)}
-    </div>
-    {selectedDimension && dimension !== "decades" && <ClassificationTermEditor key={dimension} dimension={dimension} terms={selectedDimension.values} />}
     <div className="categories-toolbar">
       <input id="shadow-mdc-search" value={query} onChange={event => setBrowsing(previous => ({ ...previous, query: event.target.value, page: 1 }))}
         placeholder="分类名称、别名…" aria-label="搜索分类" maxLength={200} />
@@ -106,7 +87,7 @@ export function CategoriesView({ onOpenTag, onOpenClassification, report }: Prop
         <p>{filtered ? "试试其他关键词，或清除筛选查看全部分类。" : "作品入库后，可在这里按分类浏览。"}</p>
       </div> : <div className="category-grid" aria-label="分类网格" aria-busy={result.isFetching}>
         {items.map(item => <button key={item.id ?? item.label} type="button" className="category-card"
-          onClick={() => dimension === "tags" ? onOpenTag(item.id ?? item.label, item.label) : onOpenClassification?.(dimension, item.id!, item.label)} title={`查看「${item.label}」的 ${item.work_count} 部作品`}>
+          onClick={() => onOpenTag(item.id ?? item.label, item.label)} title={`查看「${item.label}」的 ${item.work_count} 部作品`}>
           <div className="category-cover"><CoverImage src={appUrl(item.image_url) ?? ""} />
             {!item.image_url && <span className="category-cover-label" aria-hidden="true">{item.label}</span>}
           </div>

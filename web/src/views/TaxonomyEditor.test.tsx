@@ -6,6 +6,7 @@ import { api } from "../api";
 import { taxonomySchema } from "../lib/classifications";
 import { queryClient } from "../query/client";
 import { ClassificationTermEditor } from "./ClassificationTermEditor";
+import { ClassificationManagement } from "./ClassificationManagement";
 import { TaxonomyEditor } from "./TaxonomyEditor";
 
 vi.mock("../api", () => ({ api: { classifications: vi.fn(), workTaxonomy: vi.fn(), saveWorkTaxonomy: vi.fn(), editClassification: vi.fn(), createClassification: vi.fn() } }));
@@ -76,4 +77,18 @@ it("renames a classification without changing its ID or revision guard", async (
   await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
   expect(api.editClassification).toHaveBeenCalledWith("genres:drama", "新名称", [], 3);
   expect(container.textContent).toContain("已有作品关联继续保留");
+});
+
+it("keeps dimension dictionaries available in works tools and loads them only when opened", async () => {
+  await act(async () => root.render(<ClassificationManagement />));
+  expect(api.classifications).not.toHaveBeenCalled();
+  const details = container.querySelector("details")!;
+  await act(async () => {
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+  });
+  expect(api.classifications).toHaveBeenCalledOnce();
+  await select("分类字典维度", ["genres"]);
+  expect(container.querySelector('[aria-label="管理分类项"]')?.textContent).toContain("剧情");
+  expect(container.querySelector('[aria-label="管理分类项"]')?.textContent).toContain("喜剧");
 });
