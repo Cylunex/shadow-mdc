@@ -40,16 +40,16 @@ from shadow_mdc.services.x_handle import (  # noqa: E402
     verify_x_handle_exists,
 )
 
-ACTORS_PATH = ROOT / "data" / "non-jav-actors.json"
-WORKS_PATH = ROOT / "data" / "non-jav-works.json"
-ARCHIVE_PATH = ROOT / "data" / "nv-pu-sa-archive.json"
-IMAGE_DIR = ROOT / "data" / "actor-images"
-ARTWORK_DIR = ROOT / "data" / "artwork"
+from shadow_mdc.reference_models import catalog_rules  # noqa: E402
+from shadow_mdc.runtime_data import data_directories  # noqa: E402
 
-ARCHIVE_URLS = (
-    "https://nv-pu-sa.pages.dev/data/archive.json",
-    "https://img.boomboomboom.ggff.net/data/archive.json",
-)
+ACTORS_PATH = data_directories()[0] / "non-jav-actors.json"
+WORKS_PATH = data_directories()[0] / "non-jav-works.json"
+ARCHIVE_PATH = data_directories()[0] / "nv-pu-sa-archive.json"
+IMAGE_DIR = data_directories()[0] / "actor-images"
+ARTWORK_DIR = data_directories()[0] / "artwork"
+
+ARCHIVE_URLS = catalog_rules().archive_urls
 
 _USER_AGENT = "ShadowMDC/0.1 (https://github.com/Cylunex/shadow-mdc; nv-pu-sa-import)"
 
@@ -60,29 +60,10 @@ _ADULT_BIO = re.compile(
 )
 
 # Known TPDB site short_names that do not follow fansdb{handle}onlyfans.
-_KNOWN_SITES: dict[str, tuple[str, ...]] = {
-    "Anaimiya": ("fansdbanaimiyaonlyfans", "hobbypornnaiminaimi"),
-    "HongKong_Doll": (
-        "fansdbhongkongdollonlyfans",
-        "fansdbhongkongdollfansly",
-        "hobbypornhongkongdoll",
-    ),
-    "SpicygumL": ("spicygum",),
-    "Nana_taipei": ("fansdbnanataipeionlyfans",),
-    "yui_xin_tw": ("fansdbyuixintwonlyfans",),
-}
+_KNOWN_SITES = catalog_rules().blogger_sites
 
 # Prefer these display names when the X name is emoji-heavy.
-_PREFERRED_NAMES: dict[str, str] = {
-    "Anaimiya": "Naimi奶咪",
-    "waifupupu": "pupuwaifu",
-    "HongKong_Doll": "HongKongDoll",
-    "SpicygumL": "June Liu",
-    "FortuneCutie00": "FortuneCutie饼干姐姐",
-    "Nana_taipei": "Nana Taipei",
-    "yui_xin_tw": "辛尤里",
-    "kunkunkun188": "困困狗",
-}
+_PREFERRED_NAMES = catalog_rules().blogger_names
 
 
 def collapse_key(value: str) -> str:

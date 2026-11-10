@@ -47,6 +47,7 @@ just build
 - [统一作品、人物、机构与播放](docs/unified-library.md)
 - [标签标识、展示名称与兼容](docs/tags.md)
 - [多维分类与数据迁移](docs/classifications.md)
+- [代码与运行数据边界](docs/data-storage.md)
 - [MDC skill 与受支持 CLI](docs/skill.md)
 - [刷流与解析生命周期](docs/swipe.md)
 - [开发文档](docs/dev/index.md)

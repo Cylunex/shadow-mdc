@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild bundled actress_name_map.json.gz from peer refs (offline).
+"""Rebuild external actress_name_map.json.gz from peer refs (offline).
 
 Sources (must exist under /workspace/refs or override via env):
   - Javinizer jvThumbs.csv (MIT)
@@ -17,9 +17,11 @@ import sys
 import unicodedata
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+from shadow_mdc.runtime_data import reference_path
+
 REFS = Path(os.environ.get("SHADOW_MDC_REFS", "/workspace/refs"))
-OUT = ROOT / "src" / "shadow_mdc" / "data" / "actress_name_map.json.gz"
+
+OUT = reference_path("actress_name_map.json.gz")
 
 
 def norm(value: str) -> str:

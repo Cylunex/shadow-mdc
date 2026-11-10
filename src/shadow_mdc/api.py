@@ -498,10 +498,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         repo.repair_jav_actor_sources()
         repo.sync_all_work_actors()
         if settings.auto_seed_non_jav_works:
-            # Prefer data_dir override (tests / NAS custom seed), then repo seeds/.
+            # Catalog data belongs to the selected library, never to the source checkout.
             _works_seed = settings.data_dir / "non-jav-works.json"
-            if not _works_seed.is_file():
-                _works_seed = Path(__file__).resolve().parents[2] / "seeds" / "non-jav-works.json"
             seed_non_jav_works_if_changed(
                 repo,
                 seed_path=_works_seed,

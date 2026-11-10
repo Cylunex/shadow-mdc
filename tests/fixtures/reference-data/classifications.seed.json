@@ -1,0 +1,318 @@
+{
+  "dimensions": [
+    {
+      "id": "contents",
+      "name": "内容体系",
+      "description": "按 JAV、国产原创、欧美等内容体系归类。与制作地区及音轨语言分别保存。"
+    },
+    {
+      "id": "types",
+      "name": "作品类型",
+      "description": "电影、剧集、动画、纪录片等作品大类。"
+    },
+    {
+      "id": "genres",
+      "name": "题材",
+      "description": "剧情、喜剧、悬疑等内容题材。支持多选。"
+    },
+    {
+      "id": "forms",
+      "name": "表现形式",
+      "description": "长片、短片、合集、自拍、VR 等呈现形式。"
+    },
+    {
+      "id": "languages",
+      "name": "音轨语言",
+      "description": "作品中实际使用的语言。不会根据内容体系或制作地区推断。"
+    },
+    {
+      "id": "subtitle_languages",
+      "name": "字幕语言",
+      "description": "字幕提供的语言、与音轨语言独立。"
+    },
+    {
+      "id": "regions",
+      "name": "制作地区",
+      "description": "作品明确的制作国家或地区。与音轨语言分别保存。"
+    }
+  ],
+  "terms": [
+    {
+      "id": "contents:jav",
+      "dimension": "contents",
+      "name": "JAV",
+      "aliases": [
+        "jav"
+      ]
+    },
+    {
+      "id": "contents:chinese",
+      "dimension": "contents",
+      "name": "国产原创",
+      "aliases": [
+        "chinese"
+      ]
+    },
+    {
+      "id": "contents:western",
+      "dimension": "contents",
+      "name": "欧美内容",
+      "aliases": [
+        "western"
+      ]
+    },
+    {
+      "id": "contents:korean",
+      "dimension": "contents",
+      "name": "韩系内容",
+      "aliases": [
+        "korean"
+      ]
+    },
+    {
+      "id": "contents:animation",
+      "dimension": "contents",
+      "name": "动画内容",
+      "aliases": []
+    },
+    {
+      "id": "types:movie",
+      "dimension": "types",
+      "name": "电影",
+      "aliases": [
+        "movie",
+        "film"
+      ]
+    },
+    {
+      "id": "types:series",
+      "dimension": "types",
+      "name": "剧集",
+      "aliases": [
+        "series"
+      ]
+    },
+    {
+      "id": "types:animation",
+      "dimension": "types",
+      "name": "动画",
+      "aliases": [
+        "动漫"
+      ]
+    },
+    {
+      "id": "types:live",
+      "dimension": "types",
+      "name": "直播录像",
+      "aliases": [
+        "live"
+      ]
+    },
+    {
+      "id": "genres:drama",
+      "dimension": "genres",
+      "name": "剧情",
+      "aliases": [
+        "drama"
+      ]
+    },
+    {
+      "id": "genres:comedy",
+      "dimension": "genres",
+      "name": "喜剧",
+      "aliases": []
+    },
+    {
+      "id": "genres:action",
+      "dimension": "genres",
+      "name": "动作",
+      "aliases": [
+        "action"
+      ]
+    },
+    {
+      "id": "genres:documentary",
+      "dimension": "genres",
+      "name": "纪录",
+      "aliases": []
+    },
+    {
+      "id": "forms:feature",
+      "dimension": "forms",
+      "name": "长片",
+      "aliases": [
+        "feature"
+      ]
+    },
+    {
+      "id": "forms:short",
+      "dimension": "forms",
+      "name": "短片",
+      "aliases": []
+    },
+    {
+      "id": "forms:compilation",
+      "dimension": "forms",
+      "name": "合集",
+      "aliases": [
+        "compilation"
+      ]
+    },
+    {
+      "id": "forms:selfie",
+      "dimension": "forms",
+      "name": "自拍",
+      "aliases": []
+    },
+    {
+      "id": "forms:vr",
+      "dimension": "forms",
+      "name": "VR",
+      "aliases": [
+        "vr",
+        "虚拟现实"
+      ]
+    },
+    {
+      "id": "languages:zh",
+      "dimension": "languages",
+      "name": "中文",
+      "aliases": [
+        "Chinese"
+      ]
+    },
+    {
+      "id": "languages:ja",
+      "dimension": "languages",
+      "name": "日语",
+      "aliases": [
+        "ja",
+        "Japanese"
+      ]
+    },
+    {
+      "id": "languages:en",
+      "dimension": "languages",
+      "name": "英语",
+      "aliases": []
+    },
+    {
+      "id": "languages:ko",
+      "dimension": "languages",
+      "name": "韩语",
+      "aliases": [
+        "Korean"
+      ]
+    },
+    {
+      "id": "subtitle_languages:zh",
+      "dimension": "subtitle_languages",
+      "name": "中文",
+      "aliases": [
+        "Chinese"
+      ]
+    },
+    {
+      "id": "subtitle_languages:ja",
+      "dimension": "subtitle_languages",
+      "name": "日语",
+      "aliases": [
+        "ja",
+        "Japanese"
+      ]
+    },
+    {
+      "id": "subtitle_languages:ko",
+      "dimension": "subtitle_languages",
+      "name": "韩语",
+      "aliases": [
+        "Korean"
+      ]
+    },
+    {
+      "id": "regions:jp",
+      "dimension": "regions",
+      "name": "日本",
+      "aliases": [
+        "JP",
+        "Japan"
+      ]
+    },
+    {
+      "id": "regions:cn",
+      "dimension": "regions",
+      "name": "中国大陆",
+      "aliases": [
+        "China"
+      ]
+    },
+    {
+      "id": "regions:kr",
+      "dimension": "regions",
+      "name": "韩国",
+      "aliases": []
+    },
+    {
+      "id": "regions:us",
+      "dimension": "regions",
+      "name": "美国",
+      "aliases": []
+    },
+    {
+      "id": "contents:unknown",
+      "dimension": "contents",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    },
+    {
+      "id": "types:unknown",
+      "dimension": "types",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    },
+    {
+      "id": "genres:unknown",
+      "dimension": "genres",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    },
+    {
+      "id": "forms:unknown",
+      "dimension": "forms",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    },
+    {
+      "id": "languages:unknown",
+      "dimension": "languages",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    },
+    {
+      "id": "subtitle_languages:unknown",
+      "dimension": "subtitle_languages",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    },
+    {
+      "id": "regions:unknown",
+      "dimension": "regions",
+      "name": "待补",
+      "aliases": [
+        "unknown"
+      ]
+    }
+  ]
+}

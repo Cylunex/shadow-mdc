@@ -322,10 +322,10 @@ def test_expanded_position_and_scene_synonyms() -> None:
 
 
 def test_featured_adjacent_filter_tags_present() -> None:
-    from shadow_mdc.tags import COMMON_FILTER_TAGS
+    from shadow_mdc.tags import current_registry
 
     for name in ("乳交", "后入", "骑乘", "情侣", "自拍", "不伦", "高清", "浴室"):
-        assert name in COMMON_FILTER_TAGS
+        assert name in current_registry().rules.common_filter_tags
 
 
 def test_specific_ltx_marker_is_not_inferred_from_generic_subtitle_or_mosaic_labels() -> None:

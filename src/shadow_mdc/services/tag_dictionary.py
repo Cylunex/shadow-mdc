@@ -34,7 +34,7 @@ class TagDictionaryStore:
             yield
 
     def initialize(self) -> None:
-        """Import packaged defaults once. Restarts and upgrades preserve runtime edits."""
+        """Import an optional external seed once; preserve existing runtime edits."""
         with self._writer():
             if not self.path.exists():
                 self._write(seed_document())

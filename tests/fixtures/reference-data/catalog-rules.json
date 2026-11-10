@@ -1,0 +1,277 @@
+{
+  "platform_names": [
+    "91探花",
+    "hongkongdoll",
+    "ktv探花",
+    "madou",
+    "onlyfans",
+    "swag",
+    "探花",
+    "杏吧",
+    "杏吧传媒",
+    "果冻传媒",
+    "糖心",
+    "糖心vlog",
+    "蜜桃影像",
+    "麻豆",
+    "麻豆传媒"
+  ],
+  "china_markers": [
+    "china",
+    "chinese",
+    "国产",
+    "中文",
+    "麻豆",
+    "探花",
+    "糖心",
+    "蜜桃",
+    "果冻",
+    "天美",
+    "自拍"
+  ],
+  "japan_markers": [
+    "japan",
+    "japanese",
+    "jav",
+    "日本",
+    "有码",
+    "有碼",
+    "無碼"
+  ],
+  "korea_markers": [
+    "korea",
+    "korean",
+    "韩国"
+  ],
+  "europe_markers": [
+    "europe",
+    "western",
+    "欧美",
+    "歐美",
+    "english"
+  ],
+  "animation_markers": [
+    "anime",
+    "hentai",
+    "动漫",
+    "動漫"
+  ],
+  "other_markers": [
+    "other",
+    "unknown",
+    "未知",
+    "未分类",
+    "其它"
+  ],
+  "control_names": [
+    "japan",
+    "japanese",
+    "jav",
+    "other",
+    "test",
+    "unknown",
+    "其它",
+    "日本",
+    "有码",
+    "有碼",
+    "未分类",
+    "未知",
+    "测试",
+    "無碼"
+  ],
+  "explicit_studio_labels": [
+    "91探花",
+    "杏吧",
+    "果冻传媒",
+    "糖心Vlog",
+    "蜜桃影像",
+    "麻豆",
+    "麻豆传媒"
+  ],
+  "explicit_fuzzy_names": [
+    "Amateur",
+    "N/A",
+    "NA",
+    "None",
+    "Unknown Guy",
+    "n/a",
+    "null",
+    "女优",
+    "无",
+    "未知",
+    "演员",
+    "素人"
+  ],
+  "keep_borderline": [
+    "HongKongDoll",
+    "Naimi奶咪",
+    "Nana Taipei",
+    "Natasha Nice",
+    "江南第一深情",
+    "璇璇SWAG",
+    "蜜桃酱",
+    "雪碧SWAG"
+  ],
+  "prefix_series": [
+    "探花",
+    "约炮",
+    "杏吧"
+  ],
+  "suffix_series": [
+    "探花"
+  ],
+  "studio_tokens": [
+    "传媒",
+    "影像",
+    "Vlog",
+    "vlog"
+  ],
+  "studio_site_hints": [
+    [
+      "model media asia",
+      "modelmediaasia"
+    ],
+    [
+      "model media us",
+      "modelmediaus"
+    ],
+    [
+      "model media",
+      "modelmediaasia"
+    ],
+    [
+      "麻豆",
+      "modelmediaasia"
+    ],
+    [
+      "madou",
+      "modelmediaasia"
+    ],
+    [
+      "hongkongdoll",
+      "fansdbhongkongdollonlyfans"
+    ],
+    [
+      "hong kong doll",
+      "fansdbhongkongdollonlyfans"
+    ],
+    [
+      "蜜桃影像",
+      "swaglivepeachmedia"
+    ],
+    [
+      "蜜桃",
+      "swaglivepeachmedia"
+    ],
+    [
+      "peach media",
+      "swaglivepeachmedia"
+    ],
+    [
+      "jules jordan",
+      "julesjordan"
+    ],
+    [
+      "vixen",
+      "vixen"
+    ],
+    [
+      "tushy",
+      "tushy"
+    ],
+    [
+      "blacked",
+      "blacked"
+    ],
+    [
+      "deeper",
+      "deeper"
+    ],
+    [
+      "bangbros",
+      "bangbros"
+    ],
+    [
+      "evil angel",
+      "evilangel"
+    ],
+    [
+      "digital playground",
+      "digitalplayground"
+    ],
+    [
+      "lubed",
+      "lubed"
+    ],
+    [
+      "onlyfans",
+      "onlyfans"
+    ]
+  ],
+  "studio_site_extra": [
+    [
+      "modelmediaasia",
+      "teamskeetxmodelmediaasia"
+    ],
+    [
+      "modelmediaus",
+      "teamskeetxmodelmediaus"
+    ],
+    [
+      "fansdbhongkongdollonlyfans",
+      "hobbypornhongkongdoll"
+    ]
+  ],
+  "known_creator_sites": {
+    "sunnyday9": [
+      "swaglivesunnyday9"
+    ]
+  },
+  "code_prefix_site": {
+    "MD": "modelmediaasia",
+    "MDJ": "modelmediaasia",
+    "MSD": "modelmediaasia",
+    "MT": "modelmediaasia",
+    "MM": "modelmediaasia",
+    "MMZ": "modelmediaasia",
+    "MKY": "modelmediaasia",
+    "MAD": "modelmediaasia",
+    "MDL": "modelmediaasia",
+    "MDHT": "modelmediaasia",
+    "MDHG": "modelmediaasia",
+    "MDWP": "modelmediaasia",
+    "MDHS": "modelmediaasia",
+    "MDAG": "modelmediaasia",
+    "MDSR": "modelmediaasia",
+    "MTVQ": "modelmediaasia",
+    "MTVSQ": "modelmediaasia"
+  },
+  "platform_stems": [
+    "麻豆",
+    "探花",
+    "糖心",
+    "天美",
+    "果冻",
+    "星空无限"
+  ],
+  "studio_name_markers": [
+    "传媒",
+    "制片",
+    "探花",
+    "厂",
+    "SWAG",
+    "OnlyFans",
+    "福利",
+    "博主",
+    "精东",
+    "皇家华人",
+    "起点",
+    "大象",
+    "蜜桃",
+    "乐播",
+    "星空无限",
+    "麻豆传媒",
+    "天美传媒",
+    "果冻传媒"
+  ]
+}

@@ -10,14 +10,13 @@ r18.dev dump). Marker-aware peel/re-append follows javinizer-go
 
 from __future__ import annotations
 
-import gzip
-import json
 import re
 from functools import lru_cache
-from importlib import resources
-from pathlib import Path
+
+from pydantic import TypeAdapter
 
 from .remaster import parse_remaster_identity
+from .runtime_data import read_data, reference_path
 
 _CODE_PARTS = re.compile(r"(?i)(\d*[a-z]+)[-_]?(\d+)")
 _SERIES_DIGITS = re.compile(r"^(\d*)([a-z]+)$")
@@ -28,21 +27,13 @@ _T28 = "t28"
 _WIDE_NUMERIC_CID = re.compile(r"^(?:t28|[a-z]+)\d{5,}[a-z]{0,3}$")
 
 
-@lru_cache(maxsize=1)
 def _prefix_table() -> dict[str, tuple[str, ...]]:
-    try:
-        resource = resources.files("shadow_mdc.data").joinpath("dmm_content_id_prefixes.json.gz")
-        with resources.as_file(resource) as path:
-            payload = json.loads(gzip.decompress(Path(path).read_bytes()).decode("utf-8"))
-    except (OSError, ValueError, ModuleNotFoundError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    return {
-        str(series): tuple(str(item) for item in prefixes if isinstance(item, str))
-        for series, prefixes in payload.items()
-        if isinstance(prefixes, list)
-    }
+    return _parse_prefixes(read_data(reference_path("dmm_content_id_prefixes.json.gz")))
+
+
+@lru_cache(maxsize=8)
+def _parse_prefixes(raw: bytes | None) -> dict[str, tuple[str, ...]]:
+    return {} if raw is None else TypeAdapter(dict[str, tuple[str, ...]]).validate_json(raw)
 
 
 def known_content_id_prefixes(series: str) -> tuple[str, ...]:

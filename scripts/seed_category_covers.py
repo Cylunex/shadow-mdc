@@ -29,7 +29,6 @@ if str(ROOT / "src") not in sys.path:
 
 from shadow_mdc.config import Settings  # noqa: E402
 from shadow_mdc.services.category_catalog import (  # noqa: E402
-    FEATURED_CATEGORY_LABELS,
     CategoryCoverEntry,
     covers_dir,
     load_manifest,
@@ -38,6 +37,7 @@ from shadow_mdc.services.category_catalog import (  # noqa: E402
 )
 from shadow_mdc.tags import (  # noqa: E402
     canonicalize_tag,
+    current_registry,
     synonyms_for,
     tag_id,
 )
@@ -52,7 +52,7 @@ _BROWSER_UA = (
 
 # Prefer these display labels when multiple PH titles collapse to the same tag.
 _LABEL_PRIORITY: dict[str, int] = {
-    label: index for index, label in enumerate(FEATURED_CATEGORY_LABELS)
+    label: index for index, label in enumerate(current_registry().rules.featured_labels)
 }
 
 
@@ -143,7 +143,7 @@ def _build_source_index(
                 continue
             # Only keep featured + known taxonomy
             if (
-                canonical not in FEATURED_CATEGORY_LABELS
+                canonical not in current_registry().rules.featured_labels
                 and not (tag_id(canonical) or "").startswith("tag:")
             ):
                 continue
@@ -179,10 +179,10 @@ def seed(
 ) -> int:
     refs = _load_refs(refs_path)
     index = _build_source_index(refs)
-    target_labels = list(labels) if labels else list(FEATURED_CATEGORY_LABELS)
+    target_labels = list(labels) if labels else list(current_registry().rules.featured_labels)
     # Also include any featured-mapped labels discovered only via sources
     for label in sorted(index.keys(), key=lambda name: _LABEL_PRIORITY.get(name, 10_000)):
-        if label not in target_labels and label in FEATURED_CATEGORY_LABELS:
+        if label not in target_labels and label in current_registry().rules.featured_labels:
             target_labels.append(label)
 
     out_dir = covers_dir(data_dir)
@@ -197,7 +197,7 @@ def seed(
     updated_labels: set[str] = set()
 
     for label in target_labels:
-        if label not in FEATURED_CATEGORY_LABELS and label not in index:
+        if label not in current_registry().rules.featured_labels and label not in index:
             continue
         slug = slugify_label(label)
         candidates = index.get(label) or []

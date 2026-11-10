@@ -38,15 +38,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-from shadow_mdc.config import Settings  # noqa: E402
-from shadow_mdc.db.models import Work  # noqa: E402
-from shadow_mdc.db.repository import Database, Repository  # noqa: E402
-from shadow_mdc.domain import Artwork, ProviderRecord  # noqa: E402
-from shadow_mdc.enums import ContentFamily, MediaCategory  # noqa: E402
-from shadow_mdc.media.artwork import ArtworkStore  # noqa: E402
-from shadow_mdc.services.javranking_client import BROWSER_UA  # noqa: E402
-from shadow_mdc.services.studio_guard import classify_non_jav_actor_rejection  # noqa: E402
-from shadow_mdc.services.translation import (  # noqa: E402
+from shadow_mdc.config import Settings
+from shadow_mdc.db.models import Work
+from shadow_mdc.db.repository import Database, Repository
+from shadow_mdc.domain import Artwork, ProviderRecord
+from shadow_mdc.enums import ContentFamily, MediaCategory
+from shadow_mdc.media.artwork import ArtworkStore
+from shadow_mdc.reference_models import catalog_rules
+from shadow_mdc.services.javranking_client import BROWSER_UA
+from shadow_mdc.services.studio_guard import classify_non_jav_actor_rejection
+from shadow_mdc.services.translation import (
     GoogleTitleTranslator,
     TranslationCache,
     build_translation_backends,
@@ -56,7 +57,7 @@ try:
     from actor_avatars import theporndb_token_from_env  # type: ignore
 except ImportError:  # pragma: no cover
     sys.path.insert(0, str(ROOT / "scripts"))
-    from actor_avatars import theporndb_token_from_env  # noqa: E402
+    from actor_avatars import theporndb_token_from_env
 
 _TPDB_SCENES = "https://api.theporndb.net/scenes"
 _COLLAPSE = re.compile(r"[^a-z0-9\u4e00-\u9fff]+")
@@ -64,86 +65,20 @@ _COLLAPSE = re.compile(r"[^a-z0-9\u4e00-\u9fff]+")
 # TPDB REST `site=` short_name hints keyed by studio / title markers.
 # Prefer short_names proven via local artwork / refresh_chinese_media; TPDB
 # returns unrelated popular scenes for unknown site slugs.
-_STUDIO_SITE_HINTS: tuple[tuple[str, str], ...] = (
-    ("model media asia", "modelmediaasia"),
-    ("model media us", "modelmediaus"),
-    ("model media", "modelmediaasia"),
-    ("麻豆", "modelmediaasia"),
-    ("madou", "modelmediaasia"),
-    ("hongkongdoll", "fansdbhongkongdollonlyfans"),
-    ("hong kong doll", "fansdbhongkongdollonlyfans"),
-    ("蜜桃影像", "swaglivepeachmedia"),
-    ("蜜桃", "swaglivepeachmedia"),
-    ("peach media", "swaglivepeachmedia"),
-    ("jules jordan", "julesjordan"),
-    ("vixen", "vixen"),
-    ("tushy", "tushy"),
-    ("blacked", "blacked"),
-    ("deeper", "deeper"),
-    ("bangbros", "bangbros"),
-    ("evil angel", "evilangel"),
-    ("digital playground", "digitalplayground"),
-    ("lubed", "lubed"),
-    ("onlyfans", "onlyfans"),
-)
+_STUDIO_SITE_HINTS = catalog_rules().studio_site_hints
 
 # Secondary site aliases to try after the primary studio hint (same work family).
-_STUDIO_SITE_EXTRA: tuple[tuple[str, str], ...] = (
-    ("modelmediaasia", "teamskeetxmodelmediaasia"),
-    ("modelmediaus", "teamskeetxmodelmediaus"),
-    ("fansdbhongkongdollonlyfans", "hobbypornhongkongdoll"),
-)
+_STUDIO_SITE_EXTRA = catalog_rules().studio_site_extra
 
 # Proven creator-handle → TPDB site short_names (from local artwork folders).
 # Do NOT invent fansdb/swaglive guesses for unknown handles — unknown site=
 # queries return junk popular scenes.
-_KNOWN_CREATOR_SITES: dict[str, tuple[str, ...]] = {
-    "hongkongdoll": ("fansdbhongkongdollonlyfans", "hobbypornhongkongdoll", "fansdbhongkongdollfansly"),
-    "anaimiya": ("fansdbanaimiyaonlyfans", "hobbypornnaiminaimi"),
-    "naimi": ("fansdbanaimiyaonlyfans", "hobbypornnaiminaimi"),
-    "nanataipei": ("fansdbnanataipeionlyfans",),
-    "yuixintw": ("fansdbyuixintwonlyfans",),
-    "spicygum": ("spicygum",),
-    "spicyguml": ("spicygum",),
-    "oshiximiya": ("manyvidsoshiximiya",),
-    # High-volume SwagLive creators already seen in artwork.
-    "sunnyday9": ("swaglivesunnyday9",),
-    "ezrabebe": ("swagliveezrabebe",),
-    "peachmedia": ("swaglivepeachmedia",),
-    "daxiangtw": ("swaglivedaxiangtw",),
-    "roostersclubtw": ("swagliveroostersclubtw",),
-    "miababe": ("swaglivemiababe",),
-    "woshisuchang": ("swaglivewoshisuchang",),
-    "edmosaic": ("swagliveedmosaic",),
-    "princessdolly": ("swagliveprincessdolly",),
-    "linlinbebe": ("swaglivelinlinbebe",),
-    "weijoannana": ("swagliveweijoannana",),
-    "asiaxxxtour": ("swagliveasiaxxxtour",),
-    "elvababe": ("swagliveelvababe",),
-}
+_KNOWN_CREATOR_SITES = catalog_rules().known_creator_sites
 
 
 # Scene-code prefix → TPDB site= (Madou / Model Media Asia family).
 # Keep conservative: only prefixes repeatedly seen with modelmediaasia hits.
-_CODE_PREFIX_SITE: dict[str, str] = {
-    "MD": "modelmediaasia",
-    "MDJ": "modelmediaasia",
-    "MSD": "modelmediaasia",
-    "MT": "modelmediaasia",
-    "MM": "modelmediaasia",
-    "MMZ": "modelmediaasia",
-    "MKY": "modelmediaasia",
-    "MAD": "modelmediaasia",
-    "MDL": "modelmediaasia",
-    "MDHT": "modelmediaasia",
-    "MDHG": "modelmediaasia",
-    "MDWP": "modelmediaasia",
-    "MDHS": "modelmediaasia",
-    "MDAG": "modelmediaasia",
-    "MDSR": "modelmediaasia",
-    "MTVQ": "modelmediaasia",
-    "MTVSQ": "modelmediaasia",
-}
+_CODE_PREFIX_SITE = catalog_rules().code_prefix_site
 
 _SWAG_HANDLE_RE = re.compile(r"@([A-Za-z0-9_]{2,32})", re.I)
 # Titles like Jxzeroc_clip01 / CreatorName-001 (opaque no-studio chinese rows).
@@ -283,7 +218,7 @@ def with_sqlite_retry(operation, *, attempts: int = 8, base_delay: float = 0.4):
     for attempt in range(max(1, attempts)):
         try:
             return operation()
-        except Exception as exc:  # noqa: BLE001 - narrow by message
+        except Exception as exc:
             message = str(exc).casefold()
             if not any(marker in message for marker in _SQLITE_LOCK_MARKERS):
                 raise
@@ -989,7 +924,7 @@ async def _run(arguments: argparse.Namespace) -> int:
                             sources["artwork"] = "theporndb"
                             updated.field_sources = sources
                         try:
-                            repo._add_record_identities(updated, record)  # noqa: SLF001
+                            repo._add_record_identities(updated, record)
                         except Exception:
                             pass
                         repo._session.flush()
@@ -1048,7 +983,7 @@ async def _run(arguments: argparse.Namespace) -> int:
                             # session closes after translate_work may have written via repo
                     except TimeoutError:
                         print(f"[warn] translate timeout {updated.id}", flush=True)
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         print(f"[warn] translate {updated.id}: {type(exc).__name__}: {exc}", flush=True)
 
                     def _reload():
@@ -1064,7 +999,7 @@ async def _run(arguments: argparse.Namespace) -> int:
                     flush=True,
                 )
                 await asyncio.sleep(float(arguments.delay))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 stats.failed += 1
                 stats.failures.append({"id": work_stub.id, "error": f"{type(exc).__name__}: {exc}"})
                 print(f"[fail] {work_stub.id} {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)

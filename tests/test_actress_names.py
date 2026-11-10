@@ -5,9 +5,9 @@ def test_normalize_actress_key_strips_spaces() -> None:
     assert normalize_actress_key(" Ai  Kano ") == normalize_actress_key("AiKano")
 
 
-def test_bundled_map_resolves_common_romaji() -> None:
+def test_external_fixture_map_resolves_romaji() -> None:
     mapping = get_actress_name_map()
-    assert len(mapping) > 1000
+    assert len(mapping) > 0
     assert mapping.resolve_japanese("Ai Kano") == "叶愛"
     expanded = mapping.expand_candidates(["Ai Kano"])
     assert expanded[0] == "叶愛"

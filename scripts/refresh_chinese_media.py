@@ -33,11 +33,14 @@ from actor_avatars import (  # noqa: E402
     theporndb_token_from_env,
 )
 
-ACTORS_PATH = ROOT / "data" / "non-jav-actors.json"
-WORKS_PATH = ROOT / "data" / "non-jav-works.json"
-IMAGE_DIR = ROOT / "data" / "actor-images"
-ARTWORK_DIR = ROOT / "data" / "artwork"
-DB_PATH = ROOT / "data" / "shadow-mdc.db"
+from shadow_mdc.reference_models import catalog_rules  # noqa: E402
+from shadow_mdc.runtime_data import data_directories  # noqa: E402
+
+ACTORS_PATH = data_directories()[0] / "non-jav-actors.json"
+WORKS_PATH = data_directories()[0] / "non-jav-works.json"
+IMAGE_DIR = data_directories()[0] / "actor-images"
+ARTWORK_DIR = data_directories()[0] / "artwork"
+DB_PATH = data_directories()[0] / "shadow-mdc.db"
 
 _USER_AGENT = "ShadowMDC/0.1 (https://github.com/Cylunex/shadow-mdc; chinese-media-refresh)"
 
@@ -68,46 +71,10 @@ zhua zhuai zhuan zhuang zhui zhun zhuo zi zong zou zu zuan zui zun zuo
 """.split()
 )
 
-_STUDIO_NAME_MARKERS = (
-    "传媒",
-    "制片",
-    "探花",
-    "厂",
-    "SWAG",
-    "OnlyFans",
-    "福利",
-    "博主",
-    "精东",
-    "皇家华人",
-    "起点",
-    "大象",
-    "蜜桃",
-    "乐播",
-    "星空无限",
-    "麻豆传媒",
-    "天美传媒",
-    "果冻传媒",
-)
+_STUDIO_NAME_MARKERS = catalog_rules().studio_name_markers
 
 # TPDB site short_names that carry Chinese / Madou-adjacent catalog.
-_CHINESE_SITES: tuple[tuple[str, str, str], ...] = (
-    ("modelmediaasia", "麻豆传媒", "madou"),
-    ("teamskeetxmodelmediaasia", "麻豆传媒", "madou"),
-    ("fansdbhongkongdollonlyfans", "HongKongDoll", "onlyfans"),
-    ("swagliveezrabebe", "SWAG", "swag"),
-    ("swagliveweijoannana", "SWAG", "swag"),
-    ("swaglivelinlinbebe", "SWAG", "swag"),
-    ("swaglivesunnyday9", "SWAG", "swag"),
-    ("swagliveprincessdolly", "SWAG", "swag"),
-    ("swagliveasiaxxxtour", "SWAG", "swag"),
-    ("swaglivemiababe", "SWAG", "swag"),
-    ("swaglivewoshisuchang", "SWAG", "swag"),
-    ("swagliveelvababe", "SWAG", "swag"),
-    ("swaglivedaxiangtw", "SWAG", "swag"),
-    ("swaglivepeachmedia", "蜜桃影像", "swag"),
-    ("swagliveroostersclubtw", "SWAG", "swag"),
-    ("swagliveedmosaic", "SWAG", "swag"),
-)
+_CHINESE_SITES = catalog_rules().chinese_sites
 
 
 def collapse_key(value: str) -> str:
@@ -555,80 +522,7 @@ def db_upsert_work_artwork(
     )
 
 
-CURATED_PLATFORM_SEEDS: tuple[dict[str, object], ...] = (
-    {
-        "id": "curated-tanhua-ktv-001",
-        "title": "KTV探花·样例场次 001",
-        "studio": "探花",
-        "series": "KTV探花",
-        "family": "chinese",
-        "category": "China",
-        "actors": ["探花达人"],
-        "tags": ["chinese", "tanhua", "curated-seed"],
-        "year": None,
-        "code": None,
-    },
-    {
-        "id": "curated-tanhua-hotel-002",
-        "title": "酒店探花·样例场次 002",
-        "studio": "探花",
-        "series": "酒店探花",
-        "family": "chinese",
-        "category": "China",
-        "actors": ["探花达人"],
-        "tags": ["chinese", "tanhua", "curated-seed"],
-        "year": None,
-        "code": None,
-    },
-    {
-        "id": "curated-sugarheart-vlog-001",
-        "title": "糖心Vlog·居家日常 001",
-        "studio": "糖心Vlog",
-        "series": "糖心",
-        "family": "chinese",
-        "category": "China",
-        "actors": ["糖心女孩"],
-        "tags": ["chinese", "tangxin", "sugarheart", "curated-seed"],
-        "year": None,
-        "code": None,
-    },
-    {
-        "id": "curated-sugarheart-vlog-002",
-        "title": "糖心Vlog·约会记录 002",
-        "studio": "糖心Vlog",
-        "series": "糖心",
-        "family": "chinese",
-        "category": "China",
-        "actors": ["糖心女孩"],
-        "tags": ["chinese", "tangxin", "sugarheart", "curated-seed"],
-        "year": None,
-        "code": None,
-    },
-    {
-        "id": "curated-tiameei-001",
-        "title": "天美传媒·都市情感 001",
-        "studio": "天美传媒",
-        "series": "天美传媒",
-        "family": "chinese",
-        "category": "China",
-        "actors": ["天美女郎"],
-        "tags": ["chinese", "tianmei", "curated-seed"],
-        "year": None,
-        "code": None,
-    },
-    {
-        "id": "curated-jelly-001",
-        "title": "果冻传媒·校园邂逅 001",
-        "studio": "果冻传媒",
-        "series": "果冻传媒",
-        "family": "chinese",
-        "category": "China",
-        "actors": ["果冻女孩"],
-        "tags": ["chinese", "jelly", "curated-seed"],
-        "year": None,
-        "code": None,
-    },
-)
+CURATED_PLATFORM_SEEDS = catalog_rules().platform_seeds
 
 
 def main() -> None:
@@ -642,17 +536,12 @@ def main() -> None:
     works: list[dict[str, Any]] = list(works_doc.get("works") or [])
     existing_ids = {str(item.get("id")) for item in works if isinstance(item, dict)}
     for seed in CURATED_PLATFORM_SEEDS:
-        seed_id = str(seed["id"])
+        seed_id = seed.id
         if seed_id not in existing_ids:
-            works.append(dict(seed))
+            works.append(seed.model_dump())
             existing_ids.add(seed_id)
             print(f"curated seed added {seed_id}", flush=True)
-    for actor_name, groups in (
-        ("探花达人", ["tanhua"]),
-        ("糖心女孩", ["tangxin"]),
-        ("天美女郎", ["tianmei"]),
-        ("果冻女孩", ["jelly"]),
-    ):
+    for actor_name, groups in catalog_rules().platform_actors:
         if _exact_actor_match(_build_actor_index(actors), actor_name) is None:
             actors.append(
                 {
@@ -990,11 +879,8 @@ def main() -> None:
                 )
                 stats["avatars_from_posters"] += 1
 
-        # --- Pass 4: HongKongDoll / blogger special-case scene search ---
-        for blogger, query in (
-            ("HongKongDoll", "HongKongDoll"),
-            ("HongKongDoll", "Hong Kong Doll"),
-        ):
+        # --- Pass 4: configured blogger scene searches ---
+        for blogger, query in catalog_rules().blogger_searches:
             actor = _exact_actor_match(index, blogger)
             if actor is None:
                 continue
@@ -1022,7 +908,7 @@ def main() -> None:
                 filename = save_actor_image(str(actor["name"]), content)
                 actor["image_file"] = filename
                 actor["notes"] = (
-                    "Work cover/screenshot from ThePornDB FansDB/HongKongDoll scene."
+                    "Work cover/screenshot from ThePornDB configured blogger scene."
                 )
                 stats["avatars_from_posters"] += 1
                 break

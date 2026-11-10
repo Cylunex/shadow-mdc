@@ -4,5 +4,8 @@
 .mypy_cache
 .ruff_cache
 data
+seeds
+.env
+src/shadow_mdc/data
 web/node_modules
 web/dist

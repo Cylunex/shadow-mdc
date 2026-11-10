@@ -357,6 +357,13 @@ if [[ ! -x "$release_python" ]]; then
 fi
 backup_shadow_mdc_data "$data_dir" "$backup_dir/data" "$release_python"
 
+# Preserve reference data outside releases without overwriting existing library edits.
+if [[ -n "$previous_release" && -d "$previous_release" ]]; then
+  PYTHONPATH="$release_dir/src" "$release_python" "$release_dir/scripts/migrate_reference_data.py" \
+    --legacy-root "$previous_release" \
+    --output "${SHADOW_MDC_REFERENCE_DATA_DIR:-$data_dir/reference}"
+fi
+
 activation_link="${current_link}.next.$$"
 ln -s "$release_dir" "$activation_link"
 mv -Tf "$activation_link" "$current_link"

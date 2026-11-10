@@ -5,6 +5,9 @@ __pycache__/
 .pytest-tmp/
 .ruff_cache/
 .mypy_cache/
+.DS_Store
+# Reference dictionaries, catalogs and generated maps belong outside the source package.
+/src/shadow_mdc/data/**
 /data/
 !tests/fixtures/catalog-import-bundle/data/
 !tests/fixtures/catalog-import-bundle/data/**

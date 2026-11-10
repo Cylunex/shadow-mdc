@@ -3,9 +3,9 @@
 标签词条、名称、别名、隐藏状态和展示规则属于运行数据，不在 Python 源码中维护。
 
 - 运行词典保存在 `<data_dir>/tag-dictionary.json`，文件权限 0600，随片库数据一起备份。
-- `data/tag-dictionary.seed.json` 是随包提供的首次初始化数据；只在运行词典不存在时导入。
+- `<reference_data_dir>/tag-dictionary.seed.json` 是仓库外提供的可选首次初始化数据；只在运行词典不存在时导入。
   重启和升级不会覆盖已修改的词条或规则。以后日常新增、改名都通过接口维护运行数据。
-- 七维分类的首次数据在 `data/classifications.seed.json`，运行词条继续保存于已有分类数据库表。
+- 未提供种子时创建空词典，来源标签仍可发现与维护。七维分类首次数据在外部 `<reference_data_dir>/classifications.seed.json`，运行词条继续保存于已有分类数据库表。
 - Python 的 `tag_models.py` 仅保留模型、身份解析和加载校验，`services/tag_dictionary.py` 负责持久化。
   原 `tag_registry.py` 已删除。
 
@@ -42,4 +42,4 @@
 来源词保留原文，展示和筛选接受 ID、当前名称及历史别名；未知标签仍能被发现与管理。
 `display_tags` 还包含地区、片商等信息，不能整体作为题材标签写回作品。
 
-词典、隐藏规则和实际片库文件均不进入 Git；仓库只保留通用初始化数据与加载实现。
+词典、隐藏规则、演员映射和种子片库均不进入 Git 或 Python 发布包；仓库保留模型、加载实现与必要测试夹具。路径与迁移方式见[运行数据边界](data-storage.md)。

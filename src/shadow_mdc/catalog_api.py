@@ -47,7 +47,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from .catalog_management import CatalogFilter, build_management_router, organization_relationships
-from .classifications import DIMENSIONS, ClassificationSelection
+from .classifications import ClassificationSelection, classification_dimensions
 from .db.models import (
     Actor,
     CatalogClassificationTerm,
@@ -674,7 +674,7 @@ def build_catalog_router(
             ))
             taxonomy: dict[str, list[Facet | TagFacet]] = {}
             terms = {term.id: term for term in session.scalars(select(CatalogClassificationTerm))}
-            for dimension in DIMENSIONS:
+            for dimension in classification_dimensions():
                 values = classification_rows(dimension.id)
                 dimension_rows = filtered_statement(
                     filters.model_copy(update={dimension.id: []}), request, session, actor_profiles,
@@ -917,7 +917,7 @@ def build_catalog_router(
                     id=term.id, name=term.name, aliases=term.aliases, revision=term.revision,
                     count=next((facet.count for facet in counts[dimension.id] if facet.id == term.id), 0),
                 ) for term in terms if term.dimension == dimension.id],
-            ) for dimension in DIMENSIONS]
+            ) for dimension in classification_dimensions()]
             dimensions.append(ClassificationDimensionOut(
                 id="decades", name="年代", description="按发行年归类、支持年代与其它维度组合筛选。",
                 values=[ClassificationTermOut(
@@ -954,7 +954,7 @@ def build_catalog_router(
         def check_term_name(
             session: Session, dimension: str, payload: ClassificationTermEdit, identity: str = "",
         ) -> None:
-            if dimension not in {item.id for item in DIMENSIONS}:
+            if dimension not in {item.id for item in classification_dimensions()}:
                 raise HTTPException(422, "invalid classification dimension")
             names = {fold_tag(name) for name in [payload.name, *payload.aliases]}
             if "" in names:

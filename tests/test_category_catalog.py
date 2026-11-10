@@ -9,14 +9,13 @@ from fastapi.testclient import TestClient
 
 from shadow_mdc.api import app
 from shadow_mdc.services.category_catalog import (
-    FEATURED_CATEGORY_LABELS,
     CategoryCoverEntry,
     build_category_list,
     load_manifest,
     slugify_label,
     write_manifest,
 )
-from shadow_mdc.tags import canonicalize_tag
+from shadow_mdc.tags import canonicalize_tag, current_registry
 
 
 @pytest.mark.parametrize(
@@ -66,9 +65,10 @@ def test_category_source_titles_map_to_canonical(raw: str, expected: str) -> Non
     assert canonicalize_tag(raw) == expected
 
 
-def test_featured_labels_are_curated_size() -> None:
-    assert 40 <= len(FEATURED_CATEGORY_LABELS) <= 150
-    assert len(FEATURED_CATEGORY_LABELS) == len(set(FEATURED_CATEGORY_LABELS))
+def test_featured_labels_resolve_without_duplicates() -> None:
+    labels = current_registry().rules.featured_labels
+    assert labels and len(labels) == len(set(labels))
+    assert all(canonicalize_tag(label) is not None for label in labels)
 
 
 def test_manifest_roundtrip_and_build_list(tmp_path: Path) -> None:

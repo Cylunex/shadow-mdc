@@ -6,10 +6,11 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 from urllib.parse import quote, unquote
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .runtime_data import data_directories, read_data, reference_path
 
 
 def fold_tag(value: str) -> str:
@@ -35,7 +36,7 @@ class TagRegistry:
 
     def __init__(self, definitions: tuple[TagDefinition, ...], rules: TagRules | None = None) -> None:
         self.definitions = definitions
-        self.rules = rules if rules is not None else seed_document().rules
+        self.rules = rules if rules is not None else TagRules()
         self.ids = {tag.id for tag in definitions}
         self._by_id: dict[str, TagDefinition] = {}
         self._by_alias: dict[str, TagDefinition] = {}
@@ -135,12 +136,24 @@ def valid_raw_id(value: str) -> bool:
     return value.startswith("raw:") and bool(decoded) and value == "raw:" + quote(fold_tag(decoded), safe="")
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=8)
+def _parse_document(raw: bytes | None) -> TagDocument:
+    return TagDocument(terms=[], rules=TagRules()) if raw is None else TagDocument.model_validate_json(raw)
+
+
 def seed_document() -> TagDocument:
-    """Load first-run defaults from packaged data, never overwrite an existing runtime dictionary."""
-    return TagDocument.model_validate_json(
-        (Path(__file__).parent / "data/tag-dictionary.seed.json").read_text(encoding="utf-8")
-    )
+    """Read an optional external seed; a new library can start with an empty dictionary."""
+    return _parse_document(read_data(reference_path("tag-dictionary.seed.json")))
 
 
-TAG_REGISTRY = seed_document().registry()
+@lru_cache(maxsize=8)
+def _parse_registry(raw: bytes | None) -> TagRegistry:
+    return _parse_document(raw).registry()
+
+
+def default_registry() -> TagRegistry:
+    """Use the selected library's persisted vocabulary outside an HTTP request as well."""
+    raw = read_data(data_directories()[0] / "tag-dictionary.json")
+    if raw is None:
+        raw = read_data(reference_path("tag-dictionary.seed.json"))
+    return _parse_registry(raw)

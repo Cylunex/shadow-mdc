@@ -1,4 +1,10 @@
+import os
+from pathlib import Path
+
 import pytest
+
+# Set before test module collection; never read the checkout's private datasets.
+os.environ["SHADOW_MDC_REFERENCE_DATA_DIR"] = str(Path(__file__).parent / "fixtures/reference-data")
 
 
 @pytest.fixture(autouse=True)

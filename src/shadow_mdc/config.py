@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SHADOW_MDC_", env_file=".env", extra="ignore")
 
     data_dir: Path = Path("data")
+    reference_data_dir: Path | None = None  # default: data_dir/reference; never bundled with code
     database_url: str = "sqlite:///data/shadow-mdc.db"
     javdb_base_url: str = "https://javdb.com"
     # JavDB app JSON API (signed; primary for rankings, fallback for detail/magnets).
@@ -99,7 +100,6 @@ class Settings(BaseSettings):
     subtitlecat_min_interval_seconds: float = Field(default=3.0, ge=0, le=60)
     subtitlecat_miss_ttl_hours: float = Field(default=72, ge=0, le=24 * 90)
     # Redis for API response cache. Empty / unset → in-process TTL dict.
-    # Production NAS: redis://192.168.0.21:6379/0
     # Local/dev fallback: redis://127.0.0.1:6379/0 when reachable.
     redis_url: str | None = "redis://127.0.0.1:6379/0"
     # Tube swipefeed Node sidecar (listing/resolve/media proxy). Empty → /api/swipe/* returns 503.

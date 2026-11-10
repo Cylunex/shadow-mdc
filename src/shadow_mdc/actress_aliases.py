@@ -12,8 +12,11 @@ import re
 import threading
 import unicodedata
 from functools import lru_cache
-from importlib import resources
 from pathlib import Path
+
+from pydantic import TypeAdapter
+
+from .runtime_data import read_data, reference_path
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -36,7 +39,7 @@ class ActressNameMap:
 
     @classmethod
     def load_default(cls) -> ActressNameMap:
-        return cls(_load_bundled_map())
+        return _load_default_map(read_data(reference_path("actress_name_map.json.gz")))
 
     @classmethod
     def load_path(cls, path: Path) -> ActressNameMap:
@@ -91,30 +94,15 @@ class ActressNameMap:
         return ordered
 
 
-_default_map: ActressNameMap | None = None
-_default_lock = threading.Lock()
-
-
 def get_actress_name_map() -> ActressNameMap:
-    global _default_map
-    if _default_map is not None:
-        return _default_map
-    with _default_lock:
-        if _default_map is None:
-            _default_map = ActressNameMap.load_default()
-        return _default_map
+    """Select the external mapping for the current library, or an empty mapping."""
+    return ActressNameMap.load_default()
 
 
-@lru_cache(maxsize=1)
-def _load_bundled_map() -> dict[str, str]:
-    package = resources.files("shadow_mdc.data")
-    resource = package.joinpath("actress_name_map.json.gz")
-    with resources.as_file(resource) as path:
-        raw = gzip.decompress(Path(path).read_bytes())
-    payload = json.loads(raw.decode("utf-8"))
-    if not isinstance(payload, dict):
-        return {}
-    return {str(k): str(v) for k, v in payload.items()}
+@lru_cache(maxsize=8)
+def _load_default_map(raw: bytes | None) -> ActressNameMap:
+    mapping = {} if raw is None else TypeAdapter(dict[str, str]).validate_json(raw)
+    return ActressNameMap(mapping)
 
 
 _CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]")

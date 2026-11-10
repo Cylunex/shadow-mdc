@@ -8,7 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 from sqlalchemy import Connection, Engine, select, update
 from sqlalchemy.dialects.sqlite import insert
 
-from ..classifications import DEFINITION_ALIASES, DEFINITIONS, DIMENSION_KEYS
+from ..classifications import DIMENSION_KEYS, classification_definitions
 from ..tag_models import fold_tag
 from .models import CatalogClassificationTerm, CatalogPlaylistRule, Work, WorkClassification
 
@@ -23,9 +23,6 @@ def _migrated_identity(connection: Connection, dimension: str, raw: str) -> str:
     )
     if existing:
         return str(existing)
-    definition = DEFINITION_ALIASES.get((dimension, fold_tag(name)))
-    if definition:
-        return definition.id
     existing = connection.scalar(
         select(CatalogClassificationTerm.id).where(
             CatalogClassificationTerm.dimension == dimension,
@@ -34,6 +31,13 @@ def _migrated_identity(connection: Connection, dimension: str, raw: str) -> str:
     )
     if existing:
         return str(existing)
+    for identity, aliases in connection.execute(
+        select(CatalogClassificationTerm.id, CatalogClassificationTerm.aliases).where(
+            CatalogClassificationTerm.dimension == dimension,
+        )
+    ):
+        if fold_tag(name) in {fold_tag(alias) for alias in aliases}:
+            return str(identity)
     identity = f"{dimension}:custom-{uuid5(NAMESPACE_URL, f'shadow-mdc:{dimension}:{fold_tag(name)}')}"
     connection.execute(
         insert(CatalogClassificationTerm)
@@ -60,7 +64,7 @@ def _legacy_values(encoded: object, dimension: str) -> list[str]:
 def migrate_classifications(engine: Engine) -> None:
     """Seed terms, migrate assignments and playlist rules, verify, then drop old columns."""
     with engine.begin() as connection:
-        for term in DEFINITIONS:
+        for term in classification_definitions():
             connection.execute(
                 insert(CatalogClassificationTerm)
                 .values(

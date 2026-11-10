@@ -18,7 +18,6 @@ from shadow_mdc.tags import current_registry, normalize_tags, resolve_tag, tag_i
 MANIFEST_NAME = "manifest.json"
 COVERS_DIRNAME = "category-covers"
 
-FEATURED_CATEGORY_LABELS = tuple(current_registry().rules.featured_labels)
 
 def covers_dir(data_dir: Path) -> Path:
     return Path(data_dir) / COVERS_DIRNAME
@@ -148,7 +147,7 @@ def build_category_list(
 ) -> list[CategoryOutData]:
     """Merge manifest entries with library facet counts.
 
-    When no manifest exists, fall back to FEATURED_CATEGORY_LABELS with null images.
+    When no manifest exists, fall back to the runtime featured labels with null images.
     """
 
     counts: dict[str, int] = {}

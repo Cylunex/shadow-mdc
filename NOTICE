@@ -7,7 +7,7 @@
   - JavScraper/Emby.Plugins.JavScraper `Scrapers/Gfriends.cs`
 
 ## Actress name aliases (romaji / CJK ↔ Japanese)
-- Bundled map `shadow_mdc/data/actress_name_map.json.gz` built from:
+- Optional external map `actress_name_map.json.gz` (not bundled) built from:
   - javinizer/Javinizer `jvThumbs.csv` (MIT) — romaji ↔ JapaneseName
   - Yuukiy/JavSP `data/actress_alias.json` (GPL-3.0) — stage-name / CJK variants
 
@@ -44,7 +44,7 @@ Shadow MDC remains MIT-licensed; see LICENSE.
   - r18.dev dump download with Range/If-Range resume and `.part` sidecar →
     `services/r18_dump_download.py`
   - `content_id_prefixes.go` series → DMM content-id prefix table →
-    `data/dmm_content_id_prefixes.json.gz` (+ ranking in `dmm_ids.py`)
+    external `dmm_content_id_prefixes.json.gz` (not bundled; ranking in `dmm_ids.py`)
   - actress merger (alias-set identity, CJK display preference) → `actress_aliases.merge_actor_names`
   - MGStage numeric label prefix expansion, JavBus info-panel scoping + uncensored search
     fallback, DMM `awsimgsrc.dmm.com` full-size jacket upgrade (ideas, reimplemented)

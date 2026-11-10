@@ -3,14 +3,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from functools import lru_cache
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .tag_models import fold_tag
+from .enums import ContentFamily
+from .runtime_data import read_data, reference_path
 
 DimensionKey = Literal["contents", "types", "genres", "forms", "languages", "subtitle_languages", "regions"]
+DIMENSION_KEYS: tuple[DimensionKey, ...] = (
+    "contents",
+    "types",
+    "genres",
+    "forms",
+    "languages",
+    "subtitle_languages",
+    "regions",
+)
+FAMILY_CONTENTS = {
+    family.value: f"contents:{family.value}"
+    for family in ContentFamily
+    if family is not ContentFamily.UNKNOWN
+}
 
 
 @dataclass(frozen=True)
@@ -56,16 +71,44 @@ class ClassificationSeed(BaseModel):
     dimensions: tuple[ClassificationDimension, ...]
     terms: tuple[ClassificationDefinition, ...]
 
+    @model_validator(mode="after")
+    def validate_structure(self) -> ClassificationSeed:
+        if len(self.dimensions) != len(DIMENSION_KEYS) or {d.id for d in self.dimensions} != set(
+            DIMENSION_KEYS
+        ):
+            raise ValueError("classification data must describe the seven supported dimensions")
+        if len({term.id for term in self.terms}) != len(self.terms):
+            raise ValueError("duplicate classification term ID")
+        if any(not term.id.startswith(f"{term.dimension}:") for term in self.terms):
+            raise ValueError("classification ID belongs to a different dimension")
+        return self
 
-_SEED = ClassificationSeed.model_validate_json(
-    (Path(__file__).parent / "data/classifications.seed.json").read_text(encoding="utf-8")
-)
-DIMENSIONS = _SEED.dimensions
-DIMENSION_KEYS = tuple(dimension.id for dimension in DIMENSIONS)
-DEFINITIONS = _SEED.terms
-DEFINITION_ALIASES: dict[tuple[str, str], ClassificationDefinition] = {
-    (term.dimension, fold_tag(value)): term
-    for term in DEFINITIONS
-    for value in (term.id, term.name, *term.aliases)
-}
-FAMILY_CONTENTS = {key: f"contents:{key}" for key in ("jav", "chinese", "western", "korean", "animation")}
+
+@lru_cache(maxsize=8)
+def _parse_seed(raw: bytes | None) -> ClassificationSeed:
+    if raw is None:
+        return ClassificationSeed(
+            dimensions=tuple(ClassificationDimension(key, key, "") for key in DIMENSION_KEYS),
+            terms=(),
+        )
+    return ClassificationSeed.model_validate_json(raw)
+
+
+def classification_seed() -> ClassificationSeed:
+    """Optional vocabulary is external; dimension IDs remain part of the API schema."""
+    return _parse_seed(read_data(reference_path("classifications.seed.json")))
+
+
+def classification_dimensions() -> tuple[ClassificationDimension, ...]:
+    return classification_seed().dimensions
+
+
+def classification_definitions() -> tuple[ClassificationDefinition, ...]:
+    """Include the structural sentinels required for unclassified works and family projections."""
+    terms = classification_seed().terms
+    identities = {term.id for term in terms}
+    required = [ClassificationDefinition(f"{key}:unknown", key, "待补") for key in DIMENSION_KEYS]
+    required.extend(
+        ClassificationDefinition(identity, "contents", key) for key, identity in FAMILY_CONTENTS.items()
+    )
+    return (*terms, *(term for term in required if term.id not in identities))

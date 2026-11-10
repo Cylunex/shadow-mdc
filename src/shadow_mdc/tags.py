@@ -14,15 +14,13 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
 
-from .tag_models import TAG_REGISTRY, TagDefinition, TagReference, TagRegistry, fold_tag
+from .tag_models import TagDefinition, TagReference, TagRegistry, default_registry, fold_tag
 
-# Compatibility exports describe first-run defaults; serving requests use their runtime dictionary.
-COMMON_FILTER_TAGS = tuple(TAG_REGISTRY.rules.common_filter_tags)
 _ACTIVE_REGISTRY: ContextVar[TagRegistry | None] = ContextVar("mdc_tag_dictionary", default=None)
 
 
 def current_registry() -> TagRegistry:
-    return _ACTIVE_REGISTRY.get() or TAG_REGISTRY
+    return _ACTIVE_REGISTRY.get() or default_registry()
 
 
 @contextmanager
