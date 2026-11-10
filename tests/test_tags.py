@@ -132,12 +132,12 @@ def test_pov_bbc_bdsm_kept_as_english_loanwords() -> None:
     assert canonicalize_tag("bbw") == "BBW"
     assert canonicalize_tag("BDSM") == "BDSM"
     assert canonicalize_tag("SM") == "BDSM"
-    assert canonicalize_tag("interracial") == "Interracial"
-    assert canonicalize_tag("latina") == "Latina"
-    assert canonicalize_tag("ebony") == "Ebony"
-    assert canonicalize_tag("blonde") == "Blonde"
-    assert canonicalize_tag("brunette") == "Brunette"
-    assert canonicalize_tag("redhead") == "Redhead"
+    assert canonicalize_tag("interracial") == "跨种族"
+    assert canonicalize_tag("latina") == "拉丁裔"
+    assert canonicalize_tag("ebony") == "黑人"
+    assert canonicalize_tag("blonde") == "金发"
+    assert canonicalize_tag("brunette") == "棕发"
+    assert canonicalize_tag("redhead") == "红发"
 
 
 def test_uniform_vs_cosplay_split() -> None:
@@ -218,7 +218,7 @@ def test_xvideos_classic_scene_role_fetish() -> None:
     assert canonicalize_tag("orgy") == "多人"
     assert canonicalize_tag("lesbian") == "女同"
     assert canonicalize_tag("massage") == "按摩"
-    assert canonicalize_tag("shemale") == "Shemale"
+    assert canonicalize_tag("shemale") == "TS"
 
 
 def test_seed_chinese_korean_remain_blacklisted() -> None:
@@ -248,12 +248,12 @@ def test_pornhub_cn_synonyms_and_pov_display() -> None:
     assert canonicalize_tag("集体颜射") == "颜射"
     assert canonicalize_tag("辣妈") == "MILF"
     assert canonicalize_tag("爆菊") == "肛交"
-    assert canonicalize_tag("深发女") == "Brunette"
-    assert canonicalize_tag("金发女") == "Blonde"
-    assert canonicalize_tag("红毛") == "Redhead"
-    assert canonicalize_tag("黑人女") == "Ebony"
-    assert canonicalize_tag("拉丁裔美女") == "Latina"
-    assert canonicalize_tag("跨种族") == "Interracial"
+    assert canonicalize_tag("深发女") == "棕发"
+    assert canonicalize_tag("金发女") == "金发"
+    assert canonicalize_tag("红毛") == "红发"
+    assert canonicalize_tag("黑人女") == "黑人"
+    assert canonicalize_tag("拉丁裔美女") == "拉丁裔"
+    assert canonicalize_tag("跨种族") == "跨种族"
     assert canonicalize_tag("女性自慰") == "自慰"
     assert canonicalize_tag("恋物癖") == "癖好"
     assert canonicalize_tag("纹身女") == "纹身"
@@ -312,9 +312,9 @@ def test_expanded_position_and_scene_synonyms() -> None:
     assert canonicalize_tag("Lactating") == "母乳"
     assert canonicalize_tag("Oiled") == "油腻"
     assert canonicalize_tag("Soap") == "泡泡浴"
-    assert canonicalize_tag("Cheating") == "不倫"
-    assert canonicalize_tag("出轨") == "不倫"
-    assert canonicalize_tag("Affairs") == "不倫"
+    assert canonicalize_tag("Cheating") == "不伦"
+    assert canonicalize_tag("出轨") == "不伦"
+    assert canonicalize_tag("Affairs") == "不伦"
     assert canonicalize_tag("Humiliation") == "羞辱"
     assert canonicalize_tag("Dirty Talk") == "淫语"
     assert canonicalize_tag("Virgin") == "童贞"
@@ -324,5 +324,5 @@ def test_expanded_position_and_scene_synonyms() -> None:
 def test_featured_adjacent_filter_tags_present() -> None:
     from shadow_mdc.tags import COMMON_FILTER_TAGS
 
-    for name in ("乳交", "后入", "骑乘", "情侣", "自拍", "不倫", "高清", "浴室"):
+    for name in ("乳交", "后入", "骑乘", "情侣", "自拍", "不伦", "高清", "浴室"):
         assert name in COMMON_FILTER_TAGS
