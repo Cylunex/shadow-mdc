@@ -32,6 +32,7 @@ dev = [
 
 [project.scripts]
 shadow-mdc = "shadow_mdc.main:run"
+shadow-mdc-skill = "shadow_mdc.skill_cli:main"
 
 [build-system]
 requires = ["hatchling"]

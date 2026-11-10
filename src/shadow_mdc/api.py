@@ -393,6 +393,7 @@ from .services.x_handle import (
     sanitize_stored_x_handle,
     x_profile_url,
 )
+from .skill_api import build_skill_router
 from .tags import display_chips, facet_tags, normalize_tags, resolve_tag, tag_refs, work_matches_tags
 
 
@@ -6220,6 +6221,7 @@ from .swipe_proxy import create_swipe_proxy_router  # noqa: E402
 
 app.include_router(build_catalog_router(runtime))
 app.include_router(build_media_router(runtime))
+app.include_router(build_skill_router(runtime))
 app.include_router(_mcp_router)
 app.include_router(create_swipe_proxy_router(Settings()))
 

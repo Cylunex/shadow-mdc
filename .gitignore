@@ -15,6 +15,7 @@ web/node_modules/
 web/dist/
 *.tsbuildinfo
 .env
+/skills/mdc-operator/skill.local.json
 web/package-lock.json
 web/bun.lock
 # Offline r18.dev dumps (NAS only)

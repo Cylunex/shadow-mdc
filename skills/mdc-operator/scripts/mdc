@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+skill_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+project_root=$(CDPATH= cd -- "$skill_dir/../.." && pwd -P)
+if [ -z "${MDC_SKILL_CONFIG:-}" ] && [ -f "$skill_dir/skill.local.json" ]; then
+  exec "$project_root/.venv/bin/python" -m shadow_mdc.skill_cli --config "$skill_dir/skill.local.json" "$@"
+fi
+exec "$project_root/.venv/bin/python" -m shadow_mdc.skill_cli "$@"

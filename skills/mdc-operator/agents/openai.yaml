@@ -1,0 +1,3 @@
+interface:
+  display_name: "MDC 片库操作"
+  short_description: "通过 MDC CLI 检索影片与演员、浏览标签及多维分类、查询片单和管理想看"
