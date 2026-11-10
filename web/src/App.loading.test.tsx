@@ -11,7 +11,7 @@ import { memoryStorage } from "./test/storage";
 
 vi.mock("./api", () => ({ appUrl: (path: string) => path, api: {
   libraries: vi.fn(), libraryPrefs: vi.fn(), tasks: vi.fn(), works: vi.fn(),
-  actors: vi.fn(), nonJavActors: vi.fn(), assets: vi.fn(), setWantList: vi.fn(), categories: vi.fn(),
+  actors: vi.fn(), nonJavActors: vi.fn(), assets: vi.fn(), setWantList: vi.fn(), categories: vi.fn(), classifications: vi.fn(),
 } }));
 vi.mock("./panels", () => ({ Inbox: () => null }));
 vi.mock("./views/WorkDetailView", () => ({ WorkDetailView: () => <div>detail-ready</div> }));
@@ -52,6 +52,7 @@ describe("page load request budget", () => {
     vi.mocked(api.works).mockResolvedValue([work]);
     vi.mocked(api.actors).mockResolvedValue([]);
     vi.mocked(api.nonJavActors).mockResolvedValue([]);
+    vi.mocked(api.classifications).mockResolvedValue({ dimensions: [] });
     vi.mocked(api.categories).mockResolvedValue({ categories: [
       { slug: "fixture-tag", label: "Fixture tag", aliases: [], image_url: null, work_count: 1 },
     ] });
@@ -191,6 +192,7 @@ describe("page load request budget", () => {
   it("opens categories as a separate list and applies the chosen tag to works", async () => {
     window.history.replaceState({}, "", "/?view=categories&q=old&genre=old");
     await act(async () => root.render(<App />));
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "主题标签")!.click());
     expect(container.querySelector(".category-grid")?.textContent).toContain("Fixture tag");
     expect(container.querySelector(".work-grid")).toBeNull();
     expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith("/works/query"))).toBe(false);

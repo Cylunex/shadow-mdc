@@ -364,14 +364,31 @@ class MediaEmbyBinding(Base):
 
 
 class WorkTaxonomy(Base):
-    """Explicit library metadata, independent of scraper routing and legacy family."""
+    """Explicit release year; classification assignments live in WorkClassification."""
 
     __tablename__ = "work_taxonomy"
     work_id: Mapped[str] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"), primary_key=True)
-    genres: Mapped[list[str]] = mapped_column(JSON, default=list)
-    forms: Mapped[list[str]] = mapped_column(JSON, default=list)
-    regions: Mapped[list[str]] = mapped_column(JSON, default=list)
     release_year: Mapped[int | None] = mapped_column(Integer)
+
+
+class CatalogClassificationTerm(Base):
+    __tablename__ = "catalog_classification_terms"
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    dimension: Mapped[str] = mapped_column(String(40), index=True)
+    name: Mapped[str] = mapped_column(String(300))
+    normalized_name: Mapped[str] = mapped_column(String(300))
+    aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    __table_args__ = (UniqueConstraint("dimension", "normalized_name"),)
+
+
+class WorkClassification(Base):
+    __tablename__ = "work_classifications"
+    work_id: Mapped[str] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"), primary_key=True)
+    term_id: Mapped[str] = mapped_column(
+        ForeignKey("catalog_classification_terms.id", ondelete="RESTRICT"), primary_key=True,
+    )
+    __table_args__ = (Index("ix_work_classifications_term_work", "term_id", "work_id"),)
 
 
 class CatalogPersonRecord(Base):

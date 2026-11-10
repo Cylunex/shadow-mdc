@@ -14,6 +14,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.selectable import Subquery
 
+from .classifications import ClassificationSelection
 from .collection_names import normalize_collection_name
 from .db.models import (
     CatalogOrganization,
@@ -64,7 +65,7 @@ class OrganizationLink(BaseModel):
     role: Role
 
 
-class CatalogFilter(BaseModel):
+class CatalogFilter(ClassificationSelection):
     q: str = Field(default="", max_length=200)
     category: Literal["all", "Japan", "China", "Korea", "Europe", "Other"] = "all"
     collection: str = ""
@@ -75,9 +76,6 @@ class CatalogFilter(BaseModel):
     studio_name: str = ""
     tags: list[str] = Field(default_factory=list)
     tags_all: bool = False
-    genres: list[str] = Field(default_factory=list)
-    forms: list[str] = Field(default_factory=list)
-    regions: list[str] = Field(default_factory=list)
     exclude_tags: list[str] = Field(default_factory=list)
     organizations: list[str] = Field(default_factory=list)
     organization_role: str = ""

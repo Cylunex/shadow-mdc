@@ -1,3 +1,4 @@
+import { ClassificationDetails } from "./ClassificationDetails";
 import { CatalogWorkCredits } from "./CatalogManagement";
 import { Lightbox } from "../components/Lightbox";
 import { CoverImage } from "../components/CoverImage";
@@ -543,6 +544,7 @@ export function WorkDetailView(props: {
                 )}
               </MetaRow>
             </dl>
+            <ClassificationDetails key={work.id} work={work} />
 
             {work.javranking && (work.javranking.honors ?? []).length > 0 && (
               <section className="javranking-honors">

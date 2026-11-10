@@ -26,6 +26,7 @@ from ..enums import (
 )
 from ..identity import normalize_identity_value
 from ..tags import canonicalize_tag, tag_id
+from .classification_migration import migrate_classifications
 from .models import (
     Actor,
     Base,
@@ -124,6 +125,7 @@ class Database:
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             self._migrate_sqlite()
+            migrate_classifications(self.engine)
 
     def _migrate_sqlite(self) -> None:
         with self.engine.begin() as connection:

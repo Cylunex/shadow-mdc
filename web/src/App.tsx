@@ -1,3 +1,4 @@
+import { applyCatalogFiltersToUrl, EMPTY_CATALOG_FILTERS } from "./lib/catalogFilters";
 import { useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -453,6 +454,18 @@ export function App() {
           <UnifiedCatalogView key={view} mode={view} refresh={catalogRefresh} onStartFeed={startCatalogFeed} onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
         )}
         {view === "categories" && <CategoriesView report={setMessage}
+          onOpenClassification={(dimension, id, name) => {
+            const filters = { ...EMPTY_CATALOG_FILTERS };
+            if (dimension === "decades") {
+              const decade = id.split(":")[1];
+              if (decade === "unknown") filters.unknown_year = true;
+              else { filters.year_from = Number(decade); filters.year_to = Number(decade) + 9; }
+            } else if (dimension !== "tags") filters[dimension] = [id];
+            const url = new URL(window.location.href);
+            applyCatalogFiltersToUrl(url, filters); url.searchParams.set("view", "works");
+            history.replaceState(history.state, "", url);
+            setSelectedActorRef(null); setSelectedWorkId(null); setView("works"); setMessage(`正在查看${name}`);
+          }}
           onOpenTag={(id, name) => navigateToFilteredWorks({ tags: [id] }, `正在查看分类：${name ?? id}`)} />}
         {view === "actor-detail" && selectedActorRef && <>
           <button className="ghost" onClick={closeActorDetail}>返回演员库</button>

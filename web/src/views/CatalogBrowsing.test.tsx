@@ -1,16 +1,17 @@
 import { notifyManager } from "@tanstack/react-query";
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { libraryPrefsSchema } from "../model";
 import { queryClient } from "../query/client";
 import { memoryStorage } from "../test/storage";
+import { EMPTY_CATALOG_FILTERS } from "../lib/catalogFilters";
 import { CategoriesView } from "./CategoriesView";
 import { UnifiedCatalogView } from "./UnifiedCatalogView";
 
 vi.mock("../api", () => ({ appUrl: (path: string | null) => path, api: {
-  categories: vi.fn(), libraryPrefs: vi.fn(),
+  categories: vi.fn(), classifications: vi.fn(), createClassification: vi.fn(), libraryPrefs: vi.fn(),
 } }));
 let root: Root;
 let container: HTMLDivElement;
@@ -36,6 +37,8 @@ beforeEach(() => {
   vi.clearAllMocks(); queryClient.clear(); notifyManager.setScheduler(queueMicrotask);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("sessionStorage", memoryStorage()); vi.stubGlobal("localStorage", memoryStorage());
+  sessionStorage.setItem("mdc:category-browsing", JSON.stringify({ dimension: "tags", query: "", onlyWithWorks: false, sort: "featured", page: 1, pageSize: 24 }));
+  vi.mocked(api.classifications).mockResolvedValue({ dimensions: [] });
   vi.mocked(api.categories).mockResolvedValue({ categories });
   vi.mocked(api.libraryPrefs).mockResolvedValue(libraryPrefsSchema.parse({}));
   vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
@@ -92,6 +95,41 @@ it("opens a category by its stable ID while displaying its name", async () => {
   await act(async () => root.render(<CategoriesView onOpenTag={open} />));
   await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
   expect(open).toHaveBeenCalledWith("tag:amateur", "爱好者");
+});
+
+it("starts with content and opens an independent audio-language classification", async () => {
+  sessionStorage.removeItem("mdc:category-browsing");
+  const open = vi.fn();
+  vi.mocked(api.classifications).mockResolvedValue({ dimensions: [
+    { id: "contents", name: "内容体系", description: "内容体系说明", values: [
+      { id: "contents:jav", name: "JAV", aliases: [], count: 4, revision: 1 },
+    ] },
+    { id: "languages", name: "音轨语言", description: "实际音轨语言", values: [
+      { id: "languages:ja", name: "日语", aliases: ["Japanese"], count: 2, revision: 1 },
+    ] },
+  ] });
+  await act(async () => root.render(<CategoriesView onOpenTag={vi.fn()} onOpenClassification={open} />));
+  expect(container.querySelector(".category-card strong")?.textContent).toBe("JAV");
+  expect(api.categories).not.toHaveBeenCalled();
+  await act(async () => button("音轨语言").click());
+  await change("搜索分类", "Japanese");
+  expect(container.querySelector(".category-card strong")?.textContent).toBe("日语");
+  await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
+  expect(open).toHaveBeenCalledWith("languages", "languages:ja", "日语");
+});
+
+it("migrates local saved classifications once under StrictMode", async () => {
+  localStorage.setItem("mdc:saved-filters", JSON.stringify([{ name: "Old", filters: {
+    ...EMPTY_CATALOG_FILTERS, q: "keep", genres: ["自定义旧题材"],
+  } }]));
+  vi.mocked(api.createClassification).mockResolvedValue({ id: "genres:custom", name: "自定义旧题材", aliases: [], count: 0, revision: 1 });
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(
+    url.endsWith("/facets") ? {} : { items: [], next_cursor: null, total: 0 },
+  ))));
+  await act(async () => root.render(<StrictMode><UnifiedCatalogView mode="works" onOpenWork={vi.fn()} onOpenActor={vi.fn()} /></StrictMode>));
+  expect(api.createClassification).toHaveBeenCalledOnce();
+  expect(JSON.parse(localStorage.getItem("mdc:saved-filters")!)[0].filters).toMatchObject({ q: "keep", genres: ["genres:custom"] });
+  expect(localStorage.getItem("mdc:saved-classification-version")).toBe("1");
 });
 
 it("keeps a legacy tag selection readable and removes it when toggling the new ID", async () => {

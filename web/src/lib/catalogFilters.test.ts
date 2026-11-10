@@ -19,9 +19,11 @@ it("only writes the selected search and year and removes them when cleared", () 
 
 it("round-trips every active filter without changing AND/OR or repeated values", () => {
   const filters: Filters = {
+    ...EMPTY_CATALOG_FILTERS,
     q: "标题 / title", actors: ["a", "b"], actors_all: true, actor_name: "演员", studio_name: "片商",
     tags: ["tag one", "tag&two"], tags_all: false, exclude_tags: ["excluded"],
     genres: ["g1", "g2"], forms: ["f"], regions: ["r"], organizations: ["o1", "o2"],
+    contents: ["contents:jav"], types: ["types:movie"], languages: ["languages:ja"], subtitle_languages: ["subtitle_languages:zh"],
     organization_role: "studio", year_from: 2000, year_to: 2009, unknown_year: false,
     sort: "newest", status: "emby",
   };

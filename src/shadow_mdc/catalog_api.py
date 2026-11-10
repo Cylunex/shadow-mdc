@@ -42,12 +42,15 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult, Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from .catalog_management import CatalogFilter, build_management_router, organization_relationships
+from .classifications import DIMENSIONS, ClassificationSelection
 from .db.models import (
     Actor,
+    CatalogClassificationTerm,
     CatalogPersonCredit,
     CatalogPersonMerge,
     CatalogPersonRecord,
@@ -56,11 +59,13 @@ from .db.models import (
     MediaEmbyBinding,
     Work,
     WorkActor,
+    WorkClassification,
     WorkCollection,
     WorkTaxonomy,
 )
 from .media.artwork import resolve_work_display_images
 from .services.actor_images import actor_images, valid_key
+from .services.catalog_classifications import classification_rows, validate_selection, work_classifications
 from .services.catalog_people import (
     Collaboration,
     MergeRequest,
@@ -80,7 +85,7 @@ from .services.catalog_people import (
 )
 from .services.javranking_client import JavRankingIndexCache
 from .services.library_prefs import LibraryPrefs
-from .tag_registry import TagReference
+from .tag_registry import TagReference, fold_tag
 from .tags import normalize_tags, resolve_tag, tag_id, tag_refs
 
 if TYPE_CHECKING:
@@ -104,11 +109,38 @@ class PersonPreference(BaseModel):
     blacklist: bool = False
 
 
-class TaxonomyEdit(BaseModel):
-    genres: list[str] = Field(default_factory=list, max_length=100)
-    forms: list[str] = Field(default_factory=list, max_length=30)
-    regions: list[str] = Field(default_factory=list, max_length=30)
+class TaxonomyEdit(ClassificationSelection):
     release_year: int | None = Field(default=None, ge=1800, le=2200)
+
+
+class TaxonomyOut(TaxonomyEdit):
+    classification_refs: dict[str, list[TagReference]] = Field(default_factory=dict)
+
+
+class ClassificationTermEdit(BaseModel):
+    name: str = Field(min_length=1, max_length=300)
+    aliases: list[str] = Field(default_factory=list, max_length=100)
+    revision: int = Field(default=1, ge=1)
+
+
+class ClassificationTermCreate(ClassificationTermEdit):
+    dimension: str
+
+
+class ClassificationTermOut(ClassificationTermEdit):
+    id: str
+    count: int = 0
+
+
+class ClassificationDimensionOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    values: list[ClassificationTermOut]
+
+
+class ClassificationsOut(BaseModel):
+    dimensions: list[ClassificationDimensionOut]
 
 
 class CatalogCard(BaseModel):
@@ -119,6 +151,7 @@ class CatalogCard(BaseModel):
     actors: list[str]
     tags: list[str]
     tag_refs: list[TagReference] = Field(default_factory=list)
+    classification_refs: dict[str, list[TagReference]] = Field(default_factory=dict)
     studio: str | None
     label: str | None
     series: str | None
@@ -383,16 +416,13 @@ def build_catalog_router(
                              else statement.where(or_(*predicates)))
             for tag in filters.exclude_tags:
                 statement = statement.where(~tagged(tag))
-        for field, selected in (("genres", filters.genres), ("forms", filters.forms),
-                                ("regions", filters.regions)):
+        validate_selection(session, filters)
+        for dimension, selected in filters.selections().items():
             if selected:
-                column = {"genres": WorkTaxonomy.genres, "forms": WorkTaxonomy.forms,
-                          "regions": WorkTaxonomy.regions}[field]
-                values = func.json_each(column).table_valued("value")
-                matching = select(WorkTaxonomy.work_id).select_from(WorkTaxonomy).join(
-                    values, true(),
-                ).where(values.c.value.in_(selected))
-                statement = statement.where(Work.id.in_(matching))
+                values = classification_rows(dimension)
+                statement = statement.where(exists(select(1).select_from(values).where(
+                    values.c.work_id == Work.id, values.c.term_id.in_(selected),
+                )))
         if filters.organizations:
             links = organization_relationships()
             matching = select(links.c.work_id).where(
@@ -516,6 +546,8 @@ def build_catalog_router(
         cards = [_card(w, poster_prefix).model_copy(update={
             "year": taxonomies[w.id].release_year or (w.release_date.year if w.release_date else None),
         }) if w.id in taxonomies else _card(w, poster_prefix) for w in rows[:filters.limit]]
+        refs = work_classifications(session, rows[:filters.limit])
+        cards = [card.model_copy(update={"classification_refs": refs[card.id]}) for card in cards]
         cards = [card.model_copy(update={"actors": names[card.id]})
                  if card.id in names else card for card in cards]
         if prefix == "/api/catalog":
@@ -640,21 +672,21 @@ def build_catalog_router(
                 .join(organization_rows, organization_rows.c.id == relationships.c.work_id)
                 .group_by(Collection.id),
             ))
-            taxonomy: dict[str, list[Facet]] = {}
-            for key, column in (("genres", WorkTaxonomy.genres), ("forms", WorkTaxonomy.forms),
-                                ("regions", WorkTaxonomy.regions)):
-                values = func.json_each(column).table_valued("value")
-                dimension_filters = filters.model_copy(update={key: []})
+            taxonomy: dict[str, list[Facet | TagFacet]] = {}
+            terms = {term.id: term for term in session.scalars(select(CatalogClassificationTerm))}
+            for dimension in DIMENSIONS:
+                values = classification_rows(dimension.id)
                 dimension_rows = filtered_statement(
-                    dimension_filters, request, session, actor_profiles,
+                    filters.model_copy(update={dimension.id: []}), request, session, actor_profiles,
                 ).subquery()
-                counts = session.execute(
-                    select(values.c.value, func.count(func.distinct(WorkTaxonomy.work_id)))
-                    .select_from(WorkTaxonomy)
-                    .join(dimension_rows, dimension_rows.c.id == WorkTaxonomy.work_id)
-                    .join(values, true()).group_by(values.c.value),
-                )
-                taxonomy[key] = [Facet(id=k, name=k, count=v) for k, v in counts]
+                counts: dict[str, int] = {identity: count for identity, count in session.execute(select(
+                    values.c.term_id, func.count(func.distinct(values.c.work_id)),
+                ).join(dimension_rows, dimension_rows.c.id == values.c.work_id).group_by(values.c.term_id))}
+                for selected in filters.selections()[dimension.id]:
+                    counts.setdefault(selected, 0)
+                taxonomy[dimension.id] = [TagFacet(
+                    id=identity, name=terms[identity].name, count=count, aliases=terms[identity].aliases,
+                ) for identity, count in counts.items()]
             collection_base = filtered_statement(filters.model_copy(update={"collection": ""}), request,
                                                  session, actor_profiles).subquery()
             collections = session.execute(select(Collection.kind, Collection.name, func.count()).join(
@@ -855,22 +887,126 @@ def build_catalog_router(
             with runtime(request).database.session() as session:
                 undo_merge(session, merge_id)
 
-        @router.get("/works/{work_id}/taxonomy")
-        def read_taxonomy(work_id: str, request: Request) -> TaxonomyEdit:
-            with runtime(request).database.session() as session:
-                entry = session.get(WorkTaxonomy, work_id)
-                return TaxonomyEdit(
-                    genres=entry.genres, forms=entry.forms, regions=entry.regions,
-                    release_year=entry.release_year,
-                ) if entry else TaxonomyEdit()
+    def taxonomy_document(work_id: str, session: Session) -> TaxonomyOut:
+        work = session.get(Work, work_id)
+        if work is None:
+            raise HTTPException(404, "work not found")
+        refs = work_classifications(session, [work])[work.id]
+        year = session.get(WorkTaxonomy, work_id)
+        return TaxonomyOut(
+            **{key: [term.id for term in values] for key, values in refs.items()},
+            release_year=year.release_year if year else None,
+            classification_refs={key: value for key, value in refs.items()},
+        )
 
+    @router.get("/works/{work_id}/taxonomy")
+    def read_taxonomy(work_id: str, request: Request) -> TaxonomyOut:
+        with runtime(request).database.session() as session:
+            return taxonomy_document(work_id, session)
+
+    @router.get("/classifications")
+    def classifications(request: Request) -> ClassificationsOut:
+        counts = facets(CatalogFilter(), request)
+        with runtime(request).database.session() as session:
+            terms = list(session.scalars(select(CatalogClassificationTerm).order_by(
+                CatalogClassificationTerm.name, CatalogClassificationTerm.id,
+            )))
+            dimensions = [ClassificationDimensionOut(
+                id=dimension.id, name=dimension.name, description=dimension.description,
+                values=[ClassificationTermOut(
+                    id=term.id, name=term.name, aliases=term.aliases, revision=term.revision,
+                    count=next((facet.count for facet in counts[dimension.id] if facet.id == term.id), 0),
+                ) for term in terms if term.dimension == dimension.id],
+            ) for dimension in DIMENSIONS]
+            dimensions.append(ClassificationDimensionOut(
+                id="decades", name="年代", description="按发行年归类、支持年代与其它维度组合筛选。",
+                values=[ClassificationTermOut(
+                    id=f"decades:{facet.id}",
+                    name="年代待补" if facet.id == "unknown" else f"{facet.id} 年代",
+                    count=facet.count,
+                ) for facet in counts["decades"]],
+            ))
+            return ClassificationsOut(dimensions=dimensions)
+
+    if prefix == "/api/catalog":
         @router.put("/works/{work_id}/taxonomy")
-        def edit_taxonomy(work_id: str, payload: TaxonomyEdit, request: Request) -> TaxonomyEdit:
+        def edit_taxonomy(work_id: str, payload: TaxonomyEdit, request: Request) -> TaxonomyOut:
             with runtime(request).database.session() as session:
                 if session.get(Work, work_id) is None:
                     raise HTTPException(404, "work not found")
-                session.merge(WorkTaxonomy(work_id=work_id, **payload.model_dump()))
-            return payload
+                validate_selection(session, payload)
+                for dimension, identities in payload.selections().items():
+                    if dimension not in payload.model_fields_set:
+                        continue
+                    session.execute(delete(WorkClassification).where(
+                        WorkClassification.work_id == work_id,
+                        WorkClassification.term_id.in_(select(CatalogClassificationTerm.id).where(
+                            CatalogClassificationTerm.dimension == dimension,
+                        )),
+                    ))
+                    session.add_all([WorkClassification(work_id=work_id, term_id=identity)
+                                     for identity in dict.fromkeys(identities)])
+                if "release_year" in payload.model_fields_set:
+                    session.merge(WorkTaxonomy(work_id=work_id, release_year=payload.release_year))
+                session.flush()
+                return taxonomy_document(work_id, session)
+
+        def check_term_name(
+            session: Session, dimension: str, payload: ClassificationTermEdit, identity: str = "",
+        ) -> None:
+            if dimension not in {item.id for item in DIMENSIONS}:
+                raise HTTPException(422, "invalid classification dimension")
+            names = {fold_tag(name) for name in [payload.name, *payload.aliases]}
+            if "" in names:
+                raise HTTPException(422, "classification names cannot be blank")
+            for term in session.scalars(select(CatalogClassificationTerm).where(
+                CatalogClassificationTerm.dimension == dimension, CatalogClassificationTerm.id != identity,
+            )):
+                if names.intersection(fold_tag(name) for name in [term.name, *term.aliases]):
+                    raise HTTPException(409, "classification name or alias already exists")
+
+        @router.post("/classifications/terms", status_code=201)
+        def create_term(payload: ClassificationTermCreate, request: Request) -> ClassificationTermOut:
+            with runtime(request).database.session() as session:
+                check_term_name(session, payload.dimension, payload)
+                term = CatalogClassificationTerm(
+                    id=f"{payload.dimension}:custom-{uuid4()}", dimension=payload.dimension,
+                    name=payload.name.strip(), aliases=[name.strip() for name in payload.aliases], revision=1,
+                    normalized_name=fold_tag(payload.name),
+                )
+                session.add(term)
+                try:
+                    session.flush()
+                except IntegrityError as exc:
+                    raise HTTPException(409, "classification name already exists") from exc
+                return ClassificationTermOut(
+                    id=term.id, name=term.name, aliases=term.aliases, revision=term.revision,
+                )
+
+        @router.put("/classifications/terms/{term_id}")
+        def edit_term(
+            term_id: str, payload: ClassificationTermEdit, request: Request,
+        ) -> ClassificationTermOut:
+            with runtime(request).database.session() as session:
+                term = session.get(CatalogClassificationTerm, term_id)
+                if term is None:
+                    raise HTTPException(404, "classification not found")
+                check_term_name(session, term.dimension, payload, term_id)
+                requested = payload.aliases if "aliases" in payload.model_fields_set else term.aliases
+                aliases = list(dict.fromkeys([*requested, term.name]))
+                try:
+                    changed = session.execute(update(CatalogClassificationTerm).where(
+                        CatalogClassificationTerm.id == term_id,
+                        CatalogClassificationTerm.revision == payload.revision,
+                    ).values(name=payload.name.strip(), normalized_name=fold_tag(payload.name),
+                             aliases=aliases, revision=payload.revision + 1))
+                except IntegrityError as exc:
+                    raise HTTPException(409, "classification name already exists") from exc
+                if type_cast(CursorResult[tuple[()]], changed).rowcount != 1:
+                    raise HTTPException(409, "classification revision conflict")
+                return ClassificationTermOut(
+                    id=term_id, name=payload.name.strip(), aliases=aliases, revision=payload.revision + 1,
+                )
 
     router.include_router(build_management_router(
         runtime, ordered_playlist_works, prefix="", writable=prefix == "/api/catalog",

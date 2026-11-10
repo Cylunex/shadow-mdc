@@ -76,6 +76,7 @@ import {
   javRankingSeedResultSchema
 } from "./model";
 import type { FilterWords, IdentityAliases } from "./model";
+import { classificationsSchema, classificationTermSchema, taxonomySchema, type TaxonomyEdit } from "./lib/classifications";
 
 export type DisplayMediaCategory = "Japan" | "China" | "Korea" | "Europe" | "Other";
 
@@ -325,6 +326,17 @@ export const api = {
     const query = params.onlyWithWorks ? "?only_with_works=true" : "";
     return request(categoriesPageSchema, `/api/categories${query}`, { signal });
   },
+  classifications: (signal?: AbortSignal) => request(classificationsSchema, "/api/catalog/classifications", { signal }),
+  workTaxonomy: (id: string, signal?: AbortSignal) => request(taxonomySchema, `/api/catalog/works/${encodeURIComponent(id)}/taxonomy`, { signal }),
+  saveWorkTaxonomy: (id: string, payload: TaxonomyEdit) => request(taxonomySchema, `/api/catalog/works/${encodeURIComponent(id)}/taxonomy`, {
+    method: "PUT", body: JSON.stringify(taxonomySchema.omit({ classification_refs: true }).parse(payload)),
+  }),
+  createClassification: (dimension: string, name: string, aliases: string[]) => request(classificationTermSchema, "/api/catalog/classifications/terms", {
+    method: "POST", body: JSON.stringify({ dimension, name, aliases }),
+  }),
+  editClassification: (id: string, name: string, aliases: string[], revision: number) => request(classificationTermSchema, `/api/catalog/classifications/terms/${encodeURIComponent(id)}`, {
+    method: "PUT", body: JSON.stringify({ name, aliases, revision }),
+  }),
   collections: (params?: { kind?: string; q?: string; seed_if_empty?: boolean }) => {
     const query = new URLSearchParams();
     if (params?.kind) query.set("kind", params.kind);

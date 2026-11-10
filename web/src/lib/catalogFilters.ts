@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const filtersSchema = z.object({
+export const filtersSchema = z.object({
   q: z.string().default(""),
   category: z.enum(["all", "Japan", "China", "Korea", "Europe", "Other"]).optional().catch(undefined),
   collection: z.string().optional(), seed: z.number().int().min(0).max(1000000).optional().catch(undefined),
@@ -9,6 +9,8 @@ const filtersSchema = z.object({
   tags: z.array(z.string()).default([]), tags_all: z.boolean().default(false),
   exclude_tags: z.array(z.string()).default([]), genres: z.array(z.string()).default([]),
   forms: z.array(z.string()).default([]), regions: z.array(z.string()).default([]),
+  contents: z.array(z.string()).default([]), types: z.array(z.string()).default([]),
+  languages: z.array(z.string()).default([]), subtitle_languages: z.array(z.string()).default([]),
   organizations: z.array(z.string()).default([]), organization_role: z.string().optional(),
   year_from: z.number().int().optional().catch(undefined), year_to: z.number().int().optional().catch(undefined),
   unknown_year: z.boolean().default(false),
@@ -21,6 +23,7 @@ export const EMPTY_CATALOG_FILTERS: Filters = filtersSchema.parse({});
 const lists = {
   actors: "person", tags: "tag", exclude_tags: "exclude", genres: "genre",
   forms: "form", regions: "region", organizations: "org",
+  contents: "content", types: "type", languages: "language", subtitle_languages: "subtitle",
 } as const;
 const strings = { q: "q", actor_name: "cast", studio_name: "studio", organization_role: "role", collection: "col" } as const;
 const keys = [...Object.values(lists), ...Object.values(strings), "year", "from", "to", "sort", "status", "cast_all", "match", "cat", "seed", "page"];

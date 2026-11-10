@@ -58,9 +58,12 @@ def test_unified_catalog_facets_and_actor_intersection(
         }).status_code == 400
         assert client.get("/api/media/v1/catalog/people").status_code == 503
         assert client.put("/api/catalog/works/c/taxonomy", json={
-            "genres": ["纪录"], "forms": ["短片"], "regions": ["JP"], "release_year": 2012,
+            "genres": ["genres:documentary"], "forms": ["forms:short"],
+            "regions": ["regions:jp"], "release_year": 2012,
         }).status_code == 200
-        selected = client.post("/api/catalog/works/query", json={"genres": ["纪录"], "year_from": 2010})
+        selected = client.post("/api/catalog/works/query", json={
+            "genres": ["genres:documentary"], "year_from": 2010,
+        })
         assert selected.json()["items"][0]["id"] == "c"
         assert selected.json()["items"][0]["year"] == 2012
         assert client.post("/api/catalog/works/query", json={"unknown_year": True}).json()["total"] == 0

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
-import { appUrl } from "../api";
+import { api, appUrl } from "../api";
 import { applyCatalogFiltersToUrl, EMPTY_CATALOG_FILTERS, readCatalogFilters, type Filters } from "../lib/catalogFilters";
 import {
   CatalogPeopleEditor, CatalogOrganizations, CatalogPlaylists, PersonPicker, catalogRequest,
@@ -13,6 +13,10 @@ import { CoverImage } from "../components/CoverImage";
 import { CatalogTags, matchesTag } from "./CatalogTags";
 import { Pagination } from "../components/Pagination";
 import { useSessionState } from "../hooks/useSessionState";
+import { CLASSIFICATION_KEYS, CLASSIFICATION_NAMES, migrateSavedClassifications } from "../lib/classifications";
+import { queryClient } from "../query/client";
+import { resources } from "../query/resources";
+import { TaxonomyEditor } from "./TaxonomyEditor";
 
 type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null; code?: string | null; category?: string; release_date?: string | null; has_local_media?: boolean; rating_value?: number | null; rating_max?: number | null; javranking_rank?: number | null; javranking_score?: number | null };
 type Person = ManagedPerson;
@@ -72,33 +76,31 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   const [saved, setSaved] = useState<{ name: string; filters: Filters }[]>(() => {
     try { return JSON.parse(localStorage.getItem("mdc:saved-filters") ?? "[]"); } catch { return []; }
   });
+  const [migratingSaved, setMigratingSaved] = useState(saved.length > 0);
+  useEffect(() => {
+    let active = true;
+    async function migrate() {
+      try {
+        if (!saved.length || localStorage.getItem("mdc:saved-classification-version") === "1") return;
+        const schema = await queryClient.fetchQuery(resources.classifications());
+        if (!active) return;
+        const migrated = await migrateSavedClassifications(saved, schema.dimensions,
+          (dimension, name) => api.createClassification(dimension, name, []));
+        if (active) {
+          localStorage.setItem("mdc:saved-filters", JSON.stringify(migrated));
+          localStorage.setItem("mdc:saved-classification-version", "1");
+          setSaved(migrated);
+        }
+      } catch { if (active) setError("已保存的分类筛选迁移失败，原数据已保留。重新打开页面可重试。"); }
+      finally { if (active) setMigratingSaved(false); }
+    }
+    void migrate();
+    return () => { active = false; };
+  }, []);
   const [editing, setEditing] = useState<Card | null>(null);
-  const [taxonomy, setTaxonomy] = useState({ genres: "", forms: "", regions: "", release_year: "" });
   const [revision, setRevision] = useState(0);
   const actions = useCatalogActions(() => setRevision(value => value + 1));
   const showingWorks = mode !== "actors" || Boolean(initialPersonRef);
-  async function edit(row: Card) {
-    try {
-      const value = await request<{ genres: string[]; forms: string[]; regions: string[]; release_year: number | null }>("works/" + row.id + "/taxonomy");
-      setTaxonomy({ genres: value.genres.join("、"), forms: value.forms.join("、"), regions: value.regions.join("、"), release_year: String(value.release_year ?? "") });
-      setEditing(row);
-    } catch (e) { setError(String(e)); }
-  }
-  async function saveTaxonomy() {
-    if (!editing) return;
-    try {
-      const response = await fetch(appUrl("/api/catalog/works/" + editing.id + "/taxonomy")!, {
-        method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ genres: taxonomy.genres.split(/[、,]/).map(s => s.trim()).filter(Boolean),
-          forms: taxonomy.forms.split(/[、,]/).map(s => s.trim()).filter(Boolean),
-          regions: taxonomy.regions.split(/[、,]/).map(s => s.trim()).filter(Boolean),
-          release_year: taxonomy.release_year ? Number(taxonomy.release_year) : null })
-      });
-      if (!response.ok) throw new Error("分类保存失败（" + response.status + "）");
-      sessionStorage.removeItem("mdc:catalog-return");
-      setEditing(null); setRevision(value => value + 1);
-    } catch (e) { setError(String(e)); }
-  }
   const [saveName, setSaveName] = useState("");
   const [workRetry, setWorkRetry] = useState(0);
   const [facetRetry, setFacetRetry] = useState(0);
@@ -276,21 +278,18 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       <button className="ghost" aria-expanded={showFilters} onClick={() => setShowFilters(value => !value)}>{showFilters ? "收起筛选" : "分类与筛选"}</button>
     </div>
     {showFilters && <div className="works-extra-filters">
-      <select aria-label="作品地区" value={filters.category ?? "all"} onChange={e => patch({ category: e.target.value as Filters["category"] })}>
-        <option value="all">全部地区</option><option value="Japan">JAV</option><option value="China">国产</option><option value="Korea">韩国</option><option value="Europe">欧美</option><option value="Other">其他</option>
-      </select>
       <select aria-label="合集" value={filters.collection ?? ""} onChange={e => patch({ collection: e.target.value })}><option value="">全部合集</option>{(facets.collections ?? []).map(f => <option key={f.id} value={f.id}>{f.name} · {f.count}</option>)}</select>
       <select aria-label="年代" value={filters.unknown_year ? "unknown" : filters.year_from && filters.year_to === filters.year_from + 9 ? String(filters.year_from) : ""} onChange={e => patch(e.target.value === "unknown" ? { unknown_year: true, year_from: undefined, year_to: undefined } : { unknown_year: false, year_from: e.target.value ? Number(e.target.value) : undefined, year_to: e.target.value ? Number(e.target.value) + 9 : undefined })}>
         <option value="">全部年代</option>{(facets.decades ?? []).map(f => <option key={f.id} value={f.id}>{f.id === "unknown" ? "年份待补" : f.name + " 年代"} · {f.count}</option>)}
       </select>
       <select aria-label="发行年份" value={filters.year_from === filters.year_to ? String(filters.year_from ?? "") : ""} onChange={e => patch({ unknown_year: false, year_from: e.target.value ? Number(e.target.value) : undefined, year_to: e.target.value ? Number(e.target.value) : undefined })}><option value="">全部年份</option>{(facets.years ?? []).filter(f => f.id !== "unknown").map(f => <option key={f.id} value={f.id}>{f.name} · {f.count}</option>)}</select>
       <select aria-label="机构和系列" value={filters.organizations[0] ?? ""} onChange={e => patch({ organizations: e.target.value ? [e.target.value] : [], organization_role: "" })}><option value="">全部片商 / 工作室 / 厂牌 / 系列</option>{(facets.organizations ?? []).map(f => <option key={f.id} value={f.id}>{f.name} · {({ studio: "工作室", label: "厂牌", platform: "平台", series: "系列" } as Record<string, string>)[f.role] ?? "署名机构"} · {f.count}</option>)}</select>
-      {(["genres", "forms", "regions"] as const).map(field => <select key={field}
-        aria-label={field} value={filters[field][0] ?? ""}
-        onChange={e => patch({ [field]: e.target.value ? [e.target.value] : [] })}>
-        <option value="">{field === "genres" ? "全部题材" : field === "forms" ? "全部作品形式" : "全部制作地区"}</option>
-        {(facets[field] ?? []).map(f => <option key={f.id} value={f.id}>{f.name} · {f.count}</option>)}
-      </select>)}
+      {CLASSIFICATION_KEYS.map(field => <label key={field}>{CLASSIFICATION_NAMES[field]}<select
+        aria-label={`筛选${CLASSIFICATION_NAMES[field]}`} value=""
+        onChange={event => { if (event.target.value) patch({ [field]: [...new Set([...filters[field], event.target.value])] }); }}>
+        <option value="">追加{CLASSIFICATION_NAMES[field]}</option>
+        {(facets[field] ?? []).map(facet => <option key={facet.id} value={facet.id}>{facet.name} · {facet.count}</option>)}
+      </select></label>)}
       <select aria-label="播放状态" value={filters.status} onChange={e => patch({ status: e.target.value as Filters["status"] })}><option value="all">全部状态</option><option value="want">想看</option><option value="downloaded">已下载</option><option value="undownloaded">全部未下载</option><option value="emby">已关联 Emby</option><option value="files">有关联文件</option><option value="metadata">仅资料</option></select>
       <select aria-label="排序" value={filters.sort} onChange={e => patch({ sort: e.target.value as Filters["sort"], seed: e.target.value === "random" ? Math.floor(Math.random() * 1000000) : undefined })}><option value="added">最近入库</option><option value="newest">最新发行</option><option value="oldest">最早发行</option><option value="title">片名</option><option value="code">番号</option><option value="ranked">榜单热度</option><option value="random">随机</option></select>
       <PersonPicker label="追加演员" onSelect={person =>
@@ -308,7 +307,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       {filters.actor_name && <button onClick={() => patch({ actor_name: "" })}>{filters.actor_name} ×</button>}
       {filters.studio_name && <button onClick={() => patch({ studio_name: "" })}>{filters.studio_name} ×</button>}
       {filters.tags.map(id => <button key={"tag:" + id} onClick={() => patch({ tags: filters.tags.filter(t => t !== id) })}>{facets.tags?.find(tag => matchesTag(tag, id))?.name ?? id} ×</button>)}
-      {(["genres", "forms", "regions", "organizations"] as const).flatMap(field => filters[field].map(id =>
+      {([...CLASSIFICATION_KEYS, "organizations"] as const).flatMap(field => filters[field].map(id =>
         <button key={field + id} onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
       {(filters.year_from || filters.unknown_year) && <button onClick={() => patch({ year_from: undefined, year_to: undefined, unknown_year: false })}>{filters.unknown_year ? "年份待补" : filters.year_from === filters.year_to ? filters.year_from : `${filters.year_from}–${filters.year_to}`} ×</button>}
       {filters.status !== "all" && <button onClick={() => patch({ status: "all" })}>{({ emby: "已关联 Emby", files: "有关联文件", metadata: "仅资料", want: "想看", downloaded: "已下载", undownloaded: "全部未下载" })[filters.status]} ×</button>}
@@ -325,7 +324,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     <CatalogLibraryTools actions={actions} />
     <CatalogOrganizations works={rows} onFilter={(id, role) => patch({ organizations: [id], organization_role: role ?? "" })} />
     <CatalogPlaylists works={rows} onOpenWork={openWork} filters={filters} onApplyFilters={value => setFilters({ ...empty, ...value })} />
-    <details><summary>保存的筛选</summary>{saved.map(item => <button key={item.name} onClick={() => setFilters(item.filters)}>{item.name}</button>)}<input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="筛选名称" /><button onClick={save}>保存到本机</button></details>
+    <details><summary>保存的筛选</summary>{saved.map(item => <button key={item.name} disabled={migratingSaved} onClick={() => setFilters(item.filters)}>{item.name}</button>)}<input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="筛选名称" /><button disabled={migratingSaved} onClick={save}>保存到本机</button></details>
     </div></details>
     </div>
     {loading && !workError && !error && <p role="status">正在读取…</p>}
@@ -336,15 +335,10 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     })} onSelect={openWork} busy={actions.busy} onToggleWant={actions.toggleWant}
       onRefresh={actions.refreshWork} onFilterCast={name => patch({ actor_name: name })}
       onFilterStudio={name => patch({ studio_name: name })}
-      actions={<button className="ghost" onClick={() => void edit(row)}>编辑分类</button>} />)}</div>
-    {editing && <div className="genre-sheet-backdrop"><form className="genre-sheet" role="dialog" aria-modal="true" aria-label="编辑作品分类" onSubmit={e => { e.preventDefault(); void saveTaxonomy(); }}>
-      <h2>{editing.title}</h2>{(["genres", "forms", "regions", "release_year"] as const).map(field =>
-        <label key={field}>{({ genres: "题材", forms: "形式", regions: "制作地区", release_year: "发行年" })[field]}
-          <input value={taxonomy[field]} onChange={e => setTaxonomy(previous => ({ ...previous, [field]: e.target.value }))} />
-        </label>)}
-      <p>多值用顿号分隔。手工分类独立保存，来源刷新不会覆盖。</p>
-      <button type="submit">保存</button><button type="button" onClick={() => setEditing(null)}>取消</button>
-    </form></div>}
+      actions={<button className="ghost" onClick={() => setEditing(row)}>编辑分类</button>} />)}</div>
+    {editing && <TaxonomyEditor key={editing.id} work={editing} onClose={() => setEditing(null)} onSaved={() => {
+      sessionStorage.removeItem("mdc:catalog-return"); setEditing(null); setRevision(value => value + 1);
+    }} />}
 
     {!loading && !workError && rows.length === 0 && <p>没有符合条件的作品，可移除部分条件后再试。</p>}
     <div className="catalog-load-more">

@@ -67,6 +67,14 @@ export const resources = {
     queryKey: queryKeys.categories(onlyWithWorks),
     queryFn: ({ signal }) => api.categories({ onlyWithWorks }, signal),
   }),
+  classifications: () => queryOptions({
+    queryKey: queryKeys.classifications,
+    queryFn: ({ signal }) => api.classifications(signal),
+  }),
+  taxonomy: (id: string) => queryOptions({
+    queryKey: queryKeys.taxonomy(id),
+    queryFn: ({ signal }) => api.workTaxonomy(id, signal),
+  }),
   actorWorks: (ref: string) => queryOptions({
     queryKey: queryKeys.actorWorks(ref),
     queryFn: ({ signal }) => api.actorWorks(ref, signal),
