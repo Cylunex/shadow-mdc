@@ -71,6 +71,7 @@ export const resources = {
     queryKey: queryKeys.tagDictionary(q, offset),
     queryFn: ({ signal }) => api.tagDictionary(q, offset, signal),
   }),
+  tagTree: () => queryOptions({ queryKey: queryKeys.tagTree, queryFn: ({ signal }) => api.tagTree(signal) }),
   classifications: () => queryOptions({
     queryKey: queryKeys.classifications,
     queryFn: ({ signal }) => api.classifications(signal),

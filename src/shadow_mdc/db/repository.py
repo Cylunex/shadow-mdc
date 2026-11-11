@@ -30,7 +30,7 @@ from ..enums import (
 )
 from ..filename_tags import filename_tags
 from ..identity import normalize_identity_value
-from ..tags import canonicalize_tag, tag_id
+from ..tags import canonicalize_tag, tag_id, tag_matches, tag_tree_ids
 from .classification_migration import migrate_classifications
 from .models import (
     Actor,
@@ -111,6 +111,8 @@ def _apply_sqlite_pragmas(dbapi_connection: Any, _connection_record: Any) -> Non
 
     dbapi_connection.create_function("mdc_canonical_tag", 1, canonicalize_tag, deterministic=True)
     dbapi_connection.create_function("mdc_tag_id", 1, tag_id, deterministic=True)
+    dbapi_connection.create_function("mdc_tag_matches", 2, tag_matches, deterministic=True)
+    dbapi_connection.create_function("mdc_tag_tree_ids", 1, tag_tree_ids, deterministic=True)
     cursor = dbapi_connection.cursor()
     try:
         for statement in _SQLITE_CONNECTION_PRAGMAS:

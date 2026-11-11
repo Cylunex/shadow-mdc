@@ -89,7 +89,7 @@ from .services.catalog_people import (
 from .services.javranking_client import JavRankingIndexCache
 from .services.library_prefs import LibraryPrefs
 from .tag_models import TagReference, fold_tag
-from .tags import current_registry, normalize_tags, resolve_tag, tag_id, tag_refs
+from .tags import current_registry, normalize_tags, resolve_tag, tag_refs
 
 if TYPE_CHECKING:
     from .api import Runtime
@@ -207,6 +207,8 @@ class Facet(BaseModel):
 class TagFacet(Facet):
     aliases: list[str] = Field(default_factory=list)
     group: str = ""
+    parent_id: str | None = None
+    path: list[TagReference] = Field(default_factory=list)
 
 
 def _card(work: Work, prefix: str, *, detail: bool = False) -> CatalogCard:
@@ -438,10 +440,7 @@ def build_catalog_router(
             # SQLite json_each avoids materializing every work in Python.
             def tagged(tag: str) -> ColumnElement[bool]:
                 values = func.json_each(Work.tags).table_valued("value")
-                identity = tag_id(tag)
-                match = (func.mdc_tag_id(values.c.value) == identity
-                         if identity is not None else values.c.value == tag)
-                return exists(select(1).select_from(values).where(match))
+                return exists(select(1).select_from(values).where(func.mdc_tag_matches(values.c.value, tag)))
             predicates = [tagged(tag) for tag in filters.tags]
             if predicates:
                 statement = (statement.where(*predicates) if filters.tags_all
@@ -458,7 +457,8 @@ def build_catalog_router(
                 for value in filters.genres:
                     if value == "genres:unknown":
                         known = {term.tag_id for term in terms if term.tag_id}
-                        known.update(tag.id for tag in current_registry().definitions if tag.group == "题材")
+                        known.update(tag.id for tag in current_registry().definitions
+                                     if current_registry().in_branch(tag.id, "题材"))
                         genre_predicates.append(~or_(*(tagged(identity) for identity in known)) if known
                                                 else true())
                         continue
@@ -466,7 +466,8 @@ def build_catalog_router(
                     resolved_genre = current_registry().resolve(value)
                     identity = term.tag_id if term is not None else (
                         resolved_genre.id
-                        if resolved_genre is not None and resolved_genre.group == "题材"
+                        if resolved_genre is not None
+                        and current_registry().in_branch(resolved_genre.id, "题材")
                         else None
                     )
                     if identity is None:
@@ -746,23 +747,37 @@ def build_catalog_router(
             tag_filters = filters if filters.tags_all else filters.model_copy(update={"tags": []})
             tag_base = filtered_statement(tag_filters, request, session, actor_profiles).subquery()
             tag_rows = func.json_each(tag_base.c.tags).table_valued("value")
-            identity = func.mdc_tag_id(tag_rows.c.value)
+            ancestors = func.json_each(func.mdc_tag_tree_ids(tag_rows.c.value)).table_valued("value")
+            identity = ancestors.c.value
             tags = list(session.execute(
                 select(identity, func.min(tag_rows.c.value), func.count(func.distinct(tag_base.c.id)))
-                .select_from(tag_base).join(tag_rows, true()).where(identity.is_not(None))
+                .select_from(tag_base).join(tag_rows, true()).join(ancestors, true())
+                .where(identity.is_not(None))
                 .group_by(identity),
             ))
+            tag_counts = {key: count for key, _raw, count in tags}
             tag_facets = {
-                key: TagFacet(id=key, name=tag.name, count=count, aliases=list(tag.aliases), group=tag.group)
-                for key, raw, count in tags if (tag := resolve_tag(raw)) is not None
+                key: TagFacet(id=key, name=tag.name, count=count, aliases=list(tag.aliases), group=tag.group,
+                              parent_id=tag.parent_id, path=list(current_registry().path(tag.id)))
+                for key, raw, count in tags
+                if (tag := resolve_tag(key if key in current_registry().ids else raw)) is not None
             }
             # Keep selected/excluded labels readable even when other filters hide all their works.
             for raw in [*filters.tags, *filters.exclude_tags]:
                 tag = resolve_tag(raw)
-                if tag is not None and tag.id not in tag_facets:
-                    tag_facets[tag.id] = TagFacet(
-                        id=tag.id, name=tag.name, count=0, aliases=list(tag.aliases), group=tag.group,
-                    )
+                if tag is None:
+                    explicit = current_registry().resolve(raw)
+                    tag = explicit if explicit is not None and explicit.id in current_registry().ids else None
+                if tag is not None:
+                    for ancestor_id in current_registry().ancestor_ids(tag.id):
+                        node = tag if ancestor_id == tag.id else resolve_tag(ancestor_id)
+                        if node is not None and ancestor_id not in tag_facets:
+                            tag_facets[ancestor_id] = TagFacet(
+                                id=node.id, name=node.name, count=tag_counts.get(node.id, 0),
+                                aliases=list(node.aliases),
+                                group=node.group,
+                                parent_id=node.parent_id, path=list(current_registry().path(node.id)),
+                            )
             organization_filters = filters.model_copy(update={"organizations": [], "organization_role": ""})
             organization_rows = filtered_statement(
                 organization_filters, request, session, actor_profiles,
@@ -832,7 +847,8 @@ def build_catalog_router(
                                                          ("subtitle_languages", filters.subtitle_languages))}
             # Older mobile clients still ask for genres; these choices read the
             # same grouped tags, without restoring a separate genre vocabulary.
-            grouped_tags = {tag.id: tag for tag in tag_facets.values() if tag.group == "题材"}
+            grouped_tags = {tag.id: tag for tag in tag_facets.values()
+                            if current_registry().in_branch(tag.id, "题材")}
             for facet in legacy_facets["genres"]:
                 term = terms[facet.id]
                 tag_facet = tag_facets.get(term.tag_id or "")

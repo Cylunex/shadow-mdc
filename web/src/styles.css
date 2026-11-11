@@ -2693,3 +2693,11 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .work-classifications dd { margin: 4px 0; }
 
 .taxonomy-editor > button { margin-right: 8px; }
+
+.catalog-tag-tree { list-style: none; margin: 8px 0; padding: 0; max-height: 32vh; overflow-y: auto; }
+.catalog-tag-tree li { display: flex; align-items: start; gap: 6px; margin: 4px 0; min-width: 0; }
+.catalog-tag-tree .catalog-tag-expand { flex: 0 0 26px; width: 26px; min-height: 30px; padding: 4px; }
+.catalog-tag-tree li > button:not(.catalog-tag-expand) { text-align: start; white-space: normal; overflow-wrap: anywhere; min-width: 0; }
+.category-tile { min-width: 0; }
+.category-tile .category-card { width: 100%; }
+.categories-view nav[aria-label="标签层级"] { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 12px; }

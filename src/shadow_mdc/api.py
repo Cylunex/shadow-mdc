@@ -4380,6 +4380,8 @@ def list_categories(
                 image_url=row.image_url,
                 work_count=row.work_count,
                 aliases=list(row.aliases),
+                parent_id=row.parent_id,
+                path=list(row.path),
             )
             for row in rows
         ]

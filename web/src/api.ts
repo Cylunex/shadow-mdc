@@ -77,7 +77,7 @@ import {
   javRankingSeedResultSchema
 } from "./model";
 import type { FilterWords, IdentityAliases } from "./model";
-import { tagDictionarySchema, tagTermSchema } from "./lib/tagDictionary";
+import { tagDictionarySchema, tagTermSchema, tagTreeSchema } from "./lib/tagDictionary";
 import { classificationsSchema, classificationTermSchema, taxonomySchema, type TaxonomyEdit } from "./lib/classifications";
 
 export type DisplayMediaCategory = MediaCategory;
@@ -330,9 +330,10 @@ export const api = {
   },
   tagDictionary: (q: string, offset: number, signal?: AbortSignal) =>
     request(tagDictionarySchema, `/api/catalog/tags?${new URLSearchParams({ q, offset: String(offset), limit: "100" })}`, { signal }),
-  createTag: (payload: { name: string; aliases: string[]; group?: string; hidden: boolean }) =>
+  tagTree: (signal?: AbortSignal) => request(tagTreeSchema, "/api/catalog/tags/tree", { signal }),
+  createTag: (payload: { name: string; aliases: string[]; group?: string; parent_id?: string | null; hidden: boolean }) =>
     request(tagTermSchema, "/api/catalog/tags", { method: "POST", body: JSON.stringify(payload) }),
-  editTag: (id: string, payload: { name: string; aliases: string[]; group?: string; hidden: boolean; revision: number }) =>
+  editTag: (id: string, payload: { name: string; aliases: string[]; group?: string; parent_id?: string | null; hidden: boolean; revision: number }) =>
     request(tagTermSchema, "/api/catalog/tags", { method: "PUT", body: JSON.stringify({ ...payload, tag_id: id }) }),
   classifications: (signal?: AbortSignal) => request(classificationsSchema, "/api/catalog/classifications", { signal }),
   workTaxonomy: (id: string, signal?: AbortSignal) => request(taxonomySchema, `/api/catalog/works/${encodeURIComponent(id)}/taxonomy`, { signal }),

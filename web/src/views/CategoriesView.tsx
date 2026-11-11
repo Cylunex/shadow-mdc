@@ -11,8 +11,9 @@ import { resources } from "../query/resources";
 const browsingSchema = z.object({
   query: z.string(), onlyWithWorks: z.boolean(), sort: z.enum(["featured", "count", "name"]),
   page: z.number().int().min(1), pageSize: z.union([z.literal(24), z.literal(48), z.literal(96)]),
+  parent_id: z.string().nullable().default(null),
 });
-const defaults: z.infer<typeof browsingSchema> = { query: "", onlyWithWorks: false, sort: "featured", page: 1, pageSize: 24 };
+const defaults: z.infer<typeof browsingSchema> = { query: "", onlyWithWorks: false, sort: "featured", page: 1, pageSize: 24, parent_id: null };
 
 type Props = {
   onOpenTag: (id: string, name?: string) => void;
@@ -24,6 +25,14 @@ export function CategoriesView({ onOpenTag, report }: Props) {
   const { query, onlyWithWorks, sort, pageSize } = browsing;
   const heading = useRef<HTMLDivElement>(null);
   const result = useQuery(resources.categories(), queryClient);
+  const knownIds = new Set((result.data?.categories ?? []).map(item => item.id ?? item.slug));
+  const activeParent = browsing.parent_id && knownIds.has(browsing.parent_id) ? browsing.parent_id : null;
+  const parent = result.data?.categories.find(item => (item.id ?? item.slug) === activeParent);
+  const nestedIds = new Set((result.data?.categories ?? []).flatMap(item => item.parent_id ? [item.parent_id] : []));
+  const crumbs = parent?.path?.length ? parent.path : parent ? [{ id: parent.id ?? parent.slug, name: parent.label }] : [];
+  function browse(parent_id: string | null) {
+    setBrowsing(previous => ({ ...previous, parent_id, query: "", page: 1 }));
+  }
   const loading = result.isPending;
   useEffect(() => {
     if (result.error) report?.(result.error.message);
@@ -33,12 +42,13 @@ export function CategoriesView({ onOpenTag, report }: Props) {
   const visible = useMemo(() => {
     const q = query.trim().toLocaleLowerCase();
     const items = (result.data?.categories ?? []).filter(item =>
+      (q || (item.parent_id && knownIds.has(item.parent_id) ? item.parent_id : null) === activeParent) &&
       (!onlyWithWorks || item.work_count > 0) && (!q ||
         [item.id, item.label, item.slug, ...item.aliases].join(" ").toLocaleLowerCase().includes(q)));
     if (sort === "count") items.sort((a, b) => b.work_count - a.work_count || a.label.localeCompare(b.label, "zh-CN"));
     if (sort === "name") items.sort((a, b) => a.label.localeCompare(b.label, "zh-CN"));
     return items;
-  }, [result.data, query, onlyWithWorks, sort]);
+  }, [result.data, query, onlyWithWorks, sort, activeParent]);
   const page = Math.min(browsing.page, Math.max(1, Math.ceil(visible.length / pageSize)));
   useEffect(() => {
     if (result.data && page !== browsing.page) setBrowsing(previous => ({ ...previous, page }));
@@ -58,8 +68,12 @@ export function CategoriesView({ onOpenTag, report }: Props) {
     <div className="catalog-heading" ref={heading}>
       <div><p className="eyebrow">CATEGORIES</p><div className="category-heading-title"><h1>分类浏览</h1>
         <span className="muted">{loading ? "正在读取分类…" : `${visible.length} / ${result.data?.categories.length ?? 0} 个分类`}</span>
-      </div><p className="muted">按主题标签浏览作品，选择图卡查看对应影片。</p></div>
+      </div><p className="muted">高层节点可展开浏览下级，也可查看该节点及全部下级的作品。</p></div>
     </div>
+    {crumbs.length > 0 && <nav aria-label="标签层级"><button className="ghost" onClick={() => browse(null)}>全部标签</button>
+      {crumbs.map(node => <button key={node.id} className="ghost" onClick={() => browse(node.id)}>{node.name}</button>)}
+      {parent && <button onClick={() => onOpenTag(parent.id ?? parent.label, parent.label)}>查看此节点全部作品</button>}
+    </nav>}
     <div className="categories-toolbar">
       <input id="shadow-mdc-search" value={query} onChange={event => setBrowsing(previous => ({ ...previous, query: event.target.value, page: 1 }))}
         placeholder="分类名称、别名…" aria-label="搜索分类" maxLength={200} />
@@ -86,13 +100,15 @@ export function CategoriesView({ onOpenTag, report }: Props) {
         <h2>{filtered ? "没有匹配的分类" : "暂无分类"}</h2>
         <p>{filtered ? "试试其他关键词，或清除筛选查看全部分类。" : "作品入库后，可在这里按分类浏览。"}</p>
       </div> : <div className="category-grid" aria-label="分类网格" aria-busy={result.isFetching}>
-        {items.map(item => <button key={item.id ?? item.label} type="button" className="category-card"
-          onClick={() => onOpenTag(item.id ?? item.label, item.label)} title={`查看「${item.label}」的 ${item.work_count} 部作品`}>
+        {items.map(item => <div className="category-tile" key={item.id ?? item.label}><button type="button" className="category-card"
+          onClick={() => nestedIds.has(item.id ?? item.slug) ? browse(item.id ?? item.slug) : onOpenTag(item.id ?? item.label, item.label)}
+          title={nestedIds.has(item.id ?? item.slug) ? `浏览「${item.label}」下级标签` : `查看「${item.label}」的 ${item.work_count} 部作品`}>
           <div className="category-cover"><CoverImage src={appUrl(item.image_url) ?? ""} />
             {!item.image_url && <span className="category-cover-label" aria-hidden="true">{item.label}</span>}
           </div>
           <div className="category-meta"><strong>{item.label}</strong><span className="category-count">{item.work_count} 部作品</span></div>
-        </button>)}
+        </button>{nestedIds.has(item.id ?? item.slug) && <button className="ghost" onClick={() => onOpenTag(item.id ?? item.label, item.label)}>
+          查看全部 {item.work_count} 部作品</button>}</div>)}
       </div>}
       {visible.length > pageSize && <Pagination {...pagination} position="底部" />}
     </>}

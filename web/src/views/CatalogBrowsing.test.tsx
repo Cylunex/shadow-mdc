@@ -97,6 +97,29 @@ it("opens a category by its stable ID while displaying its name", async () => {
   expect(open).toHaveBeenCalledWith("tag:amateur", "爱好者");
 });
 
+it("browses high-level tag nodes and opens either their whole subtree or a leaf", async () => {
+  const open = vi.fn();
+  const nodes = [{ id: "clothing", name: "服饰" }, { id: "stockings", name: "丝袜" }, { id: "black", name: "黑丝" }];
+  vi.mocked(api.categories).mockResolvedValue({ categories: nodes.map((node, index) => ({
+    ...categories[0]!, id: node.id, label: node.name, work_count: 3,
+    parent_id: index ? nodes[index - 1]!.id : null, path: nodes.slice(0, index + 1),
+  })) });
+  await act(async () => root.render(<CategoriesView onOpenTag={open} />));
+  expect(container.querySelectorAll(".category-card")).toHaveLength(1);
+  expect(container.querySelector(".category-card strong")?.textContent).toBe("服饰");
+  await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
+  expect(open).not.toHaveBeenCalled();
+  expect(container.querySelector(".category-card strong")?.textContent).toBe("丝袜");
+  await act(async () => button("查看此节点全部作品").click());
+  expect(open).toHaveBeenCalledWith("clothing", "服饰");
+  await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
+  expect(container.querySelector(".category-card strong")?.textContent).toBe("黑丝");
+  await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
+  expect(open).toHaveBeenLastCalledWith("black", "黑丝");
+  await act(async () => button("全部标签").click());
+  expect(container.querySelector(".category-card strong")?.textContent).toBe("服饰");
+});
+
 it("keeps the category page as a tag gallery with covers and stable tag navigation", async () => {
   sessionStorage.setItem("mdc:category-browsing", JSON.stringify({ dimension: "contents", query: "", onlyWithWorks: false, sort: "featured", page: 1, pageSize: 24 }));
   const open = vi.fn();

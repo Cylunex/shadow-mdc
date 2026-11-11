@@ -7,6 +7,7 @@ display and facets.
 
 from __future__ import annotations
 
+import json
 import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
@@ -102,20 +103,63 @@ def normalize_tags(raw: Iterable[str] | None) -> list[str]:
     return [tag.name for tag in tag_refs(raw)]
 
 
+def visible_tree_refs(raw: Iterable[str] | None) -> list[TagReference]:
+    """Visible node/ancestor references, deduplicated per work; source assignments stay direct."""
+    registry = current_registry()
+    found: dict[str, TagReference] = {}
+    for value in raw or ():
+        if not isinstance(value, str):
+            continue
+        direct = registry.resolve(value)
+        if direct is None or (direct.id not in registry.ids and is_noise_tag(value)):
+            continue
+        for identity in registry.ancestor_ids(direct.id):
+            node = registry.resolve(identity) if identity in registry.ids else direct
+            if node is not None and not is_noise_tag(node.name):
+                found[identity] = TagReference(identity, node.name)
+    return list(found.values())
+
+
+def tag_tree_ids(raw: str | None) -> str:
+    """Semantic SQLite projection; visibility is applied after distinct subtree counts."""
+    if not isinstance(raw, str):
+        return "[]"
+    registry = current_registry()
+    tag = registry.resolve(raw)
+    if tag is None or (tag.id not in registry.ids and is_noise_tag(raw)):
+        return "[]"
+    return json.dumps(registry.ancestor_ids(tag.id))
+
+
+def tag_matches(raw: str | None, selected: str | None) -> bool:
+    """A selected node matches itself and descendants, including historical source aliases."""
+    if not isinstance(raw, str) or not isinstance(selected, str):
+        return False
+    registry = current_registry()
+    direct, wanted = registry.resolve(raw), registry.resolve(selected)
+    return (direct is not None and wanted is not None
+            and registry.is_descendant(direct.id, wanted.id))
+
+
 def work_matches_tags(work_tags: Sequence[str] | None, selected: Sequence[str]) -> bool:
     """AND filter: every selected tag must match the work's normalized set.
 
     Selected values may be JP/EN/CN synonyms — they are canonicalized first.
     """
 
-    wanted = [tag_id(item) for item in selected if not is_noise_tag(item)]
+    registry = current_registry()
+    wanted: list[str | None] = []
+    for item in selected:
+        node = registry.resolve(item)
+        if is_noise_tag(item) and (node is None or node.id not in registry.ids):
+            continue
+        wanted.append(node.id if node is not None else None)
     if any(item is None for item in wanted):
         return False
     wanted_clean = [item for item in wanted if item]
     if not wanted_clean:
         return True
-    available = {tag.id for tag in tag_refs(work_tags)}
-    return all(tag in available for tag in wanted_clean)
+    return all(any(tag_matches(raw, tag) for raw in work_tags or ()) for tag in wanted_clean)
 
 
 def facet_tags(
@@ -133,7 +177,7 @@ def facet_tags(
     counter: Counter[str] = Counter()
     names: dict[str, str] = {}
     for tags in works_tags:
-        for tag in tag_refs(tags):
+        for tag in visible_tree_refs(tags):
             counter[tag.id] += 1
             names.setdefault(tag.id, tag.name)
     ranked = sorted(counter.items(), key=lambda item: (-item[1], _fold(names[item[0]])))

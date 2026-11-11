@@ -13,7 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from shadow_mdc.tags import current_registry, normalize_tags, resolve_tag, tag_id
+from shadow_mdc.tag_models import TagReference
+from shadow_mdc.tags import current_registry, resolve_tag, tag_id, visible_tree_refs
 
 MANIFEST_NAME = "manifest.json"
 COVERS_DIRNAME = "category-covers"
@@ -66,6 +67,8 @@ class CategoryOutData:
     image_url: str | None
     work_count: int
     aliases: tuple[str, ...]
+    parent_id: str | None = None
+    path: tuple[TagReference, ...] = ()
 
 
 def load_manifest(data_dir: Path) -> list[CategoryCoverEntry]:
@@ -84,7 +87,7 @@ def load_manifest(data_dir: Path) -> list[CategoryCoverEntry]:
         tag = resolve_tag(str(item.get("tag_id") or item.get("label") or ""))
         if tag is None:
             continue
-        label = tag.name if tag.id.startswith("tag:") else unicodedata.normalize(
+        label = tag.name if tag.id in current_registry().ids else unicodedata.normalize(
             "NFKC", str(item.get("label") or tag.name),
         ).strip()
         slug = str(item.get("slug") or slugify_label(label))
@@ -183,6 +186,13 @@ def build_category_list(
                 slug=slugify_label(label), label=label, image_file=None, tag_id=identity,
             )
             ordered_ids.append(identity)
+    for identity in list(ordered_ids):
+        for ancestor in current_registry().ancestor_ids(identity)[1:]:
+            tag = resolve_tag(ancestor)
+            if tag is not None and ancestor not in by_id:
+                by_id[ancestor] = CategoryCoverEntry(slug=slugify_label(tag.name), label=tag.name,
+                                                    image_file=None, tag_id=ancestor)
+                ordered_ids.append(ancestor)
 
     results: list[CategoryOutData] = []
     for identity in ordered_ids:
@@ -197,10 +207,12 @@ def build_category_list(
             CategoryOutData(
                 id=identity,
                 slug=entry.slug,
-                label=tag.name if identity.startswith("tag:") else entry.label,
+                label=tag.name if identity in current_registry().ids else entry.label,
                 image_url=entry.image_url,
                 work_count=count,
                 aliases=tuple(dict.fromkeys((*entry.aliases, *tag.aliases))),
+                parent_id=tag.parent_id,
+                path=current_registry().path(identity),
             )
         )
     # Stable secondary sort within equal featured rank by count desc
@@ -217,8 +229,8 @@ def build_category_list(
 def facet_count_map(works_tags: list[list[str] | tuple[str, ...] | None]) -> dict[str, int]:
     counter: dict[str, int] = {}
     for tags in works_tags:
-        for name in normalize_tags(tags):
-            counter[name] = counter.get(name, 0) + 1
+        for tag in visible_tree_refs(tags):
+            counter[tag.id] = counter.get(tag.id, 0) + 1
     return counter
 
 

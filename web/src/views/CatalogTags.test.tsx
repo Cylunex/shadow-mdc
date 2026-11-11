@@ -58,17 +58,39 @@ it("finds aliases, highlights old selections, and emits a stable ID after a rena
   expect(toggle).toHaveBeenCalledWith("tag:amateur");
 });
 
-it("browses groups without changing selection or tag identities", async () => {
+it("treats high-level groups as selectable tree nodes and expands their children", async () => {
   const toggle = vi.fn();
   const grouped = [
-    { id: "tag:drama", name: "剧情", group: "题材", count: 2 },
-    { id: "tag:scene", name: "户外", group: "场景", count: 1 },
+    { id: "tag:genres", name: "题材", parent_id: null, count: 2 },
+    { id: "tag:drama", name: "剧情", parent_id: "tag:genres", count: 2 },
+    { id: "tag:scene", name: "户外", parent_id: null, count: 1 },
   ];
   await act(async () => root.render(<CatalogTags tags={grouped} selected={["tag:scene"]} preview={false} onToggle={toggle} />));
-  const select = container.querySelector<HTMLSelectElement>('[aria-label="浏览标签分组"]')!;
-  await act(async () => { select.value = "题材"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(container.querySelectorAll("button[aria-pressed]")).toHaveLength(2);
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开题材"]')!.click());
   const buttons = container.querySelectorAll<HTMLButtonElement>("button[aria-pressed]");
-  expect(buttons).toHaveLength(1);
-  expect(buttons[0]!.textContent).toContain("剧情");
+  expect(buttons).toHaveLength(3);
+  expect(buttons[1]!.textContent).toContain("剧情");
   expect(toggle).not.toHaveBeenCalled();
+  await act(async () => buttons[0]!.click());
+  expect(toggle).toHaveBeenCalledWith("tag:genres");
+});
+
+it("reveals a selected leaf and keeps its ancestors when searching a deep branch", async () => {
+  const nested = [
+    { id: "clothing", name: "服饰", parent_id: null, count: 4 },
+    { id: "stockings", name: "丝袜", parent_id: "clothing", count: 4 },
+    { id: "black", name: "黑丝", parent_id: "stockings", aliases: ["Black stockings"], count: 2 },
+    { id: "white", name: "白丝", parent_id: "stockings", count: 2 },
+  ];
+  await act(async () => root.render(<CatalogTags tags={nested} selected={["black"]} preview={false} onToggle={vi.fn()} />));
+  expect(container.querySelectorAll("button[aria-pressed]")).toHaveLength(4);
+  expect(container.querySelector('button[aria-pressed="true"]')?.textContent).toContain("黑丝");
+  const input = container.querySelector("input")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Black stockings");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const labels = [...container.querySelectorAll("button[aria-pressed]")].map(button => button.textContent);
+  expect(labels).toEqual(["服饰 · 4", "丝袜 · 4", "黑丝 · 2"]);
 });

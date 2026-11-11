@@ -62,7 +62,9 @@ SSH 端使用已有 HTTP 私有配置。CLI 不跟随 HTTP 重定向，不输出
 想看与媒体情况可组合：`{"wanted":true,"availability":"files"}` 查询想看且有关联文件的作品；
 `wanted=false` 排除想看，省略不筛选。`availability` 支持 all/files/emby/metadata/undownloaded；
 无关联文件不证明没有远端下载。磁力检查分别读取 `presence` 和 `offline_status`，不能用 done 断言媒体已入库。
-作品语言表示原始对白语言；题材用标签维护。标签词条支持 `group` 分组，更新省略保持、空字符串清除。
+作品语言表示原始对白语言；题材用标签树维护。`tags.tree` 读取节点，`tags.create/update` 用真实 `parent_id` 设置上级；
+编辑时省略保持位置，null 移到顶层。分组也是高层节点；旧 group 只作输入兼容。
+查询父节点会包含其全部后代，统计按作品去重；作品只需保存具体标签，维护父子关系不改写原标签或猜测下级。
 
 机构与系列分开：`organizations.list` 返回片商、工作室及所属品牌和渠道，`series.list` 返回独立系列。
 `works.query` / `works.facets` 的 `organizations`、`labels`、`platforms`、`series` 使用实际 ID，跨维度同时匹配。

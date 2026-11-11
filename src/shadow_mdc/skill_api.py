@@ -456,6 +456,8 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         "tags.list", "浏览带封面的大标签、别名和作品计数。", "read", TagsInput, "GET", "/api/categories"
     ),
+    Capability("tags.tree", "读取标签树的节点与父子关系。分组属于高层节点。",
+               "read", EmptyInput, "GET", "/api/catalog/tags/tree"),
     Capability(
         "classifications.list",
         "读取作品分类的正式 ID、名称及计数。题材通过标签维护。",

@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, select, true
+from sqlalchemy import select
 
 from .db.models import Work
-from .services.tag_dictionary import TagRevisionConflict
-from .tag_models import TagRules, TagTerm, fold_tag
+from .services.tag_dictionary import UNCHANGED_PARENT, TagRevisionConflict
+from .tag_models import TagReference, TagRules, TagTerm, fold_tag
 from .tags import is_noise_tag
 
 if TYPE_CHECKING:
@@ -25,6 +25,7 @@ class TagEdit(BaseModel):
     aliases: tuple[str, ...] | None = Field(default=None, max_length=200)
     hidden: bool | None = None
     group: str | None = Field(default=None, max_length=100)
+    parent_id: str | None = Field(default=None, max_length=4000)
     revision: int = Field(ge=1)
 
     @field_validator("name")
@@ -45,6 +46,7 @@ class TagCreate(BaseModel):
     aliases: tuple[str, ...] = Field(default_factory=tuple, max_length=200)
     hidden: bool = False
     group: str = Field(default="", max_length=100)
+    parent_id: str | None = Field(default=None, max_length=4000)
 
     @field_validator("name")
     @classmethod
@@ -54,6 +56,21 @@ class TagCreate(BaseModel):
 
 class TagOut(TagTerm):
     count: int = 0
+    direct_count: int = 0
+    path: list[TagReference] = Field(default_factory=list)
+
+
+class TagNode(BaseModel):
+    id: str
+    name: str
+    parent_id: str | None
+    aliases: tuple[str, ...]
+    hidden: bool
+
+
+class TagTreeOut(BaseModel):
+    nodes: list[TagNode]
+    revision: int
 
 
 class TagsOut(BaseModel):
@@ -85,28 +102,55 @@ def build_tag_dictionary_router(runtime: Callable[[Request], Runtime]) -> APIRou
         store = runtime(request).tag_dictionary
         document = store.load()
         registry = store.registry()
-        by_id = {term.id: TagOut(**term.model_dump()) for term in document.terms}
-        counts: defaultdict[str, set[str]] = defaultdict(set)
+        by_id = {
+            term.id: TagOut(**term.model_dump(), path=list(registry.path(term.id))) for term in document.terms
+        }
+        counts: Counter[str] = Counter()
+        direct_counts: Counter[str] = Counter()
         with runtime(request).database.session() as session:
-            values = func.json_each(Work.tags).table_valued("value").alias("tags")
-            for work_id, raw in session.execute(
-                select(Work.id, values.c.value).select_from(Work).join(values, true())
-            ):
-                tag = registry.resolve(str(raw))
-                if tag is None:
-                    continue
-                counts[tag.id].add(work_id)
-                if tag.id not in by_id:
-                    by_id[tag.id] = TagOut(
-                        id=tag.id, name=tag.name, hidden=is_noise_tag(str(raw)), group=tag.group
-                    )
+            for work_tags in session.scalars(select(Work.tags)).yield_per(1000):
+                direct: set[str] = set()
+                ancestors: set[str] = set()
+                for raw in work_tags or ():
+                    tag = registry.resolve(str(raw))
+                    if tag is None:
+                        continue
+                    direct.add(tag.id)
+                    ancestors.update(registry.ancestor_ids(tag.id))
+                    if tag.id not in by_id:
+                        by_id[tag.id] = TagOut(
+                            id=tag.id,
+                            name=tag.name,
+                            hidden=is_noise_tag(str(raw)),
+                            group=tag.group,
+                            parent_id=tag.parent_id,
+                        )
+                counts.update(ancestors)
+                direct_counts.update(direct)
         terms = [
-            term.model_copy(update={"count": len(counts[term.id])})
+            term.model_copy(update={"count": counts[term.id], "direct_count": direct_counts[term.id]})
             for term in by_id.values()
             if not q or any(fold_tag(q) in fold_tag(value) for value in (term.name, term.id, *term.aliases))
         ]
         terms.sort(key=lambda term: (fold_tag(term.name), term.id))
         return TagsOut(terms=terms[offset : offset + limit], total=len(terms), revision=document.revision)
+
+    @router.get("/tree")
+    def tree(request: Request) -> TagTreeOut:
+        store = runtime(request).tag_dictionary
+        registry = store.registry()
+        return TagTreeOut(
+            nodes=[
+                TagNode(
+                    id=tag.id, name=tag.name, parent_id=tag.parent_id, aliases=tag.aliases, hidden=tag.hidden
+                )
+                for tag in sorted(
+                    registry.definitions,
+                    key=lambda node: tuple(fold_tag(part.name) for part in registry.path(node.id)),
+                )
+            ],
+            revision=store.load().revision,
+        )
 
     @router.get("/rules")
     def rules(request: Request) -> RulesOut:
@@ -126,7 +170,11 @@ def build_tag_dictionary_router(runtime: Callable[[Request], Runtime]) -> APIRou
     def create(payload: TagCreate, request: Request) -> TagTerm:
         try:
             term = runtime(request).tag_dictionary.create(
-                payload.name, payload.aliases, payload.hidden, payload.group
+                payload.name,
+                payload.aliases,
+                payload.hidden,
+                payload.group,
+                parent_id=payload.parent_id,
             )
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
@@ -137,7 +185,13 @@ def build_tag_dictionary_router(runtime: Callable[[Request], Runtime]) -> APIRou
     def update(payload: TagUpdate, request: Request) -> TagTerm:
         try:
             term = runtime(request).tag_dictionary.update(
-                payload.tag_id, payload.name, payload.aliases, payload.hidden, payload.revision, payload.group
+                payload.tag_id,
+                payload.name,
+                payload.aliases,
+                payload.hidden,
+                payload.revision,
+                payload.group,
+                parent_id=payload.parent_id if "parent_id" in payload.model_fields_set else UNCHANGED_PARENT,
             )
         except KeyError as exc:
             raise HTTPException(404, "tag not found") from exc

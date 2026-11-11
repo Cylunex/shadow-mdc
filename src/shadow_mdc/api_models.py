@@ -1139,6 +1139,8 @@ class CategoryOut(BaseModel):
     image_url: str | None = None
     work_count: int = 0
     aliases: list[str] = Field(default_factory=list)
+    parent_id: str | None = None
+    path: list[TagReference] = Field(default_factory=list)
 
 
 class CategoriesOut(BaseModel):

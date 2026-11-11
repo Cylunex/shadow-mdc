@@ -301,7 +301,9 @@ export const categoryItemSchema = z.object({
   label: z.string(),
   image_url: z.string().nullable().optional().default(null),
   work_count: z.number().default(0),
-  aliases: z.array(z.string()).optional().default([])
+  aliases: z.array(z.string()).optional().default([]),
+  parent_id: z.string().nullable().optional(),
+  path: z.array(z.object({ id: z.string(), name: z.string() })).optional(),
 });
 export const categoriesPageSchema = z.object({
   categories: z.array(categoryItemSchema).default([])

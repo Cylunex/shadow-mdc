@@ -7,6 +7,7 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from threading import RLock
 from urllib.parse import quote
@@ -24,6 +25,26 @@ class ImportedTag:
 
 class TagRevisionConflict(ValueError):
     """The caller edited an older vocabulary revision."""
+
+
+class ParentUnchanged(Enum):
+    VALUE = "unchanged"
+
+
+UNCHANGED_PARENT = ParentUnchanged.VALUE
+
+
+def group_parent(terms: list[TagTerm], group: str) -> str | None:
+    """Adapt an old group write to an ordinary high-level tag node."""
+    if not group.strip():
+        return None
+    registry = TagRegistry(tuple(term.definition() for term in terms))
+    existing = registry.resolve(group)
+    if existing is not None and existing.id in registry.ids:
+        return existing.id
+    identity = "raw:" + quote(fold_tag(group), safe="")
+    terms.append(TagTerm(id=identity, name=group.strip()))
+    return identity
 
 
 class TagDictionaryStore:
@@ -47,6 +68,10 @@ class TagDictionaryStore:
         with self._writer():
             if not self.path.exists():
                 self._write(seed_document())
+            else:
+                old = TagDocument.model_validate_json(self.path.read_text(encoding="utf-8"))
+                if old.tree_version == 0:
+                    self._write(old.as_tree().model_copy(update={"revision": old.revision + 1}))
         self.load()
 
     def load(self) -> TagDocument:
@@ -54,7 +79,7 @@ class TagDictionaryStore:
             stat = self.path.stat()
             signature = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
             if self._document is None or self._signature != signature:
-                document = TagDocument.model_validate_json(self.path.read_text(encoding="utf-8"))
+                document = TagDocument.model_validate_json(self.path.read_text(encoding="utf-8")).as_tree()
                 registry = document.registry()
                 self._document, self._registry, self._signature = document, registry, signature
             return self._document
@@ -64,8 +89,17 @@ class TagDictionaryStore:
         assert self._registry is not None
         return self._registry
 
-    def _write(self, document: TagDocument) -> None:
-        document.registry()  # Reject ambiguous aliases before writing any data.
+    def _write(self, document: TagDocument) -> TagDocument:
+        document = document.as_tree()
+        registry = document.registry()  # Reject invalid names and hierarchy before writing.
+        definitions = {tag.id: tag for tag in registry.definitions}
+        document = document.model_copy(
+            update={
+                "terms": [
+                    term.model_copy(update={"group": definitions[term.id].group}) for term in document.terms
+                ]
+            }
+        )
         temp = self.path.with_suffix(".tmp")
         descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
@@ -75,6 +109,7 @@ class TagDictionaryStore:
             os.fsync(stream.fileno())
         os.replace(temp, self.path)
         self._signature = None
+        return document
 
     def merge_imports(self, values: list[ImportedTag]) -> dict[str, str]:
         """Merge external terms before DB migration; a retry never changes existing identities."""
@@ -106,11 +141,28 @@ class TagDictionaryStore:
                     or resolved.id == identity
                 )
                 old = terms.get(identity)
+                candidates = list(terms.values())
+                parent = (
+                    group_parent(candidates, value.group)
+                    if value.group and (old is None or not old.parent_id)
+                    else None
+                )
+                terms.update({term.id: term for term in candidates})
                 if old is None:
-                    term = TagTerm(id=identity, name=value.name, aliases=safe_names[:200], group=value.group)
+                    term = TagTerm(
+                        id=identity,
+                        name=value.name,
+                        aliases=safe_names[:200],
+                        parent_id=parent if parent != identity else None,
+                    )
                 else:
                     aliases = tuple(dict.fromkeys((*old.aliases, *safe_names)))[:200]
-                    term = old.model_copy(update={"aliases": aliases, "group": old.group or value.group})
+                    term = old.model_copy(
+                        update={
+                            "aliases": aliases,
+                            "parent_id": old.parent_id or (parent if parent != old.id else None),
+                        }
+                    )
                     if term != old:
                         term = term.model_copy(update={"revision": old.revision + 1})
                 terms[identity] = term
@@ -126,22 +178,36 @@ class TagDictionaryStore:
                 )
             return identities
 
-    def create(self, name: str, aliases: tuple[str, ...], hidden: bool, group: str = "") -> TagTerm:
+    def create(
+        self,
+        name: str,
+        aliases: tuple[str, ...],
+        hidden: bool,
+        group: str = "",
+        *,
+        parent_id: str | None = None,
+    ) -> TagTerm:
         with self._writer():
             document = self.load()
+            terms = list(document.terms)
+            if parent_id is not None and group.strip():
+                raise ValueError("Use parent_id or legacy group, not both")
+            parent = (
+                parent_id
+                if parent_id is not None
+                else (None if fold_tag(group) == fold_tag(name) else group_parent(terms, group))
+            )
             term = TagTerm(
                 id="raw:" + quote(fold_tag(name), safe=""),
                 name=name.strip(),
                 aliases=aliases,
                 hidden=hidden,
-                group=group.strip(),
+                parent_id=parent,
             )
-            self._write(
-                document.model_copy(
-                    update={"terms": [*document.terms, term], "revision": document.revision + 1}
-                )
+            updated = self._write(
+                document.model_copy(update={"terms": [*terms, term], "revision": document.revision + 1})
             )
-            return term
+            return next(value for value in updated.terms if value.id == term.id)
 
     def update(
         self,
@@ -151,6 +217,8 @@ class TagDictionaryStore:
         hidden: bool | None,
         revision: int,
         group: str | None = None,
+        *,
+        parent_id: str | ParentUnchanged | None = UNCHANGED_PARENT,
     ) -> TagTerm:
         with self._writer():
             document = self.load()
@@ -170,24 +238,32 @@ class TagDictionaryStore:
                 )
             if old.revision != revision:
                 raise TagRevisionConflict("tag revision conflict")
+            terms = list(document.terms)
+            parent = old.parent_id
+            if not isinstance(parent_id, ParentUnchanged):
+                if group:
+                    raise ValueError("Use parent_id or legacy group, not both")
+                parent = parent_id
+            elif group is not None:
+                parent = group_parent(terms, group)
             term = TagTerm(
                 id=identity,
                 name=name.strip(),
                 revision=revision + 1,
                 hidden=old.hidden if hidden is None else hidden,
                 aliases=tuple(dict.fromkeys([*(old.aliases if aliases is None else aliases), old.name])),
-                group=old.group if group is None else group.strip(),
+                parent_id=parent,
             )
-            self._write(
+            updated = self._write(
                 document.model_copy(
                     update={
-                        "terms": [term if value.id == identity else value for value in document.terms]
-                        + ([] if any(value.id == identity for value in document.terms) else [term]),
+                        "terms": [term if value.id == identity else value for value in terms]
+                        + ([] if any(value.id == identity for value in terms) else [term]),
                         "revision": document.revision + 1,
                     }
                 )
             )
-            return term
+            return next(value for value in updated.terms if value.id == identity)
 
     def update_rules(self, rules: TagRules, revision: int) -> TagDocument:
         with self._writer():
