@@ -204,6 +204,8 @@ export const gfriendsFillResultSchema = z.object({
   scanned: z.number(),
   matched: z.number(),
   filled: z.number(),
+  planned: z.number().default(0),
+  visible_profiles: z.number().default(0),
   skipped_no_match: z.number(),
   downloaded: z.number(),
   failed: z.number(),

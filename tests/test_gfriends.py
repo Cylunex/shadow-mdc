@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from pathlib import Path
 
 import httpx
 import pytest
+from PIL import Image
 
 from shadow_mdc.db.models import Actor
 from shadow_mdc.db.repository import Database, Repository
+from shadow_mdc.media import directory_index
+from shadow_mdc.services.actress_names import ActressNameMap
 from shadow_mdc.services.gfriends import GfriendsActorImageResolver, normalize_gfriends_name
 from shadow_mdc.services.gfriends_fill import fill_actor_images_from_gfriends
 
 
-def _sample_filetree() -> dict:
+def _sample_filetree() -> dict[str, object]:
     return {
         "Information": {"TotalNum": 2, "TotalSize": 1, "Timestamp": 1},
         "Content": {
@@ -67,11 +71,11 @@ def test_fill_downloads_and_sets_local_api_url(tmp_path: Path, monkeypatch: pyte
     cache.parent.mkdir(parents=True)
     cache.write_text(json.dumps(_sample_filetree()), encoding="utf-8")
 
-    jpeg = (
-        b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
-        + b"\x00" * 1300
-        + b"\xff\xd9"
-    )
+    image = BytesIO()
+    Image.new("RGB", (256, 256)).save(image, format="JPEG")
+    jpeg = image.getvalue()
+    images_dir.mkdir()
+    assert directory_index.file_with_stem(images_dir, "missing") is None
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith(".jpg"):
@@ -113,8 +117,50 @@ def test_fill_downloads_and_sets_local_api_url(tmp_path: Path, monkeypatch: pyte
             local = images_dir / Path(actor.image_url).name
             assert local.is_file()
             assert local.stat().st_size >= 1200
+            assert directory_index.file_with_stem(images_dir, local.stem) == local
     finally:
         resolver.close()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_portrait_preview_and_failed_download_do_not_write(tmp_path: Path, dry_run: bool) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    database.initialize()
+    cache = tmp_path / "index.json"
+    images_dir = tmp_path / "images"
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/index.json":
+            return httpx.Response(200, json=_sample_filetree())
+        # A signature alone is insufficient to accept corrupt image bytes.
+        return httpx.Response(200, content=b"\xff\xd8\xff" + b"0" * 1500)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        resolver = GfriendsActorImageResolver(
+            filetree_url="https://example.test/index.json", cache_path=cache, client=client,
+            cdn_base_url="https://example.test",
+        )
+        with database.session() as session:
+            actor = Actor(name="Yua Mikami", normalized_name="yua mikami", aliases=["Kept"])
+            session.add(actor)
+            session.flush()
+            stats = fill_actor_images_from_gfriends(
+                Repository(session), resolver, actor_images_dir=images_dir, dry_run=dry_run,
+                http_client=client, name_map=ActressNameMap.from_mapping({"yua mikami": "三上悠亜"}),
+            )
+            session.flush()
+            session.refresh(actor)
+            assert actor.aliases == ["Kept"] and actor.image_url is None
+            assert stats.filled == stats.downloaded == 0
+            assert stats.planned == int(dry_run)
+            assert stats.failed == int(not dry_run)
+            if dry_run:
+                assert requests == ["/index.json"]
+                assert not cache.exists() and not images_dir.exists()
+            else:
+                assert list(images_dir.iterdir()) == []
         client.close()
 
 

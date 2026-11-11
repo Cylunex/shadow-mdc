@@ -1,6 +1,7 @@
 import asyncio
 import time
 from collections.abc import Iterable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -49,8 +50,8 @@ class Provider(Protocol):
 
 
 class HttpProvider:
-    # Retry blocked GETs once through the curl_cffi browser-fingerprint transport.
-    impersonate_fallback: bool = True
+    # Access denials stop the source; alternate transports are never automatic.
+    impersonate_fallback: bool = False
 
     def __init__(self, client: httpx.AsyncClient, retries: int = 1) -> None:
         self._client = client
@@ -165,6 +166,10 @@ class HttpProvider:
                 )
                 response.raise_for_status()
                 break
+            except httpx.PoolTimeout as exc:
+                # Repeating the request consumes more of the same exhausted pool.
+                # This is local pressure, not evidence that the remote source failed.
+                raise ProviderError(provider, "pool_timeout", _http_error_detail(exc, attempt + 1)) from exc
             except httpx.TimeoutException as exc:
                 if attempt < self._retries:
                     await asyncio.sleep(0.25 * (attempt + 1))
@@ -254,14 +259,20 @@ class ProviderRegistry:
         failure_threshold: int = 4,
         cooldown_seconds: float = 300,
         max_concurrent_calls: int = 16,
+        max_concurrent_per_provider: int = 2,
         call_timeout_seconds: float = 90,
     ) -> None:
         if call_timeout_seconds <= 0 or not isfinite(call_timeout_seconds):
             raise ValueError("call_timeout_seconds must be finite and positive")
+        if max_concurrent_calls < 1 or max_concurrent_per_provider < 1:
+            raise ValueError("provider concurrency must be positive")
         self._providers = {provider.descriptor.id: provider for provider in providers}
         self._failure_threshold = failure_threshold
         self._cooldown_seconds = cooldown_seconds
         self._call_slots = asyncio.Semaphore(max_concurrent_calls)
+        self._provider_slots = {
+            key: asyncio.Semaphore(max_concurrent_per_provider) for key in self._providers
+        }
         self._call_timeout_seconds = call_timeout_seconds
         self._health: dict[str, _ProviderHealth] = {}
 
@@ -319,8 +330,14 @@ class ProviderRegistry:
                 active.append(provider)
 
         async def invoke(provider: Provider) -> tuple[list[ProviderRecord], ProviderFailure | None]:
+            started = False
             try:
-                async with self._call_slots:
+                async with AsyncExitStack() as slots:
+                    # Queuing has its own bounded budget so a slow source can
+                    # release a global slot and let a healthy source finish.
+                    async with asyncio.timeout(self._call_timeout_seconds * 2):
+                        await slots.enter_async_context(self._provider_slots[provider.descriptor.id])
+                        await slots.enter_async_context(self._call_slots)
                     # A preceding call may have opened the circuit while we queued.
                     health = self._health.get(provider.descriptor.id)
                     if health is not None and health.retry_after > time.monotonic():
@@ -329,6 +346,7 @@ class ProviderRegistry:
                             reason="cooldown",
                             detail=f"retry_in={max(1, round(health.retry_after - time.monotonic()))}s",
                         )
+                    started = True
                     async with asyncio.timeout(self._call_timeout_seconds):
                         records = await provider.search(hints)
                 self._health.pop(provider.descriptor.id, None)
@@ -337,6 +355,11 @@ class ProviderRegistry:
                 self._record_failure(exc)
                 return [], ProviderFailure(provider=exc.provider, reason=exc.reason, detail=exc.detail)
             except TimeoutError:
+                if not started:
+                    return [], ProviderFailure(
+                        provider=provider.descriptor.id, reason="capacity_timeout",
+                        detail=f"queue deadline={self._call_timeout_seconds * 2:g}s",
+                    )
                 error = ProviderError(
                     provider.descriptor.id, "timeout", f"search deadline={self._call_timeout_seconds:g}s"
                 )
@@ -398,7 +421,7 @@ class ProviderRegistry:
             return
         health = self._health.setdefault(error.provider, _ProviderHealth())
         health.failures += 1
-        if error.reason == "rate_limited":
+        if error.reason in {"rate_limited", "blocked"}:
             delay = error.retry_after_seconds
             health.retry_after = time.monotonic() + max(
                 0.25, delay if delay is not None else self._cooldown_seconds

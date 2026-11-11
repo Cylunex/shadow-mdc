@@ -44,6 +44,7 @@ from .catalog_management import (
 )
 from .db.models import Work
 from .intake_core import SubscribeRequest
+from .services.catalog_people import MergeRequest, PersonEdit
 from .services.discover import DiscoverList
 from .skill_operations import ClassificationFill, FillInput, IntakeItem, LinkInput, RecoverInput, TagsEdit
 from .tag_dictionary_api import RulesEdit, TagCreate, TagEdit, TagMerge
@@ -249,7 +250,7 @@ class SearchInput(EmptyInput):
 
 class MetadataInput(EmptyInput):
     code: str = Field(min_length=2, max_length=100)
-    providers: str | None = Field(default=None, max_length=500)
+    providers: bool | Annotated[str, Field(max_length=500)] | None = None
 
     @field_validator("code")
     @classmethod
@@ -259,6 +260,23 @@ class MetadataInput(EmptyInput):
 
 class GfriendsInput(GfriendsFillRequest, EmptyInput):
     pass
+
+
+class PersonEditInput(PersonEdit, ActorInput):
+    pass
+
+
+class PersonMergeInput(MergeRequest, EmptyInput):
+    pass
+
+
+class PersonMergeUndoInput(EmptyInput):
+    merge_id: str = Field(min_length=1, max_length=240)
+
+    @field_validator("merge_id")
+    @classmethod
+    def safe_identifier(cls, value: str) -> str:
+        return safe_id(value)
 
 
 class RankingSeedInput(JavRankingSeedRequest, EmptyInput):
@@ -383,6 +401,7 @@ RouteKey = Literal[
     "asset_id",
     "candidate_id",
     "person_id",
+    "merge_id",
     "actor_key",
     "tag_id",
     "term_id",
@@ -677,7 +696,7 @@ CAPABILITIES += (
         "/api/catalog/tags",
     ),
     Capability("tags.create", "新增持久化标签词条。", "write", TagCreateInput, "POST", "/api/catalog/tags"),
-    Capability("tags.merge", "合并明确同义的词条，保留旧 ID 解析和作品原始标签。",
+    Capability("tags.merge", "合并明确同义的词条,保留旧 ID 解析和作品原始标签。",
                "write", TagMerge, "POST", "/api/catalog/tags/merge"),
     Capability(
         "tags.update",
@@ -926,6 +945,22 @@ CAPABILITIES += (
         "/api/actors/fill-gfriends-images",
     ),
     Capability(
+        "actors.update", "带 revision 更新统一演员档案,省略字段保持原值。", "write",
+        PersonEditInput, "PUT", "/api/catalog/people/{person_id}", "person_id",
+    ),
+    Capability(
+        "actors.merge", "带双方 revision 可撤销合并已确认的同一演员。", "write",
+        PersonMergeInput, "POST", "/api/catalog/people-merge",
+    ),
+    Capability(
+        "actors.merges", "读取最近演员合并及撤销状态。", "read",
+        EmptyInput, "GET", "/api/catalog/people-merges",
+    ),
+    Capability(
+        "actors.merge.undo", "撤销未被后续编辑改变的演员合并。", "write",
+        PersonMergeUndoInput, "POST", "/api/catalog/people-merges/{merge_id}/undo", "merge_id",
+    ),
+    Capability(
         "playlists.create",
         "创建人工或动态片单。",
         "write",
@@ -1094,7 +1129,8 @@ def build_skill_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
             mode="json",
             exclude_unset=isinstance(
                 parsed,
-                (TaxonomyInput, WorkEditInput, ClassificationFill, TagEditInput, ClassificationEditInput),
+                (TaxonomyInput, WorkEditInput, ClassificationFill, TagEditInput,
+                 ClassificationEditInput, PersonEditInput),
             ),
         )
         path = capability.path

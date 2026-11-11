@@ -153,7 +153,7 @@ from .api_models import (
     WorkTagFacetsOut,
     WorkUpdateRequest,
 )
-from .catalog_api import build_catalog_router
+from .catalog_api import build_catalog_router, read_catalog_people
 from .classification import category_for_family
 from .config import Settings
 from .db.models import (
@@ -2513,6 +2513,10 @@ def fill_gfriends_actor_images(payload: GfriendsFillRequest, request: Request, r
 
     app_runtime = runtime(request)
     settings = app_runtime.settings
+    before_images: dict[str, str | None] = {}
+    if not payload.dry_run:
+        profiles_before = read_catalog_people(app_runtime, repo._session, private=True)
+        before_images = {person.id: person.image_url for person in profiles_before}
     cache_path = settings.data_dir / "cache" / "gfriends" / "Filetree.json"
     resolver = GfriendsActorImageResolver(
         filetree_url=settings.gfriends_filetree_url,
@@ -2554,10 +2558,20 @@ def fill_gfriends_actor_images(payload: GfriendsFillRequest, request: Request, r
             http_client.close()
     if not payload.dry_run and stats.filled:
         _invalidate_library_caches(app_runtime.response_cache)
+    visible_profiles = 0
+    if not payload.dry_run and stats.downloaded:
+        for person in read_catalog_people(app_runtime, repo._session, private=True):
+            url = person.image_url or ""
+            if (url.startswith("/api/actor-images/") and "/" not in url.removeprefix("/api/actor-images/")
+                    and before_images.get(person.id) != url
+                    and (settings.data_dir / "actor-images" / Path(url).name).is_file()):
+                visible_profiles += 1
     return GfriendsFillOut(
         scanned=stats.scanned,
         matched=stats.matched,
         filled=stats.filled,
+        planned=stats.planned,
+        visible_profiles=visible_profiles,
         skipped_no_match=stats.skipped_no_match,
         downloaded=stats.downloaded,
         failed=stats.failed,

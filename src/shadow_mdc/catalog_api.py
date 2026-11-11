@@ -334,21 +334,33 @@ def catalog_credit_names(
     if not overrides and not explicit:
         return {}
     profiles = read_catalog_people(runtime_state, session)
+    claims: dict[str, set[str]] = {}
+    for profile in profiles:
+        for alias in [profile.name, *profile.aliases]:
+            claims.setdefault(unicodedata.normalize("NFKC", alias).casefold(), set()).add(profile.id)
     names: dict[str, list[str]] = {}
     for work in works:
         original = {name: position for position, name in enumerate(work.actors)}
         entries: list[tuple[int, str]] = []
         known_aliases: set[str] = set()
+        known_folded: set[str] = set()
         for profile in profiles:
             if work.id not in profile.work_ids and work.id not in profile.excluded_work_ids:
                 continue
             aliases = {profile.name, *profile.aliases}
             known_aliases.update(aliases)
+            folded = {unicodedata.normalize("NFKC", alias).casefold() for alias in aliases
+                      if len(claims[unicodedata.normalize("NFKC", alias).casefold()]) == 1}
+            known_folded.update(folded)
             if work.id in profile.work_ids:
-                position = min((original[alias] for alias in aliases if alias in original), default=1000000)
+                position = min((position for alias, position in original.items() if alias in aliases
+                                or unicodedata.normalize("NFKC", alias).casefold() in folded),
+                               default=1000000)
                 entries.append((position, profile.name))
         # Preserve legacy text credits that have not yet acquired an entity relationship.
-        entries.extend((position, name) for name, position in original.items() if name not in known_aliases)
+        entries.extend((position, name) for name, position in original.items()
+                       if name not in known_aliases
+                       and unicodedata.normalize("NFKC", name).casefold() not in known_folded)
         names[work.id] = [name for _, name in sorted(entries)]
     return names
 
@@ -1040,6 +1052,10 @@ def build_catalog_router(
         def update_person(person_id: str, payload: PersonEdit, request: Request) -> CatalogPerson:
             with runtime(request).database.session() as session:
                 people(request, session)
+                current = stored_person(session, person_id, private=True)
+                if ("image_url" in payload.model_fields_set
+                        and payload.image_url == actor_images().display_url(current.image_url)):
+                    payload = payload.model_copy(update={"image_url": current.image_url})
                 return edit_person(session, person_id, payload)
 
         @router.post("/people-merge")

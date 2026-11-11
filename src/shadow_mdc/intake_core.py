@@ -768,12 +768,26 @@ async def intake_metadata(
     code: str,
     request: Request,
     repo: IntakeRepo,
-    providers: bool = Query(False, description="also query remote providers (slower, network)"),
+    providers: str | None = Query(None, description="true/false or comma-separated provider IDs"),
 ) -> MetadataOut:
     """Metadata by 番号 without adding anything: catalog + r18 dump (+ providers)."""
 
     normalized = normalize_code_or_422(code)
     app_runtime = _core().runtime(request)
+    selected: tuple[str, ...] | None = None
+    remote: bool | None = None
+    if providers is not None:
+        value = providers.strip().casefold()
+        if value in {"true", "1", "yes", "on"}:
+            remote = True
+        elif value in {"false", "0", "no", "off"}:
+            remote = False
+        else:
+            selected = tuple(dict.fromkeys(part.strip() for part in providers.split(",") if part.strip()))
+            known = {descriptor.id for descriptor in app_runtime.providers.descriptors()}
+            if not selected or set(selected) - known:
+                raise HTTPException(422, "unknown metadata provider")
+            remote = True
     work = repo.find_work_by_code(normalized)
     record = app_runtime.discover.r18_record(normalized)
     out = MetadataOut(
@@ -782,8 +796,8 @@ async def intake_metadata(
         work_id=work.id if work is not None else None,
         r18dump=brief_from_record(record) if record is not None else None,
     )
-    if providers or (record is None and work is None):
-        batch = await app_runtime.providers.search(_jav_hints(normalized))
+    if remote is True or (remote is None and record is None and work is None):
+        batch = await app_runtime.providers.search(_jav_hints(normalized), provider_ids=selected)
         out.providers = [brief_from_record(item) for item in batch.records[:5]]
         out.failures = [f"{item.provider}: {item.reason}" for item in batch.failures]
     if work is not None:

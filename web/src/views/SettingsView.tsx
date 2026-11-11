@@ -947,7 +947,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                 async () => {
                   const result = await api.fillGfriendsActorImages({ download: true, force_refresh: false });
                   report(
-                    `已补全 ${result.filled}/${result.scanned}（下载 ${result.downloaded} · 失败 ${result.failed} · 无匹配 ${result.skipped_no_match}）`
+                    `新增可显示头像 ${result.visible_profiles} 个档案（来源写入 ${result.filled} · 下载 ${result.downloaded} · 失败 ${result.failed} · 无匹配 ${result.skipped_no_match}）`
                   );
                 },
                 "actors"

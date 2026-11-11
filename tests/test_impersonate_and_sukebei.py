@@ -30,8 +30,12 @@ class _Probe(HttpProvider):
         return await self._get_text("probe", url, headers={"Cookie": "a=1"})
 
 
+class _LegacyProbe(_Probe):
+    impersonate_fallback = True
+
+
 @pytest.mark.asyncio
-async def test_blocked_get_falls_back_to_impersonated_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_blocked_get_stops_without_alternate_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 
     async def fake_get(url: str, **kwargs: object) -> ImpersonatedResponse:
@@ -41,9 +45,9 @@ async def test_blocked_get_falls_back_to_impersonated_transport(monkeypatch: pyt
 
     monkeypatch.setattr(base_module, "impersonated_get", fake_get)
     async with _client(403) as client:
-        assert await _Probe(client, retries=0).get("https://example.test/x") == "<html>real page</html>"
-    assert seen["url"] == "https://example.test/x"
-    assert dict(seen["headers"])["Cookie"] == "a=1"  # type: ignore[call-overload]
+        with pytest.raises(ProviderError, match="status=403"):
+            await _Probe(client, retries=3).get("https://example.test/x")
+    assert seen == {}
 
 
 @pytest.mark.asyncio
@@ -54,7 +58,7 @@ async def test_impersonated_challenge_or_error_stays_blocked(monkeypatch: pytest
     monkeypatch.setattr(base_module, "impersonated_get", challenge)
     async with _client(403) as client:
         with pytest.raises(ProviderError) as info:
-            await _Probe(client, retries=0).get("https://example.test/x")
+            await _LegacyProbe(client, retries=0).get("https://example.test/x")
     assert info.value.reason == "blocked" and "impersonate: Cloudflare" in info.value.detail
 
     async def boom(url: str, **kwargs: object) -> ImpersonatedResponse:
@@ -63,7 +67,7 @@ async def test_impersonated_challenge_or_error_stays_blocked(monkeypatch: pytest
     monkeypatch.setattr(base_module, "impersonated_get", boom)
     async with _client(451) as client:
         with pytest.raises(ProviderError) as info:
-            await _Probe(client, retries=0).get("https://example.test/x")
+            await _LegacyProbe(client, retries=0).get("https://example.test/x")
     assert info.value.reason == "blocked" and "DNSError" in info.value.detail
 
 
@@ -152,7 +156,7 @@ async def test_impersonated_get_uses_default_proxy(monkeypatch: pytest.MonkeyPat
         def __init__(self, **kwargs: object) -> None:
             captured.update(kwargs)
 
-        async def __aenter__(self) -> "_Session":
+        async def __aenter__(self) -> _Session:
             return self
 
         async def __aexit__(self, *args: object) -> None:

@@ -12,13 +12,16 @@ import logging
 import re
 import unicodedata
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 import httpx
+from PIL import Image, UnidentifiedImageError
 from sqlalchemy import or_, select
 
 from ..db.models import Actor
 from ..db.repository import Repository
+from ..media import atomicfile, directory_index
 from .actress_names import ActressNameMap, get_actress_name_map
 from .gfriends import GfriendsActorImageResolver
 
@@ -39,6 +42,7 @@ class GfriendsFillStats:
     dry_run: bool
     filetree_source: str
     filetree_entries: int
+    planned: int = 0
 
 
 def _detect_image_ext(content: bytes) -> str | None:
@@ -104,7 +108,7 @@ def fill_actor_images_from_gfriends(
 ) -> GfriendsFillStats:
     """Match actors with empty ``image_url`` against GFriends and persist URLs."""
 
-    refresh_stats = resolver.refresh(force=force_refresh_index)
+    refresh_stats = resolver.refresh(force=force_refresh_index, persist=not dry_run)
     actors = list_actors_missing_images(repo, limit=limit)
     owns_client = http_client is None
     client = http_client or httpx.Client(
@@ -115,16 +119,15 @@ def fill_actor_images_from_gfriends(
     matched = filled = downloaded = failed = 0
     skipped_no_match = 0
     try:
-        actor_images_dir.mkdir(parents=True, exist_ok=True)
+        if not dry_run and download:
+            actor_images_dir.mkdir(parents=True, exist_ok=True)
         for actor in actors:
             remote_url = resolver.resolve(_candidate_names(actor, name_map=name_map))
             if remote_url is None:
                 skipped_no_match += 1
                 continue
             matched += 1
-            _merge_resolved_aliases(actor, name_map=name_map)
             if dry_run:
-                filled += 1
                 continue
             image_url = remote_url
             if download:
@@ -135,7 +138,8 @@ def fill_actor_images_from_gfriends(
                 except Exception as exc:
                     logger.warning("gfriends download failed for %s: %s", actor.name, exc)
                     failed += 1
-                    # Still store CDN URL so UI can try remote.
+                    continue
+            _merge_resolved_aliases(actor, name_map=name_map)
             actor.image_url = image_url
             filled += 1
             if not dry_run and commit_every > 0 and filled % commit_every == 0:
@@ -157,6 +161,7 @@ def fill_actor_images_from_gfriends(
         dry_run=dry_run,
         filetree_source=str(refresh_stats.get("source", "")),
         filetree_entries=int(refresh_stats.get("entries", 0)),
+        planned=matched if dry_run else 0,
     )
 
 
@@ -166,20 +171,33 @@ def _download_portrait(
     actor_name: str,
     actor_images_dir: Path,
 ) -> str:
-    response = client.get(url)
-    response.raise_for_status()
-    content = response.content
+    with client.stream("GET", url) as response:
+        response.raise_for_status()
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes():
+            total += len(chunk)
+            if total > 8 * 1024 * 1024:
+                raise ValueError("image too large")
+            chunks.append(chunk)
+    content = b"".join(chunks)
     if len(content) < _MIN_IMAGE_BYTES:
         raise ValueError(f"image too small ({len(content)} bytes)")
     extension = _detect_image_ext(content)
     if extension is None:
         raise ValueError("unrecognized image bytes")
+    try:
+        with Image.open(BytesIO(content)) as image:
+            if image.width * image.height > 25_000_000:
+                raise ValueError("image dimensions exceed the limit")
+            image.verify()
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValueError("invalid image bytes") from exc
     filename = _image_filename(actor_name, extension)
     path = actor_images_dir / filename
     if not path.exists() or path.stat().st_size != len(content):
-        tmp = path.with_suffix(path.suffix + ".part")
-        tmp.write_bytes(content)
-        tmp.replace(path)
+        atomicfile.write_bytes(path, content)
+        directory_index.invalidate(actor_images_dir)
     return filename
 
 
@@ -215,13 +233,13 @@ def localize_cdn_actor_images(
     )
     filled = downloaded = failed = 0
     try:
-        actor_images_dir.mkdir(parents=True, exist_ok=True)
+        if not dry_run:
+            actor_images_dir.mkdir(parents=True, exist_ok=True)
         for actor in actors:
             remote = actor.image_url or ""
             if not remote.startswith("https://"):
                 continue
             if dry_run:
-                filled += 1
                 continue
             try:
                 local_name = _download_portrait(client, remote, actor.name, actor_images_dir)
@@ -250,6 +268,7 @@ def localize_cdn_actor_images(
         dry_run=dry_run,
         filetree_source="localize",
         filetree_entries=0,
+        planned=len(actors) if dry_run else 0,
     )
 
 

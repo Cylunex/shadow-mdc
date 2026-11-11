@@ -127,26 +127,34 @@ def people(session: Session, *, private: bool = False) -> list[PersonDocument]:
     result: list[PersonDocument] = []
     for root_id, members in groups.items():
         primary = rows[root_id]
-        primary_doc = PersonDocument.model_validate(primary.document)
+        primary_doc = PersonDocument.model_validate({**primary.document, **primary.edits})
         documents = [primary_doc, *(
-            PersonDocument.model_validate(row.document) for row in members if row.id != root_id
+            PersonDocument.model_validate({**row.document, **row.edits})
+            for row in members if row.id != root_id
         )]
         public_refs = sorted(set(references.get(root_id, [])))
         merged = primary_doc.model_copy(update={
             "id": root_id, "ref": public_refs[0] if public_refs else primary_doc.ref,
             "refs": public_refs,
-            "aliases": sorted({name for d in documents for name in [d.name, *d.aliases]
+            "aliases": sorted({name for d in documents for name in [d.name, *d.aliases,
+                               str(rows[d.id].document["name"])]
                                if name != primary_doc.name}),
             "work_ids": sorted({work for d in documents for work in d.work_ids if work in known_works}),
+            "excluded_work_ids": sorted({work for d in documents for work in d.excluded_work_ids}),
+            "groups": sorted({name for d in documents for name in d.groups}),
+            "match_names": sorted({name for d in documents for name in d.match_names}),
+            "notes": "\n\n".join(dict.fromkeys(d.notes for d in documents if d.notes)),
             "revision": primary.revision,
         })
-        if primary.edits:
-            merged = PersonDocument.model_validate({**merged.model_dump(), **primary.edits})
+        if "biography" not in primary.edits and not merged.biography:
+            merged.biography = next((d.biography for d in documents if d.biography), None)
+        if "image_url" not in primary.edits and not merged.image_url:
+            merged.image_url = next((d.image_url for d in documents if d.image_url), None)
+        if "x_handle" not in primary.edits and not merged.x_handle:
+            merged.x_handle = next((d.x_handle for d in documents if d.x_handle), None)
         actor_works = set(merged.work_ids) | credits.get(root_id, {}).get("actor", set())
         merged.work_ids = sorted((actor_works - set(merged.excluded_work_ids)) & known_works)
         merged.directed_work_ids = sorted(credits.get(root_id, {}).get("director", set()) & known_works)
-        if merged.name != primary_doc.name:
-            merged.aliases = list(dict.fromkeys([primary_doc.name, *merged.aliases]))
         if not private:
             merged.notes = ""
             merged.match_names = []
@@ -180,7 +188,12 @@ def edit_person(session: Session, key: str, edit: PersonEdit) -> PersonDocument:
         raise HTTPException(409, "person changed; reload before saving")
     record = session.get(CatalogPersonRecord, current.id)
     assert record is not None
-    edits = {**record.edits, **edit.model_dump(exclude={"revision"})}
+    # Omitted and unchanged fields must not pin a stale projection over later imports.
+    supplied = edit.model_dump(exclude={"revision"}, exclude_unset=True)
+    current_values = current.model_dump()
+    changes = {field: value for field, value in supplied.items()
+               if field in record.edits or value != current_values[field]}
+    edits = {**record.edits, **changes}
     changed = session.execute(update(CatalogPersonRecord).where(
         CatalogPersonRecord.id == current.id, CatalogPersonRecord.revision == edit.revision,
     ).values(edits=edits, revision=edit.revision + 1))

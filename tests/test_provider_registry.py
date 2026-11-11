@@ -36,6 +36,31 @@ class CallCounter:
     maximum: int = 0
 
 
+@pytest.mark.asyncio
+async def test_pool_timeout_is_not_retried_or_attributed_to_upstream() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.PoolTimeout("pool exhausted", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProviderError) as failure:
+            await HttpProvider(client, retries=3)._get_text("source", "https://example.test")
+    assert calls == 1 and failure.value.reason == "pool_timeout"
+
+
+@pytest.mark.asyncio
+async def test_access_denial_immediately_cools_down_source() -> None:
+    registry = ProviderRegistry([
+        FixtureProvider("blocked", failure=ProviderError("blocked", "blocked", "status=403")),
+    ])
+    hints = IdentityHints(term="TEST-123", mode=QueryMode.CODE, code="TEST-123")
+    assert (await registry.search(hints)).failures[0].reason == "blocked"
+    assert (await registry.search(hints)).failures[0].reason == "cooldown"
+
+
 @dataclass(frozen=True)
 class LimitedProvider:
     provider_id: str
@@ -56,6 +81,39 @@ class LimitedProvider:
         await asyncio.sleep(0.01)
         self.counter.active -= 1
         return []
+
+
+@pytest.mark.asyncio
+async def test_one_source_cannot_exhaust_its_pool_or_global_slots() -> None:
+    counter = CallCounter()
+    other = CallCounter()
+    registry = ProviderRegistry([
+        LimitedProvider("busy", counter), LimitedProvider("other", other),
+    ], max_concurrent_calls=8, max_concurrent_per_provider=2)
+    hints = IdentityHints(term="TEST-123", mode=QueryMode.CODE, code="TEST-123")
+    await asyncio.gather(
+        *(registry.search(hints, provider_ids=("busy",)) for _ in range(8)),
+        registry.search(hints, provider_ids=("other",)),
+    )
+    assert counter.maximum == 2 and other.maximum == 1
+
+
+@pytest.mark.asyncio
+async def test_source_queue_wait_is_bounded_without_blaming_upstream() -> None:
+    registry = ProviderRegistry([LimitedProvider("busy", CallCounter())],
+                                max_concurrent_per_provider=1, call_timeout_seconds=0.001)
+    hints = IdentityHints(term="TEST-123", mode=QueryMode.CODE, code="TEST-123")
+    # Hold all global capacity to distinguish queue pressure from an upstream timeout.
+    for _ in range(16):
+        await registry._call_slots.acquire()
+    try:
+        results = await asyncio.gather(*(registry.search(hints) for _ in range(5)))
+    finally:
+        for _ in range(16):
+            registry._call_slots.release()
+    reasons = [result.failures[0].reason for result in results]
+    assert reasons == ["capacity_timeout"] * 5
+    assert registry.health_snapshot()[0]["failures"] == 0
 
 
 @pytest.mark.asyncio

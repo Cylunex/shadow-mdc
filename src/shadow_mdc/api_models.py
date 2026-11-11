@@ -786,6 +786,8 @@ class GfriendsFillOut(BaseModel):
     scanned: int = 0
     matched: int = 0
     filled: int = 0
+    planned: int = 0
+    visible_profiles: int = 0
     skipped_no_match: int = 0
     downloaded: int = 0
     failed: int = 0

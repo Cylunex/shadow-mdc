@@ -1,7 +1,9 @@
+import re
+import unicodedata
 from datetime import date
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 from .enums import (
     ContentFamily,
@@ -115,6 +117,18 @@ class ProviderRecord(BaseModel):
     rating_max: float | None = Field(default=None, gt=0)
     rating_count: int | None = Field(default=None, ge=0)
     reviews: tuple[ReviewHighlight, ...] = ()
+
+    @field_validator("actors")
+    @classmethod
+    def named_actor_credits(cls, names: tuple[str, ...]) -> tuple[str, ...]:
+        result: list[str] = []
+        for name in names:
+            cleaned = name.strip()
+            token = unicodedata.normalize("NFKC", cleaned).casefold().strip("()[] ")
+            placeholder = re.fullmatch(r"他|その他|ほか|others?|unknown|uncredited|anonymous|n/a|-+", token)
+            if token and not placeholder:
+                result.append(cleaned)
+        return tuple(result)
 
 
 class MatchEvidence(BaseModel):

@@ -132,6 +132,19 @@ def test_metadata_and_library_not_in_catalog(client: TestClient) -> None:
     assert lib == {**lib, "in_catalog": False, "in_library": False}
 
 
+def test_metadata_provider_selection_and_explicit_off(client: TestClient) -> None:
+    search = app.state.runtime.providers.search
+    selected = client.get("/api/intake/v1/metadata/SSIS-123?providers=javdb,javbus", headers=AUTH)
+    assert selected.status_code == 200, selected.text
+    assert search.await_args.kwargs["provider_ids"] == ("javdb", "javbus")
+    search.reset_mock()
+    offline = client.get("/api/intake/v1/metadata/SSIS-123?providers=false", headers=AUTH)
+    assert offline.status_code == 200 and offline.json()["providers"] == []
+    search.assert_not_awaited()
+    assert client.get("/api/intake/v1/metadata/SSIS-123?providers=missing", headers=AUTH).status_code == 422
+    search.assert_not_awaited()
+
+
 def test_offline_dry_run_plans_without_writes(client: TestClient) -> None:
     out = client.post(
         "/api/intake/v1/offline", json={"code": "ｓｓｉｓ－１２３", "dry_run": True}, headers=AUTH  # noqa: RUF001

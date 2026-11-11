@@ -53,8 +53,26 @@
 - 返回 `changed/errors/outcome`。缺少可信资料或下载失败会报告失败，不能把部分更新说成全部补齐。
 
 演员档案头像可用 `actors.images.fill` 补齐，默认不强制刷新；执行前看 schema，按范围设置 limit。
+预演 `dry_run=true` 不写数据库、别名、图片或索引文件，`planned` 表示可匹配数，`filled` 为零。
+正式下载失败保持待补，不把失效远程地址计为补齐；`download=false` 仅保存来源地址，
+不证明最终图片可以显示。下载成功会校验图片内容并立即更新文件索引。
+`visible_profiles` 单独统计统一档案中新增可显示的本地头像，合并档案只计一次；
+人工清空或指定的头像仍受保护，来源记录写入数可能大于可显示档案数。
 这与作品缺演员名单是两种操作。批量使用 `prepare works.fill`，见 [批量工作](batches.md)。
 确实需要替换已有未锁元数据时才用 `works.refresh`，沿用重刮配额。
+
+## 演员档案维护
+
+服务目录支持时，`actors.update` 接受 `person_id/name/revision` 及明确修改的字段；省略字段保持原值，
+不要把展示图片路由当作新的来源地址。`actors.merge` 只对已经确认是同一人的两份档案使用，
+携带 `target_id/source_id/target_revision/source_revision`，冲突先回读。
+合并保留双方名字、别名、关联与资料；`actors.merges` 读取合并记录，
+`actors.merge.undo {"merge_id":"REPLACE_MERGE_ID"}` 可撤销没有后续冲突的合并。
+姓名相似、大小写相同或短昵称本身不构成合并依据。
+
+`metadata.lookup.providers` 可传 `true` 查询已配置来源、`false` 禁止远程查询，
+或传逗号分隔的正式来源 ID 定点查询；未知 ID 拒绝执行，省略沿用本地优先的默认行为。
+来源拒绝访问或限流后进入冷却，不自动切换传输；连接池等待超时单独报告，不反复重试同一池。
 
 ## LTX 选择
 

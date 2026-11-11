@@ -82,7 +82,7 @@ class GfriendsActorImageResolver:
                 return self._cdn_url(relative)
         return None
 
-    def refresh(self, *, force: bool = False) -> dict[str, Any]:
+    def refresh(self, *, force: bool = False, persist: bool = True) -> dict[str, Any]:
         """Fetch Filetree (or reuse fresh disk cache) and rebuild the memory index."""
 
         with self._lock:
@@ -108,7 +108,7 @@ class GfriendsActorImageResolver:
                     }
                 raise
 
-            bytes_written = self._write_cache_payload(payload)
+            bytes_written = self._write_cache_payload(payload) if persist else 0
             self._index = self._build_index(payload)
             self._disk_hydrated = True
             self._hydrated_mtime = self._cache_mtime()
