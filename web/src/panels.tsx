@@ -1148,6 +1148,7 @@ export function Works(props: {
     const counts = new Map<string, number>();
     for (const work of works) {
       for (const item of work.collections ?? []) {
+        if (item.kind !== "series") continue;
         const key = `${item.kind}:${item.name}`;
         counts.set(key, (counts.get(key) ?? 0) + 1);
       }
@@ -1281,7 +1282,7 @@ export function Works(props: {
         <input id="shadow-mdc-lookup" value={code} onChange={(event) => setCode(event.target.value)} placeholder="番号、FC2 或详情 URL · ⌘K" />
         <button disabled={!code.trim() || props.busy === "lookup-work"}>一键查档</button>
         <button type="button" className="secondary" disabled={props.busy === "translate-works"} onClick={() => void props.translateWorks()}>补翻译</button>
-        <button type="button" className="ghost" disabled={props.busy === "seed-collections"} onClick={() => void props.seedCollections()}>重建合集</button>
+        <button type="button" className="ghost" disabled={props.busy === "seed-collections"} onClick={() => void props.seedCollections()}>补齐机构与系列</button>
       </form>
     </div>
     {works.length > 0 && (
@@ -1317,9 +1318,9 @@ export function Works(props: {
           <select
             value={collectionFilter || "all"}
             onChange={(event) => commitFilters({ collection: event.target.value === "all" ? "" : event.target.value })}
-            aria-label="按合集筛选"
+            aria-label="按系列筛选"
           >
-            <option value="all">全部合集</option>
+            <option value="all">全部系列</option>
             {collectionOptions.map(([value, count]) => (
               <option key={value} value={value}>{value} · {count}</option>
             ))}

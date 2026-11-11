@@ -40,7 +40,7 @@ Media 中从「影视 → 媒体库 → Shadow MDC 片库」添加连接。设�
 
 Web 使用 /api/catalog，移动端使用受移动令牌保护的 /api/media/v1/catalog。
 works/query 接收组合筛选，facets 返回去重数量；people 汇集两类历史人物档案并保留旧 ref，
-无作品档案仍可检索。机构沿用已有 Collection ID，保留工作室、厂牌、系列和平台角色。
+无作品档案仍可检索。机构沿用已有 ID，制作、发行、厂牌与平台职责分别保存；系列使用独立档案和成员关系，不作为机构职责。参见[实体与归属关系](catalog-entities.md)。
 年代、发行年、演员任意/共同出演、标签任意/全部/排除、机构与文件/Emby 状态可组合。
 形式、题材、制作地区存于 work_taxonomy，Web 分类编辑保存的值独立于刮削字段。
 

@@ -475,7 +475,7 @@ export function App() {
               navigateToFilteredWorks({ studio }, `已筛选片商：${studio}`, true);
             }}
             onSelectSeries={(series) => {
-              navigateToFilteredWorks({ q: series }, `已搜索系列：${series}`, true);
+              navigateToFilteredWorks({ collection: `series:${series}` }, `已筛选系列：${series}`, true);
             }}
             onSelectYear={(year) => {
               navigateToFilteredWorks({ year }, `已筛选年份：${year}`, true);

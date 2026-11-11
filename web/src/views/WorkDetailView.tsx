@@ -499,7 +499,7 @@ export function WorkDetailView(props: {
                     <button
                       type="button"
                       className="display-tag-chip"
-                      title={`搜索系列「${work.series}」`}
+                      title={`按系列「${work.series}」筛选`}
                       onClick={() => props.onSelectSeries?.(work.series!)}
                     >{work.series}</button>
                   ) : work.series
@@ -896,13 +896,16 @@ export function WorkDetailView(props: {
           </section>
 
           <section className="work-page-section work-page-aux">
-            <h2>合集</h2>
-            <div className="tags">
-              {(work.collections ?? []).map((item) => (
-                <span key={item.id}>{item.kind} · {item.name}</span>
-              ))}
-              {(work.collections ?? []).length === 0 && <p className="muted">尚未关联系列/片商/平台合集</p>}
-            </div>
+            <h2>制作与作品归属</h2>
+            <dl>
+              <MetaRow label="机构署名" empty={!(work.collections ?? []).some(item => item.kind !== "series")}>
+                {(work.collections ?? []).filter(item => item.kind !== "series").map(item =>
+                  <span key={item.id}>{({ organization: "片商 / 公司", studio: "制作方", label: "厂牌", platform: "发布平台" } as Record<string, string>)[item.kind]} · {item.name} </span>)}
+              </MetaRow>
+              <MetaRow label="所属系列" empty={!(work.collections ?? []).some(item => item.kind === "series")}>
+                {(work.collections ?? []).filter(item => item.kind === "series").map(item => <span key={item.id}>{item.name} </span>)}
+              </MetaRow>
+            </dl>
           </section>
 
           <section className="work-page-section work-page-aux">

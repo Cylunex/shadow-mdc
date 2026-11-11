@@ -60,3 +60,10 @@ SSH 端使用已有 HTTP 私有配置。CLI 不跟随 HTTP 重定向，不输出
 
 作品时长筛选可用 `works.query` / `works.facets` 的 `duration_min`、`duration_max`（秒，左闭右开）或 `unknown_duration`。
 作品语言表示原始对白语言；题材用标签维护。标签词条支持 `group` 分组，更新省略保持、空字符串清除。
+
+机构与系列分开：`organizations.list` 返回片商、工作室及所属品牌和渠道，`series.list` 返回独立系列。
+`works.query` / `works.facets` 的 `organizations`、`labels`、`platforms`、`series` 使用实际 ID，跨维度同时匹配。
+`organizations.create/update` 维护机构及所属关系，`organizations.link` 只维护制作、发行等职责；
+`series.create/update` 维护系列及已知归属，`series.add` 只加入作品成员。更新带当前 `revision`。
+不把系列 ID 当机构 ID，不把厂牌视为演员，不凭平台词或 `studio` 字段名推定组织形态、隶属关系。
+调用前先确认当前服务 catalog 已包含这些能力；代码中的新增能力不代表当前已部署。

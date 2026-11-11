@@ -165,6 +165,29 @@ it("filters runtime and keeps work types under more filters", async () => {
   expect(requests.length).toBeGreaterThan(0);
 });
 
+it("combines production, brand, channel and series without treating series as an organization", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(
+    url.endsWith("/facets") ? {
+      organizations: [{ id: "maker", name: "Company", role: "organization", count: 3 }],
+      labels: [{ id: "brand", name: "Brand", count: 2 }],
+      platforms: [{ id: "channel", name: "Channel", count: 1 }],
+      series: [{ id: "cycle", name: "Cycle", count: 2 }],
+    } : { items: [], next_cursor: null, total: 0 },
+  ))));
+  await act(async () => root.render(<UnifiedCatalogView mode="works" onOpenWork={vi.fn()} onOpenActor={vi.fn()} />));
+  await act(async () => button("分类与筛选").click());
+  expect(container.querySelector('[aria-label="合集"]')).toBeNull();
+  expect(container.querySelector('[aria-label="机构和系列"]')).toBeNull();
+  await change("筛选制作机构", "maker");
+  await change("筛选厂牌", "brand");
+  await change("筛选发布平台", "channel");
+  await change("筛选系列", "cycle");
+  expect(readCatalogFilters(window.location.search)).toMatchObject({
+    organizations: ["maker"], labels: ["brand"], platforms: ["channel"], series: ["cycle"],
+  });
+  expect(container.querySelector(".active-filter-chips")?.textContent).toContain("系列：Cycle");
+});
+
 it("jumps actor pages, resets offsets on sort and search, and requests only the chosen page size", async () => {
   const fetch = vi.fn(async (url: string) => {
     const params = new URL(url, "https://example.com").searchParams;

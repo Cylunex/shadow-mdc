@@ -6,12 +6,14 @@ export const filtersSchema = z.object({
   collection: z.string().optional(), seed: z.number().int().min(0).max(1000000).optional().catch(undefined),
   actors: z.array(z.string()).default([]), actors_all: z.boolean().default(false),
   actor_name: z.string().optional(), studio_name: z.string().optional(),
+  series_name: z.string().optional(), series: z.array(z.string()).default([]),
   tags: z.array(z.string()).default([]), tags_all: z.boolean().default(false),
   exclude_tags: z.array(z.string()).default([]), genres: z.array(z.string()).default([]),
   forms: z.array(z.string()).default([]), regions: z.array(z.string()).default([]),
   contents: z.array(z.string()).default([]), types: z.array(z.string()).default([]),
   languages: z.array(z.string()).default([]), subtitle_languages: z.array(z.string()).default([]),
   organizations: z.array(z.string()).default([]), organization_role: z.string().optional(),
+  labels: z.array(z.string()).default([]), platforms: z.array(z.string()).default([]),
   year_from: z.number().int().optional().catch(undefined), year_to: z.number().int().optional().catch(undefined),
   unknown_year: z.boolean().default(false),
   duration_min: z.number().int().min(0).optional().catch(undefined),
@@ -25,10 +27,10 @@ export const EMPTY_CATALOG_FILTERS: Filters = filtersSchema.parse({});
 
 const lists = {
   actors: "person", tags: "tag", exclude_tags: "exclude", genres: "genre",
-  forms: "form", regions: "region", organizations: "org",
+  forms: "form", regions: "region", organizations: "org", series: "series", labels: "label", platforms: "platform",
   contents: "content", types: "type", languages: "language", subtitle_languages: "subtitle",
 } as const;
-const strings = { q: "q", actor_name: "cast", studio_name: "studio", organization_role: "role", collection: "col" } as const;
+const strings = { q: "q", actor_name: "cast", studio_name: "studio", series_name: "series_name", organization_role: "role", collection: "col" } as const;
 const keys = [...Object.values(lists), ...Object.values(strings), "year", "from", "to", "sort", "status", "cast_all", "match", "cat", "seed", "page", "duration_min", "duration_max", "duration_unknown"];
 
 function year(value: string | null): number | undefined {

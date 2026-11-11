@@ -92,7 +92,7 @@ class ProviderRequirement(StrEnum):
 
 
 class CollectionKind(StrEnum):
-    """Collection kinds: series / studio / platform / label (not loose tags)."""
+    """Legacy collection projection; series dossiers and organization credits are separate domains."""
 
     ORGANIZATION = "organization"
     SERIES = "series"

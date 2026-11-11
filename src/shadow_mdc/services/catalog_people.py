@@ -49,6 +49,7 @@ class PersonDocument(BaseModel):
     revision: int = 1
     collaborators: list[Collaboration] = Field(default_factory=list)
     organizations: list[Collaboration] = Field(default_factory=list)
+    series: list[Collaboration] = Field(default_factory=list)
     years: list[int] = Field(default_factory=list)
 
 

@@ -231,6 +231,8 @@ def test_incremental_export_with_no_kept_works_prunes_every_child_table(tmp_path
             "work_collections",
             "external_identities",
             "source_snapshots",
+            "catalog_work_series",
+            "catalog_work_organizations",
         ):
             assert connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] == 0, table
         # Actors and collections lose their only work link, so they go too.

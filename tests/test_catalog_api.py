@@ -205,7 +205,7 @@ def test_ordered_playlists_scopes_revisions_and_organization_cycles(
             session.add_all([
                 Work(id="a", title="A"), Work(id="b", title="B"),
                 Collection(id="first", name="One", normalized_name="one", kind="studio"),
-                Collection(id="second", name="Two", normalized_name="two", kind="label"),
+                Collection(id="second", name="Two", normalized_name="two", kind="organization"),
             ])
         independent = client.post("/api/catalog/organizations", json={"name": "Independent"})
         assert independent.status_code == 201, independent.text

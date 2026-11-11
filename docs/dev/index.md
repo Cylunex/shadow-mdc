@@ -3,6 +3,7 @@
 提交: beb3400
 
 - [架构与跨模块契约](../architecture.md)
+- [片库实体、机构层级与系列归属](../catalog-entities.md)
 - [来源参考与设计取舍](../references.md)
 - [用户可见行为](../user-guide.md)
 

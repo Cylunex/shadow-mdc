@@ -57,8 +57,8 @@ export function CatalogLibraryTools({ actions }: { actions: CatalogActions }) {
       })}>补翻译</button>
       <button type="button" disabled={!!actions.busy} onClick={() => void actions.run("collections", async () => {
         const result = await api.seedCollections();
-        return `合集索引：共 ${result.collections_total}，新建 ${result.collections_created}`;
-      })}>重建合集</button>
+        return `机构与系列：共 ${result.collections_total}，补齐 ${result.collections_created}`;
+      })}>补齐机构与系列</button>
     </form>
   </details>;
 }

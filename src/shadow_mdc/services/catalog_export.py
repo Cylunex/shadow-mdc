@@ -28,10 +28,17 @@ _CATALOG_TABLES = (
     "source_snapshots",
     "collections",
     "work_collections",
+    "catalog_organizations",
+    "catalog_work_organizations",
+    "catalog_series",
+    "catalog_work_series",
 )
 _RUNTIME_TABLES = ("libraries", "media_assets", "match_candidates", "task_runs")
 # Tables that carry a work_id FK; a partial export must prune the ones whose work is dropped.
-_CHILD_WORK_TABLES = ("work_actors", "work_collections", "external_identities", "source_snapshots")
+_CHILD_WORK_TABLES = (
+    "work_actors", "work_collections", "external_identities", "source_snapshots",
+    "catalog_work_organizations", "catalog_work_series",
+)
 _STATE_VERSION = 1
 DEFAULT_STATE_NAME = "export-manifest.json"
 
@@ -729,6 +736,17 @@ def _clean_database(
                 connection.execute(f'DELETE FROM "{table}"')
         partial = keep_work_ids is not None and _table_exists(connection, "works")
         if partial:
+            # Some existing stores predate ON DELETE CASCADE on catalog credits.
+            # Prune the portable copy's memberships before dropping their works.
+            for table in _CHILD_WORK_TABLES:
+                if not _table_exists(connection, table):
+                    continue
+                if keep_work_ids:
+                    placeholders = ",".join("?" for _ in keep_work_ids)
+                    connection.execute(f'DELETE FROM "{table}" WHERE work_id NOT IN ({placeholders})',
+                                       tuple(keep_work_ids))
+                else:
+                    connection.execute(f'DELETE FROM "{table}"')
             if keep_work_ids:
                 placeholders = ",".join("?" for _ in keep_work_ids)
                 connection.execute(
@@ -751,11 +769,27 @@ def _clean_database(
                     """
                 )
             if _table_exists(connection, "collections") and _table_exists(connection, "work_collections"):
+                retained = ["SELECT collection_id FROM work_collections"]
+                if _table_exists(connection, "catalog_series"):
+                    connection.execute(
+                        "DELETE FROM catalog_series WHERE revision = 0 AND organization_id IS NULL "
+                        "AND description IS NULL AND aliases = '[]' "
+                        "AND id NOT IN (SELECT series_id FROM catalog_work_series) "
+                        "AND id NOT IN (SELECT collection_id FROM work_collections)"
+                    )
+                    retained.extend((
+                        "SELECT id FROM catalog_series",
+                        "SELECT organization_id FROM catalog_series WHERE organization_id IS NOT NULL",
+                    ))
+                if _table_exists(connection, "catalog_organizations"):
+                    retained.extend((
+                        "SELECT id FROM catalog_organizations",
+                        "SELECT parent_id FROM catalog_organizations WHERE parent_id IS NOT NULL",
+                    ))
+                if _table_exists(connection, "catalog_work_organizations"):
+                    retained.append("SELECT organization_id FROM catalog_work_organizations")
                 connection.execute(
-                    """
-                    DELETE FROM collections
-                    WHERE id NOT IN (SELECT DISTINCT collection_id FROM work_collections)
-                    """
+                    "DELETE FROM collections WHERE id NOT IN (" + " UNION ".join(retained) + ")"
                 )
         _rewrite_artwork_paths(
             connection,

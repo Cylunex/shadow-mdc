@@ -285,7 +285,7 @@ class OrganizeJournalRecord(Base):
 
 
 class Collection(Base):
-    """Collection entity (series/studio/platform/label) many-to-many with Work."""
+    """Legacy collection registry; series have their own canonical dossier and membership."""
 
     __tablename__ = "collections"
     __table_args__ = (
@@ -430,9 +430,31 @@ class CatalogOrganization(Base):
 class CatalogWorkOrganization(Base):
     __tablename__ = "catalog_work_organizations"
     __table_args__ = (Index("ix_catalog_org_work", "organization_id", "work_id"),)
-    work_id: Mapped[str] = mapped_column(ForeignKey("works.id"), primary_key=True)
+    work_id: Mapped[str] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"), primary_key=True)
     organization_id: Mapped[str] = mapped_column(ForeignKey("collections.id"), primary_key=True)
     role: Mapped[str] = mapped_column(String(30), primary_key=True)
+
+
+class CatalogSeries(Base):
+    """A named body of works, optionally owned by an organization (never an organization subtype)."""
+
+    __tablename__ = "catalog_series"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(300))
+    normalized_name: Mapped[str] = mapped_column(String(300), unique=True)
+    aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
+    description: Mapped[str | None] = mapped_column(Text)
+    organization_id: Mapped[str | None] = mapped_column(ForeignKey("collections.id"), index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class CatalogWorkSeries(Base):
+    """Series membership, independent of production/distribution credits."""
+
+    __tablename__ = "catalog_work_series"
+    work_id: Mapped[str] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"), primary_key=True)
+    series_id: Mapped[str] = mapped_column(ForeignKey("catalog_series.id"), primary_key=True)
+    source: Mapped[str] = mapped_column(String(30), primary_key=True, default="manual")
 
 
 class CatalogPlaylist(Base):

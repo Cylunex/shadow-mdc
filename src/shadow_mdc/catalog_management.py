@@ -14,12 +14,14 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.selectable import Subquery
 
+from .catalog_series import ORGANIZATION_KINDS, ensure_series, find_series, link_series, series_relationships
 from .classifications import ClassificationSelection
 from .collection_names import normalize_collection_name
 from .db.models import (
     CatalogOrganization,
     CatalogPlaylist,
     CatalogPlaylistRule,
+    CatalogSeries,
     CatalogWorkOrganization,
     Collection,
     Work,
@@ -29,7 +31,8 @@ from .db.models import (
 if TYPE_CHECKING:
     from .api import Runtime
 
-Role = Literal["studio", "distributor", "label", "platform", "series", "credited"]
+Role = Literal["studio", "distributor", "label", "platform", "credited"]
+OrganizationKind = Literal["organization", "studio", "label", "platform"]
 
 
 class OrganizationEdit(BaseModel):
@@ -51,7 +54,7 @@ class OrganizationEdit(BaseModel):
 
 
 class OrganizationCreate(OrganizationEdit):
-    kind: Literal["organization", "studio", "label", "platform", "series"] = "organization"
+    kind: OrganizationKind = "organization"
 
 
 class OrganizationOut(OrganizationEdit):
@@ -63,6 +66,30 @@ class OrganizationOut(OrganizationEdit):
 class OrganizationLink(BaseModel):
     work_id: str
     role: Role
+
+
+class SeriesEdit(BaseModel):
+    name: str = Field(min_length=1, max_length=300)
+    aliases: list[str] = Field(default_factory=list, max_length=100)
+    description: str | None = Field(default=None, max_length=30000)
+    organization_id: str | None = None
+    revision: int = Field(default=0, ge=0)
+
+    @field_validator("name")
+    @classmethod
+    def nonempty_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("name cannot be blank")
+        return value.strip()
+
+
+class SeriesOut(SeriesEdit):
+    id: str
+    work_count: int = 0
+
+
+class SeriesMember(BaseModel):
+    work_id: str
 
 
 class CatalogFilter(ClassificationSelection):
@@ -81,10 +108,14 @@ class CatalogFilter(ClassificationSelection):
     actors_all: bool = False
     actor_name: str = ""
     studio_name: str = ""
+    series_name: str = ""
+    series: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     tags_all: bool = False
     exclude_tags: list[str] = Field(default_factory=list)
     organizations: list[str] = Field(default_factory=list)
+    labels: list[str] = Field(default_factory=list)
+    platforms: list[str] = Field(default_factory=list)
     organization_role: str = ""
     year_from: int | None = None
     year_to: int | None = None
@@ -132,12 +163,24 @@ class PlaylistMember(BaseModel):
 
 
 def organization_relationships() -> Subquery:
-    return union(
+    """Organization credits, including subsidiaries; series membership is a separate relation."""
+    direct = union(
         select(WorkCollection.collection_id.label("organization_id"), WorkCollection.work_id,
-               Collection.kind.label("role")).join(Collection, Collection.id == WorkCollection.collection_id),
+               Collection.kind.label("role")).join(Collection, Collection.id == WorkCollection.collection_id)
+        .where(Collection.kind.in_(ORGANIZATION_KINDS)),
         select(CatalogWorkOrganization.organization_id, CatalogWorkOrganization.work_id,
-               CatalogWorkOrganization.role),
-    ).subquery()
+               CatalogWorkOrganization.role).join(
+                   Collection, Collection.id == CatalogWorkOrganization.organization_id,
+               )
+        .where(Collection.kind.in_(ORGANIZATION_KINDS), CatalogWorkOrganization.role != "series"),
+    ).cte()
+    ancestors = select(direct).cte(recursive=True)
+    ancestors = ancestors.union(select(
+        CatalogOrganization.parent_id, ancestors.c.work_id, ancestors.c.role,
+    ).join(CatalogOrganization, CatalogOrganization.id == ancestors.c.organization_id)
+        .join(Collection, Collection.id == CatalogOrganization.parent_id)
+        .where(Collection.kind.in_(ORGANIZATION_KINDS)))
+    return select(ancestors).subquery()
 
 
 def build_management_router(
@@ -146,6 +189,38 @@ def build_management_router(
     *, prefix: str, writable: bool,
 ) -> APIRouter:
     router = APIRouter(prefix=prefix)
+
+    def require_organization(session: Session, identity: str) -> Collection:
+        row = session.get(Collection, identity)
+        if row is None or row.kind not in ORGANIZATION_KINDS:
+            raise HTTPException(404, "organization not found")
+        return row
+
+    def require_parent(session: Session, identity: str) -> None:
+        if require_organization(session, identity).kind not in ("organization", "studio"):
+            raise HTTPException(422, "a parent organization must be a company or studio")
+
+    def series_out(row: CatalogSeries, session: Session, count: int | None = None) -> SeriesOut:
+        if count is None:
+            links = series_relationships()
+            count = session.scalar(select(func.count()).select_from(links).where(
+                links.c.series_id == row.id,
+            )) or 0
+        return SeriesOut(id=row.id, name=row.name, aliases=row.aliases, description=row.description,
+                         organization_id=row.organization_id, revision=row.revision, work_count=count)
+
+    @router.get("/series")
+    def series(request: Request) -> list[SeriesOut]:
+        with runtime(request).database.session() as session:
+            links = series_relationships()
+            counts: dict[str, int] = {key: count for key, count in session.execute(select(
+                links.c.series_id, func.count(),
+            ).group_by(
+                links.c.series_id,
+            ))}
+            return [series_out(row, session, counts.get(row.id, 0)) for row in session.scalars(
+                select(CatalogSeries).order_by(CatalogSeries.name, CatalogSeries.id),
+            )]
 
     def owner(x_catalog_owner: str | None) -> str:
         # A random client namespace scopes device preferences; it is not an authentication token.
@@ -168,7 +243,9 @@ def build_management_router(
                 parent_id=extras[row.id].parent_id if row.id in extras else None,
                 revision=extras[row.id].revision if row.id in extras else 0,
                 work_count=counts.get(row.id, 0),
-            ) for row in session.scalars(select(Collection).order_by(Collection.name, Collection.id))]
+            ) for row in session.scalars(select(Collection).where(
+                Collection.kind.in_(ORGANIZATION_KINDS),
+            ).order_by(Collection.name, Collection.id))]
 
     if writable:
         @router.post("/organizations", status_code=201)
@@ -180,8 +257,8 @@ def build_management_router(
                     Collection.kind == payload.kind, Collection.normalized_name == normalized,
                 )):
                     raise HTTPException(409, "organization with this name already exists")
-                if payload.parent_id and session.get(Collection, payload.parent_id) is None:
-                    raise HTTPException(404, "parent organization not found")
+                if payload.parent_id:
+                    require_parent(session, payload.parent_id)
                 row = Collection(name=payload.name, normalized_name=normalized, kind=payload.kind,
                                  aliases=payload.aliases, description=payload.description)
                 session.add(row)
@@ -202,9 +279,7 @@ def build_management_router(
             with runtime(request).database.session() as session:
                 # Serialize hierarchy validation with its update on the supported SQLite store.
                 session.connection().exec_driver_sql("BEGIN IMMEDIATE")
-                collection = session.get(Collection, organization_id)
-                if collection is None:
-                    raise HTTPException(404, "organization not found")
+                collection = require_organization(session, organization_id)
                 current = session.get(CatalogOrganization, organization_id)
                 if (current.revision if current else 0) != payload.revision:
                     raise HTTPException(409, "organization changed; reload")
@@ -215,8 +290,7 @@ def build_management_router(
                         if parent in visited:
                             raise HTTPException(409, "organization hierarchy cannot contain cycles")
                         visited.add(parent)
-                        if session.get(Collection, parent) is None:
-                            raise HTTPException(404, "parent organization not found")
+                        require_parent(session, parent)
                         ancestor = session.get(CatalogOrganization, parent)
                         parent = ancestor.parent_id if ancestor else None
                 normalized = normalize_collection_name(payload.name)
@@ -256,14 +330,67 @@ def build_management_router(
             organization_id: str, payload: OrganizationLink, request: Request,
         ) -> dict[str, str]:
             with runtime(request).database.session() as session:
-                if (session.get(Collection, organization_id) is None
-                        or session.get(Work, payload.work_id) is None):
-                    raise HTTPException(404, "organization or work not found")
+                require_organization(session, organization_id)
+                if session.get(Work, payload.work_id) is None:
+                    raise HTTPException(404, "work not found")
                 statement = insert(CatalogWorkOrganization).values(
                     organization_id=organization_id, work_id=payload.work_id, role=payload.role,
                 )
                 session.execute(statement.on_conflict_do_nothing())
             return {"work_id": payload.work_id, "role": payload.role}
+
+        @router.post("/series", status_code=201)
+        def create_series(payload: SeriesEdit, request: Request) -> SeriesOut:
+            with runtime(request).database.session() as session:
+                session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                if payload.organization_id:
+                    require_organization(session, payload.organization_id)
+                if find_series(session, payload.name) is not None:
+                    raise HTTPException(409, "series with this name already exists")
+                row = ensure_series(session, payload.name)
+                row.aliases, row.description = payload.aliases, payload.description
+                row.organization_id, row.revision = payload.organization_id, 1
+                session.flush()
+                return series_out(row, session)
+
+        @router.put("/series/{series_id}")
+        def edit_series(series_id: str, payload: SeriesEdit, request: Request) -> SeriesOut:
+            with runtime(request).database.session() as session:
+                session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                row = session.get(CatalogSeries, series_id)
+                if row is None:
+                    raise HTTPException(404, "series not found")
+                if row.revision != payload.revision:
+                    raise HTTPException(409, "series changed; reload")
+                if payload.organization_id:
+                    require_organization(session, payload.organization_id)
+                normalized = normalize_collection_name(payload.name)
+                if session.scalar(select(Collection.id).where(
+                    Collection.kind == "series", Collection.normalized_name == normalized,
+                    Collection.id != series_id,
+                )):
+                    raise HTTPException(409, "series with this name already exists")
+                row.aliases = list(dict.fromkeys([
+                    *payload.aliases, *([row.name] if row.name != payload.name else []),
+                ]))
+                row.name, row.normalized_name = payload.name, normalized
+                row.description, row.organization_id = payload.description, payload.organization_id
+                row.revision += 1
+                legacy = session.get(Collection, series_id)
+                if legacy is not None:
+                    legacy.name, legacy.normalized_name = row.name, row.normalized_name
+                    legacy.aliases, legacy.description = row.aliases, row.description
+                session.flush()
+                return series_out(row, session)
+
+        @router.put("/series/{series_id}/works")
+        def add_series_member(series_id: str, payload: SeriesMember, request: Request) -> dict[str, str]:
+            with runtime(request).database.session() as session:
+                if (session.get(CatalogSeries, series_id) is None
+                        or session.get(Work, payload.work_id) is None):
+                    raise HTTPException(404, "series or work not found")
+                link_series(session, payload.work_id, series_id)
+            return {"work_id": payload.work_id, "series_id": series_id}
 
     def playlist_members(
         row: CatalogPlaylist, rule: CatalogPlaylistRule | None, request: Request, session: Session,

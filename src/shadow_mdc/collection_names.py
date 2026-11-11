@@ -13,17 +13,10 @@ def normalize_collection_name(value: str) -> str:
 
 
 def detect_collection_kind(name: str, *, preferred: CollectionKind | None = None) -> CollectionKind:
-    """Map a free-text studio/series/label into a Collection kind.
+    """Classify legacy organization credits without overriding explicit series evidence."""
 
-    Known Chinese platforms (麻豆/探花/糖心…) stay PLATFORM even when the string
-    came from a Work.series field, so the UI does not grow duplicate series+platform
-    rows for the same brand.
-    """
-
-    if preferred is CollectionKind.LABEL:
-        return CollectionKind.LABEL
-    if preferred is CollectionKind.PLATFORM:
-        return CollectionKind.PLATFORM
+    if preferred in (CollectionKind.SERIES, CollectionKind.LABEL, CollectionKind.PLATFORM):
+        return preferred
     rules = catalog_rules()
     key = normalize_collection_name(name)
     if key in rules.platform_names:

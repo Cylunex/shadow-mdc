@@ -18,8 +18,8 @@ def test_detect_collection_kind_prefers_chinese_platforms() -> None:
     assert detect_collection_kind("糖心Vlog", preferred=CollectionKind.STUDIO) is CollectionKind.PLATFORM
     assert detect_collection_kind("Blacked", preferred=CollectionKind.STUDIO) is CollectionKind.STUDIO
     assert detect_collection_kind("MDX", preferred=CollectionKind.SERIES) is CollectionKind.SERIES
-    assert detect_collection_kind("麻豆传媒", preferred=CollectionKind.SERIES) is CollectionKind.PLATFORM
-    assert detect_collection_kind("糖心Vlog", preferred=CollectionKind.SERIES) is CollectionKind.PLATFORM
+    assert detect_collection_kind("麻豆传媒", preferred=CollectionKind.SERIES) is CollectionKind.SERIES
+    assert detect_collection_kind("糖心Vlog", preferred=CollectionKind.SERIES) is CollectionKind.SERIES
 
 
 def test_seed_collections_from_work_fields(tmp_path: Path) -> None:
@@ -45,7 +45,7 @@ def test_seed_collections_from_work_fields(tmp_path: Path) -> None:
         collections = repo.collections_for_work(work.id)
         kinds = {item.kind for item in collections}
         names = {item.name for item in collections}
-        assert "platform" in kinds
+        assert "organization" in kinds
         assert "series" in kinds
         assert "label" in kinds
         assert "麻豆传媒" in names
@@ -95,9 +95,9 @@ def test_collections_api_list_and_filter_works(
 
         seeded = client.post("/api/collections/seed").json()
         assert seeded["collections_total"] >= 2
-        platforms = client.get("/api/collections", params={"kind": "platform"}).json()
-        tanhua = next(item for item in platforms if item["name"] == "探花")
-        studios = client.get("/api/collections", params={"kind": "studio"}).json()
+        makers = client.get("/api/collections", params={"kind": "organization"}).json()
+        tanhua = next(item for item in makers if item["name"] == "探花")
+        studios = makers
         assert any(item["name"] == "Blacked" for item in studios)
 
         # Lifespan may also seed curated non-JAV works that share the 探花 platform;
@@ -109,6 +109,6 @@ def test_collections_api_list_and_filter_works(
         assert any(item["name"] == "探花" for item in ours["collections"])
         blacked = client.get(
             "/api/works",
-            params={"collection": "Blacked", "collection_kind": "studio"},
+            params={"collection": "Blacked", "collection_kind": "organization"},
         ).json()
         assert any(item["title"] == "其它片商" for item in blacked)

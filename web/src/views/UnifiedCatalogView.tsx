@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { api, appUrl } from "../api";
-import { applyCatalogFiltersToUrl, EMPTY_CATALOG_FILTERS, readCatalogFilters, type Filters } from "../lib/catalogFilters";
+import { applyCatalogFiltersToUrl, EMPTY_CATALOG_FILTERS, filtersSchema, readCatalogFilters, type Filters } from "../lib/catalogFilters";
 import {
-  CatalogPeopleEditor, CatalogOrganizations, CatalogPlaylists, PersonPicker, catalogRequest,
+  CatalogPeopleEditor, CatalogOrganizations, CatalogSeriesEditor, CatalogPlaylists, PersonPicker, catalogRequest,
   usePeopleCards, usePersonLabels, type ManagedPerson
 } from "./CatalogManagement";
 import { workSchema } from "../model";
@@ -270,6 +270,8 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
           onClick={() => patch({ actors: [selectedPerson.id, other.id], actors_all: true })}>{other.name} · {other.count}</button>)}
         <p>合作机构</p>{selectedPerson.organizations?.map(other => <button key={other.id}
           onClick={() => patch({ actors: [selectedPerson.id], organizations: [other.id] })}>{other.name} · {other.count}</button>)}
+        <p>参演系列</p>{selectedPerson.series?.map(other => <button key={other.id}
+          onClick={() => patch({ actors: [selectedPerson.id], series: [other.id] })}>{other.name} · {other.count}</button>)}
       </article>}
       <CatalogPeopleEditor key={selectedPerson?.id} person={selectedPerson} onSaved={() => {
         try { sessionStorage.removeItem("mdc:catalog-return"); } catch { /* Storage is optional. */ }
@@ -282,12 +284,17 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       <button className="ghost" aria-expanded={showFilters} onClick={() => setShowFilters(value => !value)}>{showFilters ? "收起筛选" : "分类与筛选"}</button>
     </div>
     {showFilters && <div className="works-extra-filters">
-      <select aria-label="合集" value={filters.collection ?? ""} onChange={e => patch({ collection: e.target.value })}><option value="">全部合集</option>{(facets.collections ?? []).map(f => <option key={f.id} value={f.id}>{f.name} · {f.count}</option>)}</select>
+      <label>系列<select aria-label="筛选系列" value={filters.series[0] ?? ""} onChange={e => patch({ series: e.target.value ? [e.target.value] : [], collection: "", series_name: "" })}><option value="">全部系列</option>{(facets.series ?? []).map(f => <option key={f.id} value={f.id}>{f.name} · {f.count}</option>)}</select></label>
       <select aria-label="年代" value={filters.unknown_year ? "unknown" : filters.year_from && filters.year_to === filters.year_from + 9 ? String(filters.year_from) : ""} onChange={e => patch(e.target.value === "unknown" ? { unknown_year: true, year_from: undefined, year_to: undefined } : { unknown_year: false, year_from: e.target.value ? Number(e.target.value) : undefined, year_to: e.target.value ? Number(e.target.value) + 9 : undefined })}>
         <option value="">全部年代</option>{(facets.decades ?? []).map(f => <option key={f.id} value={f.id}>{f.id === "unknown" ? "年份待补" : f.name + " 年代"} · {f.count}</option>)}
       </select>
       <select aria-label="发行年份" value={filters.year_from === filters.year_to ? String(filters.year_from ?? "") : ""} onChange={e => patch({ unknown_year: false, year_from: e.target.value ? Number(e.target.value) : undefined, year_to: e.target.value ? Number(e.target.value) : undefined })}><option value="">全部年份</option>{(facets.years ?? []).filter(f => f.id !== "unknown").map(f => <option key={f.id} value={f.id}>{f.name} · {f.count}</option>)}</select>
-      <select aria-label="机构和系列" value={filters.organizations[0] ?? ""} onChange={e => patch({ organizations: e.target.value ? [e.target.value] : [], organization_role: "" })}><option value="">全部片商 / 工作室 / 厂牌 / 系列</option>{(facets.organizations ?? []).map(f => <option key={f.id} value={f.id}>{f.name} · {({ studio: "工作室", label: "厂牌", platform: "平台", series: "系列" } as Record<string, string>)[f.role] ?? "署名机构"} · {f.count}</option>)}</select>
+      <label>制作机构<select aria-label="筛选制作机构" value={filters.organizations[0] ?? ""} onChange={e => patch({ organizations: e.target.value ? [e.target.value] : [], organization_role: "" })}><option value="">全部片商及工作室</option>{(facets.organizations ?? []).map(f => <option key={f.id} value={f.id}>{f.name} · {f.role === "studio" ? "工作室" : "片商 / 公司"} · {f.count}</option>)}</select></label>
+      {(["labels", "platforms"] as const).map(field => <label key={field}>{field === "labels" ? "厂牌" : "发布平台"}<select
+        aria-label={field === "labels" ? "筛选厂牌" : "筛选发布平台"} value={filters[field][0] ?? ""}
+        onChange={e => patch({ [field]: e.target.value ? [e.target.value] : [] })}>
+        <option value="">{field === "labels" ? "全部厂牌" : "全部发布平台"}</option>{(facets[field] ?? []).map(f => <option key={f.id} value={f.id}>{f.name} · {f.count}</option>)}
+      </select></label>)}
       <label>时长<select aria-label="筛选时长" value={durationOption(filters)?.id ?? (filters.duration_min !== undefined || filters.duration_max !== undefined ? "custom" : "")}
         onChange={event => patch({ ...EMPTY_DURATION, ...DURATION_OPTIONS.find(option => option.id === event.target.value)?.filters })}>
         <option value="">全部时长</option><option value="custom" hidden>自定义时长</option>{DURATION_OPTIONS.map(option => <option key={option.id} value={option.id}>
@@ -316,6 +323,9 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       {filters.collection && <button onClick={() => patch({ collection: "" })}>{filters.collection} ×</button>}
       {filters.actor_name && <button onClick={() => patch({ actor_name: "" })}>{filters.actor_name} ×</button>}
       {filters.studio_name && <button onClick={() => patch({ studio_name: "" })}>{filters.studio_name} ×</button>}
+      {filters.series_name && <button onClick={() => patch({ series_name: "" })}>系列：{filters.series_name} ×</button>}
+      {(["series", "labels", "platforms"] as const).flatMap(field => filters[field].map(id => <button key={`${field}:${id}`}
+        onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{({ series: "系列", labels: "厂牌", platforms: "发布平台" })[field]}：{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
       {filters.tags.map(id => <button key={"tag:" + id} onClick={() => patch({ tags: filters.tags.filter(t => t !== id) })}>{facets.tags?.find(tag => matchesTag(tag, id))?.name ?? id} ×</button>)}
       {(["genres", "subtitle_languages"] as const).flatMap(field => filters[field].map(id => <button key={field + id}
         onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{field === "genres" ? "题材" : "历史字幕"}：{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
@@ -338,8 +348,9 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     <TagManagement />
     <ClassificationManagement />
     <CatalogOrganizations works={rows} onFilter={(id, role) => patch({ organizations: [id], organization_role: role ?? "" })} />
+    <CatalogSeriesEditor works={rows} onFilter={id => patch({ series: [id], collection: "", series_name: "" })} />
     <CatalogPlaylists works={rows} onOpenWork={openWork} filters={filters} onApplyFilters={value => setFilters({ ...empty, ...value })} />
-    <details><summary>保存的筛选</summary>{saved.map(item => <button key={item.name} disabled={migratingSaved} onClick={() => setFilters(item.filters)}>{item.name}</button>)}<input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="筛选名称" /><button disabled={migratingSaved} onClick={save}>保存到本机</button></details>
+    <details><summary>保存的筛选</summary>{saved.map(item => <button key={item.name} disabled={migratingSaved} onClick={() => setFilters(filtersSchema.parse(item.filters))}>{item.name}</button>)}<input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="筛选名称" /><button disabled={migratingSaved} onClick={save}>保存到本机</button></details>
     </div></details>
     </div>
     {loading && !workError && !error && <p role="status">正在读取…</p>}

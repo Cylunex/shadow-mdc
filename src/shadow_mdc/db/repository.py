@@ -12,7 +12,8 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, load_only, sessionmaker
 
 from ..actress_aliases import merge_actor_names
-from ..collection_names import detect_collection_kind, normalize_collection_name
+from ..catalog_series import migrate_series, sync_field_series
+from ..collection_names import normalize_collection_name
 from ..domain import IdentityHints, MatchEvidence, MediaTechnicalInfo, ProviderRecord, ScoredCandidate
 from ..enums import (
     AssetState,
@@ -31,6 +32,7 @@ from .classification_migration import migrate_classifications
 from .models import (
     Actor,
     Base,
+    CatalogWorkOrganization,
     Collection,
     ExternalIdentity,
     JobCheckpoint,
@@ -127,6 +129,7 @@ class Database:
         if self.engine.dialect.name == "sqlite":
             self._migrate_sqlite()
             migrate_classifications(self.engine)
+            migrate_series(self.engine)
 
     def _migrate_sqlite(self) -> None:
         with self.engine.begin() as connection:
@@ -913,7 +916,9 @@ class Repository:
                     if isinstance(collection_kind, CollectionKind)
                     else str(collection_kind)
                 )
-                statement = statement.where(Collection.kind == kind)
+                statement = statement.where(Collection.kind.in_(
+                    ("studio", "organization") if kind == "studio" else (kind,),
+                ))
             if collection_name:
                 statement = statement.where(
                     Collection.normalized_name == normalize_collection_name(collection_name)
@@ -2055,7 +2060,9 @@ class Repository:
         statement = select(Collection)
         if kind is not None:
             kind_value = kind.value if isinstance(kind, CollectionKind) else str(kind)
-            statement = statement.where(Collection.kind == kind_value)
+            statement = statement.where(Collection.kind.in_(
+                ("studio", "organization") if kind_value == "studio" else (kind_value,),
+            ))
         if q:
             needle = f"%{normalize_collection_name(q)}%"
             statement = statement.where(Collection.normalized_name.like(needle))
@@ -2126,12 +2133,7 @@ class Repository:
         if not cleaned:
             raise ValueError("collection name is required")
         normalized = normalize_collection_name(cleaned)
-        existing = self._session.scalar(
-            select(Collection).where(
-                Collection.kind == kind.value,
-                Collection.normalized_name == normalized,
-            )
-        )
+        existing = self._named_collection(cleaned, kinds=(kind.value,))
         if existing is None:
             existing = Collection(
                 name=cleaned,
@@ -2156,6 +2158,19 @@ class Repository:
             existing.aliases = merged
         self._session.flush()
         return existing
+
+    def _named_collection(self, name: str, *, kinds: tuple[str, ...]) -> Collection | None:
+        matches = list(self._session.scalars(select(Collection).where(
+            Collection.kind.in_(kinds), Collection.normalized_name == normalize_collection_name(name),
+        )))
+        if not matches:
+            aliases = func.json_each(Collection.aliases).table_valued("value")
+            matches = list(self._session.scalars(select(Collection).where(
+                Collection.kind.in_(kinds), exists(select(1).select_from(aliases).where(
+                    aliases.c.value == name.strip(),
+                )),
+            )))
+        return matches[0] if len(matches) == 1 else None
 
     def link_work_collection(self, work: Work, collection: Collection) -> None:
         exists_row = self._session.scalar(
@@ -2211,15 +2226,22 @@ class Repository:
 
         linked: list[Collection] = []
         if work.studio:
-            kind = detect_collection_kind(work.studio, preferred=CollectionKind.STUDIO)
-            collection = self.upsert_collection(name=work.studio, kind=kind)
+            # The historical field means maker/production credit, not proof that
+            # the business is a studio, subsidiary or publishing platform.
+            known = self._named_collection(work.studio, kinds=("organization", "studio"))
+            collection = known if known is not None else self.upsert_collection(
+                name=work.studio, kind=CollectionKind.ORGANIZATION,
+            )
             self.link_work_collection(work, collection)
+            self._session.execute(sqlite_insert(CatalogWorkOrganization).values(
+                organization_id=collection.id, work_id=work.id, role="studio",
+            ).on_conflict_do_nothing())
             linked.append(collection)
-        if work.series:
-            kind = detect_collection_kind(work.series, preferred=CollectionKind.SERIES)
-            collection = self.upsert_collection(name=work.series, kind=kind)
-            self.link_work_collection(work, collection)
-            linked.append(collection)
+        series = sync_field_series(self._session, work)
+        if series is not None:
+            collection = self._session.get(Collection, series.id)
+            if collection is not None:
+                linked.append(collection)
         if work.label:
             collection = self.upsert_collection(name=work.label, kind=CollectionKind.LABEL)
             self.link_work_collection(work, collection)

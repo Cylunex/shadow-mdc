@@ -33,7 +33,15 @@ from .api_models import (
     WorkUpdateRequest,
 )
 from .catalog_api import ClassificationTermCreate, ClassificationTermEdit, TaxonomyEdit
-from .catalog_management import CatalogFilter, PlaylistEdit
+from .catalog_management import (
+    CatalogFilter,
+    OrganizationCreate,
+    OrganizationEdit,
+    OrganizationLink,
+    PlaylistEdit,
+    SeriesEdit,
+    SeriesMember,
+)
 from .db.models import Work
 from .intake_core import SubscribeRequest
 from .skill_operations import ClassificationFill, FillInput, IntakeItem, LinkInput, RecoverInput, TagsEdit
@@ -79,6 +87,48 @@ class PlaylistInput(EmptyInput):
     @classmethod
     def safe_identifier(cls, value: str) -> str:
         return safe_id(value)
+
+
+class OrganizationInput(EmptyInput):
+    organization_id: str = Field(min_length=1, max_length=240)
+
+    @field_validator("organization_id")
+    @classmethod
+    def safe_identifier(cls, value: str) -> str:
+        return safe_id(value)
+
+
+class SeriesInput(EmptyInput):
+    series_id: str = Field(min_length=1, max_length=240)
+
+    @field_validator("series_id")
+    @classmethod
+    def safe_identifier(cls, value: str) -> str:
+        return safe_id(value)
+
+
+class OrganizationCreateInput(OrganizationCreate, EmptyInput):
+    pass
+
+
+class OrganizationEditInput(OrganizationEdit, OrganizationInput):
+    pass
+
+
+class OrganizationLinkInput(OrganizationLink, OrganizationInput):
+    pass
+
+
+class SeriesCreateInput(SeriesEdit, EmptyInput):
+    pass
+
+
+class SeriesEditInput(SeriesEdit, SeriesInput):
+    pass
+
+
+class SeriesMemberInput(SeriesMember, SeriesInput):
+    pass
 
 
 class ActorsInput(EmptyInput):
@@ -321,6 +371,8 @@ class CandidateInput(EmptyInput):
 
 
 RouteKey = Literal[
+    "organization_id",
+    "series_id",
     "work_id",
     "task_id",
     "playlist_id",
@@ -359,7 +411,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability(
         "works.facets",
-        "读取当前筛选下的标签、分类、机构和年份计数。",
+        "分别读取制作机构、厂牌、发布平台、作品系列及标签、分类和年份计数。",
         "read",
         CatalogFilter,
         "POST",
@@ -374,6 +426,24 @@ CAPABILITIES: tuple[Capability, ...] = (
         "/api/works/{work_id}",
         "work_id",
     ),
+    Capability("organizations.list", "读取片商及所属工作室、厂牌、发布渠道。不含系列。",
+               "read", EmptyInput, "GET", "/api/catalog/organizations"),
+    Capability("organizations.create", "新增片商或所属机构。隶属关系须有明确依据。",
+               "write", OrganizationCreateInput, "POST", "/api/catalog/organizations"),
+    Capability("organizations.update", "带 revision 维护机构及其隶属关系。",
+               "write", OrganizationEditInput, "PUT", "/api/catalog/organizations/{organization_id}",
+               "organization_id"),
+    Capability("organizations.link", "维护作品制作、发行、厂牌或平台署名。不设定系列成员。",
+               "write", OrganizationLinkInput, "PUT", "/api/catalog/organizations/{organization_id}/works",
+               "organization_id"),
+    Capability("series.list", "读取独立系列档案、归属机构和成员计数。",
+               "read", EmptyInput, "GET", "/api/catalog/series"),
+    Capability("series.create", "创建作品系列。可指定已知归属机构。",
+               "write", SeriesCreateInput, "POST", "/api/catalog/series"),
+    Capability("series.update", "带 revision 维护系列资料与归属。",
+               "write", SeriesEditInput, "PUT", "/api/catalog/series/{series_id}", "series_id"),
+    Capability("series.add", "将明确的作品加入系列。不新增制作或发行署名。",
+               "write", SeriesMemberInput, "PUT", "/api/catalog/series/{series_id}/works", "series_id"),
     Capability(
         "actors.query",
         "按姓名或别名分页查询演员档案。",

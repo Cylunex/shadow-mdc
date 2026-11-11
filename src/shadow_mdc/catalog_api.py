@@ -48,6 +48,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from .catalog_duration import DURATION_BANDS, duration_condition, work_duration
 from .catalog_management import CatalogFilter, build_management_router, organization_relationships
+from .catalog_series import find_series, series_relationships
 from .classifications import DURATION_FORM_IDS, ClassificationSelection, classification_dimensions
 from .db.models import (
     Actor,
@@ -55,6 +56,7 @@ from .db.models import (
     CatalogPersonCredit,
     CatalogPersonMerge,
     CatalogPersonRecord,
+    CatalogSeries,
     Collection,
     MediaAsset,
     MediaEmbyBinding,
@@ -367,9 +369,17 @@ def build_catalog_router(
             statement = statement.where(Work.category == filters.category)
         if filters.collection:
             kind, _, name = filters.collection.partition(":")
-            statement = statement.where(Work.id.in_(select(WorkCollection.work_id).join(
-                Collection, Collection.id == WorkCollection.collection_id,
-            ).where(Collection.kind == kind, Collection.name == name)))
+            canonical_series = find_series(session, name) if kind == "series" else None
+            if canonical_series is not None:
+                memberships = series_relationships()
+                statement = statement.where(Work.id.in_(select(memberships.c.work_id).where(
+                    memberships.c.series_id == canonical_series.id,
+                )))
+            else:
+                statement = statement.where(Work.id.in_(select(WorkCollection.work_id).join(
+                    Collection, Collection.id == WorkCollection.collection_id,
+                ).where(Collection.kind.in_(("studio", "organization") if kind == "studio" else (kind,)),
+                        Collection.name == name)))
         if filters.q.strip():
             q = filters.q.strip()
             profiles_for_search = (list(actor_profiles.values()) if actor_profiles is not None
@@ -382,12 +392,17 @@ def build_catalog_router(
                 Collection, Collection.id == links_for_search.c.organization_id,
             ).where(or_(Collection.name.icontains(q, autoescape=True),
                         cast(Collection.aliases, String).icontains(q, autoescape=True)))
+            memberships = series_relationships()
+            series_matches = select(memberships.c.work_id).join(
+                CatalogSeries, CatalogSeries.id == memberships.c.series_id,
+            ).where(or_(CatalogSeries.name.icontains(q, autoescape=True),
+                        cast(CatalogSeries.aliases, String).icontains(q, autoescape=True)))
             statement = statement.where(or_(
                 Work.title.icontains(q, autoescape=True), Work.primary_code.icontains(q, autoescape=True),
                 cast(Work.actors, String).icontains(q, autoescape=True),
                 Work.studio.icontains(q, autoescape=True), Work.label.icontains(q, autoescape=True),
                 Work.series.icontains(q, autoescape=True),
-                Work.id.in_(actor_work_ids), Work.id.in_(organization_matches),
+                Work.id.in_(actor_work_ids), Work.id.in_(organization_matches), Work.id.in_(series_matches),
                 Work.id.in_(select(WorkActor.work_id).join(
                     Actor, Actor.id == WorkActor.actor_id,
                 ).where(or_(Actor.name.icontains(q, autoescape=True),
@@ -399,6 +414,20 @@ def build_catalog_router(
             ))
         if filters.studio_name:
             statement = statement.where(Work.studio == filters.studio_name)
+        if filters.series_name:
+            canonical_series = find_series(session, filters.series_name)
+            if canonical_series is not None:
+                memberships = series_relationships()
+                statement = statement.where(Work.id.in_(select(memberships.c.work_id).where(
+                    memberships.c.series_id == canonical_series.id,
+                )))
+            else:
+                statement = statement.where(Work.series == filters.series_name)
+        if filters.series:
+            memberships = series_relationships()
+            statement = statement.where(Work.id.in_(select(memberships.c.work_id).where(
+                memberships.c.series_id.in_(filters.series),
+            )))
         if filters.actors:
             profiles = (actor_profiles if actor_profiles is not None
                         else _person_index(people(request, session)))
@@ -491,7 +520,21 @@ def build_catalog_router(
             )
             if filters.organization_role:
                 matching = matching.where(links.c.role == filters.organization_role)
-            statement = statement.where(Work.id.in_(matching))
+            condition: ColumnElement[bool] = Work.id.in_(matching)
+            # Old clients saved series Collection IDs under "organizations".
+            # Adapt those memberships without exposing series as organizations.
+            if filters.organization_role in ("", "series"):
+                memberships = series_relationships()
+                condition = or_(condition, Work.id.in_(select(memberships.c.work_id).where(
+                    memberships.c.series_id.in_(filters.organizations),
+                )))
+            statement = statement.where(condition)
+        for identities, kind in ((filters.labels, "label"), (filters.platforms, "platform")):
+            if identities:
+                links = organization_relationships()
+                statement = statement.where(Work.id.in_(select(links.c.work_id).join(
+                    Collection, Collection.id == links.c.organization_id,
+                ).where(links.c.organization_id.in_(identities), Collection.kind == kind)))
         year = func.coalesce(
             select(WorkTaxonomy.release_year).where(WorkTaxonomy.work_id == Work.id).scalar_subquery(),
             cast(func.strftime("%Y", Work.release_date), Integer),
@@ -733,6 +776,25 @@ def build_catalog_router(
                 .join(organization_rows, organization_rows.c.id == relationships.c.work_id)
                 .group_by(Collection.id),
             ))
+            organization_facets: dict[str, list[Facet]] = {}
+            for field, kind in (("labels", "label"), ("platforms", "platform")):
+                matching_rows = filtered_statement(filters.model_copy(update={field: []}), request,
+                                                   session, actor_profiles).subquery()
+                credit_counts = session.execute(select(
+                    Collection.id, Collection.name, func.count(func.distinct(relationships.c.work_id)),
+                ).join(relationships, relationships.c.organization_id == Collection.id)
+                    .join(matching_rows, matching_rows.c.id == relationships.c.work_id)
+                    .where(Collection.kind == kind).group_by(Collection.id)).all()
+                organization_facets[field] = [Facet(id=k, name=n, role=kind, count=v)
+                                              for k, n, v in credit_counts]
+            memberships = series_relationships()
+            series_rows = filtered_statement(filters.model_copy(update={"series": []}), request,
+                                             session, actor_profiles).subquery()
+            series_facets = session.execute(select(
+                CatalogSeries.id, CatalogSeries.name, func.count(func.distinct(memberships.c.work_id)),
+            ).join(memberships, memberships.c.series_id == CatalogSeries.id)
+                .join(series_rows, series_rows.c.id == memberships.c.work_id)
+                .group_by(CatalogSeries.id)).all()
             taxonomy: dict[str, list[Facet | TagFacet]] = {}
             terms = {term.id: term for term in session.scalars(select(CatalogClassificationTerm))}
             for dimension in classification_dimensions():
@@ -785,7 +847,10 @@ def build_catalog_router(
                 "years": [Facet(id=k, name=k, count=v) for k, v in year_counts],
                 "decades": [Facet(id=k, name=k, count=v) for k, v in sorted(decades.items(), reverse=True)],
                 "tags": sorted(tag_facets.values(), key=lambda tag: (-tag.count, tag.name.casefold())),
-                "organizations": [Facet(id=k, name=n, role=r, count=v) for k, n, r, v in organizations],
+                "organizations": [Facet(id=k, name=n, role=r, count=v) for k, n, r, v in organizations
+                                  if r in ("organization", "studio")],
+                **organization_facets,
+                "series": [Facet(id=k, name=n, count=v) for k, n, v in series_facets],
                 "durations": duration_counts,
                 **legacy_facets,
             }
@@ -834,6 +899,13 @@ def build_catalog_router(
             ).group_by(Collection.id))
             result.organizations = [Collaboration(id=key, name=name, count=count)
                                     for key, name, count in linked]
+            memberships = series_relationships()
+            linked_series = session.execute(select(
+                CatalogSeries.id, CatalogSeries.name, func.count(func.distinct(memberships.c.work_id)),
+            ).join(memberships, memberships.c.series_id == CatalogSeries.id)
+                .where(memberships.c.work_id.in_(ids)).group_by(CatalogSeries.id))
+            result.series = [Collaboration(id=key, name=name, count=count)
+                             for key, name, count in linked_series]
             return result
 
     if prefix == "/api/catalog":

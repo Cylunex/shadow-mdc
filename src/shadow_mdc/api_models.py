@@ -661,6 +661,7 @@ class CollectionSeedResultOut(BaseModel):
     collections_created: int
     links_added: int
     kind_series: int = 0
+    kind_organization: int = 0
     kind_studio: int = 0
     kind_platform: int = 0
     kind_label: int = 0

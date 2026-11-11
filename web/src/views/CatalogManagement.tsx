@@ -10,6 +10,7 @@ export type ManagedPerson = {
   match_names: string[]; groups: string[]; work_ids: string[]; directed_work_ids?: string[]; revision: number;
   collaborators?: { id: string; name: string; count: number }[];
   organizations?: { id: string; name: string; count: number }[];
+  series?: { id: string; name: string; count: number }[];
 };
 export type PersonCard = {
   id: string; name: string; aliases: string[]; image_url: string | null;
@@ -18,6 +19,12 @@ export type PersonCard = {
 type PeoplePage = { items: PersonCard[]; next_offset: number | null; total: number; labels: Record<string, string> };
 export const PEOPLE_PAGE_SIZE = 48;
 type Organization = { id: string; kind: string; name: string; aliases: string[]; description: string | null; parent_id: string | null; revision: number; work_count: number };
+type Series = { id: string; name: string; aliases: string[]; description: string | null; organization_id: string | null; revision: number; work_count: number };
+export const ORGANIZATION_NAMES: Record<string, string> = { organization: "片商 / 公司", studio: "工作室", label: "厂牌", platform: "发布平台" };
+function organizationLabel(item: Organization, items: Organization[]): string {
+  const parent = items.find(value => value.id === item.parent_id);
+  return `${parent ? parent.name + " › " : ""}${item.name} · ${ORGANIZATION_NAMES[item.kind] ?? "机构"}`;
+}
 type Playlist = { id: string; name: string; work_ids: string[]; revision: number; filters?: Filters | null };
 type Merge = { id: string; target_id: string; members: string[]; undone: boolean };
 let fallbackOwner: string | undefined;
@@ -251,7 +258,7 @@ export function CatalogOrganizations({ works, onFilter }: {
   const [role, setRole] = useState("studio");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const roles = { studio: "制作", distributor: "发行", label: "厂牌", platform: "发布平台", series: "系列", credited: "原始署名" };
+  const roles = { studio: "制作", distributor: "发行", label: "厂牌", platform: "发布平台", credited: "原始署名" };
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
@@ -271,25 +278,25 @@ export function CatalogOrganizations({ works, onFilter }: {
       setSelected(result); setOrganizations(await catalogRequest<Organization[]>("organizations"));
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
-  return <details onToggle={event => setOpen(event.currentTarget.open)}><summary>片商、工作室、厂牌与系列档案</summary>
+  return <details onToggle={event => setOpen(event.currentTarget.open)}><summary>片商与所属机构</summary>
+    <p className="muted">工作室可隶属片商，厂牌是品牌，平台是发布渠道；所属关系按实际资料维护。</p>
     {error && <p role="alert">{error}</p>}
     <button onClick={() => { setSelected({ id: "", kind: "organization", name: "", aliases: [],
-      description: "", parent_id: null, revision: 0, work_count: 0 }); setAliasesText(""); }}>新增机构或系列</button>
+      description: "", parent_id: null, revision: 0, work_count: 0 }); setAliasesText(""); }}>新增片商或所属机构</button>
     <select value={selected?.id ?? ""} onChange={event => setSelected(organizations.find(item => item.id === event.target.value) ?? null)}>
-      <option value="">选择机构或系列</option>{organizations.map(item =>
-        <option key={item.id} value={item.id}>{item.name} · {item.work_count} 部</option>)}
+      <option value="">选择片商或所属机构</option>{organizations.map(item =>
+        <option key={item.id} value={item.id}>{organizationLabel(item, organizations)} · {item.work_count} 部</option>)}
     </select>
     {selected && <article><h2>{selected.name}</h2>
       {!selected.id && <label>类型<select value={selected.kind} onChange={e => setSelected({ ...selected, kind: e.target.value })}>
-        <option value="organization">机构</option><option value="studio">工作室</option>
-        <option value="label">厂牌</option><option value="platform">平台</option><option value="series">系列</option>
+        {Object.entries(ORGANIZATION_NAMES).map(([key, name]) => <option key={key} value={key}>{name}</option>)}
       </select></label>}
       <label>名称<input value={selected.name} onChange={e => setSelected({ ...selected, name: e.target.value })} /></label>
       <label>别名<input value={aliasesText} onChange={e => setAliasesText(e.target.value)} /></label>
       <label>简介<textarea value={selected.description ?? ""} onChange={e => setSelected({ ...selected, description: e.target.value })} /></label>
       <label>所属机构<select value={selected.parent_id ?? ""} onChange={e => setSelected({ ...selected, parent_id: e.target.value || null })}>
-        <option value="">独立机构 / 未知</option>{organizations.filter(item => item.id !== selected.id).map(item =>
-          <option key={item.id} value={item.id}>{item.name}</option>)}
+        <option value="">独立 / 归属未知</option>{organizations.filter(item => item.id !== selected.id && ["organization", "studio"].includes(item.kind)).map(item =>
+          <option key={item.id} value={item.id}>{organizationLabel(item, organizations)}</option>)}
       </select></label>
       <button disabled={busy} onClick={() => void save()}>保存机构资料</button>
       <button disabled={!selected.id} onClick={() => onFilter(selected.id)}>全部作品</button>
@@ -305,6 +312,65 @@ export function CatalogOrganizations({ works, onFilter }: {
             .catch(e => setError(String(e))).finally(() => setBusy(false));
         }}>保存署名</button>
       </details>
+    </article>}
+  </details>;
+}
+
+export function CatalogSeriesEditor({ works, onFilter }: {
+  works: { id: string; title: string }[]; onFilter: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState<Series[]>([]);
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [selected, setSelected] = useState<Series | null>(null);
+  const [aliases, setAliases] = useState("");
+  const [workId, setWorkId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    Promise.all([
+      catalogRequest<Series[]>("series", "GET", undefined, controller.signal),
+      catalogRequest<Organization[]>("organizations", "GET", undefined, controller.signal),
+    ]).then(([series, owners]) => { if (!controller.signal.aborted) { setItems(series); setOrganizations(owners); } })
+      .catch(e => { if (!controller.signal.aborted) setError(String(e)); });
+    return () => controller.abort();
+  }, [open]);
+  async function save() {
+    if (!selected) return;
+    setBusy(true); setError("");
+    try {
+      const result = await catalogRequest<Series>(selected.id ? `series/${selected.id}` : "series",
+        selected.id ? "PUT" : "POST", { ...selected, aliases: split(aliases) });
+      setSelected(result); setAliases(result.aliases.join("、"));
+      setItems(await catalogRequest<Series[]>("series"));
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+  }
+  return <details onToggle={event => setOpen(event.currentTarget.open)}><summary>作品系列</summary>
+    <p className="muted">系列组织一组作品，可归属片商、工作室或厂牌；系列成员与制作、发行署名分别维护。</p>
+    {error && <p role="alert">{error}</p>}
+    <button onClick={() => { setSelected({ id: "", name: "", aliases: [], description: "", organization_id: null, revision: 0, work_count: 0 }); setAliases(""); }}>新增系列</button>
+    <select aria-label="选择系列档案" value={selected?.id ?? ""} onChange={e => {
+      const value = items.find(item => item.id === e.target.value) ?? null;
+      setSelected(value); setAliases(value?.aliases.join("、") ?? "");
+    }}><option value="">选择系列</option>{items.map(item => <option key={item.id} value={item.id}>{item.name} · {item.work_count} 部</option>)}</select>
+    {selected && <article>
+      <label>系列名称<input value={selected.name} onChange={e => setSelected({ ...selected, name: e.target.value })} /></label>
+      <label>系列别名<input value={aliases} onChange={e => setAliases(e.target.value)} /></label>
+      <label>系列简介<textarea value={selected.description ?? ""} onChange={e => setSelected({ ...selected, description: e.target.value })} /></label>
+      <label>归属机构<select value={selected.organization_id ?? ""} onChange={e => setSelected({ ...selected, organization_id: e.target.value || null })}>
+        <option value="">归属未知</option>{organizations.map(item => <option key={item.id} value={item.id}>{organizationLabel(item, organizations)}</option>)}
+      </select></label>
+      <button disabled={busy || !selected.name.trim()} onClick={() => void save()}>保存系列资料</button>
+      <button disabled={!selected.id} onClick={() => onFilter(selected.id)}>查看系列作品</button>
+      <label>加入系列<select value={workId} onChange={e => setWorkId(e.target.value)}><option value="">从当前结果选择作品</option>{works.map(work => <option key={work.id} value={work.id}>{work.title}</option>)}</select></label>
+      <button disabled={busy || !workId || !selected.id} onClick={() => {
+        setBusy(true); setError("");
+        catalogRequest(`series/${selected.id}/works`, "PUT", { work_id: workId })
+          .then(() => catalogRequest<Series[]>("series")).then(setItems)
+          .catch(e => setError(String(e))).finally(() => setBusy(false));
+      }}>保存系列成员</button>
     </article>}
   </details>;
 }
