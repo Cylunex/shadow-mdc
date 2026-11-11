@@ -19,7 +19,8 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Literal
+from enum import StrEnum
+from typing import Any
 
 import httpx
 
@@ -41,10 +42,25 @@ APP_VERSION_NUMBER = "10928"
 APP_USER_AGENT = "Dart/3.4 (dart:io)"
 DEFAULT_API_HOSTS: tuple[str, ...] = ("https://jdforrepam.com", "https://javdb.com")
 
-RankingZone = Literal["censored", "uncensored", "western", "fc2"]
-RankingPeriod = Literal["daily", "weekly", "monthly"]
-ZONES: dict[str, int] = {"censored": 0, "uncensored": 1, "western": 2, "fc2": 3}
-PERIODS: tuple[str, ...] = ("daily", "weekly", "monthly")
+class RankingZone(StrEnum):
+    """JavDB's own ranking segments, not work types or production countries."""
+
+    CENSORED = "censored"
+    UNCENSORED = "uncensored"
+    WESTERN = "western"
+    FC2 = "fc2"
+
+
+class RankingPeriod(StrEnum):
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+
+
+ZONES: dict[RankingZone, int] = {
+    RankingZone.CENSORED: 0, RankingZone.UNCENSORED: 1, RankingZone.WESTERN: 2, RankingZone.FC2: 3,
+}
+PERIODS = tuple(RankingPeriod)
 _PERIOD_ALIASES = {"day": "daily", "week": "weekly", "month": "monthly"}
 # The app answers ``success: 0`` with these actions when a bearer token is needed.
 _AUTH_ACTIONS = frozenset(
@@ -66,18 +82,19 @@ def sign(timestamp: int | None = None) -> str:
     return f"{ts}.{SIGNATURE_SUFFIX}.{digest}"
 
 
-def normalize_period(period: str) -> str:
+def normalize_period(period: str) -> RankingPeriod:
     value = period.strip().casefold()
     value = _PERIOD_ALIASES.get(value, value)
-    if value not in PERIODS:
-        raise ValueError(f"period must be one of {PERIODS}")
-    return value
+    try:
+        return RankingPeriod(value)
+    except ValueError as exc:
+        raise ValueError(f"period must be one of {tuple(item.value for item in PERIODS)}") from exc
 
 
 def zone_code(zone: str) -> int:
     try:
-        return ZONES[zone.strip().casefold()]
-    except KeyError as exc:
+        return ZONES[RankingZone(zone.strip().casefold())]
+    except ValueError as exc:
         raise ValueError(f"zone must be one of {tuple(ZONES)}") from exc
 
 

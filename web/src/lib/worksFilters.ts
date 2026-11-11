@@ -1,14 +1,15 @@
 /** URL-synced works list filter state (q/cat/tag/studio/cast/year/col/page). */
 
 import { applyCatalogFiltersToUrl, EMPTY_CATALOG_FILTERS } from "./catalogFilters";
+import { catalogCategorySchema, catalogSortSchema, legacyWorkStatusSchema, type CatalogCategory, type CatalogSort, type LegacyWorkStatus } from "./catalogTypes";
 
-export type WorksCategory = "all" | "Japan" | "China" | "Korea" | "Europe" | "Other";
+export type WorksCategory = CatalogCategory;
 
 /** Quick status chips (JHS-inspired 「全部未下载」). */
-export type WorksStatusFilter = "all" | "undownloaded" | "want" | "downloaded";
+export type WorksStatusFilter = LegacyWorkStatus;
 
 /** Card ordering for the library grid (JavRanking explore-style controls). */
-export type WorksSort = "added" | "newest" | "oldest" | "ranked" | "code" | "random";
+export type WorksSort = CatalogSort;
 
 export type WorksFilterState = {
   q: string;
@@ -27,6 +28,7 @@ export const WORKS_SORT_OPTIONS: Array<{ value: WorksSort; label: string; hint: 
   { value: "added", label: "最新收录", hint: "按入库时间倒序（默认）" },
   { value: "newest", label: "最新发行", hint: "按发行日期从新到旧" },
   { value: "oldest", label: "最早发行", hint: "按发行日期从旧到新" },
+  { value: "title", label: "片名", hint: "按作品标题排序" },
   { value: "ranked", label: "榜单优先", hint: "有 JavRanking 名次的作品优先，名次靠前在前" },
   { value: "code", label: "番号 A→Z", hint: "按番号排序" },
   { value: "random", label: "手气不错", hint: "随机打散（每次点击重新抽）" }
@@ -45,25 +47,16 @@ export const EMPTY_WORKS_FILTERS: WorksFilterState = {
   page: 1
 };
 
-const SORTS = new Set<string>(WORKS_SORT_OPTIONS.map((item) => item.value));
-
 function parseSort(value: string | null): WorksSort {
-  if (value && SORTS.has(value)) return value as WorksSort;
-  return "added";
+  return catalogSortSchema.catch("added").parse(value);
 }
-
-const CATEGORIES = new Set<string>(["all", "Japan", "China", "Korea", "Europe", "Other"]);
 
 function parseCategory(value: string | null): WorksCategory {
-  if (value && CATEGORIES.has(value)) return value as WorksCategory;
-  return "all";
+  return catalogCategorySchema.catch("all").parse(value);
 }
 
-const STATUS_FILTERS = new Set<string>(["all", "undownloaded", "want", "downloaded"]);
-
 function parseStatus(value: string | null): WorksStatusFilter {
-  if (value && STATUS_FILTERS.has(value)) return value as WorksStatusFilter;
-  return "all";
+  return legacyWorkStatusSchema.catch("all").parse(value);
 }
 
 export function readWorksFiltersFromSearch(search: string = typeof window !== "undefined" ? window.location.search : ""): WorksFilterState {
@@ -91,6 +84,7 @@ export function readWorksFiltersFromSearch(search: string = typeof window !== "u
 /** Minimal work shape the grid sorter needs (keeps this module dependency-free). */
 export type SortableWork = {
   id: string;
+  title?: string;
   release_date?: string | null;
   primary_code?: string | null;
   created_at?: string;
@@ -150,6 +144,7 @@ export function sortWorkRows<T extends { work: SortableWork }>(
       if (scoreDiff !== 0) return scoreDiff;
       return dateValue(b.release_date) - dateValue(a.release_date);
     }
+    if (sort === "title") return (a.title ?? "").localeCompare(b.title ?? "", "zh");
     return (a.primary_code ?? "").localeCompare(b.primary_code ?? "", "en");
   });
   return sorted;

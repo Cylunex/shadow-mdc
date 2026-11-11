@@ -1,5 +1,7 @@
 import { expect, it } from "vitest";
 import { applyCatalogFiltersToUrl, EMPTY_CATALOG_FILTERS, readCatalogFilters, type Filters } from "./catalogFilters";
+import { effectiveAvailability, effectiveWanted } from "./catalogTypes";
+import { readWorksFiltersFromSearch, sortWorkRows } from "./worksFilters";
 
 it("removes default JSON filters while preserving the page, detail and fragment", () => {
   const url = new URL("https://example.com/mdc/?view=actors&work=fixture&extra=keep#section");
@@ -34,6 +36,24 @@ it("round-trips every active filter without changing AND/OR or repeated values",
   expect(readCatalogFilters(url.search)).toEqual(filters);
   expect(url.searchParams.get("actor")).toBe("detail-id");
   expect(url.searchParams.has("catalog")).toBe(false);
+});
+
+it.each([true, false])("preserves wanted=%s independently of media availability", wanted => {
+  const filters = { ...EMPTY_CATALOG_FILTERS, availability: "files" as const, wanted };
+  const url = new URL("https://example.com/mdc/");
+  applyCatalogFiltersToUrl(url, filters);
+  expect(readCatalogFilters(url.search)).toEqual(filters);
+  expect(url.searchParams.get("wanted")).toBe(wanted ? "1" : "0");
+});
+
+it("adapts old query presets without mixing their independent meanings", () => {
+  expect(effectiveWanted(readCatalogFilters("?status=want"))).toBe(true);
+  expect(effectiveAvailability(readCatalogFilters("?status=want"))).toBe("all");
+  expect(effectiveAvailability(readCatalogFilters("?status=downloaded"))).toBe("files");
+  expect(effectiveWanted(readCatalogFilters("?status=downloaded"))).toBeUndefined();
+  expect(readWorksFiltersFromSearch("?sort=title&status=want")).toMatchObject({ sort: "title", status: "want" });
+  expect(sortWorkRows([{ work: { id: "b", title: "B" } }, { work: { id: "a", title: "A" } }], "title")
+    .map(row => row.work.id)).toEqual(["a", "b"]);
 });
 
 it("keeps unknown duration distinct from known runtime ranges in URLs", () => {

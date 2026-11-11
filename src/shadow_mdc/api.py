@@ -154,6 +154,7 @@ from .api_models import (
     WorkUpdateRequest,
 )
 from .catalog_api import build_catalog_router
+from .classification import category_for_family
 from .config import Settings
 from .db.models import (
     Actor,
@@ -256,7 +257,7 @@ from .services.directory_actor_rules import (
     DirectoryActorRule,
     DirectoryActorRuleStore,
 )
-from .services.discover import DiscoverService
+from .services.discover import DiscoverList, DiscoverService
 from .services.field_priority import FieldPriorityConfig, FieldPriorityStore
 from .services.gfriends import GfriendsActorImageResolver
 from .services.gfriends_fill import fill_actor_images_from_gfriends, localize_cdn_actor_images
@@ -1959,7 +1960,7 @@ async def discover_browse(
     request: Request,
     repo: Repo,
     provider: str = "javdb",
-    list: str = "latest",
+    list: DiscoverList = "latest",
     page: int = 1,
 ) -> DiscoverPageOut:
     """Browse remote rankings/lists. Discover ≠ library — does not write Works."""
@@ -1968,7 +1969,7 @@ async def discover_browse(
         page_data = await runtime(request).discover.browse(
             repo,
             provider=provider,
-            list_name=list,  # type: ignore[arg-type]
+            list_name=list,
             page=page,
         )
     except ValueError as exc:
@@ -6006,14 +6007,12 @@ def _strict_non_jav_organize_candidate(
 ) -> bool:
     """Admit only actor-backed local works; real videos also need their own screenshot."""
 
-    expected_category = {
-        ContentFamily.CHINESE.value: MediaCategory.CHINA.value,
-        ContentFamily.KOREAN.value: MediaCategory.KOREA.value,
-        ContentFamily.WESTERN.value: MediaCategory.EUROPE.value,
-        ContentFamily.UNKNOWN.value: MediaCategory.OTHER.value,
-        ContentFamily.ANIMATION.value: MediaCategory.OTHER.value,
-    }.get(work.family)
-    if expected_category is None or work.category != expected_category or work.primary_code:
+    try:
+        family = ContentFamily(work.family)
+    except ValueError:
+        return False
+    if (family is ContentFamily.JAV or work.category != category_for_family(family).value
+            or work.primary_code):
         return False
 
     hints = IdentityHints.model_validate(asset.hints)

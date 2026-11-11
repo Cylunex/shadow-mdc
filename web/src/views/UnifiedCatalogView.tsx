@@ -20,6 +20,7 @@ import { TaxonomyEditor } from "./TaxonomyEditor";
 import { TagManagement } from "./TagManagement";
 import { DURATION_OPTIONS, EMPTY_DURATION, durationLabel, durationOption } from "../lib/catalogDuration";
 import { ClassificationManagement } from "./ClassificationManagement";
+import { effectiveAvailability, effectiveWanted, mediaAvailabilitySchema } from "../lib/catalogTypes";
 
 type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null; code?: string | null; category?: string; release_date?: string | null; has_local_media?: boolean; rating_value?: number | null; rating_max?: number | null; javranking_rank?: number | null; javranking_score?: number | null };
 type Person = ManagedPerson;
@@ -109,6 +110,8 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   const [workRetry, setWorkRetry] = useState(0);
   const [facetRetry, setFacetRetry] = useState(0);
   const patch = (value: Partial<Filters>) => setFilters(previous => ({ ...previous, ...value }));
+  const availability = effectiveAvailability(filters);
+  const wanted = effectiveWanted(filters);
   useEffect(() => {
     if (!activePersonRef) return;
     const controller = new AbortController();
@@ -307,7 +310,8 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
         <option value="">追加{CLASSIFICATION_NAMES[field]}</option>
         {(facets[field] ?? []).map(facet => <option key={facet.id} value={facet.id}>{facet.name} · {facet.count}</option>)}
       </select></label>)}
-      <select aria-label="播放状态" value={filters.status} onChange={e => patch({ status: e.target.value as Filters["status"] })}><option value="all">全部状态</option><option value="want">想看</option><option value="downloaded">已下载</option><option value="undownloaded">全部未下载</option><option value="emby">已关联 Emby</option><option value="files">有关联文件</option><option value="metadata">仅资料</option></select>
+      <label>媒体<select aria-label="媒体可用性" value={availability} onChange={e => patch({ status: "all", wanted, availability: mediaAvailabilitySchema.parse(e.target.value) })}><option value="all">全部媒体情况</option><option value="files">有关联文件</option><option value="undownloaded">无关联文件</option><option value="emby">已关联 Emby</option><option value="metadata">仅资料</option></select></label>
+      <label>想看<select aria-label="想看偏好" value={wanted === undefined ? "all" : wanted ? "yes" : "no"} onChange={e => patch({ status: "all", availability, wanted: e.target.value === "all" ? undefined : e.target.value === "yes" })}><option value="all">全部偏好</option><option value="yes">想看</option><option value="no">未标记想看</option></select></label>
       <select aria-label="排序" value={filters.sort} onChange={e => patch({ sort: e.target.value as Filters["sort"], seed: e.target.value === "random" ? Math.floor(Math.random() * 1000000) : undefined })}><option value="added">最近入库</option><option value="newest">最新发行</option><option value="oldest">最早发行</option><option value="title">片名</option><option value="code">番号</option><option value="ranked">榜单热度</option><option value="random">随机</option></select>
       <PersonPicker label="追加演员" onSelect={person =>
         patch({ actors: [...new Set([...filters.actors, person.id])] })} />
@@ -333,7 +337,8 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
         <button key={field + id} onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
       {(filters.year_from || filters.unknown_year) && <button onClick={() => patch({ year_from: undefined, year_to: undefined, unknown_year: false })}>{filters.unknown_year ? "年份待补" : filters.year_from === filters.year_to ? filters.year_from : `${filters.year_from}–${filters.year_to}`} ×</button>}
       {(filters.duration_min !== undefined || filters.duration_max !== undefined || filters.unknown_duration) && <button onClick={() => patch(EMPTY_DURATION)}>{durationLabel(filters)} ×</button>}
-      {filters.status !== "all" && <button onClick={() => patch({ status: "all" })}>{({ emby: "已关联 Emby", files: "有关联文件", metadata: "仅资料", want: "想看", downloaded: "已下载", undownloaded: "全部未下载" })[filters.status]} ×</button>}
+      {availability !== "all" && <button onClick={() => patch({ status: "all", availability: "all", wanted })}>{({ emby: "已关联 Emby", files: "有关联文件", metadata: "仅资料", undownloaded: "无关联文件" })[availability]} ×</button>}
+      {wanted !== undefined && <button onClick={() => patch({ status: "all", availability, wanted: undefined })}>{wanted ? "想看" : "未标记想看"} ×</button>}
       {filters.exclude_tags.map(id => <button key={id}
       onClick={() => patch({ exclude_tags: filters.exclude_tags.filter(t => t !== id) })}>排除 {facets.tags?.find(tag => matchesTag(tag, id))?.name ?? id} ×</button>)}{filters.actors.map(id => <button key={id} onClick={() => patch({ actors: filters.actors.filter(a => a !== id) })}>{actorNames?.[id] ?? id} ×</button>)}</div>
     <div className="catalog-controls">

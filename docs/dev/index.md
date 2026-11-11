@@ -4,6 +4,7 @@
 
 - [架构与跨模块契约](../architecture.md)
 - [片库实体、机构层级与系列归属](../catalog-entities.md)
+- [枚举、状态、查询与开放类型审查](../type-enum-audit.md)
 - [来源参考与设计取舍](../references.md)
 - [用户可见行为](../user-guide.md)
 

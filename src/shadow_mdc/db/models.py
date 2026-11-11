@@ -23,6 +23,7 @@ from ..enums import (
     IdentityKind,
     MediaCategory,
     RecognitionScope,
+    TaskStatus,
 )
 
 
@@ -232,7 +233,7 @@ class TaskRun(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     kind: Mapped[str] = mapped_column(String(50), index=True)
     scope: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(30), index=True, default="running")
+    status: Mapped[str] = mapped_column(String(30), index=True, default=TaskStatus.RUNNING.value)
     summary: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

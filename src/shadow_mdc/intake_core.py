@@ -27,7 +27,7 @@ from .api_models import (
 from .db.models import PanOfflineTask, Work
 from .db.repository import Repository
 from .domain import IdentityHints, ProviderRecord
-from .enums import ContentFamily, MediaCategory, QueryMode
+from .enums import ContentFamily, LibraryPresence, MediaCategory, OfflineStatus, QueryMode
 from .identity import extract_code
 from .media.magnets import (
     MagnetLink,
@@ -171,7 +171,12 @@ class MagnetInspectOut(BaseModel):
     likely_non_jav: bool = False
     family: str | None = None
     quality: MagnetQualityHints = Field(default_factory=MagnetQualityHints)
-    library_state: Literal["absent", "in_catalog", "in_library", "running", "done"] = "absent"
+    library_state: Literal["absent", "in_catalog", "in_library", "running", "done"] = Field(
+        default="absent", deprecated=True,
+        description="旧版复合状态。新调用方分别读取 presence 与 offline_status。",
+    )
+    presence: LibraryPresence = LibraryPresence.ABSENT
+    offline_status: OfflineStatus | None = None
     work_id: str | None = None
     job_id: str | None = None
     metadata: MetadataBrief | None = None
@@ -1029,6 +1034,12 @@ def analyze_magnet(
         meta = brief_from_work(work)
         preview = _preview_url_for_work(work)
 
+    has_media = work is not None and (
+        repo.first_asset_for_work(work.id) is not None
+        or (offline is not None and offline.work_id == work.id and _stage(offline) == "in_library")
+    )
+    presence = LibraryPresence.from_flags(in_catalog=work is not None, has_media=bool(has_media))
+
     if meta is None and resolved_code is not None and callable(r18_lookup):
         record = r18_lookup(resolved_code)
         if record is not None:
@@ -1055,6 +1066,8 @@ def analyze_magnet(
         family=family,
         quality=quality,
         library_state=library_state,
+        presence=presence,
+        offline_status=OfflineStatus.from_legacy(offline.status) if offline is not None else None,
         work_id=work.id if work is not None else None,
         job_id=job_id,
         metadata=meta,

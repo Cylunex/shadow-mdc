@@ -1,4 +1,5 @@
 import { invalidateMutation, queryClient, queryKeys } from "./query/client";
+import type { MediaCategory } from "./lib/catalogTypes";
 import {
   z } from "zod";
 
@@ -79,7 +80,7 @@ import type { FilterWords, IdentityAliases } from "./model";
 import { tagDictionarySchema, tagTermSchema } from "./lib/tagDictionary";
 import { classificationsSchema, classificationTermSchema, taxonomySchema, type TaxonomyEdit } from "./lib/classifications";
 
-export type DisplayMediaCategory = "Japan" | "China" | "Korea" | "Europe" | "Other";
+export type DisplayMediaCategory = MediaCategory;
 
 export type NonJavActorEditPayload = {
   name: string;

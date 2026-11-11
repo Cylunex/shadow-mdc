@@ -59,6 +59,9 @@ HTTP 配置只存于实际的私有文件；示例不含真实连接：
 SSH 端使用已有 HTTP 私有配置。CLI 不跟随 HTTP 重定向，不输出 SSH stderr 或凭据；失败时先核对配置与原操作结果。
 
 作品时长筛选可用 `works.query` / `works.facets` 的 `duration_min`、`duration_max`（秒，左闭右开）或 `unknown_duration`。
+想看与媒体情况可组合：`{"wanted":true,"availability":"files"}` 查询想看且有关联文件的作品；
+`wanted=false` 排除想看，省略不筛选。`availability` 支持 all/files/emby/metadata/undownloaded；
+无关联文件不证明没有远端下载。磁力检查分别读取 `presence` 和 `offline_status`，不能用 done 断言媒体已入库。
 作品语言表示原始对白语言；题材用标签维护。标签词条支持 `group` 分组，更新省略保持、空字符串清除。
 
 机构与系列分开：`organizations.list` 返回片商、工作室及所属品牌和渠道，`series.list` 返回独立系列。

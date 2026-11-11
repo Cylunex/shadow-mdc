@@ -394,6 +394,7 @@ def test_magnet_inspect_known_code_with_poster(client: TestClient, monkeypatch: 
     ).json()
     assert out["code"] == "SSIS-123"
     assert out["metadata"] is not None
+    assert out["presence"] == "absent" and out["offline_status"] is None
     assert out["metadata"]["title"] == "Fixture title"
     assert out["metadata"]["actors"] == ["Actress A"]
     assert out["preview_url"] == poster
@@ -428,6 +429,7 @@ def test_magnet_inspect_already_in_library(client: TestClient) -> None:
     ).json()
     assert out["code"] == "SSIS-123"
     assert out["library_state"] == "running"
+    assert out["presence"] == "catalog_only" and out["offline_status"] == "running"
     assert out["work_id"] == work_id
     assert out["job_id"]
     assert out["preview_url"] == "https://cdn.example/SSIS-123/cover.jpg"

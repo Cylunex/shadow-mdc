@@ -27,12 +27,12 @@ from .db.models import (
     Work,
     WorkCollection,
 )
+from .enums import MediaAvailability, MediaCategory, OrganizationKind, OrganizationRole
 
 if TYPE_CHECKING:
     from .api import Runtime
 
-Role = Literal["studio", "distributor", "label", "platform", "credited"]
-OrganizationKind = Literal["organization", "studio", "label", "platform"]
+Role = OrganizationRole
 
 
 class OrganizationEdit(BaseModel):
@@ -54,12 +54,12 @@ class OrganizationEdit(BaseModel):
 
 
 class OrganizationCreate(OrganizationEdit):
-    kind: OrganizationKind = "organization"
+    kind: OrganizationKind = OrganizationKind.ORGANIZATION
 
 
 class OrganizationOut(OrganizationEdit):
     id: str
-    kind: str
+    kind: OrganizationKind
     work_count: int = 0
 
 
@@ -101,7 +101,7 @@ class CatalogFilter(ClassificationSelection):
     duration_max: int | None = Field(default=None, gt=0, description="最大时长(秒, 不含边界)")
     unknown_duration: bool = False
     q: str = Field(default="", max_length=200)
-    category: Literal["all", "Japan", "China", "Korea", "Europe", "Other"] = "all"
+    category: MediaCategory | Literal["all"] = "all"
     collection: str = ""
     seed: int = Field(default=0, ge=0, le=1000000)
     actors: list[str] = Field(default_factory=list)
@@ -116,14 +116,31 @@ class CatalogFilter(ClassificationSelection):
     organizations: list[str] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
     platforms: list[str] = Field(default_factory=list)
-    organization_role: str = ""
+    organization_role: OrganizationRole | Literal["", "series"] = ""
     year_from: int | None = None
     year_to: int | None = None
     unknown_year: bool = False
     status: Literal["all", "files", "emby", "metadata", "want", "downloaded", "undownloaded"] = "all"
+    availability: MediaAvailability = MediaAvailability.ALL
+    wanted: bool | None = None
     sort: Literal["added", "newest", "oldest", "title", "code", "ranked", "random"] = "added"
     cursor: str | None = None
     limit: int = Field(default=60, ge=1, le=100)
+
+    @property
+    def media_availability(self) -> MediaAvailability:
+        """The old status is an input preset, not a stored work lifecycle."""
+        if self.availability is not MediaAvailability.ALL:
+            return self.availability
+        return {
+            "files": MediaAvailability.FILES, "downloaded": MediaAvailability.FILES,
+            "emby": MediaAvailability.EMBY, "metadata": MediaAvailability.METADATA,
+            "undownloaded": MediaAvailability.UNDOWNLOADED,
+        }.get(self.status, MediaAvailability.ALL)
+
+    @property
+    def wanted_filter(self) -> bool | None:
+        return self.wanted if self.wanted is not None else True if self.status == "want" else None
 
     @model_validator(mode="after")
     def validate_duration(self) -> CatalogFilter:
@@ -237,7 +254,7 @@ def build_management_router(
                 links.c.organization_id, func.count(func.distinct(links.c.work_id)),
             ).group_by(links.c.organization_id))}
             return [OrganizationOut(
-                id=row.id, kind=row.kind, name=row.name,
+                id=row.id, kind=OrganizationKind(row.kind), name=row.name,
                 aliases=extras[row.id].aliases if row.id in extras else row.aliases,
                 description=extras[row.id].description if row.id in extras else row.description,
                 parent_id=extras[row.id].parent_id if row.id in extras else None,
@@ -321,7 +338,8 @@ def build_management_router(
                 work_count = session.scalar(select(func.count(func.distinct(
                     relationships.c.work_id,
                 ))).where(relationships.c.organization_id == organization_id)) or 0
-                return OrganizationOut(id=organization_id, kind=collection.kind, work_count=work_count, **{
+                return OrganizationOut(id=organization_id, kind=OrganizationKind(collection.kind),
+                                       work_count=work_count, **{
                     **payload.model_dump(), "revision": payload.revision + 1, "aliases": aliases,
                 })
 

@@ -10,7 +10,7 @@ import logging
 import re
 from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 from urllib.parse import quote, urlparse
 
 from pydantic import BaseModel, ConfigDict
@@ -19,15 +19,15 @@ from selectolax.parser import HTMLParser
 from ..db.models import Work
 from ..db.repository import Repository
 from ..domain import IdentityHints, ProviderRecord
-from ..enums import ContentFamily, MediaCategory, QueryMode
+from ..enums import ContentFamily, LibraryPresence, MediaCategory, QueryMode
 from ..identity import extract_code
-from ..providers.base import ProviderRegistry
-from ..providers.html import absolute, parse_date
 from ..media.magnets import MagnetLink
-from ..providers.sukebei import SukebeiClient
+from ..providers.base import ProviderRegistry
 from ..providers.fanza import FanzaProvider
+from ..providers.html import absolute, parse_date
 from ..providers.javdb import JavDBProvider
-from ..providers.javdb_api import JavDBApiMovie, JavDBAppApi
+from ..providers.javdb_api import JavDBApiMovie, JavDBAppApi, RankingPeriod, RankingZone
+from ..providers.sukebei import SukebeiClient
 from .r18_dump import R18DumpStore
 
 logger = logging.getLogger(__name__)
@@ -51,29 +51,36 @@ DiscoverList = Literal[
 ]
 
 # JavDB ranking zones; ``rankings_<period>`` (no suffix) stays the censored list.
-JAVDB_RANKING_ZONES: tuple[str, ...] = ("censored", "uncensored", "western", "fc2")
+JAVDB_RANKING_ZONES = tuple(RankingZone)
 # Lists only JavDB can serve (FANZA has no zone split / TOP250).
 JAVDB_ONLY_LISTS: frozenset[str] = frozenset(
     {
         f"rankings_{period}_{zone}"
-        for period in ("daily", "weekly", "monthly")
-        for zone in ("uncensored", "western", "fc2")
+        for period in RankingPeriod
+        for zone in RankingZone if zone is not RankingZone.CENSORED
     }
     | {"top250"}
 )
 
 
-def javdb_ranking_spec(list_name: str) -> tuple[str, str] | None:
+class RankingSpec(NamedTuple):
+    zone: RankingZone
+    period: RankingPeriod
+
+
+def javdb_ranking_spec(list_name: str) -> RankingSpec | None:
     """``rankings_weekly_fc2`` → ``("fc2", "weekly")``; non-ranking lists → ``None``."""
 
     if not list_name.startswith("rankings_"):
         return None
     parts = list_name.split("_")
-    if len(parts) == 2 and parts[1] in {"daily", "weekly", "monthly"}:
-        return "censored", parts[1]
-    if len(parts) == 3 and parts[1] in {"daily", "weekly", "monthly"} and parts[2] in JAVDB_RANKING_ZONES:
-        return parts[2], parts[1]
-    return None
+    if len(parts) not in (2, 3):
+        return None
+    try:
+        return RankingSpec(RankingZone(parts[2]) if len(parts) == 3 else RankingZone.CENSORED,
+                           RankingPeriod(parts[1]))
+    except ValueError:
+        return None
 
 
 class DiscoverItem(BaseModel):
@@ -87,6 +94,7 @@ class DiscoverItem(BaseModel):
     thumb_url: str | None = None
     release_date: date | None = None
     state: DiscoverState = "not_in_library"
+    presence: LibraryPresence = LibraryPresence.ABSENT
     work_id: str | None = None
     has_local_media: bool = False
 
@@ -154,9 +162,11 @@ class DiscoverSeedResult(BaseModel):
 # Ranking pages are a single fixed list (``page`` is ignored by the site). The HTML
 # scrape is the *fallback*; the signed app API (``JavDBAppApi.rankings``) is primary.
 _LIST_PATHS: dict[str, str] = {"latest": "/"}
-for _period in ("daily", "weekly", "monthly"):
+for _period in RankingPeriod:
     _LIST_PATHS[f"rankings_{_period}"] = f"/rankings/movies?p={_period}&t=censored"
-    for _zone in ("uncensored", "western", "fc2"):
+    for _zone in RankingZone:
+        if _zone is RankingZone.CENSORED:
+            continue
         _LIST_PATHS[f"rankings_{_period}_{_zone}"] = f"/rankings/movies?p={_period}&t={_zone}"
 _SINGLE_PAGE_LISTS: frozenset[str] = frozenset(name for name in _LIST_PATHS if name.startswith("rankings_"))
 
@@ -282,7 +292,7 @@ class DiscoverService:
                     movies = await self._javdb_api.top250(page=page)
                 else:
                     assert spec is not None
-                    movies = await self._javdb_api.rankings(spec[0], spec[1])
+                    movies = await self._javdb_api.rankings(spec.zone, spec.period)
             except Exception as exc:  # noqa: BLE001 - fall back to the HTML scrape
                 api_note = f"app API failed: {type(exc).__name__}: {exc}"
                 logger.warning("javdb app API %s failed, falling back to HTML: %s", list_name, api_note)
@@ -592,6 +602,7 @@ class DiscoverService:
                         "state": "in_library" if has_media else "catalog_only",
                         "work_id": work.id,
                         "has_local_media": has_media,
+                        "presence": LibraryPresence.from_flags(in_catalog=True, has_media=has_media),
                     }
                 )
             )

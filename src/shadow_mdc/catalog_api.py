@@ -547,17 +547,16 @@ def build_catalog_router(
             statement = statement.where(year <= filters.year_to)
         files = exists(select(1).where(MediaAsset.work_id == Work.id))
         emby = exists(select(1).where(MediaEmbyBinding.work_id == Work.id))
-        if filters.status == "want":
-            statement = statement.where(Work.id.in_(runtime(request).library_prefs_store.load().want_list))
-        elif filters.status == "downloaded":
-            statement = statement.where(files)
-        elif filters.status == "undownloaded":
+        if filters.wanted_filter is not None:
+            wanted = Work.id.in_(runtime(request).library_prefs_store.load().want_list)
+            statement = statement.where(wanted if filters.wanted_filter else ~wanted)
+        if filters.media_availability == "undownloaded":
             statement = statement.where(~files)
-        elif filters.status == "files":
+        elif filters.media_availability == "files":
             statement = statement.where(files)
-        elif filters.status == "emby":
+        elif filters.media_availability == "emby":
             statement = statement.where(emby)
-        elif filters.status == "metadata":
+        elif filters.media_availability == "metadata":
             statement = statement.where(~files, ~emby)
         return statement
 

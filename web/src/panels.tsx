@@ -23,8 +23,9 @@ import {
   type WorksStatusFilter
 } from "./lib/worksFilters";
 import { javActorRef, nonJavActorRef } from "./views/ActorDetailView";
+import type { CatalogCategory } from "./lib/catalogTypes";
 
-type DisplayCategory = "all" | "Japan" | "China" | "Korea" | "Europe" | "Other";
+type DisplayCategory = CatalogCategory;
 
 type RefreshMode = "none" | "works" | "actors" | "inbox" | "tasks" | "core" | "all";
 type RunFn = (key: string, action: () => Promise<void>, refresh?: RefreshMode) => Promise<void>;
@@ -35,11 +36,6 @@ const ACTOR_PAGE_SIZE = 24;
 const NON_JAV_ACTOR_PAGE_SIZE = 30;
 const WORK_PAGE_SIZE = 48;
 const QUICK_GENRE_TAG_COUNT = 10;
-const COMMON_GENRE_FILTER_TAGS = [
-  "黑丝", "丝袜", "高跟鞋", "巨乳", "美腿", "制服", "眼镜", "口交", "中出",
-  "痴女", "人妻", "OL", "护士", "学生", "女仆", "老师", "熟女", "贫乳", "美尻",
-  "潮吹", "颜射", "多人", "女同", "VR", "4K", "单体作品"
-] as const;
 
 
 function normalizeSearchText(value: string): string {
@@ -1095,37 +1091,18 @@ export function Works(props: {
 
   const genreFacets = useMemo(() => {
     const counts = new Map<string, number>();
-    const categories = new Set(["Japan", "China", "Korea", "Europe", "Other"]);
     for (const work of works) {
-      const meta = new Set(
-        [work.category, work.family, work.studio, work.label, work.series]
-          .filter((value): value is string => Boolean(value && value.trim()))
-          .map((value) => value.trim())
-      );
       const seen = new Set<string>();
-      for (const tag of work.display_tags ?? []) {
+      for (const tag of work.tag_refs.length ? work.tag_refs.map(item => item.name) : work.tags) {
         const name = tag.trim();
-        if (!name || seen.has(name) || categories.has(name) || meta.has(name)) continue;
+        if (!name || seen.has(name)) continue;
         seen.add(name);
         counts.set(name, (counts.get(name) ?? 0) + 1);
       }
     }
-    const preferred = new Set<string>(COMMON_GENRE_FILTER_TAGS);
     const ranked = [...counts.entries()]
-      .sort((left, right) => {
-        const leftPref = preferred.has(left[0]) ? 0 : 1;
-        const rightPref = preferred.has(right[0]) ? 0 : 1;
-        return leftPref - rightPref || right[1] - left[1] || left[0].localeCompare(right[0], "zh");
-      });
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], "zh"));
     const top = ranked.slice(0, 36);
-    const present = new Set(top.map(([name]) => name));
-    for (const name of COMMON_GENRE_FILTER_TAGS) {
-      const count = counts.get(name) ?? 0;
-      if (count > 0 && !present.has(name)) {
-        top.push([name, count]);
-        present.add(name);
-      }
-    }
     top.sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], "zh"));
     return top;
   }, [works]);
@@ -1192,8 +1169,8 @@ export function Works(props: {
         if (!(work.collections ?? []).some((item) => `${item.kind}:${item.name}` === collectionFilter)) continue;
       }
       if (selectedTags.length > 0) {
-        const display = new Set(work.display_tags ?? []);
-        if (!selectedTags.every((tag) => display.has(tag))) continue;
+        const tags = new Set([...work.tags, ...work.tag_refs.flatMap(item => [item.id, item.name])]);
+        if (!selectedTags.every((tag) => tags.has(tag))) continue;
       }
       if (studioNeedle) {
         if ((work.studio ?? "").toLocaleLowerCase() !== studioNeedle

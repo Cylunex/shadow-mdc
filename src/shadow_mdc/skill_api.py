@@ -44,6 +44,7 @@ from .catalog_management import (
 )
 from .db.models import Work
 from .intake_core import SubscribeRequest
+from .services.discover import DiscoverList
 from .skill_operations import ClassificationFill, FillInput, IntakeItem, LinkInput, RecoverInput, TagsEdit
 from .tag_dictionary_api import RulesEdit, TagCreate, TagEdit
 
@@ -236,7 +237,7 @@ class PlaylistEditInput(PlaylistEdit, PlaylistInput):
 
 class BrowseInput(EmptyInput):
     provider: str = Field(default="javdb", max_length=100)
-    list: str = Field(default="rankings_daily", max_length=100)
+    list: DiscoverList = "rankings_daily"
     page: int = Field(default=1, ge=1, le=1000)
 
 

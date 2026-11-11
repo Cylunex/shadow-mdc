@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import traceback
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..db.repository import Database, Repository
+from ..enums import TaskStatus
 
 logger = logging.getLogger(__name__)
 
-JobBody = Callable[[Repository, Callable[[dict[str, object]], None], Callable[[], bool]], Awaitable[dict[str, object]]]
+JobBody = Callable[
+    [Repository, Callable[[dict[str, object]], None], Callable[[], bool]], Awaitable[dict[str, object]],
+]
 
 
 @dataclass
@@ -65,7 +67,7 @@ class JobManager:
             except asyncio.CancelledError:
                 self._finish(task_id, status="cancelled", summary={"phase": "cancelled"}, error=None)
                 raise
-            except Exception as exc:  # noqa: BLE001 - surface to TaskRun
+            except Exception as exc:  # Surface failures to TaskRun.
                 logger.exception("job %s failed", task_id)
                 self._finish(
                     task_id,
@@ -98,8 +100,8 @@ class JobManager:
                 repo.finish_task_run(repo.get_task_run(task_id), status="cancelled", summary=summary)  # type: ignore[arg-type]
             else:
                 status = str(summary.get("status") or "succeeded")
-                if status not in {"succeeded", "partial", "failed", "cancelled"}:
-                    status = "succeeded"
+                if not TaskStatus(status).terminal:
+                    raise ValueError("job returned a non-terminal TaskRun status")
                 task = repo.get_task_run(task_id)
                 assert task is not None
                 repo.finish_task_run(task, status=status, summary=summary)

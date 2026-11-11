@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { appUrl } from "../api";
 import { queryClient, queryKeys } from "../query/client";
 import type { Filters } from "./UnifiedCatalogView";
+import { organizationKindSchema, organizationRoleSchema, type OrganizationKind, type OrganizationRole } from "../lib/catalogTypes";
 
 export type ManagedPerson = {
   id: string; ref: string; refs: string[]; name: string; aliases: string[];
@@ -18,9 +19,9 @@ export type PersonCard = {
 };
 type PeoplePage = { items: PersonCard[]; next_offset: number | null; total: number; labels: Record<string, string> };
 export const PEOPLE_PAGE_SIZE = 48;
-type Organization = { id: string; kind: string; name: string; aliases: string[]; description: string | null; parent_id: string | null; revision: number; work_count: number };
+type Organization = { id: string; kind: OrganizationKind; name: string; aliases: string[]; description: string | null; parent_id: string | null; revision: number; work_count: number };
 type Series = { id: string; name: string; aliases: string[]; description: string | null; organization_id: string | null; revision: number; work_count: number };
-export const ORGANIZATION_NAMES: Record<string, string> = { organization: "片商 / 公司", studio: "工作室", label: "厂牌", platform: "发布平台" };
+export const ORGANIZATION_NAMES: Record<OrganizationKind, string> = { organization: "片商 / 公司", studio: "工作室", label: "厂牌", platform: "发布平台" };
 function organizationLabel(item: Organization, items: Organization[]): string {
   const parent = items.find(value => value.id === item.parent_id);
   return `${parent ? parent.name + " › " : ""}${item.name} · ${ORGANIZATION_NAMES[item.kind] ?? "机构"}`;
@@ -247,7 +248,7 @@ export function CatalogPeopleEditor({ person, onSaved }: {
 
 export function CatalogOrganizations({ works, onFilter }: {
   works: { id: string; title: string }[];
-  onFilter: (id: string, role?: string) => void;
+  onFilter: (id: string, role?: OrganizationRole) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [organizations, setOrganizations] = useState<Organization[]>([]);
@@ -255,10 +256,10 @@ export function CatalogOrganizations({ works, onFilter }: {
   const [aliasesText, setAliasesText] = useState("");
   useEffect(() => { setAliasesText(selected?.aliases.join("、") ?? ""); }, [selected?.id]);
   const [workId, setWorkId] = useState("");
-  const [role, setRole] = useState("studio");
+  const [role, setRole] = useState<OrganizationRole>("studio");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const roles = { studio: "制作", distributor: "发行", label: "厂牌", platform: "发布平台", credited: "原始署名" };
+  const roles: Record<OrganizationRole, string> = { studio: "制作", distributor: "发行", label: "厂牌", platform: "发布平台", credited: "原始署名" };
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
@@ -288,7 +289,7 @@ export function CatalogOrganizations({ works, onFilter }: {
         <option key={item.id} value={item.id}>{organizationLabel(item, organizations)} · {item.work_count} 部</option>)}
     </select>
     {selected && <article><h2>{selected.name}</h2>
-      {!selected.id && <label>类型<select value={selected.kind} onChange={e => setSelected({ ...selected, kind: e.target.value })}>
+      {!selected.id && <label>类型<select value={selected.kind} onChange={e => setSelected({ ...selected, kind: organizationKindSchema.parse(e.target.value) })}>
         {Object.entries(ORGANIZATION_NAMES).map(([key, name]) => <option key={key} value={key}>{name}</option>)}
       </select></label>}
       <label>名称<input value={selected.name} onChange={e => setSelected({ ...selected, name: e.target.value })} /></label>
@@ -300,11 +301,11 @@ export function CatalogOrganizations({ works, onFilter }: {
       </select></label>
       <button disabled={busy} onClick={() => void save()}>保存机构资料</button>
       <button disabled={!selected.id} onClick={() => onFilter(selected.id)}>全部作品</button>
-      {Object.entries(roles).map(([key, name]) => <button key={key} disabled={!selected.id} onClick={() => onFilter(selected.id, key)}>{name}作品</button>)}
+      {Object.entries(roles).map(([key, name]) => <button key={key} disabled={!selected.id} onClick={() => onFilter(selected.id, organizationRoleSchema.parse(key))}>{name}作品</button>)}
       <details><summary>维护作品署名</summary>
         <select value={workId} onChange={e => setWorkId(e.target.value)}><option value="">从当前结果选择作品</option>{works.map(work =>
           <option value={work.id} key={work.id}>{work.title}</option>)}</select>
-        <select value={role} onChange={e => setRole(e.target.value)}>{Object.entries(roles).map(([key, name]) => <option value={key} key={key}>{name}</option>)}</select>
+        <select value={role} onChange={e => setRole(organizationRoleSchema.parse(e.target.value))}>{Object.entries(roles).map(([key, name]) => <option value={key} key={key}>{name}</option>)}</select>
         <button disabled={busy || !workId || !selected.id} onClick={() => {
           setBusy(true);
           catalogRequest("organizations/" + selected.id + "/works", "PUT", { work_id: workId, role })

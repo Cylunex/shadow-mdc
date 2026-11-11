@@ -1,10 +1,11 @@
 import { z } from "zod";
+import { mediaCategorySchema, libraryPresenceSchema } from "./lib/catalogTypes";
 
 export const librarySchema = z.object({
   id: z.string(),
   name: z.string(),
   root_path: z.string(),
-  category: z.enum(["Japan", "China", "Korea", "Europe", "Other"]),
+  category: mediaCategorySchema,
   recursive: z.boolean(),
   recognition_scope: z.enum(["all", "jav_only"]),
   organize_template: z.string(),
@@ -23,7 +24,7 @@ export const hintsSchema = z.object({
   term: z.string(),
   mode: z.string(),
   family: z.string(),
-  category: z.enum(["Japan", "China", "Korea", "Europe", "Other"]),
+  category: mediaCategorySchema,
   code: z.string().nullable(),
   title: z.string().nullable(),
   source_url: z.string().nullable(),
@@ -102,7 +103,7 @@ export const assetInboxSchema = z.object({
   state: z.string(),
   hints: z.object({
     family: z.string(),
-    category: z.enum(["Japan", "China", "Korea", "Europe", "Other"]),
+    category: mediaCategorySchema,
     code: z.string().nullable(),
     title: z.string().nullable(),
     media_locator: z.string().nullable(),
@@ -128,7 +129,7 @@ export const providerRecordSchema = z.object({
   title: z.string(),
   original_title: z.string().nullable(),
   family: z.string(),
-  category: z.enum(["Japan", "China", "Korea", "Europe", "Other"]),
+  category: mediaCategorySchema,
   release_date: z.string().nullable(),
   runtime_seconds: z.number().nullable(),
   studio: z.string().nullable(),
@@ -219,7 +220,7 @@ export const workSchema = z.object({
   original_title: z.string().nullable().optional().default(null),
   primary_code: z.string().nullable().optional().default(null),
   family: z.string(),
-  category: z.enum(["Japan", "China", "Korea", "Europe", "Other"]),
+  category: mediaCategorySchema,
   release_date: z.string().nullable().optional().default(null),
   runtime_seconds: z.number().nullable().optional().default(null),
   studio: z.string().nullable().optional().default(null),
@@ -412,7 +413,7 @@ export const nonJavActorSchema = z.object({
   name: z.string(),
   aliases: z.array(z.string()),
   groups: z.array(z.string()),
-  categories: z.array(z.enum(["Japan", "China", "Korea", "Europe", "Other"])),
+  categories: z.array(mediaCategorySchema),
   match_names: z.array(z.string()),
   image_url: z.string().nullable(),
   x_handle: z.string().nullable().optional(),
@@ -721,6 +722,7 @@ export const discoverItemSchema = z.object({
   thumb_url: z.string().nullable().optional(),
   release_date: z.string().nullable().optional(),
   state: z.enum(["not_in_library", "catalog_only", "in_library"]),
+  presence: libraryPresenceSchema.optional(),
   work_id: z.string().nullable().optional(),
   has_local_media: z.boolean().optional()
 });

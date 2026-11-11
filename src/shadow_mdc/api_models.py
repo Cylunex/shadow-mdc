@@ -10,7 +10,7 @@ from .domain import (
     ProviderDescriptor,
     ProviderRecord,
 )
-from .enums import CollectionKind, MediaCategory, NfoPolicy, OutputMode, RecognitionScope
+from .enums import CollectionKind, LibraryPresence, MediaCategory, NfoPolicy, OutputMode, RecognitionScope
 from .media.organize_journal import JournalEntry
 from .providers.base import ProviderFailure
 from .tag_models import TagReference
@@ -808,6 +808,7 @@ class DiscoverItemOut(BaseModel):
     thumb_url: str | None = None
     release_date: date | None = None
     state: str
+    presence: LibraryPresence = LibraryPresence.ABSENT
     work_id: str | None = None
     has_local_media: bool = False
 

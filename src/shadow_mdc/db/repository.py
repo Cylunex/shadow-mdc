@@ -13,9 +13,11 @@ from sqlalchemy.orm import Session, load_only, sessionmaker
 
 from ..actress_aliases import merge_actor_names
 from ..catalog_series import migrate_series, sync_field_series
+from ..classification import category_for_family
 from ..collection_names import normalize_collection_name
 from ..domain import IdentityHints, MatchEvidence, MediaTechnicalInfo, ProviderRecord, ScoredCandidate
 from ..enums import (
+    TERMINAL_TASK_STATUSES,
     AssetState,
     CandidateState,
     CollectionKind,
@@ -24,6 +26,7 @@ from ..enums import (
     MatchDecision,
     MediaCategory,
     RecognitionScope,
+    TaskStatus,
 )
 from ..filename_tags import filename_tags
 from ..identity import normalize_identity_value
@@ -400,7 +403,10 @@ class Repository:
         summary: dict[str, object],
         error: str | None = None,
     ) -> None:
-        task.status = status
+        state = TaskStatus(status)
+        if not state.terminal:
+            raise ValueError("finishing a task requires a terminal TaskRun status")
+        task.status = state.value
         task.summary = summary
         task.error = error
         task.finished_at = utc_now()
@@ -492,19 +498,19 @@ class Repository:
     def update_task_progress(self, task: TaskRun, summary: dict[str, object]) -> None:
         """Persist live progress without finishing the task."""
 
+        if task.finished_at is not None or task.status in TERMINAL_TASK_STATUSES:
+            return
         merged = dict(task.summary or {})
         merged.update(summary)
         task.summary = merged
-        if task.status == "cancel_requested":
-            return
-        if task.status not in {"cancelled", "succeeded", "failed", "partial"}:
-            task.status = "running"
+        if task.status != TaskStatus.CANCEL_REQUESTED:
+            task.status = TaskStatus.RUNNING.value
         self._session.flush()
 
     def request_task_cancel(self, task: TaskRun) -> TaskRun:
-        if task.finished_at is not None or task.status in {"succeeded", "failed", "partial", "cancelled"}:
+        if task.finished_at is not None or task.status in TERMINAL_TASK_STATUSES:
             raise ValueError("task is already finished")
-        task.status = "cancel_requested"
+        task.status = TaskStatus.CANCEL_REQUESTED.value
         summary = dict(task.summary or {})
         summary["cancel_requested"] = True
         task.summary = summary
@@ -1705,7 +1711,7 @@ class Repository:
     def _create_work(self, record: ProviderRecord) -> Work:
         category = record.category
         if category is MediaCategory.OTHER:
-            category = _category_for_family(record.family.value)
+            category = category_for_family(record.family)
         work = Work(
             title=record.title,
             original_title=record.original_title,
@@ -1838,7 +1844,7 @@ class Repository:
             sources["family"] = record.provider
         category = record.category
         if category is MediaCategory.OTHER:
-            category = _category_for_family(record.family.value)
+            category = category_for_family(record.family)
         if category is not MediaCategory.OTHER and (overwrite or work.category == MediaCategory.OTHER.value):
             work.category = category.value
             sources["category"] = record.provider
@@ -2290,15 +2296,6 @@ def _reject_actor_wipe(current: list[str], incoming: list[str]) -> bool:
 def _field_locked(work: Work, field: str) -> bool:
     locks = work.field_locks or []
     return field in locks
-
-
-def _category_for_family(family: str) -> MediaCategory:
-    return {
-        "jav": MediaCategory.JAPAN,
-        "chinese": MediaCategory.CHINA,
-        "korean": MediaCategory.KOREA,
-        "western": MediaCategory.EUROPE,
-    }.get(family, MediaCategory.OTHER)
 
 
 def _normalize_actor_name(value: str) -> str:

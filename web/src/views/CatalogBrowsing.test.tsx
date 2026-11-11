@@ -188,6 +188,25 @@ it("combines production, brand, channel and series without treating series as an
   expect(container.querySelector(".active-filter-chips")?.textContent).toContain("系列：Cycle");
 });
 
+it("combines wanted preference with media availability and clears either independently", async () => {
+  window.history.replaceState({}, "", "/?status=want");
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(
+    url.endsWith("/facets") ? {} : { items: [], next_cursor: null, total: 0 },
+  ))));
+  await act(async () => root.render(<UnifiedCatalogView mode="works" onOpenWork={vi.fn()} onOpenActor={vi.fn()} />));
+  await act(async () => button("分类与筛选").click());
+  expect(container.querySelector<HTMLSelectElement>('[aria-label="想看偏好"]')!.value).toBe("yes");
+  await change("媒体可用性", "files");
+  expect(readCatalogFilters(window.location.search)).toMatchObject({ status: "all", wanted: true, availability: "files" });
+  await change("想看偏好", "no");
+  expect(readCatalogFilters(window.location.search)).toMatchObject({ wanted: false, availability: "files" });
+  await act(async () => button("有关联文件 ×").click());
+  expect(readCatalogFilters(window.location.search)).toMatchObject({ wanted: false, availability: "all" });
+  await change("媒体可用性", "emby");
+  await act(async () => button("未标记想看 ×").click());
+  expect(readCatalogFilters(window.location.search)).toMatchObject({ wanted: undefined, availability: "emby" });
+});
+
 it("jumps actor pages, resets offsets on sort and search, and requests only the chosen page size", async () => {
   const fetch = vi.fn(async (url: string) => {
     const params = new URL(url, "https://example.com").searchParams;

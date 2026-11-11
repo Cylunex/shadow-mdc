@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from ..db.repository import Database, Repository
+from ..enums import TaskStatus
 from .library_jobs import library_checkpoint
 
-INTERRUPTED = "interrupted"
+INTERRUPTED = TaskStatus.INTERRUPTED.value
 RESUMABLE_KINDS: frozenset[str] = frozenset({"scan", "identify:library", "subtitles:backfill"})
 
 

@@ -11,6 +11,7 @@ class QueryMode(StrEnum):
 
 
 class ContentFamily(StrEnum):
+    """Legacy recognition/source families, not work types, languages or production regions."""
     JAV = "jav"
     CHINESE = "chinese"
     KOREAN = "korean"
@@ -20,6 +21,7 @@ class ContentFamily(StrEnum):
 
 
 class MediaCategory(StrEnum):
+    """Legacy library routing partitions; Europe includes the western source family."""
     JAPAN = "Japan"
     CHINA = "China"
     KOREA = "Korea"
@@ -52,6 +54,91 @@ class AssetState(StrEnum):
     IDENTIFIED = "identified"
     ERROR = "error"
     IGNORED = "ignored"
+
+
+class TaskStatus(StrEnum):
+    """Lifecycle of a general TaskRun; checkpoint phases and offline jobs use other domains."""
+
+    RUNNING = "running"
+    CANCEL_REQUESTED = "cancel_requested"
+    SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
+    PAUSED = "paused"
+
+    @property
+    def terminal(self) -> bool:
+        return self in (
+            TaskStatus.SUCCEEDED, TaskStatus.PARTIAL, TaskStatus.FAILED,
+            TaskStatus.CANCELLED, TaskStatus.INTERRUPTED, TaskStatus.PAUSED,
+        )
+
+
+TERMINAL_TASK_STATUSES = frozenset(state for state in TaskStatus if state.terminal)
+
+
+class OfflineStatus(StrEnum):
+    """Local offline pipeline status, independent of catalogue/media presence."""
+
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def from_legacy(cls, value: str) -> "OfflineStatus":
+        if value == "completed":
+            return cls.DONE
+        try:
+            return cls(value)
+        except ValueError:
+            return cls.UNKNOWN
+
+
+class LibraryPresence(StrEnum):
+    """Registration in the local catalogue; a completed remote job alone is not media."""
+
+    ABSENT = "absent"
+    CATALOG_ONLY = "catalog_only"
+    IN_LIBRARY = "in_library"
+
+    @classmethod
+    def from_flags(cls, *, in_catalog: bool, has_media: bool) -> "LibraryPresence":
+        if not in_catalog:
+            return cls.ABSENT
+        return cls.IN_LIBRARY if has_media else cls.CATALOG_ONLY
+
+
+class MediaAvailability(StrEnum):
+    """A work query's media bindings; wanted preference is a separate boolean filter."""
+
+    ALL = "all"
+    FILES = "files"
+    EMBY = "emby"
+    METADATA = "metadata"
+    UNDOWNLOADED = "undownloaded"
+
+
+class OrganizationKind(StrEnum):
+    """Organization form; a series is a different entity, not a member of this enum."""
+
+    ORGANIZATION = "organization"
+    STUDIO = "studio"
+    LABEL = "label"
+    PLATFORM = "platform"
+
+
+class OrganizationRole(StrEnum):
+    """A particular work's credit, independent of its organization's form."""
+
+    STUDIO = "studio"
+    DISTRIBUTOR = "distributor"
+    LABEL = "label"
+    PLATFORM = "platform"
+    CREDITED = "credited"
 
 
 class MatchDecision(StrEnum):

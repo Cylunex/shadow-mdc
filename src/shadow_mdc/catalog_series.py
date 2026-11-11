@@ -17,8 +17,9 @@ from .db.models import (
     Work,
     WorkCollection,
 )
+from .enums import OrganizationKind
 
-ORGANIZATION_KINDS = ("organization", "studio", "label", "platform")
+ORGANIZATION_KINDS = tuple(OrganizationKind)
 
 
 def find_series(session: Session, name: str) -> CatalogSeries | None:
