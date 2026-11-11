@@ -209,6 +209,7 @@ class TagFacet(Facet):
     group: str = ""
     parent_id: str | None = None
     path: list[TagReference] = Field(default_factory=list)
+    redirect_ids: tuple[str, ...] = ()
 
 
 def _card(work: Work, prefix: str, *, detail: bool = False) -> CatalogCard:
@@ -758,7 +759,8 @@ def build_catalog_router(
             tag_counts = {key: count for key, _raw, count in tags}
             tag_facets = {
                 key: TagFacet(id=key, name=tag.name, count=count, aliases=list(tag.aliases), group=tag.group,
-                              parent_id=tag.parent_id, path=list(current_registry().path(tag.id)))
+                              parent_id=tag.parent_id, path=list(current_registry().path(tag.id)),
+                              redirect_ids=current_registry().redirect_ids(tag.id))
                 for key, raw, count in tags
                 if (tag := resolve_tag(key if key in current_registry().ids else raw)) is not None
             }
@@ -777,6 +779,7 @@ def build_catalog_router(
                                 aliases=list(node.aliases),
                                 group=node.group,
                                 parent_id=node.parent_id, path=list(current_registry().path(node.id)),
+                                redirect_ids=current_registry().redirect_ids(node.id),
                             )
             organization_filters = filters.model_copy(update={"organizations": [], "organization_role": ""})
             organization_rows = filtered_statement(

@@ -6,7 +6,7 @@ const PAGE_SIZE = 48;
 const fold = (text: string) => text.normalize("NFKC").trim().toLowerCase();
 
 export function matchesTag(tag: Tag, value: string): boolean {
-  return [tag.id, tag.name, ...(tag.aliases ?? [])].some(alias => fold(alias) === fold(value));
+  return [tag.id, tag.name, ...(tag.aliases ?? []), ...(tag.redirect_ids ?? [])].some(alias => fold(alias) === fold(value));
 }
 
 export function CatalogTags({ tags, selected, preview, onToggle }: {

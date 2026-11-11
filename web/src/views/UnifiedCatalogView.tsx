@@ -24,7 +24,7 @@ import { effectiveAvailability, effectiveWanted, mediaAvailabilitySchema } from 
 
 type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null; code?: string | null; category?: string; release_date?: string | null; has_local_media?: boolean; rating_value?: number | null; rating_max?: number | null; javranking_rank?: number | null; javranking_score?: number | null };
 type Person = ManagedPerson;
-type Facet = { id: string; name: string; count: number; role: string; aliases?: string[]; group?: string; parent_id?: string | null };
+type Facet = { id: string; name: string; count: number; role: string; aliases?: string[]; group?: string; parent_id?: string | null; redirect_ids?: string[] };
 export type { Filters } from "../lib/catalogFilters";
 export type CatalogFeedStart = { filters: Filters; items: Card[]; nextCursor: string | null; index?: number };
 const empty = EMPTY_CATALOG_FILTERS;

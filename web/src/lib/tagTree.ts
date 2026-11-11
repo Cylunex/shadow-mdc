@@ -1,4 +1,4 @@
-export type TreeNode = { id: string; name: string; parent_id?: string | null; aliases?: string[] };
+export type TreeNode = { id: string; name: string; parent_id?: string | null; aliases?: string[]; redirect_ids?: string[] };
 export type TreeRow<T extends TreeNode> = { node: T; path: T[]; depth: number; hasChildren: boolean };
 
 /** Preserve sibling ordering, tolerate old root-only responses, and bound malformed external trees. */

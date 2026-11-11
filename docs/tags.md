@@ -70,6 +70,7 @@
 | `GET /api/catalog/tags/tree` | `tags.tree` | 完整节点拓扑和字典修订号，不扫描作品或返回全量作品 |
 | `POST /api/catalog/tags` | `tags.create` | 新增词条 |
 | `PUT /api/catalog/tags` | `tags.update` | 请求体携带 tag_id、name、revision，按需修改 aliases/hidden/parent_id |
+| `POST /api/catalog/tags/merge` | `tags.merge` | 合并同义词条，携带 source_id/target_id 和双方修订号 |
 | `GET /api/catalog/tags/rules` | `tags.rules` | 读取展示优先级、常用筛选、主题封面顺序和噪声规则 |
 | `PUT /api/catalog/tags/rules` | `tags.rules.update` | 用当前字典 revision 更新规则数据 |
 | `POST /api/catalog/classifications/terms` | `classifications.create` | 作品分类新增词条 |
@@ -78,6 +79,11 @@
 标签更新把 ID 放 JSON 请求体，避免旧 raw ID 中编码的空格或斜杠被 URL 路由二次解码。
 省略 aliases/hidden/parent_id 保持原值；修改携带当前 revision，冲突返回 409 后回读，不覆盖其它会话的新修改。
 同一名称或别名不能指向多个词条。写入先验证完整词典，再加锁原子替换文件，不写入半份数据。
+
+明确同义的独立词条通过 `tags.merge` 合并：目标保持原 ID 和树位置，来源主名与别名加入目标，
+来源 ID 作为持久重定向保留，原下级移到目标。作品原始标签和片单条件不重写；旧 ID、旧名称继续解析到目标，
+计数按作品去重。合并链压平，旧词条不再作为独立树节点；合并自身、指向自身后代或修订过期均拒绝。
+重定向只表示同义身份，不能用来表达父子包含关系。
 
 ## 读取与兼容
 

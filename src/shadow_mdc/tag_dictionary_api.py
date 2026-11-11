@@ -58,6 +58,15 @@ class TagOut(TagTerm):
     count: int = 0
     direct_count: int = 0
     path: list[TagReference] = Field(default_factory=list)
+    redirect_ids: tuple[str, ...] = ()
+
+
+class TagMerge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: str = Field(min_length=1, max_length=4000)
+    target_id: str = Field(min_length=1, max_length=4000)
+    source_revision: int = Field(ge=1)
+    target_revision: int = Field(ge=1)
 
 
 class TagNode(BaseModel):
@@ -103,7 +112,12 @@ def build_tag_dictionary_router(runtime: Callable[[Request], Runtime]) -> APIRou
         document = store.load()
         registry = store.registry()
         by_id = {
-            term.id: TagOut(**term.model_dump(), path=list(registry.path(term.id))) for term in document.terms
+            term.id: TagOut(
+                **term.model_dump(),
+                path=list(registry.path(term.id)),
+                redirect_ids=registry.redirect_ids(term.id),
+            )
+            for term in document.terms
         }
         counts: Counter[str] = Counter()
         direct_counts: Counter[str] = Counter()
@@ -192,6 +206,19 @@ def build_tag_dictionary_router(runtime: Callable[[Request], Runtime]) -> APIRou
                 payload.revision,
                 payload.group,
                 parent_id=payload.parent_id if "parent_id" in payload.model_fields_set else UNCHANGED_PARENT,
+            )
+        except KeyError as exc:
+            raise HTTPException(404, "tag not found") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        runtime(request).response_cache.clear()
+        return term
+
+    @router.post("/merge")
+    def merge(payload: TagMerge, request: Request) -> TagTerm:
+        try:
+            term = runtime(request).tag_dictionary.merge(
+                payload.source_id, payload.target_id, payload.source_revision, payload.target_revision
             )
         except KeyError as exc:
             raise HTTPException(404, "tag not found") from exc

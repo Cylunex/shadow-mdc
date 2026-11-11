@@ -65,6 +65,8 @@ SSH 端使用已有 HTTP 私有配置。CLI 不跟随 HTTP 重定向，不输出
 作品语言表示原始对白语言；题材用标签树维护。`tags.tree` 读取节点，`tags.create/update` 用真实 `parent_id` 设置上级；
 编辑时省略保持位置，null 移到顶层。分组也是高层节点；旧 group 只作输入兼容。
 查询父节点会包含其全部后代，统计按作品去重；作品只需保存具体标签，维护父子关系不改写原标签或猜测下级。
+明确同义但已有独立 ID 的词条用 `tags.merge`，传 source_id、target_id、source_revision 和 target_revision；
+旧 ID 留作持久重定向，名字加入目标别名，作品原始标签及片单条件不改写。上位概念和具体子类不能按同义合并。
 
 机构与系列分开：`organizations.list` 返回片商、工作室及所属品牌和渠道，`series.list` 返回独立系列。
 `works.query` / `works.facets` 的 `organizations`、`labels`、`platforms`、`series` 使用实际 ID，跨维度同时匹配。

@@ -12,7 +12,7 @@ from pathlib import Path
 from threading import RLock
 from urllib.parse import quote
 
-from ..tag_models import TagDocument, TagRegistry, TagRules, TagTerm, fold_tag, seed_document
+from ..tag_models import TagDocument, TagRedirect, TagRegistry, TagRules, TagTerm, fold_tag, seed_document
 
 
 @dataclass(frozen=True)
@@ -273,3 +273,52 @@ class TagDictionaryStore:
             updated = document.model_copy(update={"rules": rules, "revision": revision + 1})
             self._write(updated)
             return updated
+
+    def merge(self, source_id: str, target_id: str, source_revision: int, target_revision: int) -> TagTerm:
+        """Merge equivalent words, retaining old IDs without rewriting work assignments or filters."""
+        with self._writer():
+            document = self.load()
+            terms = {term.id: term for term in document.terms}
+            source, target = terms[source_id], terms[target_id]
+            if source_id == target_id:
+                raise ValueError("Cannot merge a tag into itself")
+            if source.revision != source_revision or target.revision != target_revision:
+                raise TagRevisionConflict("tag revision conflict")
+            if document.registry().is_descendant(target_id, source_id):
+                raise ValueError("Cannot merge a tag into its descendant")
+            merged = target.model_copy(
+                update={
+                    "aliases": tuple(dict.fromkeys((*target.aliases, source.name, *source.aliases))),
+                    "revision": target.revision + 1,
+                }
+            )
+            if len(merged.aliases) > 200:
+                raise ValueError("Merged tag exceeds 200 aliases")
+            redirects = [
+                redirect.model_copy(update={"target_id": target_id})
+                if redirect.target_id == source_id
+                else redirect
+                for redirect in document.redirects
+            ]
+            redirects.append(TagRedirect(source_id=source_id, target_id=target_id))
+            if len(redirects) > 50000:
+                raise ValueError("Tag dictionary exceeds 50000 redirects")
+            values = []
+            for term in document.terms:
+                if term.id == source_id:
+                    continue
+                if term.id == target_id:
+                    term = merged
+                elif term.parent_id == source_id:
+                    term = term.model_copy(update={"parent_id": target_id, "revision": term.revision + 1})
+                values.append(term)
+            updated = self._write(
+                document.model_copy(
+                    update={
+                        "terms": values,
+                        "redirects": tuple(redirects),
+                        "revision": document.revision + 1,
+                    }
+                )
+            )
+            return next(term for term in updated.terms if term.id == target_id)

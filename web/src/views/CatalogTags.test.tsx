@@ -76,6 +76,13 @@ it("treats high-level groups as selectable tree nodes and expands their children
   expect(toggle).toHaveBeenCalledWith("tag:genres");
 });
 
+it("highlights a saved ID after its synonym node has merged", async () => {
+  await act(async () => root.render(<CatalogTags tags={[
+    { id: "tag:canonical", name: "统一词", redirect_ids: ["raw:old"], count: 3 },
+  ]} selected={["raw:old"]} preview={false} onToggle={vi.fn()} />));
+  expect(container.querySelector('button[aria-pressed="true"]')?.textContent).toBe("统一词 · 3");
+});
+
 it("reveals a selected leaf and keeps its ancestors when searching a deep branch", async () => {
   const nested = [
     { id: "clothing", name: "服饰", parent_id: null, count: 4 },

@@ -292,3 +292,86 @@ def test_cyclic_legacy_group_data_is_not_partially_migrated(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="cycles"):
         TagDictionaryStore(path).initialize()
     assert path.read_bytes() == before
+
+
+def test_merge_synonyms_preserves_old_ids_filters_children_and_source_assignments(client: TestClient) -> None:
+    first = create(client, "合并测试甲")
+    second = create(client, "合并测试乙")
+    child = create(client, "合并测试下级", first)
+    with app.state.runtime.database.session() as session:
+        session.add_all(
+            [
+                Work(id="merge-a", title="A", tags=[first, second]),
+                Work(id="merge-b", title="B", tags=["合并测试甲"]),
+                Work(id="merge-c", title="C", tags=[child]),
+            ]
+        )
+    response = client.post(
+        "/api/skill/v1/call",
+        headers={"Authorization": "Bearer REPLACE_TEST_TOKEN", "X-Catalog-Owner": "fixture"},
+        json={
+            "name": "tags.merge",
+            "arguments": {
+                "source_id": first,
+                "target_id": second,
+                "source_revision": 1,
+                "target_revision": 1,
+            },
+        },
+    )
+    assert response.status_code == 200 and response.json()["ok"], response.text
+    registry = app.state.runtime.tag_dictionary.registry()
+    assert registry.resolve(first).id == second
+    assert registry.resolve("合并测试甲").id == second
+    assert registry.resolve(child).parent_id == second
+    page = client.post("/api/catalog/works/query", json={"tags": [first]}).json()
+    assert {work["id"] for work in page["items"]} == {"merge-a", "merge-b", "merge-c"}
+    facets = client.post("/api/catalog/facets", json={"tags": [first]}).json()["tags"]
+    target = next(tag for tag in facets if tag["id"] == second)
+    assert target["count"] == 3 and first in target["redirect_ids"]
+    third = create(client, "合并测试丙")
+    assert (
+        client.post(
+            "/api/catalog/tags/merge",
+            json={
+                "source_id": second,
+                "target_id": third,
+                "source_revision": 2,
+                "target_revision": 1,
+            },
+        ).status_code
+        == 200
+    )
+    with app.state.runtime.database.session() as session:
+        assert session.get(Work, "merge-a").tags == [first, second]
+        assert session.get(Work, "merge-b").tags == ["合并测试甲"]
+    store = TagDictionaryStore(app.state.runtime.tag_dictionary.path)
+    store.initialize()
+    first_node, second_node = store.registry().resolve(first), store.registry().resolve(second)
+    assert first_node is not None and second_node is not None
+    assert first_node.id == second_node.id == third
+    assert set(store.registry().redirect_ids(third)) == {first, second}
+
+
+def test_invalid_merges_never_write_and_keeps_revision_checks(client: TestClient) -> None:
+    root = create(client, "不可合并父")
+    child = create(client, "不可合并子", root)
+    path = app.state.runtime.tag_dictionary.path
+    original = path.read_bytes()
+    for source, target, revision, status in [
+        (root, root, 1, 409),
+        (root, child, 1, 409),
+        (child, root, 2, 409),
+        ("tag:missing", root, 1, 404),
+    ]:
+        response = client.post(
+            "/api/catalog/tags/merge",
+            json={
+                "source_id": source,
+                "target_id": target,
+                "source_revision": revision,
+                "target_revision": 1,
+            },
+        )
+        assert response.status_code == status
+        assert path.read_bytes() == original

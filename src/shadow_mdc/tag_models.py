@@ -33,10 +33,22 @@ class TagDefinition(TagReference):
     parent_id: str | None = None
 
 
+class TagRedirect(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    source_id: str
+    target_id: str
+
+
 class TagRegistry:
     """Immutable dictionary with explicit identities and reversible custom IDs."""
 
-    def __init__(self, definitions: tuple[TagDefinition, ...], rules: TagRules | None = None) -> None:
+    def __init__(
+        self,
+        definitions: tuple[TagDefinition, ...],
+        rules: TagRules | None = None,
+        *,
+        redirects: tuple[TagRedirect, ...] = (),
+    ) -> None:
         self.definitions = definitions
         self.rules = rules if rules is not None else TagRules()
         self.ids = {tag.id for tag in definitions}
@@ -56,6 +68,23 @@ class TagRegistry:
                 if previous is not None and previous.id != tag.id:
                     raise ValueError(f"Ambiguous tag alias: {alias}")
                 self._by_alias[key] = tag
+        self._redirects: dict[str, str] = {}
+        for redirect in redirects:
+            if (
+                redirect.source_id in self.ids
+                or redirect.source_id in self._redirects
+                or redirect.target_id not in self.ids
+            ):
+                raise ValueError("Invalid tag redirect")
+            if not re.fullmatch(r"tag:[a-z0-9]+(?:-[a-z0-9]+)*", redirect.source_id) and not valid_raw_id(
+                redirect.source_id
+            ):
+                raise ValueError("Invalid redirect source ID")
+            self._redirects[redirect.source_id] = redirect.target_id
+        redirected: dict[str, list[str]] = {}
+        for source, target in self._redirects.items():
+            redirected.setdefault(target, []).append(source)
+        self._redirect_sources = {target: tuple(sources) for target, sources in redirected.items()}
         self._ancestors: dict[str, tuple[str, ...]] = {}
         for tag in definitions:
             if tag.parent_id is not None and tag.parent_id not in self.ids:
@@ -105,7 +134,11 @@ class TagRegistry:
 
     def ancestor_ids(self, identity: str) -> tuple[str, ...]:
         """Self first, then ancestors. Unknown source tags remain independent roots."""
+        identity = self._redirects.get(identity, identity)
         return self._ancestors.get(identity, (identity,))
+
+    def redirect_ids(self, identity: str) -> tuple[str, ...]:
+        return self._redirect_sources.get(identity, ())
 
     def path(self, identity: str) -> tuple[TagReference, ...]:
         return tuple(
@@ -115,7 +148,7 @@ class TagRegistry:
         )
 
     def is_descendant(self, identity: str, ancestor: str) -> bool:
-        return ancestor in self.ancestor_ids(identity)
+        return self._redirects.get(ancestor, ancestor) in self.ancestor_ids(identity)
 
     def in_branch(self, identity: str, root: str) -> bool:
         node = self.resolve(root)
@@ -124,6 +157,8 @@ class TagRegistry:
     def _resolve(self, raw: str) -> TagDefinition | None:
         text = unicodedata.normalize("NFKC", raw).strip()
         key = fold_tag(text)
+        if text in self._redirects:
+            return self._by_id[self._redirects[text]]
         if text in self._by_id:
             return self._by_id[text]
         if key in self._by_id:
@@ -182,13 +217,14 @@ class TagDocument(BaseModel):
     rules: TagRules
     revision: int = Field(default=1, ge=1)
     tree_version: int = Field(default=0, ge=0, le=1)
+    redirects: tuple[TagRedirect, ...] = Field(default_factory=tuple, max_length=50000)
 
     def as_tree(self) -> TagDocument:
         """Import legacy group names as real nodes without changing existing tag identities."""
         if self.tree_version == 1:
             return self
         terms = {term.id: term for term in self.terms}
-        original = TagRegistry(tuple(term.definition() for term in self.terms))
+        original = TagRegistry(tuple(term.definition() for term in self.terms), redirects=self.redirects)
         parents: dict[str, str] = {}
         for term in self.terms:
             if not term.group.strip():
@@ -206,11 +242,13 @@ class TagDocument(BaseModel):
             if term.parent_id is None and term.id != parent:
                 terms[term.id] = term.model_copy(update={"parent_id": parent})
         result = self.model_copy(update={"terms": list(terms.values()), "tree_version": 1})
-        TagRegistry(tuple(term.definition() for term in result.terms))
+        TagRegistry(tuple(term.definition() for term in result.terms), redirects=self.redirects)
         return result
 
     def registry(self) -> TagRegistry:
-        return TagRegistry(tuple(term.definition() for term in self.as_tree().terms), self.rules)
+        return TagRegistry(
+            tuple(term.definition() for term in self.as_tree().terms), self.rules, redirects=self.redirects
+        )
 
 
 def valid_raw_id(value: str) -> bool:

@@ -46,7 +46,7 @@ from .db.models import Work
 from .intake_core import SubscribeRequest
 from .services.discover import DiscoverList
 from .skill_operations import ClassificationFill, FillInput, IntakeItem, LinkInput, RecoverInput, TagsEdit
-from .tag_dictionary_api import RulesEdit, TagCreate, TagEdit
+from .tag_dictionary_api import RulesEdit, TagCreate, TagEdit, TagMerge
 
 if TYPE_CHECKING:
     from .api import Runtime
@@ -677,6 +677,8 @@ CAPABILITIES += (
         "/api/catalog/tags",
     ),
     Capability("tags.create", "新增持久化标签词条。", "write", TagCreateInput, "POST", "/api/catalog/tags"),
+    Capability("tags.merge", "合并明确同义的词条，保留旧 ID 解析和作品原始标签。",
+               "write", TagMerge, "POST", "/api/catalog/tags/merge"),
     Capability(
         "tags.update",
         "修改标签名、别名或隐藏状态,保持 ID。携带当前 revision。",
