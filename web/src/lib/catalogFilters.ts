@@ -14,6 +14,9 @@ export const filtersSchema = z.object({
   organizations: z.array(z.string()).default([]), organization_role: z.string().optional(),
   year_from: z.number().int().optional().catch(undefined), year_to: z.number().int().optional().catch(undefined),
   unknown_year: z.boolean().default(false),
+  duration_min: z.number().int().min(0).optional().catch(undefined),
+  duration_max: z.number().int().positive().optional().catch(undefined),
+  unknown_duration: z.boolean().default(false),
   sort: z.enum(["added", "newest", "oldest", "title", "code", "ranked", "random"]).catch("added"),
   status: z.enum(["all", "emby", "files", "metadata", "want", "downloaded", "undownloaded"]).catch("all"),
 });
@@ -26,7 +29,7 @@ const lists = {
   contents: "content", types: "type", languages: "language", subtitle_languages: "subtitle",
 } as const;
 const strings = { q: "q", actor_name: "cast", studio_name: "studio", organization_role: "role", collection: "col" } as const;
-const keys = [...Object.values(lists), ...Object.values(strings), "year", "from", "to", "sort", "status", "cast_all", "match", "cat", "seed", "page"];
+const keys = [...Object.values(lists), ...Object.values(strings), "year", "from", "to", "sort", "status", "cast_all", "match", "cat", "seed", "page", "duration_min", "duration_max", "duration_unknown"];
 
 function year(value: string | null): number | undefined {
   return value && /^\d{4}$/.test(value) ? Number(value) : undefined;
@@ -56,6 +59,9 @@ export function readCatalogFilters(search: string): Filters {
       year_from: selectedYear ?? year(params.get("from")),
       year_to: selectedYear ?? year(params.get("to")),
       unknown_year: params.get("year") === "unknown",
+      duration_min: params.has("duration_min") ? Number(params.get("duration_min")) : undefined,
+      duration_max: params.has("duration_max") ? Number(params.get("duration_max")) : undefined,
+      unknown_duration: params.get("duration_unknown") === "1",
       sort: params.get("sort") ?? "added", status: params.get("status") ?? "all",
     };
   }
@@ -85,4 +91,7 @@ export function applyCatalogFiltersToUrl(url: URL, filters: Filters): void {
   }
   if (filters.sort !== "added") url.searchParams.set("sort", filters.sort);
   if (filters.status !== "all") url.searchParams.set("status", filters.status);
+  if (filters.duration_min !== undefined) url.searchParams.set("duration_min", String(filters.duration_min));
+  if (filters.duration_max !== undefined) url.searchParams.set("duration_max", String(filters.duration_max));
+  if (filters.unknown_duration) url.searchParams.set("duration_unknown", "1");
 }

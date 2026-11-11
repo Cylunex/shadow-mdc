@@ -29,6 +29,7 @@ class TagDefinition(TagReference):
     aliases: tuple[str, ...] = ()
     hidden: bool = False
     revision: int = 1
+    group: str = ""
 
 
 class TagRegistry:
@@ -113,9 +114,10 @@ class TagTerm(BaseModel):
     aliases: tuple[str, ...] = Field(default_factory=tuple, max_length=200)
     hidden: bool = False
     revision: int = Field(default=1, ge=1)
+    group: str = Field(default="", max_length=100)
 
     def definition(self) -> TagDefinition:
-        return TagDefinition(self.id, self.name, self.aliases, self.hidden, self.revision)
+        return TagDefinition(self.id, self.name, self.aliases, self.hidden, self.revision, self.group)
 
 
 class TagDocument(BaseModel):

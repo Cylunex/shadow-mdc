@@ -14,6 +14,7 @@ export function TagManagement() {
   const [name, setName] = useState("");
   const [aliases, setAliases] = useState("");
   const [hidden, setHidden] = useState(false);
+  const [group, setGroup] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -24,7 +25,7 @@ export function TagManagement() {
   const terms = [...indexed.values()];
   function edit(term: TagTerm | null) {
     setSelected(term); setName(term?.name ?? ""); setAliases(term?.aliases.join("、") ?? "");
-    setHidden(term?.hidden ?? false); setMessage(""); setError("");
+    setHidden(term?.hidden ?? false); setGroup(term?.group ?? ""); setMessage(""); setError("");
   }
   async function save() {
     if (!name.trim()) return;
@@ -32,8 +33,8 @@ export function TagManagement() {
     try {
       const values = aliases.split(/[、,，\n]/).map(value => value.trim()).filter(Boolean);
       const term = selected
-        ? await api.editTag(selected.id, { name: name.trim(), aliases: values, hidden, revision: selected.revision })
-        : await api.createTag({ name: name.trim(), aliases: values, hidden });
+        ? await api.editTag(selected.id, { name: name.trim(), aliases: values, group, hidden, revision: selected.revision })
+        : await api.createTag({ name: name.trim(), aliases: values, group, hidden });
       setSaved(term); edit(term); setMessage("标签已保存，已有作品和片单关联继续保留。");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "标签保存失败"); }
     finally { setBusy(false); }
@@ -55,6 +56,8 @@ export function TagManagement() {
               onChange={event => setName(event.target.value)} /></label>
             <label>搜索别名<textarea aria-label="标签搜索别名" value={aliases} disabled={busy}
               onChange={event => setAliases(event.target.value)} placeholder="多个别名用顿号分隔" /></label>
+            <label>分组<input aria-label="标签分组" value={group} maxLength={100} disabled={busy}
+              onChange={event => setGroup(event.target.value)} placeholder="可填写题材、场景等，留空为未分组" /></label>
             <label><input type="checkbox" aria-label="隐藏标签" checked={hidden} disabled={busy}
               onChange={event => setHidden(event.target.checked)} />在分类和筛选中隐藏</label>
             <button type="submit" disabled={busy || !name.trim()}>{busy ? "正在保存…" : "保存标签词条"}</button>

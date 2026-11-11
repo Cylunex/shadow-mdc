@@ -57,3 +57,18 @@ it("finds aliases, highlights old selections, and emits a stable ID after a rena
   await act(async () => button.click());
   expect(toggle).toHaveBeenCalledWith("tag:amateur");
 });
+
+it("browses groups without changing selection or tag identities", async () => {
+  const toggle = vi.fn();
+  const grouped = [
+    { id: "tag:drama", name: "剧情", group: "题材", count: 2 },
+    { id: "tag:scene", name: "户外", group: "场景", count: 1 },
+  ];
+  await act(async () => root.render(<CatalogTags tags={grouped} selected={["tag:scene"]} preview={false} onToggle={toggle} />));
+  const select = container.querySelector<HTMLSelectElement>('[aria-label="浏览标签分组"]')!;
+  await act(async () => { select.value = "题材"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  const buttons = container.querySelectorAll<HTMLButtonElement>("button[aria-pressed]");
+  expect(buttons).toHaveLength(1);
+  expect(buttons[0]!.textContent).toContain("剧情");
+  expect(toggle).not.toHaveBeenCalled();
+});

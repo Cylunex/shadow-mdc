@@ -21,11 +21,11 @@ scripts/mdc call works.query input.json
 `{"work_id":"REPLACE_WORK_ID"}`；分类设定示例：
 
 ```json
-{"work_id":"REPLACE_WORK_ID","languages":["languages:ja"],"subtitle_languages":["subtitle_languages:zh"]}
+{"work_id":"REPLACE_WORK_ID","languages":["languages:ja"]}
 ```
 
-这个例子只调整音轨与字幕语言，不改变题材、形式、制作地区和人工发行年。
-必须有用户提供的事实或实际资料支持语言设置；字幕为中文不证明音轨为中文。
+这个例子只调整作品语言，不改变标签、形式、制作地区和人工发行年。
+必须有用户提供的事实或实际资料支持原始对白语言设置；中文字幕不证明作品语言为中文。
 
 想看设置：
 
@@ -57,3 +57,6 @@ HTTP 配置只存于实际的私有文件；示例不含真实连接：
 ```
 
 SSH 端使用已有 HTTP 私有配置。CLI 不跟随 HTTP 重定向，不输出 SSH stderr 或凭据；失败时先核对配置与原操作结果。
+
+作品时长筛选可用 `works.query` / `works.facets` 的 `duration_min`、`duration_max`（秒，左闭右开）或 `unknown_duration`。
+作品语言表示原始对白语言；题材用标签维护。标签词条支持 `group` 分组，更新省略保持、空字符串清除。

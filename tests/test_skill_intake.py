@@ -318,14 +318,14 @@ def test_classification_fill_preserves_explicit_dimensions_and_can_be_repeated(c
     call(
         client,
         "classifications.assign",
-        {"work_id": work_id, "languages": ["languages:en"], "genres": ["genres:unknown"]},
+        {"work_id": work_id, "languages": ["languages:en"], "forms": ["forms:unknown"]},
     )
-    payload = {"work_id": work_id, "languages": ["languages:ja"], "genres": ["genres:drama"]}
-    assert call(client, "classifications.fill", payload)["changed"] == ["genres"]
+    payload = {"work_id": work_id, "languages": ["languages:ja"], "forms": ["forms:vr"]}
+    assert call(client, "classifications.fill", payload)["changed"] == ["forms"]
     assert call(client, "classifications.fill", payload)["outcome"] == "skipped"
     actual = call(client, "classifications.work", {"work_id": work_id})
-    assert actual["languages"] == ["languages:en"] and actual["genres"] == ["genres:drama"]
-    assert actual["subtitle_languages"] == [] and actual["regions"] == []
+    assert actual["languages"] == ["languages:en"] and actual["forms"] == ["forms:vr"]
+    assert "subtitle_languages" not in actual and "genres" not in actual and actual["regions"] == []
 
 
 def test_recover_rechecks_existing_result_without_resubmitting(client: TestClient, tmp_path: Path) -> None:

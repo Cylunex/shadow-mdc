@@ -30,7 +30,7 @@
 
 省略 aliases/hidden 保持原值，旧名称会自动保留为别名。修改后重新查询并用作品筛选核对。
 已隐藏的来源标记仍保存在作品原始标签中，不批量删库或重写历史标签。
-七维词条用 `classifications.create {"dimension":"genres","name":"REPLACE_NAME"}`，
+作品分类词条用 `classifications.create {"dimension":"genres","name":"REPLACE_NAME"}`，
 或 `classifications.update {"term_id":"REPLACE_TERM_ID","name":"REPLACE_NEW_NAME","revision":1}`。
 分类更新省略 aliases 保留原值；冲突回读，不自动采用较大修订号覆盖他人修改。
 

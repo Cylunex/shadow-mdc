@@ -116,16 +116,16 @@ def test_existing_classification_term_writes_are_available_through_skill(client:
     created = call(
         client,
         "classifications.create",
-        {"dimension": "genres", "name": "测试题材", "aliases": ["Fixture genre"]},
+        {"dimension": "forms", "name": "测试题材", "aliases": ["Fixture genre"]},
     )
     assert created["ok"] and isinstance(created["result"], dict)
     term = created["result"]
-    assert call(client, "classifications.assign", {"work_id": "a", "genres": [term["id"]]})["ok"]
+    assert call(client, "classifications.assign", {"work_id": "a", "forms": [term["id"]]})["ok"]
     assert call(client, "classifications.update", {"term_id": term["id"], "name": "改名题材", "revision": 1})[
         "ok"
     ]
     taxonomy = client.get("/api/catalog/works/a/taxonomy").json()
-    assert taxonomy["classification_refs"]["genres"][0]["name"] == "改名题材"
+    assert taxonomy["classification_refs"]["forms"][0]["name"] == "改名题材"
     assert (
         call(client, "classifications.update", {"term_id": term["id"], "name": "stale", "revision": 1})[
             "status"

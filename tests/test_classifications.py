@@ -100,17 +100,15 @@ def test_dimensions_filters_editing_unknowns_and_mobile(
             )
         payload = {
             "types": ["types:movie"],
-            "genres": ["genres:drama", "genres:comedy", "genres:drama"],
-            "forms": ["forms:short"],
+            "forms": ["forms:vr", "forms:compilation", "forms:vr"],
             "languages": ["languages:ja"],
-            "subtitle_languages": ["subtitle_languages:zh"],
             "regions": ["regions:us"],
             "release_year": 2018,
         }
         response = client.put("/api/catalog/works/a/taxonomy", json=payload)
         assert response.status_code == 200, response.text
         assert response.json()["contents"] == ["contents:jav"]
-        assert len(response.json()["genres"]) == 2
+        assert len(response.json()["forms"]) == 2
         assert (
             client.put("/api/catalog/works/a/taxonomy", json={"languages": ["regions:jp"]}).status_code == 422
         )
@@ -119,9 +117,8 @@ def test_dimensions_filters_editing_unknowns_and_mobile(
         query = {
             "contents": ["contents:jav"],
             "types": ["types:movie"],
-            "genres": ["genres:comedy", "genres:drama"],
+            "forms": ["forms:compilation", "forms:vr"],
             "languages": ["languages:ja"],
-            "subtitle_languages": ["subtitle_languages:zh"],
             "regions": ["regions:us"],
         }
         page = client.post("/api/catalog/works/query", json=query).json()
@@ -135,15 +132,13 @@ def test_dimensions_filters_editing_unknowns_and_mobile(
         )
         assert client.post("/api/catalog/works/query", json={"regions": ["regions:jp"]}).json()["total"] == 0
         facets = client.post("/api/catalog/facets", json=query).json()
-        assert next(value["count"] for value in facets["genres"] if value["id"] == "genres:drama") == 1
+        assert next(value["count"] for value in facets["forms"] if value["id"] == "forms:vr") == 1
         schema = client.get("/api/catalog/classifications").json()
         assert {dimension["id"] for dimension in schema["dimensions"]} == {
             "contents",
             "types",
-            "genres",
             "forms",
             "languages",
-            "subtitle_languages",
             "regions",
             "decades",
         }
@@ -175,13 +170,13 @@ def test_term_rename_and_dynamic_playlist_keep_stable_ids(
             session.add(Work(id="a", title="A", family="jav"))
         created = client.post(
             "/api/catalog/classifications/terms",
-            json={"dimension": "genres", "name": "自定义题材", "aliases": ["Original Alias"]},
+            json={"dimension": "forms", "name": "自定义题材", "aliases": ["Original Alias"]},
         )
         assert created.status_code == 201, created.text
         term = created.json()
         assert (
             client.post(
-                "/api/catalog/classifications/terms", json={"dimension": "genres", "name": "自定义题材"}
+                "/api/catalog/classifications/terms", json={"dimension": "forms", "name": "自定义题材"}
             ).status_code
             == 409
         )
@@ -191,7 +186,7 @@ def test_term_rename_and_dynamic_playlist_keep_stable_ids(
             ).status_code
             == 422
         )
-        selection = {"genres": [term["id"]], "languages": ["languages:ja"]}
+        selection = {"forms": [term["id"]], "languages": ["languages:ja"]}
         assert client.put("/api/catalog/works/a/taxonomy", json=selection).status_code == 200
         playlist = client.post(
             "/api/catalog/playlists",
@@ -211,7 +206,7 @@ def test_term_rename_and_dynamic_playlist_keep_stable_ids(
             ).status_code
             == 409
         )
-        assert client.get("/api/catalog/works/a/taxonomy").json()["classification_refs"]["genres"] == [
+        assert client.get("/api/catalog/works/a/taxonomy").json()["classification_refs"]["forms"] == [
             {"id": term["id"], "name": "新题材"}
         ]
         assert client.post("/api/catalog/works/query", json=selection).json()["total"] == 1
@@ -220,6 +215,6 @@ def test_term_rename_and_dynamic_playlist_keep_stable_ids(
             "work_ids"
         ] == ["a"]
         assert (
-            client.get("/api/catalog/works/a/taxonomy").json()["classification_refs"]["genres"][0]["name"]
+            client.get("/api/catalog/works/a/taxonomy").json()["classification_refs"]["forms"][0]["name"]
             == "新题材"
         )

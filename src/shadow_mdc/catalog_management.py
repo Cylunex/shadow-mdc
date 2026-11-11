@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, cast
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import Select, delete, func, select, union, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
@@ -66,6 +66,13 @@ class OrganizationLink(BaseModel):
 
 
 class CatalogFilter(ClassificationSelection):
+    # Read compatibility only: genres now match the unified tag store; subtitles
+    # and manual duration forms keep their historical assignments addressable.
+    genres: list[str] = Field(default_factory=list, max_length=100)
+    subtitle_languages: list[str] = Field(default_factory=list, max_length=100)
+    duration_min: int | None = Field(default=None, ge=0, description="最小时长(秒, 含边界)")
+    duration_max: int | None = Field(default=None, gt=0, description="最大时长(秒, 不含边界)")
+    unknown_duration: bool = False
     q: str = Field(default="", max_length=200)
     category: Literal["all", "Japan", "China", "Korea", "Europe", "Other"] = "all"
     collection: str = ""
@@ -86,6 +93,15 @@ class CatalogFilter(ClassificationSelection):
     sort: Literal["added", "newest", "oldest", "title", "code", "ranked", "random"] = "added"
     cursor: str | None = None
     limit: int = Field(default=60, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def validate_duration(self) -> CatalogFilter:
+        if (self.duration_min is not None and self.duration_max is not None
+                and self.duration_min >= self.duration_max):
+            raise ValueError("maximum duration must exceed minimum duration")
+        if self.unknown_duration and (self.duration_min is not None or self.duration_max is not None):
+            raise ValueError("unknown duration cannot be combined with a duration range")
+        return self
 
 
 class PlaylistEdit(BaseModel):

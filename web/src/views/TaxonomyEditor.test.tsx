@@ -12,17 +12,17 @@ import { TaxonomyEditor } from "./TaxonomyEditor";
 vi.mock("../api", () => ({ api: { classifications: vi.fn(), workTaxonomy: vi.fn(), saveWorkTaxonomy: vi.fn(), editClassification: vi.fn(), createClassification: vi.fn() } }));
 let root: Root;
 let container: HTMLDivElement;
-const doc = taxonomySchema.parse({ languages: ["languages:ja"], subtitle_languages: ["subtitle_languages:zh"], regions: ["regions:us"], release_year: 2020 });
+const doc = taxonomySchema.parse({ languages: ["languages:ja"], regions: ["regions:us"], release_year: 2020 });
 beforeEach(() => {
   vi.clearAllMocks(); queryClient.clear(); notifyManager.setScheduler(queueMicrotask);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.mocked(api.workTaxonomy).mockResolvedValue(doc);
   vi.mocked(api.classifications).mockResolvedValue({ dimensions: [
-    { id: "genres", name: "题材", description: "题材", values: [
-      { id: "genres:drama", name: "剧情", aliases: [], count: 0, revision: 1 },
-      { id: "genres:comedy", name: "喜剧", aliases: [], count: 0, revision: 1 },
+    { id: "forms", name: "形式", description: "形式", values: [
+      { id: "forms:drama", name: "剧情", aliases: [], count: 0, revision: 1 },
+      { id: "forms:comedy", name: "喜剧", aliases: [], count: 0, revision: 1 },
     ] },
-    ...(["languages", "subtitle_languages", "regions"] as const).map(id => ({
+    ...(["languages", "regions"] as const).map(id => ({
       id, name: id, description: id, values: doc[id].map(value => ({ id: value, name: value, aliases: [], count: 0, revision: 1 })),
     })),
   ] });
@@ -45,13 +45,13 @@ async function input(label: string, value: string) {
   });
 }
 
-it("edits multiple terms using IDs and keeps audio, subtitle and production region independent", async () => {
+it("edits retained dimensions and excludes subtitle and genre fields", async () => {
   const saved = vi.fn();
   await act(async () => root.render(<TaxonomyEditor work={{ id: "a", title: "A" }} onClose={vi.fn()} onSaved={saved} />));
-  await select("编辑题材", ["genres:drama", "genres:comedy"]);
+  await select("编辑表现形式", ["forms:drama", "forms:comedy"]);
   await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
   expect(api.saveWorkTaxonomy).toHaveBeenCalledWith("a", expect.objectContaining({
-    genres: ["genres:drama", "genres:comedy"], languages: ["languages:ja"], subtitle_languages: ["subtitle_languages:zh"], regions: ["regions:us"],
+    forms: ["forms:drama", "forms:comedy"], languages: ["languages:ja"], regions: ["regions:us"],
   }));
   expect(vi.mocked(api.saveWorkTaxonomy).mock.calls[0]![1]).not.toHaveProperty("classification_refs");
   expect(saved).toHaveBeenCalledOnce();
@@ -61,21 +61,21 @@ it("keeps edited values and reports a failed save", async () => {
   vi.mocked(api.saveWorkTaxonomy).mockRejectedValueOnce(new Error("保存失败"));
   const saved = vi.fn();
   await act(async () => root.render(<TaxonomyEditor work={{ id: "a", title: "A" }} onClose={vi.fn()} onSaved={saved} />));
-  await select("编辑题材", ["genres:comedy"]);
+  await select("编辑表现形式", ["forms:comedy"]);
   await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("保存失败");
   expect(saved).not.toHaveBeenCalled();
-  expect([...container.querySelector<HTMLSelectElement>('[aria-label="编辑题材"]')!.selectedOptions].map(option => option.value)).toEqual(["genres:comedy"]);
+  expect([...container.querySelector<HTMLSelectElement>('[aria-label="编辑表现形式"]')!.selectedOptions].map(option => option.value)).toEqual(["forms:comedy"]);
 });
 
 it("renames a classification without changing its ID or revision guard", async () => {
-  const term = { id: "genres:drama", name: "剧情", aliases: [], count: 2, revision: 3 };
+  const term = { id: "forms:drama", name: "剧情", aliases: [], count: 2, revision: 3 };
   vi.mocked(api.editClassification).mockResolvedValue({ ...term, name: "新名称", revision: 4 });
-  await act(async () => root.render(<ClassificationTermEditor dimension="genres" terms={[term]} />));
+  await act(async () => root.render(<ClassificationTermEditor dimension="forms" terms={[term]} />));
   await select("管理分类项", [term.id]);
   await input("分类展示名称", "新名称");
   await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
-  expect(api.editClassification).toHaveBeenCalledWith("genres:drama", "新名称", [], 3);
+  expect(api.editClassification).toHaveBeenCalledWith("forms:drama", "新名称", [], 3);
   expect(container.textContent).toContain("已有作品关联继续保留");
 });
 
@@ -88,17 +88,17 @@ it("keeps dimension dictionaries available in works tools and loads them only wh
     details.dispatchEvent(new Event("toggle"));
   });
   expect(api.classifications).toHaveBeenCalledOnce();
-  await select("分类字典维度", ["genres"]);
+  await select("分类字典维度", ["forms"]);
   expect(container.querySelector('[aria-label="管理分类项"]')?.textContent).toContain("剧情");
   expect(container.querySelector('[aria-label="管理分类项"]')?.textContent).toContain("喜剧");
 });
 
 it("keeps a newly created classification selectable for subsequent edits", async () => {
-  const created = { id: "genres:custom-fixture", name: "新题材", aliases: [], count: 0, revision: 1 };
+  const created = { id: "forms:custom-fixture", name: "新形式", aliases: [], count: 0, revision: 1 };
   vi.mocked(api.createClassification).mockResolvedValue(created);
   vi.mocked(api.editClassification).mockResolvedValue({ ...created, name: "再次改名", revision: 2 });
-  await act(async () => root.render(<ClassificationTermEditor dimension="genres" terms={[]} />));
-  await input("分类展示名称", "新题材");
+  await act(async () => root.render(<ClassificationTermEditor dimension="forms" terms={[]} />));
+  await input("分类展示名称", "新形式");
   await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
   expect(container.querySelector<HTMLSelectElement>("select")?.value).toBe(created.id);
   await input("分类展示名称", "再次改名");

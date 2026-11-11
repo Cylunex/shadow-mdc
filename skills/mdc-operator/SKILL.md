@@ -1,6 +1,6 @@
 ---
 name: mdc-operator
-description: 通过 Shadow MDC CLI 管理个人片库：单条和批量入库、标签与展示名、缺项补齐、七维分类回填、115/OpenList 与 STRM 收口、演员盯磁和播放解析。不处理付款、原媒体删除或服务部署。
+description: 通过 Shadow MDC CLI 管理个人片库：单条和批量入库、标签与展示名、缺项补齐、作品分类回填、115/OpenList 与 STRM 收口、演员盯磁和播放解析。不处理付款、原媒体删除或服务部署。
 ---
 
 # MDC 片库操作
@@ -33,10 +33,10 @@ description: 通过 Shadow MDC CLI 管理个人片库：单条和批量入库、
   标签词条本身用 `tags.dictionary/create/update` 维护名称、别名和隐藏状态；更新携带真实 tag_id/revision，
   省略 aliases/hidden 保持原值。`tags.rules` 读取持久化展示规则，只在明确要求改规则时用 `tags.rules.update`。
   词条是运行数据，禁止通过改 Python 源码或初始化数据文件来执行日常维护。
-- 七维字典使用 `classifications.list` 的正式 ID。先读 `classifications.work`；
-  七维词条本身用 `classifications.create/update` 新增或改名，更新携带真实 term_id/revision。
+- 作品分类字典使用 `classifications.list` 的正式 ID。先读 `classifications.work`；
+  作品分类词条本身用 `classifications.create/update` 新增或改名，更新携带真实 term_id/revision。
   `assign` 只传明确修改的维度，省略保持原值，空数组清空；`fill` 只补待补维度。
-  同维度任一匹配，不同维度同时匹配。音轨、字幕和制作地区分别取证，未知保持待补。
+  同维度任一匹配，不同维度同时匹配。语言表示作品原始对白语言，制作地区分别取证；题材通过标签维护，字幕属于片源版本，未知保持待补。
 - `works.want` 设定最终想看状态；回读 `works.detail.want_list`。这不提交下载。
 - `playlists.list/works/create/update` 管理人工或动态片单。更新携带当前 revision，冲突先回读。
   `owner` 固定来自私有配置，只隔离片单空间；想看仍为共同列表。

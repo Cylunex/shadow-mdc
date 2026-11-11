@@ -24,6 +24,7 @@ class TagEdit(BaseModel):
     name: str = Field(min_length=1, max_length=300)
     aliases: tuple[str, ...] | None = Field(default=None, max_length=200)
     hidden: bool | None = None
+    group: str | None = Field(default=None, max_length=100)
     revision: int = Field(ge=1)
 
     @field_validator("name")
@@ -43,6 +44,7 @@ class TagCreate(BaseModel):
     name: str = Field(min_length=1, max_length=300)
     aliases: tuple[str, ...] = Field(default_factory=tuple, max_length=200)
     hidden: bool = False
+    group: str = Field(default="", max_length=100)
 
     @field_validator("name")
     @classmethod
@@ -95,7 +97,9 @@ def build_tag_dictionary_router(runtime: Callable[[Request], Runtime]) -> APIRou
                     continue
                 counts[tag.id].add(work_id)
                 if tag.id not in by_id:
-                    by_id[tag.id] = TagOut(id=tag.id, name=tag.name, hidden=is_noise_tag(str(raw)))
+                    by_id[tag.id] = TagOut(
+                        id=tag.id, name=tag.name, hidden=is_noise_tag(str(raw)), group=tag.group
+                    )
         terms = [
             term.model_copy(update={"count": len(counts[term.id])})
             for term in by_id.values()
@@ -121,7 +125,9 @@ def build_tag_dictionary_router(runtime: Callable[[Request], Runtime]) -> APIRou
     @router.post("", status_code=201)
     def create(payload: TagCreate, request: Request) -> TagTerm:
         try:
-            term = runtime(request).tag_dictionary.create(payload.name, payload.aliases, payload.hidden)
+            term = runtime(request).tag_dictionary.create(
+                payload.name, payload.aliases, payload.hidden, payload.group
+            )
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         runtime(request).response_cache.clear()
@@ -131,7 +137,7 @@ def build_tag_dictionary_router(runtime: Callable[[Request], Runtime]) -> APIRou
     def update(payload: TagUpdate, request: Request) -> TagTerm:
         try:
             term = runtime(request).tag_dictionary.update(
-                payload.tag_id, payload.name, payload.aliases, payload.hidden, payload.revision
+                payload.tag_id, payload.name, payload.aliases, payload.hidden, payload.revision, payload.group
             )
         except KeyError as exc:
             raise HTTPException(404, "tag not found") from exc

@@ -329,9 +329,9 @@ export const api = {
   },
   tagDictionary: (q: string, offset: number, signal?: AbortSignal) =>
     request(tagDictionarySchema, `/api/catalog/tags?${new URLSearchParams({ q, offset: String(offset), limit: "100" })}`, { signal }),
-  createTag: (payload: { name: string; aliases: string[]; hidden: boolean }) =>
+  createTag: (payload: { name: string; aliases: string[]; group?: string; hidden: boolean }) =>
     request(tagTermSchema, "/api/catalog/tags", { method: "POST", body: JSON.stringify(payload) }),
-  editTag: (id: string, payload: { name: string; aliases: string[]; hidden: boolean; revision: number }) =>
+  editTag: (id: string, payload: { name: string; aliases: string[]; group?: string; hidden: boolean; revision: number }) =>
     request(tagTermSchema, "/api/catalog/tags", { method: "PUT", body: JSON.stringify({ ...payload, tag_id: id }) }),
   classifications: (signal?: AbortSignal) => request(classificationsSchema, "/api/catalog/classifications", { signal }),
   workTaxonomy: (id: string, signal?: AbortSignal) => request(taxonomySchema, `/api/catalog/works/${encodeURIComponent(id)}/taxonomy`, { signal }),

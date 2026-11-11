@@ -9,7 +9,7 @@ import { TagManagement } from "./TagManagement";
 vi.mock("../api", () => ({ api: { tagDictionary: vi.fn(), createTag: vi.fn(), editTag: vi.fn() } }));
 let root: Root;
 let container: HTMLDivElement;
-const existing = { id: "tag:fixture", name: "原名称", aliases: ["Original"], hidden: false, revision: 3, count: 2 };
+const existing = { id: "tag:fixture", name: "原名称", aliases: ["Original"], hidden: false, group: "", revision: 3, count: 2 };
 beforeEach(() => {
   vi.clearAllMocks(); queryClient.clear(); notifyManager.setScheduler(queueMicrotask);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -39,10 +39,10 @@ it("creates a data-backed word and retains its identity for a second edit", asyn
   vi.mocked(api.editTag).mockResolvedValue({ ...created, name: "改名词条", revision: 2 });
   await open();
   await input("标签展示名称", "新词条"); await submit();
-  expect(api.createTag).toHaveBeenCalledWith({ name: "新词条", aliases: [], hidden: false });
+  expect(api.createTag).toHaveBeenCalledWith({ name: "新词条", aliases: [], group: "", hidden: false });
   expect(container.querySelector<HTMLSelectElement>("select")?.value).toBe(created.id);
   await input("标签展示名称", "改名词条"); await submit();
-  expect(api.editTag).toHaveBeenCalledWith(created.id, { name: "改名词条", aliases: [], hidden: false, revision: 1 });
+  expect(api.editTag).toHaveBeenCalledWith(created.id, { name: "改名词条", aliases: [], group: "", hidden: false, revision: 1 });
   expect(container.textContent).toContain("已有作品和片单关联继续保留");
 });
 it("renames and hides a selected term using its current revision", async () => {
@@ -53,7 +53,7 @@ it("renames and hides a selected term using its current revision", async () => {
   await input("标签展示名称", "新展示");
   await act(async () => container.querySelector<HTMLInputElement>('[aria-label="隐藏标签"]')!.click());
   await submit();
-  expect(api.editTag).toHaveBeenCalledWith(existing.id, { name: "新展示", aliases: ["Original"], hidden: true, revision: 3 });
+  expect(api.editTag).toHaveBeenCalledWith(existing.id, { name: "新展示", aliases: ["Original"], group: "", hidden: true, revision: 3 });
   expect(container.querySelector("select")?.textContent).toContain("已隐藏");
 });
 it("keeps input on a rejected write and shows the actual error", async () => {

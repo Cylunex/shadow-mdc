@@ -6,7 +6,7 @@ import { api } from "../api";
 import { libraryPrefsSchema } from "../model";
 import { queryClient } from "../query/client";
 import { memoryStorage } from "../test/storage";
-import { EMPTY_CATALOG_FILTERS } from "../lib/catalogFilters";
+import { EMPTY_CATALOG_FILTERS, readCatalogFilters } from "../lib/catalogFilters";
 import { CategoriesView } from "./CategoriesView";
 import { UnifiedCatalogView } from "./UnifiedCatalogView";
 
@@ -115,15 +115,15 @@ it("keeps the category page as a tag gallery with covers and stable tag navigati
 
 it("migrates local saved classifications once under StrictMode", async () => {
   localStorage.setItem("mdc:saved-filters", JSON.stringify([{ name: "Old", filters: {
-    ...EMPTY_CATALOG_FILTERS, q: "keep", genres: ["自定义旧题材"],
+    ...EMPTY_CATALOG_FILTERS, q: "keep", forms: ["自定义旧题材"],
   } }]));
-  vi.mocked(api.createClassification).mockResolvedValue({ id: "genres:custom", name: "自定义旧题材", aliases: [], count: 0, revision: 1 });
+  vi.mocked(api.createClassification).mockResolvedValue({ id: "forms:custom", name: "自定义旧题材", aliases: [], count: 0, revision: 1 });
   vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(
     url.endsWith("/facets") ? {} : { items: [], next_cursor: null, total: 0 },
   ))));
   await act(async () => root.render(<StrictMode><UnifiedCatalogView mode="works" onOpenWork={vi.fn()} onOpenActor={vi.fn()} /></StrictMode>));
   expect(api.createClassification).toHaveBeenCalledOnce();
-  expect(JSON.parse(localStorage.getItem("mdc:saved-filters")!)[0].filters).toMatchObject({ q: "keep", genres: ["genres:custom"] });
+  expect(JSON.parse(localStorage.getItem("mdc:saved-filters")!)[0].filters).toMatchObject({ q: "keep", forms: ["forms:custom"] });
   expect(localStorage.getItem("mdc:saved-classification-version")).toBe("1");
 });
 
@@ -142,6 +142,27 @@ it("keeps a legacy tag selection readable and removes it when toggling the new I
   await act(async () => container.querySelector<HTMLButtonElement>('button[aria-pressed]')!.click());
   expect(new URLSearchParams(window.location.search).get("tag")).toBe("tag:amateur");
   expect(container.querySelector(".active-filter-chips")?.textContent).toContain("爱好者 ×");
+});
+
+it("filters runtime and keeps work types under more filters", async () => {
+  const fetch = vi.fn(async (url: string) => new Response(JSON.stringify(
+    url.endsWith("/facets") ? { durations: [{ id: "30to60", name: "30-60 分钟", count: 2 }] }
+      : { items: [], next_cursor: null, total: 0 },
+  )));
+  vi.stubGlobal("fetch", fetch);
+  await act(async () => root.render(<UnifiedCatalogView mode="works" onOpenWork={vi.fn()} onOpenActor={vi.fn()} />));
+  await act(async () => button("分类与筛选").click());
+  expect(container.querySelector('[aria-label="筛选字幕语言"]')).toBeNull();
+  expect(container.querySelector('[aria-label="筛选音轨语言"]')).toBeNull();
+  expect(container.querySelector('[aria-label="筛选题材"]')).toBeNull();
+  expect(container.querySelector('[aria-label="筛选语言"]')).not.toBeNull();
+  expect(container.querySelector('[aria-label="筛选作品类型"]')).toBeNull();
+  await change("筛选时长", "30to60");
+  expect(readCatalogFilters(window.location.search)).toMatchObject({ duration_min: 1800, duration_max: 3600 });
+  await act(async () => button("更多筛选").click());
+  expect(container.querySelector('[aria-label="筛选作品类型"]')).not.toBeNull();
+  const requests = fetch.mock.calls.filter(([url]) => url.endsWith("/works/query"));
+  expect(requests.length).toBeGreaterThan(0);
 });
 
 it("jumps actor pages, resets offsets on sort and search, and requests only the chosen page size", async () => {

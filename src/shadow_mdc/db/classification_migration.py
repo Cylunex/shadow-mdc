@@ -8,7 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 from sqlalchemy import Connection, Engine, select, update
 from sqlalchemy.dialects.sqlite import insert
 
-from ..classifications import DIMENSION_KEYS, classification_definitions
+from ..classifications import DIMENSION_KEYS, LEGACY_DIMENSIONS, classification_definitions
 from ..tag_models import fold_tag
 from .models import CatalogClassificationTerm, CatalogPlaylistRule, Work, WorkClassification
 
@@ -109,7 +109,7 @@ def migrate_classifications(engine: Engine) -> None:
             )
         ):
             migrated = dict(filters)
-            for dimension in DIMENSION_KEYS:
+            for dimension in (*DIMENSION_KEYS, *LEGACY_DIMENSIONS):
                 if dimension in filters:
                     migrated[dimension] = list(
                         dict.fromkeys(

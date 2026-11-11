@@ -58,16 +58,17 @@ def test_unified_catalog_facets_and_actor_intersection(
         }).status_code == 400
         assert client.get("/api/media/v1/catalog/people").status_code == 503
         assert client.put("/api/catalog/works/c/taxonomy", json={
-            "genres": ["genres:documentary"], "forms": ["forms:short"],
+            "forms": ["forms:vr"],
             "regions": ["regions:jp"], "release_year": 2012,
         }).status_code == 200
         selected = client.post("/api/catalog/works/query", json={
-            "genres": ["genres:documentary"], "year_from": 2010,
+            "forms": ["forms:vr"], "year_from": 2010,
         })
         assert selected.json()["items"][0]["id"] == "c"
         assert selected.json()["items"][0]["year"] == 2012
         assert client.post("/api/catalog/works/query", json={"unknown_year": True}).json()["total"] == 0
-        assert client.post("/api/catalog/facets", json={}).json()["genres"][0]["name"] == "纪录"
+        form_facets = client.post("/api/catalog/facets", json={}).json()["forms"]
+        assert any(term["name"] == "VR" for term in form_facets)
         people = client.get("/api/catalog/people").json()
         assert next(p for p in people if p["id"] == "aa")["work_ids"] == ["a", "b"]
         page = client.get("/api/catalog/people-cards", params={"limit": 1}).json()

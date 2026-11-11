@@ -18,11 +18,12 @@ import { queryClient } from "../query/client";
 import { resources } from "../query/resources";
 import { TaxonomyEditor } from "./TaxonomyEditor";
 import { TagManagement } from "./TagManagement";
+import { DURATION_OPTIONS, EMPTY_DURATION, durationLabel, durationOption } from "../lib/catalogDuration";
 import { ClassificationManagement } from "./ClassificationManagement";
 
 type Card = { id: string; title: string; year: number | null; actors: string[]; tags: string[]; poster: string; studio: string | null; code?: string | null; category?: string; release_date?: string | null; has_local_media?: boolean; rating_value?: number | null; rating_max?: number | null; javranking_rank?: number | null; javranking_score?: number | null };
 type Person = ManagedPerson;
-type Facet = { id: string; name: string; count: number; role: string; aliases?: string[] };
+type Facet = { id: string; name: string; count: number; role: string; aliases?: string[]; group?: string };
 export type { Filters } from "../lib/catalogFilters";
 export type CatalogFeedStart = { filters: Filters; items: Card[]; nextCursor: string | null; index?: number };
 const empty = EMPTY_CATALOG_FILTERS;
@@ -51,6 +52,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   const [appendFailed, setAppendFailed] = useState(false);
   const [facetError, setFacetError] = useState("");
   const [showFilters, setShowFilters] = useState(false);
+  const [showMore, setShowMore] = useState(false);
   const [actorBrowsing, setActorBrowsing] = useSessionState("mdc:actor-browsing", actorBrowsingSchema, actorDefaults);
   const actorHeading = useRef<HTMLDivElement>(null);
   const actorOffset = (actorBrowsing.page - 1) * actorBrowsing.pageSize;
@@ -87,7 +89,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
         const schema = await queryClient.fetchQuery(resources.classifications());
         if (!active) return;
         const migrated = await migrateSavedClassifications(saved, schema.dimensions,
-          (dimension, name) => api.createClassification(dimension, name, []));
+          (dimension, name) => api.createClassification(dimension, name, []), schema.legacy_terms);
         if (active) {
           localStorage.setItem("mdc:saved-filters", JSON.stringify(migrated));
           localStorage.setItem("mdc:saved-classification-version", "1");
@@ -286,7 +288,13 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       </select>
       <select aria-label="发行年份" value={filters.year_from === filters.year_to ? String(filters.year_from ?? "") : ""} onChange={e => patch({ unknown_year: false, year_from: e.target.value ? Number(e.target.value) : undefined, year_to: e.target.value ? Number(e.target.value) : undefined })}><option value="">全部年份</option>{(facets.years ?? []).filter(f => f.id !== "unknown").map(f => <option key={f.id} value={f.id}>{f.name} · {f.count}</option>)}</select>
       <select aria-label="机构和系列" value={filters.organizations[0] ?? ""} onChange={e => patch({ organizations: e.target.value ? [e.target.value] : [], organization_role: "" })}><option value="">全部片商 / 工作室 / 厂牌 / 系列</option>{(facets.organizations ?? []).map(f => <option key={f.id} value={f.id}>{f.name} · {({ studio: "工作室", label: "厂牌", platform: "平台", series: "系列" } as Record<string, string>)[f.role] ?? "署名机构"} · {f.count}</option>)}</select>
-      {CLASSIFICATION_KEYS.map(field => <label key={field}>{CLASSIFICATION_NAMES[field]}<select
+      <label>时长<select aria-label="筛选时长" value={durationOption(filters)?.id ?? (filters.duration_min !== undefined || filters.duration_max !== undefined ? "custom" : "")}
+        onChange={event => patch({ ...EMPTY_DURATION, ...DURATION_OPTIONS.find(option => option.id === event.target.value)?.filters })}>
+        <option value="">全部时长</option><option value="custom" hidden>自定义时长</option>{DURATION_OPTIONS.map(option => <option key={option.id} value={option.id}>
+          {option.name} · {facets.durations?.find(facet => facet.id === option.id)?.count ?? 0}</option>)}
+      </select></label>
+      <button className="ghost" aria-expanded={showMore} onClick={() => setShowMore(value => !value)}>{showMore ? "收起更多筛选" : "更多筛选"}</button>
+      {CLASSIFICATION_KEYS.filter(field => field !== "types" || showMore).map(field => <label key={field}>{CLASSIFICATION_NAMES[field]}<select
         aria-label={`筛选${CLASSIFICATION_NAMES[field]}`} value=""
         onChange={event => { if (event.target.value) patch({ [field]: [...new Set([...filters[field], event.target.value])] }); }}>
         <option value="">追加{CLASSIFICATION_NAMES[field]}</option>
@@ -309,9 +317,12 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       {filters.actor_name && <button onClick={() => patch({ actor_name: "" })}>{filters.actor_name} ×</button>}
       {filters.studio_name && <button onClick={() => patch({ studio_name: "" })}>{filters.studio_name} ×</button>}
       {filters.tags.map(id => <button key={"tag:" + id} onClick={() => patch({ tags: filters.tags.filter(t => t !== id) })}>{facets.tags?.find(tag => matchesTag(tag, id))?.name ?? id} ×</button>)}
+      {(["genres", "subtitle_languages"] as const).flatMap(field => filters[field].map(id => <button key={field + id}
+        onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{field === "genres" ? "题材" : "历史字幕"}：{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
       {([...CLASSIFICATION_KEYS, "organizations"] as const).flatMap(field => filters[field].map(id =>
         <button key={field + id} onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
       {(filters.year_from || filters.unknown_year) && <button onClick={() => patch({ year_from: undefined, year_to: undefined, unknown_year: false })}>{filters.unknown_year ? "年份待补" : filters.year_from === filters.year_to ? filters.year_from : `${filters.year_from}–${filters.year_to}`} ×</button>}
+      {(filters.duration_min !== undefined || filters.duration_max !== undefined || filters.unknown_duration) && <button onClick={() => patch(EMPTY_DURATION)}>{durationLabel(filters)} ×</button>}
       {filters.status !== "all" && <button onClick={() => patch({ status: "all" })}>{({ emby: "已关联 Emby", files: "有关联文件", metadata: "仅资料", want: "想看", downloaded: "已下载", undownloaded: "全部未下载" })[filters.status]} ×</button>}
       {filters.exclude_tags.map(id => <button key={id}
       onClick={() => patch({ exclude_tags: filters.exclude_tags.filter(t => t !== id) })}>排除 {facets.tags?.find(tag => matchesTag(tag, id))?.name ?? id} ×</button>)}{filters.actors.map(id => <button key={id} onClick={() => patch({ actors: filters.actors.filter(a => a !== id) })}>{actorNames?.[id] ?? id} ×</button>)}</div>

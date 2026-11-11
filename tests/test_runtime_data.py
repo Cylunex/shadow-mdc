@@ -40,8 +40,8 @@ def test_empty_library_starts_without_reference_files(
     with TestClient(app) as client:
         assert client.get("/api/health").status_code == 200
         dimensions = client.get("/api/catalog/classifications").json()["dimensions"]
-        assert len(dimensions) == 8  # Seven schema dimensions plus derived decades.
-        assert all(dimension["values"] for dimension in dimensions[:7])
+        assert len(dimensions) == 6  # Five work dimensions plus derived decades.
+        assert all(dimension["values"] for dimension in dimensions[:5])
         assert app.state.runtime.tag_dictionary.load().terms == []
     assert len(get_actress_name_map()) == 0
     assert canonicalize_tag("Unregistered source label") == "Unregistered source label"
@@ -111,11 +111,11 @@ def test_classification_data_is_loaded_after_import_and_keeps_structural_fallbac
             "terms": [{"id": "genres:fixture", "dimension": "genres", "name": "Fixture"}],
         },
     )
-    assert classification_dimensions()[0].name == "External"
+    assert classification_dimensions()[0].name == "内容分区"
     identities = {term.id for term in classification_definitions()}
-    assert {"genres:fixture", "genres:unknown", "contents:jav"}.issubset(identities)
+    assert {"genres:fixture", "forms:unknown", "contents:jav"}.issubset(identities)
     write_json(tmp_path / "reference/classifications.seed.json", {"dimensions": [], "terms": []})
-    with pytest.raises(ValidationError, match="seven supported dimensions"):
+    with pytest.raises(ValidationError, match="supported dimensions"):
         classification_dimensions()
 
 

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import delete, select
 
-from .classifications import ClassificationSelection
+from .classifications import DURATION_FORM_IDS, ClassificationSelection
 from .db.models import CatalogClassificationTerm, WorkClassification
 from .db.repository import Repository
 from .domain import IdentityHints
@@ -145,6 +145,7 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                         WorkClassification.term_id.in_(
                             select(CatalogClassificationTerm.id).where(
                                 CatalogClassificationTerm.dimension == dimension,
+                                CatalogClassificationTerm.id.not_in(DURATION_FORM_IDS),
                             )
                         ),
                     )

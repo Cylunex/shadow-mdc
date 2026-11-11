@@ -130,6 +130,12 @@ class Database:
 
     def _migrate_sqlite(self) -> None:
         with self.engine.begin() as connection:
+            columns = {row[1] for row in connection.exec_driver_sql(
+                "PRAGMA table_info(catalog_classification_terms)",
+            )}
+            if "tag_id" not in columns:
+                connection.exec_driver_sql("ALTER TABLE catalog_classification_terms ADD COLUMN tag_id TEXT")
+        with self.engine.begin() as connection:
             merge_columns = {str(row[1]) for row in connection.exec_driver_sql(
                 "PRAGMA table_info(catalog_person_merges)"
             )}

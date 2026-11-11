@@ -13,7 +13,7 @@
 | 文件 | 用途 | 未提供时 |
 | --- | --- | --- |
 | `tag-dictionary.seed.json` | 首次词典、别名、显隐和展示规则 | 创建空词典，来源标签仍可维护 |
-| `classifications.seed.json` | 七维展示信息及初始分类词条 | 仅生成结构必需的待补项与来源体系投影 |
+| `classifications.seed.json` | 作品分类展示信息及初始分类词条 | 仅生成结构必需的待补项与来源体系投影 |
 | `actress_name_map.json.gz` | 演员名称别名映射 | 使用原名和通用姓名归一化 |
 | `dmm_content_id_prefixes.json.gz` | 系列到内容前缀的映射 | 使用通用内容 ID 候选算法 |
 | `catalog-rules.json` | 机构、识别提示、演员保留名单、维护种子与站点映射 | 无人工名单或种子注入，保留通用算法 |

@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-type Tag = { id: string; name: string; count: number; aliases?: string[] };
+type Tag = { id: string; name: string; count: number; aliases?: string[]; group?: string };
 const PAGE_SIZE = 48;
 const fold = (text: string) => text.normalize("NFKC").trim().toLowerCase();
 
@@ -13,9 +13,12 @@ export function CatalogTags({ tags, selected, preview, onToggle }: {
 }) {
   const [search, setSearch] = useState("");
   const [limit, setLimit] = useState(PAGE_SIZE);
+  const [group, setGroup] = useState("");
+  const groups = [...new Set(tags.map(tag => tag.group).filter((value): value is string => Boolean(value)))].sort();
+  const activeGroup = groups.includes(group) ? group : "";
   const query = fold(search);
-  const matches = tags.filter(tag => !query || [tag.id, tag.name, ...(tag.aliases ?? [])]
-    .some(value => fold(value).includes(query)));
+  const matches = tags.filter(tag => (!activeGroup || tag.group === activeGroup) && (!query || [tag.id, tag.name, ...(tag.aliases ?? [])]
+    .some(value => fold(value).includes(query))));
   const isSelected = (tag: Tag) => selected.some(value => matchesTag(tag, value));
   return <>
     {preview && <div className="catalog-tag-preview" aria-label="常用分类标签">
@@ -25,6 +28,10 @@ export function CatalogTags({ tags, selected, preview, onToggle }: {
     </div>}
     <details className="catalog-tags">
     <summary>标签 · {tags.length}</summary>
+    {groups.length > 0 && <select aria-label="浏览标签分组" value={activeGroup}
+      onChange={event => { setGroup(event.target.value); setLimit(PAGE_SIZE); }}>
+      <option value="">全部标签分组</option>{groups.map(value => <option key={value} value={value}>{value}</option>)}
+    </select>}
     <input aria-label="搜索分类标签" placeholder="搜索全部标签" value={search}
       onChange={event => { setSearch(event.target.value); setLimit(PAGE_SIZE); }} />
     <div className="tag-capsules" role="group" aria-label="分类标签">

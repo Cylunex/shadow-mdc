@@ -5,11 +5,13 @@
 - 运行词典保存在 `<data_dir>/tag-dictionary.json`，文件权限 0600，随片库数据一起备份。
 - `<reference_data_dir>/tag-dictionary.seed.json` 是仓库外提供的可选首次初始化数据；只在运行词典不存在时导入。
   重启和升级不会覆盖已修改的词条或规则。以后日常新增、改名都通过接口维护运行数据。
-- 未提供种子时创建空词典，来源标签仍可发现与维护。七维分类首次数据在外部 `<reference_data_dir>/classifications.seed.json`，运行词条继续保存于已有分类数据库表。
+- 未提供种子时创建空词典，来源标签仍可发现与维护。作品分类首次数据在外部 `<reference_data_dir>/classifications.seed.json`，运行词条继续保存于已有分类数据库表。
 - Python 的 `tag_models.py` 仅保留模型、身份解析和加载校验，`services/tag_dictionary.py` 负责持久化。
   原 `tag_registry.py` 已删除。
 
-每个标签有稳定 `id`、展示 `name`、搜索 `aliases`、`hidden` 与 `revision`。
+每个标签有稳定 `id`、展示 `name`、搜索 `aliases`、自定义 `group`、`hidden` 与 `revision`。
+分组只组织标签浏览，不改变匹配规则。作品题材统一在标签中维护，旧题材迁移到「题材」组；
+词条编辑省略 group 保持原分组，空字符串移出分组。
 内置标签保留原 `tag:` ID；未登记来源标签保留 `raw:` 身份。把已有来源标签纳入管理、改名时仍保留原 ID，
 旧名称自动进入别名，不改写作品原始 `Work.tags`、封面关联或片单中的 ID。
 
@@ -34,7 +36,7 @@
 ### 字典接口
 
 作品库 → 片单与资料工具 → 标签字典，支持搜索、分页、新增、改名、别名与显隐修改。
-七维词条继续在同处的分类字典管理，均支持通过 skill 操作：
+作品分类词条继续在同处的分类字典管理，均支持通过 skill 操作：
 
 | HTTP 接口 | Skill 能力 | 用途 |
 | --- | --- | --- |
@@ -43,8 +45,8 @@
 | `PUT /api/catalog/tags` | `tags.update` | 请求体携带 tag_id、name、revision，按需修改 aliases/hidden |
 | `GET /api/catalog/tags/rules` | `tags.rules` | 读取展示优先级、常用筛选、主题封面顺序和噪声规则 |
 | `PUT /api/catalog/tags/rules` | `tags.rules.update` | 用当前字典 revision 更新规则数据 |
-| `POST /api/catalog/classifications/terms` | `classifications.create` | 七维分类新增词条 |
-| `PUT /api/catalog/classifications/terms/{id}` | `classifications.update` | 七维分类词条改名、别名维护 |
+| `POST /api/catalog/classifications/terms` | `classifications.create` | 作品分类新增词条 |
+| `PUT /api/catalog/classifications/terms/{id}` | `classifications.update` | 作品分类词条改名、别名维护 |
 
 标签更新把 ID 放 JSON 请求体，避免旧 raw ID 中编码的空格或斜杠被 URL 路由二次解码。
 省略 aliases/hidden 保持原值；修改携带当前 revision，冲突返回 409 后回读，不覆盖其它会话的新修改。

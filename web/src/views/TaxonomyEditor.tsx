@@ -22,7 +22,7 @@ export function TaxonomyEditor({ work, onClose, onSaved }: {
   }
   return <div className="genre-sheet-backdrop"><form className="genre-sheet taxonomy-editor" role="dialog" aria-modal="true" aria-label="编辑作品分类"
     onSubmit={event => { event.preventDefault(); void save(); }}>
-    <h2>{work.title}</h2><p>同一维度可多选；内容体系、制作地区、音轨与字幕语言分别保存。</p>
+    <h2>{work.title}</h2><p>同一维度可多选；题材统一在作品标签中维护。</p>
     {document.error || schema.error ? <p role="alert">分类读取失败 <button type="button" onClick={() => { void document.refetch(); void schema.refetch(); }}>重试</button></p>
     : document.isPending || schema.isPending ? <p role="status">正在读取分类…</p> : <>
       <div className="taxonomy-fields">{CLASSIFICATION_KEYS.map(key => <label key={key}>{CLASSIFICATION_NAMES[key]}
@@ -33,7 +33,7 @@ export function TaxonomyEditor({ work, onClose, onSaved }: {
       </label>)}</div>
       <label>发行年<input aria-label="编辑发行年" type="number" min={1800} max={2200} value={value.release_year ?? ""} disabled={saving}
         onChange={event => setValue(previous => ({ ...previous, release_year: event.target.value ? Number(event.target.value) : null }))} /></label>
-      <p className="muted">未掌握的资料可留空。音轨语言与字幕语言不会从制作地区自动推断。</p>
+      <p className="muted">语言表示作品原始对白语言；配音和字幕属于具体片源。未掌握的资料可留空。</p>
       {error && <p role="alert">{error}</p>}
       <button type="submit" disabled={saving}>{saving ? "正在保存…" : "保存"}</button>
     </>}

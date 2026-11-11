@@ -8,7 +8,7 @@
 
 | 场景 | 能力 |
 | --- | --- |
-| 作品、演员、标签、七维筛选 | `works.query/facets/detail`、`actors.query/detail`、`tags.list`、`classifications.list/work` |
+| 作品、演员、标签、作品分类筛选 | `works.query/facets/detail`、`actors.query/detail`、`tags.list`、`classifications.list/work` |
 | 标签与展示名 | `works.tags` 增删标签，`works.update` 编辑作品明确字段并默认锁定；`tags.dictionary/create/update` 维护词条，`tags.rules` 读写规则 |
 | 单条入库 | `intake.code.*`、`intake.magnet.*`、`intake.link.submit`、`intake.item` |
 | 日榜、论坛和片单批量补库 | `discover.browse/search`、`rankings.seed`、CLI `prepare/batch` |
@@ -38,7 +38,7 @@
 
 - `works.tags` 保留无关标签；`works.update.tags` 才是整组替换。标签接受注册表别名并归一，查询使用固定 ID。
 - `works.fill` 只补指定空字段、尚未翻译字段与缺失图片缓存，保留原值和人工锁；仅接受达到既有匹配门槛的来源记录。
-- `classifications.fill` 仅填空或 unknown；已有明确维度保持原值。音轨、字幕、地区分别取证，不从内容体系猜测。
+- `classifications.fill` 仅填空或 unknown；已有明确维度保持原值。语言与制作地区分别取证，不从内容分区猜测；题材用 works.tags 维护。
 - 自动入库与恢复共用 LTX 优先磁力排序，保留番号匹配和片段惩罚；用户指定磁力仍优先。
 - `intake.recover` 只让既有远端任务/结果重新进入轮询核对，不新提下载；返回 rechecking 不代表恢复完成。
 - ed2k 不走磁力解析，直连 115 的 skill 链路明确拒绝；OpenList 是否支持以实际后端结果为准。

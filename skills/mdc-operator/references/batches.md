@@ -51,7 +51,7 @@ scripts/mdc batch /REPLACE_PRIVATE/intake.json --receipt /REPLACE_PRIVATE/intake
 
 ## 上万条分类待补和库维护
 
-先用 `works.query/facets` 确认范围。比如查音轨待补的作品，把有实际资料支持的目标值放公共参数：
+先用 `works.query/facets` 确认范围。比如查作品语言待补的作品，把有实际资料支持的目标值放公共参数：
 
 ```json
 {"languages":["languages:unknown"],"limit":100}
@@ -66,7 +66,7 @@ scripts/mdc prepare classifications.fill --query query.json --arguments options.
 scripts/mdc batch /REPLACE_PRIVATE/classify.json --receipt /REPLACE_PRIVATE/classify.receipt.jsonl
 ```
 
-这些示例不构成“JAV 音轨都是日语”的证据。按用户范围和已验证资料设置目标值。
+这些示例不构成“JAV 作品语言都是日语”的证据。按用户范围和已验证资料设置目标值。
 `prepare` 在任何业务写入前沿游标收集所有实际 ID，因此修改不会把后续条目从筛选页挤掉。
 支持同样准备 `works.fill`、`works.tags`、`works.want`、`classifications.assign`。
 单份清单最多 50000 项，默认每项间隔 0.25 秒串行执行；更大范围分清单。

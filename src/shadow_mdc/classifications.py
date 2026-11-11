@@ -11,16 +11,17 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .enums import ContentFamily
 from .runtime_data import read_data, reference_path
 
-DimensionKey = Literal["contents", "types", "genres", "forms", "languages", "subtitle_languages", "regions"]
+DimensionKey = Literal["contents", "types", "forms", "languages", "regions"]
 DIMENSION_KEYS: tuple[DimensionKey, ...] = (
     "contents",
     "types",
-    "genres",
     "forms",
     "languages",
-    "subtitle_languages",
     "regions",
 )
+LEGACY_DIMENSIONS = ("genres", "subtitle_languages")
+# These permanent IDs belong to the retired manual duration classification.
+DURATION_FORM_IDS = frozenset({"forms:feature", "forms:short"})
 FAMILY_CONTENTS = {
     family.value: f"contents:{family.value}"
     for family in ContentFamily
@@ -35,14 +36,21 @@ class ClassificationDimension:
     description: str
 
 
+@dataclass(frozen=True)
+class StoredClassificationDimension:
+    """External seeds can still contain retired dimensions for migration."""
+
+    id: str
+    name: str
+    description: str
+
+
 class ClassificationSelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     contents: list[str] = Field(default_factory=list, max_length=100)
     types: list[str] = Field(default_factory=list, max_length=100)
-    genres: list[str] = Field(default_factory=list, max_length=100)
     forms: list[str] = Field(default_factory=list, max_length=100)
     languages: list[str] = Field(default_factory=list, max_length=100)
-    subtitle_languages: list[str] = Field(default_factory=list, max_length=100)
     regions: list[str] = Field(default_factory=list, max_length=100)
 
     def selections(self) -> dict[DimensionKey, list[str]]:
@@ -50,10 +58,8 @@ class ClassificationSelection(BaseModel):
         return {
             "contents": self.contents,
             "types": self.types,
-            "genres": self.genres,
             "forms": self.forms,
             "languages": self.languages,
-            "subtitle_languages": self.subtitle_languages,
             "regions": self.regions,
         }
 
@@ -61,22 +67,25 @@ class ClassificationSelection(BaseModel):
 @dataclass(frozen=True)
 class ClassificationDefinition:
     id: str
-    dimension: DimensionKey
+    dimension: str
     name: str
     aliases: tuple[str, ...] = ()
 
 
 class ClassificationSeed(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    dimensions: tuple[ClassificationDimension, ...]
+    dimensions: tuple[StoredClassificationDimension, ...]
     terms: tuple[ClassificationDefinition, ...]
 
     @model_validator(mode="after")
     def validate_structure(self) -> ClassificationSeed:
-        if len(self.dimensions) != len(DIMENSION_KEYS) or {d.id for d in self.dimensions} != set(
-            DIMENSION_KEYS
+        keys = [dimension.id for dimension in self.dimensions]
+        if (
+            len(keys) != len(set(keys))
+            or not set(DIMENSION_KEYS).issubset(keys)
+            or set(keys) - set((*DIMENSION_KEYS, *LEGACY_DIMENSIONS))
         ):
-            raise ValueError("classification data must describe the seven supported dimensions")
+            raise ValueError("classification data must describe the supported dimensions")
         if len({term.id for term in self.terms}) != len(self.terms):
             raise ValueError("duplicate classification term ID")
         if any(not term.id.startswith(f"{term.dimension}:") for term in self.terms):
@@ -88,7 +97,7 @@ class ClassificationSeed(BaseModel):
 def _parse_seed(raw: bytes | None) -> ClassificationSeed:
     if raw is None:
         return ClassificationSeed(
-            dimensions=tuple(ClassificationDimension(key, key, "") for key in DIMENSION_KEYS),
+            dimensions=tuple(StoredClassificationDimension(key, key, "") for key in DIMENSION_KEYS),
             terms=(),
         )
     return ClassificationSeed.model_validate_json(raw)
@@ -100,7 +109,17 @@ def classification_seed() -> ClassificationSeed:
 
 
 def classification_dimensions() -> tuple[ClassificationDimension, ...]:
-    return classification_seed().dimensions
+    return tuple(
+        ClassificationDimension(
+            dimension.id,
+            {"contents": "内容分区", "languages": "语言"}.get(dimension.id, dimension.name),
+            "作品原始对白语言。配音与字幕属于具体片源版本。"
+            if dimension.id == "languages"
+            else dimension.description,
+        )
+        for dimension in classification_seed().dimensions
+        if dimension.id in DIMENSION_KEYS
+    )
 
 
 def classification_definitions() -> tuple[ClassificationDefinition, ...]:

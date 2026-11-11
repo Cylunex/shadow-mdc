@@ -10,7 +10,13 @@ from sqlalchemy import String, case, exists, literal, select, union_all
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql.selectable import Subquery
 
-from ..classifications import DIMENSION_KEYS, FAMILY_CONTENTS, ClassificationSelection, DimensionKey
+from ..classifications import (
+    DIMENSION_KEYS,
+    DURATION_FORM_IDS,
+    FAMILY_CONTENTS,
+    ClassificationSelection,
+    DimensionKey,
+)
 from ..db.models import CatalogClassificationTerm, Work, WorkClassification
 from ..tag_models import TagReference
 
@@ -23,7 +29,10 @@ def classification_rows(dimension: str) -> Subquery:
             CatalogClassificationTerm,
             CatalogClassificationTerm.id == WorkClassification.term_id,
         )
-        .where(CatalogClassificationTerm.dimension == dimension)
+        .where(
+            CatalogClassificationTerm.dimension == dimension,
+            CatalogClassificationTerm.id.not_in(DURATION_FORM_IDS),
+        )
     )
     source = aliased(Work)
     assigned = exists(
@@ -33,7 +42,11 @@ def classification_rows(dimension: str) -> Subquery:
             CatalogClassificationTerm,
             CatalogClassificationTerm.id == WorkClassification.term_id,
         )
-        .where(WorkClassification.work_id == source.id, CatalogClassificationTerm.dimension == dimension)
+        .where(
+            WorkClassification.work_id == source.id,
+            CatalogClassificationTerm.dimension == dimension,
+            CatalogClassificationTerm.id.not_in(DURATION_FORM_IDS),
+        )
     )
     fallback = (
         case(FAMILY_CONTENTS, value=source.family, else_="contents:unknown")
@@ -61,7 +74,7 @@ def validate_selection(session: Session, selection: ClassificationSelection) -> 
         else {}
     )
     for dimension, values in selected.items():
-        if any(terms.get(identity) != dimension for identity in values):
+        if any(terms.get(identity) != dimension or identity in DURATION_FORM_IDS for identity in values):
             raise HTTPException(422, f"invalid classification ID in {dimension}")
 
 
@@ -85,7 +98,7 @@ def work_classifications(
         .order_by(CatalogClassificationTerm.name, CatalogClassificationTerm.id)
     )
     for work_id, term in rows:
-        if term.dimension in DIMENSION_KEYS:
+        if term.dimension in DIMENSION_KEYS and term.id not in DURATION_FORM_IDS:
             dimension = cast(DimensionKey, term.dimension)
             result[work_id].setdefault(dimension, []).append(TagReference(term.id, term.name))
     fallback_ids = {FAMILY_CONTENTS.get(work.family, "contents:unknown") for work in works}

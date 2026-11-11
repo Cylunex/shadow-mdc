@@ -26,12 +26,21 @@ it("round-trips every active filter without changing AND/OR or repeated values",
     contents: ["contents:jav"], types: ["types:movie"], languages: ["languages:ja"], subtitle_languages: ["subtitle_languages:zh"],
     organization_role: "studio", year_from: 2000, year_to: 2009, unknown_year: false,
     sort: "newest", status: "emby",
+    duration_min: 1800, duration_max: 3600,
   };
   const url = new URL("https://example.com/mdc/?actor=detail-id");
   applyCatalogFiltersToUrl(url, filters);
   expect(readCatalogFilters(url.search)).toEqual(filters);
   expect(url.searchParams.get("actor")).toBe("detail-id");
   expect(url.searchParams.has("catalog")).toBe(false);
+});
+
+it("keeps unknown duration distinct from known runtime ranges in URLs", () => {
+  const url = new URL("https://example.com/mdc/");
+  applyCatalogFiltersToUrl(url, { ...EMPTY_CATALOG_FILTERS, unknown_duration: true });
+  expect(readCatalogFilters(url.search)).toMatchObject({ unknown_duration: true, duration_min: undefined, duration_max: undefined });
+  applyCatalogFiltersToUrl(url, EMPTY_CATALOG_FILTERS);
+  expect(url.search).toBe("");
 });
 
 it("migrates a non-default JSON link without losing its filters", () => {

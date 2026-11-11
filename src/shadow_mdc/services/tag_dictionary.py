@@ -6,11 +6,20 @@ import fcntl
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 from urllib.parse import quote
 
 from ..tag_models import TagDocument, TagRegistry, TagRules, TagTerm, fold_tag, seed_document
+
+
+@dataclass(frozen=True)
+class ImportedTag:
+    source_id: str
+    name: str
+    aliases: tuple[str, ...]
+    group: str
 
 
 class TagRevisionConflict(ValueError):
@@ -67,11 +76,52 @@ class TagDictionaryStore:
         os.replace(temp, self.path)
         self._signature = None
 
-    def create(self, name: str, aliases: tuple[str, ...], hidden: bool) -> TagTerm:
+    def merge_imports(self, values: list[ImportedTag]) -> dict[str, str]:
+        """Merge external terms before DB migration; a retry never changes existing identities."""
+        with self._writer():
+            document = self.load()
+            terms = {term.id: term for term in document.terms}
+            identities: dict[str, str] = {}
+            for value in values:
+                registry = document.model_copy(update={"terms": list(terms.values())}).registry()
+                matches = {
+                    tag.id
+                    for name in (value.name, *value.aliases)
+                    if (tag := registry.resolve(name)) is not None and tag.id in registry.ids
+                }
+                if len(matches) > 1:
+                    raise ValueError("classification aliases refer to different tags")
+                identity = next(iter(matches), "raw:" + quote(fold_tag(value.name), safe=""))
+                old = terms.get(identity)
+                if old is None:
+                    term = TagTerm(id=identity, name=value.name, aliases=value.aliases, group=value.group)
+                else:
+                    aliases = tuple(dict.fromkeys((*old.aliases, value.name, *value.aliases)))
+                    term = old.model_copy(update={"aliases": aliases, "group": old.group or value.group})
+                    if term != old:
+                        term = term.model_copy(update={"revision": old.revision + 1})
+                terms[identity] = term
+                identities[value.source_id] = identity
+            if list(terms.values()) != document.terms:
+                self._write(
+                    document.model_copy(
+                        update={
+                            "terms": list(terms.values()),
+                            "revision": document.revision + 1,
+                        }
+                    )
+                )
+            return identities
+
+    def create(self, name: str, aliases: tuple[str, ...], hidden: bool, group: str = "") -> TagTerm:
         with self._writer():
             document = self.load()
             term = TagTerm(
-                id="raw:" + quote(fold_tag(name), safe=""), name=name.strip(), aliases=aliases, hidden=hidden
+                id="raw:" + quote(fold_tag(name), safe=""),
+                name=name.strip(),
+                aliases=aliases,
+                hidden=hidden,
+                group=group.strip(),
             )
             self._write(
                 document.model_copy(
@@ -87,6 +137,7 @@ class TagDictionaryStore:
         aliases: tuple[str, ...] | None,
         hidden: bool | None,
         revision: int,
+        group: str | None = None,
     ) -> TagTerm:
         with self._writer():
             document = self.load()
@@ -112,6 +163,7 @@ class TagDictionaryStore:
                 revision=revision + 1,
                 hidden=old.hidden if hidden is None else hidden,
                 aliases=tuple(dict.fromkeys([*(old.aliases if aliases is None else aliases), old.name])),
+                group=old.group if group is None else group.strip(),
             )
             self._write(
                 document.model_copy(

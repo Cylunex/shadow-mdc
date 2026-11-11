@@ -379,6 +379,7 @@ class CatalogClassificationTerm(Base):
     normalized_name: Mapped[str] = mapped_column(String(300))
     aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
     revision: Mapped[int] = mapped_column(Integer, default=1)
+    tag_id: Mapped[str | None] = mapped_column(String(4000))
     __table_args__ = (UniqueConstraint("dimension", "normalized_name"),)
 
 

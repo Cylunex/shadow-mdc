@@ -46,8 +46,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from .catalog_duration import DURATION_BANDS, duration_condition, work_duration
 from .catalog_management import CatalogFilter, build_management_router, organization_relationships
-from .classifications import ClassificationSelection, classification_dimensions
+from .classifications import DURATION_FORM_IDS, ClassificationSelection, classification_dimensions
 from .db.models import (
     Actor,
     CatalogClassificationTerm,
@@ -86,7 +87,7 @@ from .services.catalog_people import (
 from .services.javranking_client import JavRankingIndexCache
 from .services.library_prefs import LibraryPrefs
 from .tag_models import TagReference, fold_tag
-from .tags import normalize_tags, resolve_tag, tag_id, tag_refs
+from .tags import current_registry, normalize_tags, resolve_tag, tag_id, tag_refs
 
 if TYPE_CHECKING:
     from .api import Runtime
@@ -141,6 +142,7 @@ class ClassificationDimensionOut(BaseModel):
 
 class ClassificationsOut(BaseModel):
     dimensions: list[ClassificationDimensionOut]
+    legacy_terms: dict[str, list[ClassificationTermOut]] = Field(default_factory=dict)
 
 
 class CatalogCard(BaseModel):
@@ -202,6 +204,7 @@ class Facet(BaseModel):
 
 class TagFacet(Facet):
     aliases: list[str] = Field(default_factory=list)
+    group: str = ""
 
 
 def _card(work: Work, prefix: str, *, detail: bool = False) -> CatalogCard:
@@ -402,7 +405,7 @@ def build_catalog_router(
             groups = [set(profiles[key].work_ids) if key in profiles else set() for key in filters.actors]
             ids = set.intersection(*groups) if filters.actors_all else set.union(*groups)
             statement = statement.where(Work.id.in_(ids))
-        if filters.tags or filters.exclude_tags:
+        if filters.tags or filters.exclude_tags or filters.genres:
             # SQLite json_each avoids materializing every work in Python.
             def tagged(tag: str) -> ColumnElement[bool]:
                 values = func.json_each(Work.tags).table_valued("value")
@@ -416,13 +419,71 @@ def build_catalog_router(
                              else statement.where(or_(*predicates)))
             for tag in filters.exclude_tags:
                 statement = statement.where(~tagged(tag))
-        validate_selection(session, filters)
-        for dimension, selected in filters.selections().items():
+            if filters.genres:
+                terms = list(session.scalars(select(CatalogClassificationTerm).where(
+                    CatalogClassificationTerm.dimension == "genres",
+                )))
+                lookup = {fold_tag(value): term for term in terms
+                          for value in (term.id, term.name, *term.aliases)}
+                genre_predicates: list[ColumnElement[bool]] = []
+                for value in filters.genres:
+                    if value == "genres:unknown":
+                        known = {term.tag_id for term in terms if term.tag_id}
+                        known.update(tag.id for tag in current_registry().definitions if tag.group == "题材")
+                        genre_predicates.append(~or_(*(tagged(identity) for identity in known)) if known
+                                                else true())
+                        continue
+                    term = lookup.get(fold_tag(value))
+                    resolved_genre = current_registry().resolve(value)
+                    identity = term.tag_id if term is not None else (
+                        resolved_genre.id
+                        if resolved_genre is not None and resolved_genre.group == "题材"
+                        else None
+                    )
+                    if identity is None:
+                        raise HTTPException(422, "invalid legacy genre ID")
+                    genre_predicates.append(tagged(identity))
+                statement = statement.where(or_(*genre_predicates))
+        legacy_forms = [identity for identity in filters.forms if identity in DURATION_FORM_IDS]
+        active = filters.model_copy(update={
+            "forms": [identity for identity in filters.forms if identity not in DURATION_FORM_IDS],
+        })
+        validate_selection(session, active)
+        for dimension, selected in active.selections().items():
+            if dimension == "forms" and legacy_forms:
+                # Historical form selections retain OR semantics; new menus use duration.
+                values = classification_rows("forms")
+                statement = statement.where(or_(
+                    Work.id.in_(select(WorkClassification.work_id).where(
+                        WorkClassification.term_id.in_(legacy_forms),
+                    )),
+                    exists(select(1).select_from(values).where(
+                        values.c.work_id == Work.id, values.c.term_id.in_(selected),
+                    )),
+                ))
+                continue
             if selected:
                 values = classification_rows(dimension)
                 statement = statement.where(exists(select(1).select_from(values).where(
                     values.c.work_id == Work.id, values.c.term_id.in_(selected),
                 )))
+        if filters.subtitle_languages:
+            valid = set(session.scalars(select(CatalogClassificationTerm.id).where(
+                CatalogClassificationTerm.dimension == "subtitle_languages",
+            )))
+            if any(identity not in valid for identity in filters.subtitle_languages):
+                raise HTTPException(422, "invalid legacy subtitle ID")
+            values = classification_rows("subtitle_languages")
+            statement = statement.where(exists(select(1).select_from(values).where(
+                values.c.work_id == Work.id, values.c.term_id.in_(filters.subtitle_languages),
+            )))
+        duration = work_duration()
+        if filters.unknown_duration:
+            statement = statement.where(duration.is_(None))
+        if filters.duration_min is not None:
+            statement = statement.where(duration >= filters.duration_min)
+        if filters.duration_max is not None:
+            statement = statement.where(duration < filters.duration_max)
         if filters.organizations:
             links = organization_relationships()
             matching = select(links.c.work_id).where(
@@ -650,7 +711,7 @@ def build_catalog_router(
                 .group_by(identity),
             ))
             tag_facets = {
-                key: TagFacet(id=key, name=tag.name, count=count, aliases=list(tag.aliases))
+                key: TagFacet(id=key, name=tag.name, count=count, aliases=list(tag.aliases), group=tag.group)
                 for key, raw, count in tags if (tag := resolve_tag(raw)) is not None
             }
             # Keep selected/excluded labels readable even when other filters hide all their works.
@@ -658,7 +719,7 @@ def build_catalog_router(
                 tag = resolve_tag(raw)
                 if tag is not None and tag.id not in tag_facets:
                     tag_facets[tag.id] = TagFacet(
-                        id=tag.id, name=tag.name, count=0, aliases=list(tag.aliases),
+                        id=tag.id, name=tag.name, count=0, aliases=list(tag.aliases), group=tag.group,
                     )
             organization_filters = filters.model_copy(update={"organizations": [], "organization_role": ""})
             organization_rows = filtered_statement(
@@ -683,7 +744,8 @@ def build_catalog_router(
                     values.c.term_id, func.count(func.distinct(values.c.work_id)),
                 ).join(dimension_rows, dimension_rows.c.id == values.c.work_id).group_by(values.c.term_id))}
                 for selected in filters.selections()[dimension.id]:
-                    counts.setdefault(selected, 0)
+                    if selected not in DURATION_FORM_IDS:
+                        counts.setdefault(selected, 0)
                 taxonomy[dimension.id] = [TagFacet(
                     id=identity, name=terms[identity].name, count=count, aliases=terms[identity].aliases,
                 ) for identity, count in counts.items()]
@@ -694,6 +756,28 @@ def build_catalog_router(
             ).join(collection_base, collection_base.c.id == WorkCollection.work_id).group_by(
                 Collection.kind, Collection.name,
             )).all()
+            duration_base = filtered_statement(filters.model_copy(update={
+                "duration_min": None, "duration_max": None, "unknown_duration": False,
+            }), request, session, actor_profiles).subquery()
+            runtime_seconds = duration_base.c.runtime_seconds
+            counts_by_band = session.execute(select(*(
+                func.count(case((duration_condition(runtime_seconds, band), 1))) for band in DURATION_BANDS
+            )).select_from(duration_base)).one()
+            duration_counts = [Facet(id=band.id, name=band.name, count=count)
+                               for band, count in zip(DURATION_BANDS, counts_by_band, strict=True)]
+            legacy_facets = {dimension: [Facet(id=identity, name=terms[identity].name, count=0)
+                                        for identity in selected if identity in terms]
+                             for dimension, selected in (("genres", filters.genres),
+                                                         ("subtitle_languages", filters.subtitle_languages))}
+            # Older mobile clients still ask for genres; these choices read the
+            # same grouped tags, without restoring a separate genre vocabulary.
+            grouped_tags = {tag.id: tag for tag in tag_facets.values() if tag.group == "题材"}
+            for facet in legacy_facets["genres"]:
+                term = terms[facet.id]
+                tag_facet = tag_facets.get(term.tag_id or "")
+                if tag_facet is not None:
+                    grouped_tags[facet.id] = tag_facet.model_copy(update={"id": facet.id})
+            legacy_facets["genres"] = list(grouped_tags.values())
             return {
                 "collections": [Facet(id=f"{kind}:{name}", name=name, count=count)
                                 for kind, name, count in collections],
@@ -702,6 +786,8 @@ def build_catalog_router(
                 "decades": [Facet(id=k, name=k, count=v) for k, v in sorted(decades.items(), reverse=True)],
                 "tags": sorted(tag_facets.values(), key=lambda tag: (-tag.count, tag.name.casefold())),
                 "organizations": [Facet(id=k, name=n, role=r, count=v) for k, n, r, v in organizations],
+                "durations": duration_counts,
+                **legacy_facets,
             }
 
     @router.get("/people/{person_id}/image")
@@ -916,7 +1002,7 @@ def build_catalog_router(
                 values=[ClassificationTermOut(
                     id=term.id, name=term.name, aliases=term.aliases, revision=term.revision,
                     count=next((facet.count for facet in counts[dimension.id] if facet.id == term.id), 0),
-                ) for term in terms if term.dimension == dimension.id],
+                ) for term in terms if term.dimension == dimension.id and term.id not in DURATION_FORM_IDS],
             ) for dimension in classification_dimensions()]
             dimensions.append(ClassificationDimensionOut(
                 id="decades", name="年代", description="按发行年归类、支持年代与其它维度组合筛选。",
@@ -926,7 +1012,12 @@ def build_catalog_router(
                     count=facet.count,
                 ) for facet in counts["decades"]],
             ))
-            return ClassificationsOut(dimensions=dimensions)
+            legacy_terms = {dimension: [ClassificationTermOut(
+                id=term.id, name=term.name, aliases=term.aliases, revision=term.revision,
+            ) for term in terms if term.dimension == dimension
+                and (dimension != "forms" or term.id in DURATION_FORM_IDS)]
+                for dimension in ("genres", "subtitle_languages", "forms")}
+            return ClassificationsOut(dimensions=dimensions, legacy_terms=legacy_terms)
 
     if prefix == "/api/catalog":
         @router.put("/works/{work_id}/taxonomy")
@@ -942,6 +1033,7 @@ def build_catalog_router(
                         WorkClassification.work_id == work_id,
                         WorkClassification.term_id.in_(select(CatalogClassificationTerm.id).where(
                             CatalogClassificationTerm.dimension == dimension,
+                            CatalogClassificationTerm.id.not_in(DURATION_FORM_IDS),
                         )),
                     ))
                     session.add_all([WorkClassification(work_id=work_id, term_id=identity)

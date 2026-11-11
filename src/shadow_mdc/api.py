@@ -251,6 +251,7 @@ from .services.category_catalog import (
     facet_count_map,
     resolve_cover_file,
 )
+from .services.classification_tags import migrate_genres_to_tags
 from .services.directory_actor_rules import (
     DirectoryActorRule,
     DirectoryActorRuleStore,
@@ -483,6 +484,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     tag_dictionary.initialize()
     database = Database(settings.database_url)
     database.initialize()
+    migrate_genres_to_tags(database.engine, tag_dictionary)
     mark_interrupted_task_runs(database)
     alias_store = IdentityAliasStore(settings.data_dir / "identity-aliases.json")
     actor_store = ActorCatalogStore(settings.data_dir / "actor-catalog.json")

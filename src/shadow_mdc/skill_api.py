@@ -387,7 +387,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability(
         "classifications.list",
-        "读取七个分类维度的正式 ID、名称及计数。",
+        "读取作品分类的正式 ID、名称及计数。题材通过标签维护。",
         "read",
         EmptyInput,
         "GET",
@@ -625,7 +625,7 @@ CAPABILITIES += (
     ),
     Capability(
         "classifications.create",
-        "在指定七维分类中新增正式词条。",
+        "在指定作品分类中新增正式词条。",
         "write",
         ClassificationCreateInput,
         "POST",
