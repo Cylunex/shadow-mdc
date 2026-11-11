@@ -153,7 +153,7 @@ def test_runtime_boundaries_facets_playlists_and_mobile_share_the_same_filter(cl
         assert session.get(CatalogClassificationTerm, "forms:short") is not None
 
 
-def test_ambiguous_migration_keeps_assignments_and_can_retry_after_repair(client: TestClient) -> None:
+def test_ambiguous_aliases_preserve_existing_tags_and_migrate_the_explicit_name(client: TestClient) -> None:
     runtime = app.state.runtime
     before = runtime.tag_dictionary.load()
     with runtime.database.session() as session:
@@ -169,14 +169,6 @@ def test_ambiguous_migration_keeps_assignments_and_can_retry_after_repair(client
         )
         session.flush()
         session.add(WorkClassification(work_id="a", term_id="genres:custom-fixture"))
-    with pytest.raises(ValueError, match="different tags"):
-        migrate_genres_to_tags(runtime.database.engine, runtime.tag_dictionary)
-    assert runtime.tag_dictionary.load() == before
-    with runtime.database.session() as session:
-        assert session.get(WorkClassification, ("a", "genres:custom-fixture")) is not None
-        term = session.get(CatalogClassificationTerm, "genres:custom-fixture")
-        assert term is not None and term.tag_id is None
-        term.aliases = ["剧情"]
     migrate_genres_to_tags(runtime.database.engine, runtime.tag_dictionary)
     with runtime.database.session() as session:
         work = session.get(Work, "a")
@@ -184,3 +176,10 @@ def test_ambiguous_migration_keeps_assignments_and_can_retry_after_repair(client
         assert work.tags[0] == "forum" and len(work.tags) == 2
         assert work.field_sources["tags"] == "manual"
         assert session.get(WorkClassification, ("a", "genres:custom-fixture")) is None
+    registry = runtime.tag_dictionary.registry()
+    assert registry.resolve("新题材").id not in {registry.resolve("剧情").id, registry.resolve("喜剧").id}
+    for value in ("剧情", "喜剧"):
+        assert registry.resolve(value).id == before.registry().resolve(value).id
+    migrated = runtime.tag_dictionary.load()
+    migrate_genres_to_tags(runtime.database.engine, runtime.tag_dictionary)
+    assert runtime.tag_dictionary.load() == migrated

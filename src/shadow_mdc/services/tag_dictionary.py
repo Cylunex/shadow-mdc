@@ -89,14 +89,27 @@ class TagDictionaryStore:
                     for name in (value.name, *value.aliases)
                     if (tag := registry.resolve(name)) is not None and tag.id in registry.ids
                 }
-                if len(matches) > 1:
-                    raise ValueError("classification aliases refer to different tags")
-                identity = next(iter(matches), "raw:" + quote(fold_tag(value.name), safe=""))
+                primary = registry.resolve(value.name)
+                if primary is not None and primary.id in registry.ids:
+                    identity = primary.id
+                elif len(matches) == 1:
+                    identity = next(iter(matches))
+                else:
+                    # Ambiguous aliases cannot select between existing identities.
+                    # Preserve the explicit genre name as its own stable tag instead.
+                    identity = "raw:" + quote(fold_tag(value.name), safe="")
+                safe_names = tuple(
+                    name
+                    for name in (value.name, *value.aliases)
+                    if (resolved := registry.resolve(name)) is None
+                    or resolved.id not in registry.ids
+                    or resolved.id == identity
+                )
                 old = terms.get(identity)
                 if old is None:
-                    term = TagTerm(id=identity, name=value.name, aliases=value.aliases, group=value.group)
+                    term = TagTerm(id=identity, name=value.name, aliases=safe_names[:200], group=value.group)
                 else:
-                    aliases = tuple(dict.fromkeys((*old.aliases, value.name, *value.aliases)))
+                    aliases = tuple(dict.fromkeys((*old.aliases, *safe_names)))[:200]
                     term = old.model_copy(update={"aliases": aliases, "group": old.group or value.group})
                     if term != old:
                         term = term.model_copy(update={"revision": old.revision + 1})

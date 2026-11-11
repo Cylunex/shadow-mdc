@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from shadow_mdc.api import app
 from shadow_mdc.db.models import Work
-from shadow_mdc.services.tag_dictionary import TagDictionaryStore
+from shadow_mdc.services.tag_dictionary import ImportedTag, TagDictionaryStore
 from shadow_mdc.tags import normalize_tags, use_registry
 
 
@@ -31,6 +31,18 @@ def call(client: TestClient, name: str, arguments: dict[str, object]) -> dict[st
     response = client.post("/api/skill/v1/call", json={"name": name, "arguments": arguments})
     assert response.status_code == 200, response.text
     return dict(response.json())
+
+
+def test_genre_primary_name_wins_without_stealing_another_tags_alias(client: TestClient) -> None:
+    store = app.state.runtime.tag_dictionary
+    before = store.registry()
+    primary = before.resolve("剧情")
+    other = before.resolve("喜剧")
+    assert primary is not None and other is not None and primary.id != other.id
+    result = store.merge_imports([ImportedTag("genres:fixture", "剧情", ("喜剧",), "题材")])
+    assert result == {"genres:fixture": primary.id}
+    assert store.registry().resolve("喜剧").id == other.id
+    assert "喜剧" not in next(term for term in store.load().terms if term.id == primary.id).aliases
 
 
 def test_dictionary_data_rename_keeps_source_values_ids_covers_and_filters(client: TestClient) -> None:
