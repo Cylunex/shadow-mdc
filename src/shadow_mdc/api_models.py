@@ -480,6 +480,8 @@ class WorkUpdateRequest(BaseModel):
     series: str | None = Field(default=None, max_length=300)
     tags: tuple[str, ...] | None = None
     plot: str | None = Field(default=None, max_length=20000)
+    runtime_seconds: int | None = Field(default=None, strict=True, gt=0, le=2147483647)
+    only_missing: bool = False
     lock_edited: bool = True
 
 

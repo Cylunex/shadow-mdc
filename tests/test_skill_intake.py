@@ -313,6 +313,27 @@ def test_fill_only_missing_fields_respects_locks(
     app.state.runtime.pan_service.submit_offline_url.assert_not_called()
 
 
+def test_fill_runtime_only_uses_matched_source_and_preserves_other_fields(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_id = call(client, "intake.item", {"code": "SSIS-123"})["work_id"]
+    incoming = record().model_copy(update={"runtime_seconds": 5432, "title": "Do not change"})
+    monkeypatch.setattr(app.state.runtime.providers, "search", AsyncMock(
+        return_value=SearchBatch(records=(incoming,), failures=()),
+    ))
+    result = call(client, "works.fill", {"work_id": work_id, "fields": ["runtime_seconds"]})
+    assert result["changed"] == ["runtime_seconds"]
+    detail = call(client, "works.detail", {"work_id": work_id})
+    assert detail["runtime_seconds"] == 5432 and detail["title"] == "Fixture title"
+    sources = detail["field_sources"]
+    locks = detail["field_locks"]
+    assert isinstance(sources, dict) and sources["runtime_seconds"] == "javdb"
+    assert isinstance(locks, list) and "runtime_seconds" not in locks
+    repeated = call(client, "works.fill", {"work_id": work_id, "fields": ["runtime_seconds"]})
+    assert repeated["outcome"] == "skipped"
+    app.state.runtime.providers.search.assert_awaited_once()
+
+
 def test_classification_fill_preserves_explicit_dimensions_and_can_be_repeated(client: TestClient) -> None:
     work_id = call(client, "intake.item", {"code": "SSIS-123"})["work_id"]
     call(

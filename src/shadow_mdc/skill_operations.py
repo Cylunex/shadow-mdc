@@ -51,8 +51,8 @@ class TagsEdit(WorkTarget):
 
 
 class FillInput(WorkTarget):
-    fields: list[Literal["title", "plot", "actors", "artwork", "translation"]] = Field(
-        default=["actors", "artwork", "translation"], min_length=1, max_length=5
+    fields: list[Literal["title", "plot", "actors", "artwork", "translation", "runtime_seconds"]] = Field(
+        default=["actors", "artwork", "translation"], min_length=1, max_length=6
     )
 
 
@@ -180,6 +180,7 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                     "plot": work.plot,
                     "actors": work.actors,
                     "artwork": work.artwork,
+                    "runtime_seconds": work.runtime_seconds,
                 }.items()
                 if key in fields and not value
             }
@@ -215,11 +216,17 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                                 title=updates.get("title"),
                                 plot=updates.get("plot"),
                                 actors=list(record.actors) if "actors" in missing and record.actors else None,
+                                runtime_seconds=(record.runtime_seconds
+                                                 if "runtime_seconds" in missing and record.runtime_seconds
+                                                 else None),
+                                only_missing=True,
                                 lock_edited=False,
                             )
                             written = list(updates)
                             if "actors" in missing and record.actors:
                                 written.append("actors")
+                            if "runtime_seconds" in missing and record.runtime_seconds:
+                                written.append("runtime_seconds")
                             if "artwork" in missing and record.artwork:
                                 work.artwork = [item.model_dump(mode="json") for item in record.artwork]
                                 written.append("artwork")

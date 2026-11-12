@@ -11,6 +11,9 @@
 这里的标签仅为输入示例，按用户真实要求取子集。查询时使用 `tags.list` 返回的正式 ID。
 `works.update {"work_id":"REPLACE_WORK_ID","title":"REPLACE_DISPLAY_TITLE"}` 修改展示名，
 也支持明确给出的演员、剧情、制作商、系列或整组标签，默认 `lock_edited=true`。
+时长使用 `runtime_seconds` 写入正整数秒，不接受分钟、零、负数或小数。
+可靠来源补空时使用 `only_missing=true, lock_edited=false`，服务端保留已有值与人工锁；
+省略字段保持原值。普通手动更正沿用默认覆盖与锁定行为，写入后回读详情和时长筛选。
 整组 `tags` 是替换，普通补库追加标记应使用 `works.tags`。编辑后读 `works.detail` 核对。
 
 ## 维护标签和分类词条
@@ -44,7 +47,7 @@
 {"work_id":"REPLACE_WORK_ID","fields":["actors","artwork","translation"]}
 ```
 
-调用 `works.fill`。可选 `title/plot/actors/artwork/translation`：
+调用 `works.fill`。可选 `title/plot/actors/artwork/translation/runtime_seconds`：
 
 - 元数据只查询和写入被请求且为空的字段，不改其它元数据，也不覆盖人工锁。
 - 只接受达到既有匹配门槛的来源记录；没有编号时不自动套用远程演员，改用有依据的 `works.update`。

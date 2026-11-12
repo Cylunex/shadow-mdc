@@ -1118,12 +1118,25 @@ class Repository:
         series: str | None = None,
         tags: list[str] | None = None,
         plot: str | None = None,
+        runtime_seconds: int | None = None,
+        only_missing: bool = False,
         lock_edited: bool = True,
     ) -> Work:
         """Apply manual Work edits without mutating SourceSnapshot rows."""
 
         sources = dict(work.field_sources or {})
         locks = list(work.field_locks or [])
+        if runtime_seconds is not None and (type(runtime_seconds) is not int or runtime_seconds <= 0):
+            raise ValueError("runtime_seconds must be a positive integer in seconds")
+        if only_missing:
+            title = title if not work.title and "title" not in locks else None
+            actors = actors if not work.actors and "actors" not in locks else None
+            studio = studio if not work.studio and "studio" not in locks else None
+            series = series if not work.series and "series" not in locks else None
+            tags = tags if not work.tags and "tags" not in locks else None
+            plot = plot if not work.plot and "plot" not in locks else None
+            if work.runtime_seconds or "runtime_seconds" in locks:
+                runtime_seconds = None
         if title is not None:
             work.title = title.strip()
             sources["title"] = "manual"
@@ -1160,6 +1173,11 @@ class Repository:
             sources["plot"] = "manual"
             if lock_edited and "plot" not in locks:
                 locks.append("plot")
+        if runtime_seconds is not None:
+            work.runtime_seconds = runtime_seconds
+            sources["runtime_seconds"] = "manual"
+            if lock_edited and "runtime_seconds" not in locks:
+                locks.append("runtime_seconds")
         work.field_sources = sources
         work.field_locks = locks
         self.sync_work_collections(work)

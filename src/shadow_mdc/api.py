@@ -4606,6 +4606,7 @@ def update_work(work_id: str, payload: WorkUpdateRequest, request: Request, repo
         and payload.series is None
         and payload.tags is None
         and payload.plot is None
+        and payload.runtime_seconds is None
     ):
         raise HTTPException(status_code=422, detail="no editable fields provided")
     try:
@@ -4617,6 +4618,8 @@ def update_work(work_id: str, payload: WorkUpdateRequest, request: Request, repo
             series=payload.series,
             tags=list(payload.tags) if payload.tags is not None else None,
             plot=payload.plot,
+            runtime_seconds=payload.runtime_seconds,
+            only_missing=payload.only_missing,
             lock_edited=payload.lock_edited,
         )
     except ValueError as exc:
