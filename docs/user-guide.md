@@ -20,6 +20,12 @@ just dev
 把主题视频、预告和花絮登记为正片。名为 `Extras collection` 的目录仍会扫描；直接选为媒体库根的
 目录仍按用户指定扫描。该过滤不删除既有资产记录或源文件。
 
+要在本地片库扫描中跳过整个目录，可在该目录内创建普通文件 `.nomedia` 或零字节的 `.ignore`。
+标记对媒体库根和子目录都生效。已有资产与作品关联会保留，移除标记后再次扫描即可发现新文件。
+MDC 仅支持 Jellyfin 的空文件用法，含通配符等规则的 `.ignore` 及标记软链接均不生效。
+参见 [Kodi 目录排除](https://kodi.wiki/view/Updating_or_removing_videos#Exclude_Folder) 和
+[Jellyfin 扫描排除](https://jellyfin.org/docs/general/server/media/excluding-directory/)。
+
 媒体根目录不可用时扫描报错并保留登记记录；部分子目录读取失败也会记录错误。当前扫描不根据
 本轮缺少文件自动删除登记记录。尚未绑定物理卷身份，挂载点仍存在时不能据此识别是否换了磁盘。
 

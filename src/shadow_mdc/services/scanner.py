@@ -1,6 +1,6 @@
 import os
 import shutil
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -137,8 +137,9 @@ class Scanner:
         obsolete_codes: list[str] = []
         if progress is not None:
             progress({"progress_current": 0, "progress_total": 0, "phase": "discover"})
-        paths = list(_walk_files(root, recursive=library.recursive, errors=errors, cancelled=cancelled))
-        volume_codes = _directory_volume_codes(paths, cancelled=cancelled)
+        paths, volume_codes = _discover_files(
+            root, recursive=library.recursive, errors=errors, cancelled=cancelled
+        )
         total = len(paths)
         for index, path in enumerate(paths, start=1):
             if cancelled is not None and cancelled():
@@ -360,46 +361,6 @@ class Scanner:
         return created, newly_queued, tuple(obsolete)
 
 
-def _directory_volume_codes(
-    paths: list[Path], *, cancelled: Callable[[], bool] | None = None
-) -> dict[Path, str]:
-    """Map parent directories to a volume-merge code when the lettered set qualifies."""
-
-    by_parent: dict[Path, list[Path]] = {}
-    for index, path in enumerate(paths):
-        if index % 128 == 0 and cancelled is not None and cancelled():
-            return {}
-        if path.suffix.casefold() not in MEDIA_EXTENSIONS:
-            continue
-        # Walked paths are already rooted at the resolved library directory.
-        parent = path.parent
-        by_parent.setdefault(parent, []).append(path)
-
-    result: dict[Path, str] = {}
-    for parent, media in by_parent.items():
-        if cancelled is not None and cancelled():
-            break
-        names: list[str] = []
-        sizes: list[int | None] = []
-        for item in media:
-            names.append(item.name)
-            try:
-                sizes.append(item.stat().st_size)
-            except OSError:
-                sizes.append(None)
-        sidecars: list[str] = []
-        try:
-            for entry in parent.iterdir():
-                if entry.is_file() and entry.suffix.casefold() in {".nfo", ".txt"}:
-                    sidecars.append(entry.name)
-        except OSError:
-            sidecars = []
-        code = directory_volume_merge_code(parent, names, sidecars, sizes=sizes)
-        if code:
-            result[parent] = code
-    return result
-
-
 def _apply_volume_merge_code(
     repository: Repository,
     *,
@@ -450,34 +411,59 @@ def _resolve_library_root(value: str) -> Path:
         raise ValueError(f"library root is unavailable: {value}: {exc}") from exc
 
 
-def _walk_files(
-    root: Path, *, recursive: bool, errors: list[str], cancelled: Callable[[], bool] | None = None
-) -> Iterator[Path]:
+def _excludes_directory(entry: os.DirEntry[str]) -> bool:
+    if entry.name not in {".nomedia", ".ignore"} or not entry.is_file(follow_symlinks=False):
+        return False
+    return entry.name == ".nomedia" or entry.stat(follow_symlinks=False).st_size == 0
+
+
+def _discover_files(
+    root: Path,
+    *,
+    recursive: bool,
+    errors: list[str],
+    cancelled: Callable[[], bool] | None = None,
+) -> tuple[list[Path], dict[Path, str]]:
+    paths: list[Path] = []
+    volume_codes: dict[Path, str] = {}
     pending = [root]
     while pending:
         if cancelled is not None and cancelled():
-            return
+            return paths, volume_codes
         directory = pending.pop()
         try:
             with os.scandir(directory) as iterator:
                 entries = sorted(iterator, key=lambda item: item.name.casefold())
+            if any(_excludes_directory(entry) for entry in entries):
+                continue
         except OSError as exc:
             errors.append(f"{directory}: cannot list directory: {exc}")
             continue
+        media: list[str] = []
+        sidecars: list[str] = []
         for index, entry in enumerate(entries):
             if index % 128 == 0 and cancelled is not None and cancelled():
-                return
+                return paths, volume_codes
             try:
+                path = Path(entry.path)
+                suffix = path.suffix.casefold()
+                if suffix in {".nfo", ".txt"} and entry.is_file():
+                    sidecars.append(entry.name)
                 if entry.is_file(follow_symlinks=False):
-                    yield Path(entry.path)
+                    if suffix in MEDIA_EXTENSIONS:
+                        media.append(entry.name)
+                    paths.append(path)
                 elif (
                     recursive
                     and entry.is_dir(follow_symlinks=False)
                     and entry.name.casefold() not in IGNORED_DIRECTORY_NAMES
                 ):
-                    pending.append(Path(entry.path))
+                    pending.append(path)
             except OSError as exc:
                 errors.append(f"{entry.path}: cannot inspect entry: {exc}")
+        if len(media) >= 2 and (code := directory_volume_merge_code(directory, media, sidecars)):
+            volume_codes[directory] = code
+    return paths, volume_codes
 
 
 def _adopt_nfo_manual_fields(repository: Repository, work_id: str, nfo_path: Path) -> str | None:

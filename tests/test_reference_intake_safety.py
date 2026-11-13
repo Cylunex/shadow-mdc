@@ -1,7 +1,9 @@
 """Offline regression for filename evidence and conflicting metadata on ingestion."""
 
+import os
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -13,7 +15,7 @@ from shadow_mdc.matching import score_candidate
 from shadow_mdc.media.nfo_import import NfoImporter, NfoImportPolicy
 from shadow_mdc.providers.base import ProviderRegistry, SearchBatch
 from shadow_mdc.services.identify import IdentifyService
-from shadow_mdc.services.scanner import Scanner
+from shadow_mdc.services.scanner import Scanner, _discover_files
 from shadow_mdc.tags import tag_id
 
 
@@ -207,3 +209,84 @@ def test_identification_cannot_write_conflicting_candidate_metadata(
     work = repository.get_work(asset.work_id or "")
     assert work is not None and work.title == "Correct"
     assert {item.provider for item in repository.identities_for_work(work.id)} == {"correct", "global"}
+
+
+@pytest.mark.parametrize("marker", [".nomedia", ".ignore"])
+def test_directory_marker_preserves_existing_assets_and_can_be_removed(
+    tmp_path: Path, repository: Repository, marker: str,
+) -> None:
+    root = tmp_path / "media"
+    folder = root / "private"
+    nested = folder / "nested"
+    nested.mkdir(parents=True)
+    media = nested / "TEST-001.strm"
+    media.write_text("https://example.com/video.mp4", encoding="utf-8")
+    library = repository.create_library(name="test", root_path=str(root), recursive=True,
+                                        organize_template="{title}")
+    scanner = Scanner(repository)
+    assert scanner.scan(library).discovered == 1
+    existing = repository.list_assets()[0]
+    work = repository.accept_local_candidate(existing.id)
+    assert work is not None
+    (folder / marker).touch()
+    (folder / "TEST-002.strm").write_text("https://example.com/video.mp4", encoding="utf-8")
+    (root / "TEST-003.strm").write_text("https://example.com/video.mp4", encoding="utf-8")
+    result = scanner.scan(library)
+    assert (result.discovered, result.updated, result.errors) == (1, 0, ())
+    assert repository.get_asset(existing.id) is existing and existing.work_id == work.id
+    assert media.is_file()
+    (folder / marker).unlink()
+    assert scanner.scan(library, only_new=True).discovered == 1
+
+
+@pytest.mark.parametrize("marker_kind,discovered", [
+    ("empty", 0), ("rules", 1), ("directory", 1), ("symlink", 1),
+])
+def test_root_ignore_marker_requires_empty_regular_file(
+    tmp_path: Path, repository: Repository, marker_kind: str, discovered: int,
+) -> None:
+    root = tmp_path / "media"
+    root.mkdir()
+    marker = root / ".ignore"
+    if marker_kind == "directory":
+        marker.mkdir()
+    elif marker_kind == "symlink":
+        target = tmp_path / "empty"
+        target.touch()
+        marker.symlink_to(target)
+    else:
+        marker.write_text("*.strm" if marker_kind == "rules" else "", encoding="utf-8")
+    (root / "TEST-001.strm").write_text("https://example.com/video.mp4", encoding="utf-8")
+    library = repository.create_library(name="test", root_path=str(root), recursive=False,
+                                        organize_template="{title}")
+    result = Scanner(repository).scan(library, only_new=True)
+    assert result.discovered == discovered and not result.errors
+
+
+def test_discovery_uses_one_directory_listing_and_no_media_stats(tmp_path: Path) -> None:
+    merge = tmp_path / "TEST-001"
+    veto = tmp_path / "TEST-002"
+    excluded = tmp_path / "private"
+    nested = excluded / "nested"
+    nested.mkdir(parents=True)
+    (excluded / ".nomedia").touch()
+    for folder in (merge, veto):
+        folder.mkdir()
+        for part in ("A.strm", "B.strm"):
+            (folder / part).touch()
+    # A per-part NFO symlink still vetoes merging, even though discovery skips symlinked files.
+    target = tmp_path / "info.xml"
+    target.touch()
+    (veto / "TEST-002A.nfo").symlink_to(target)
+    errors: list[str] = []
+    with (
+        patch("os.scandir", wraps=os.scandir) as scandir,
+        patch.object(Path, "iterdir", side_effect=AssertionError("redundant directory listing")),
+        patch.object(Path, "stat", side_effect=AssertionError("redundant path stat")),
+    ):
+        paths, codes = _discover_files(tmp_path, recursive=True, errors=errors)
+    assert not errors
+    assert codes == {merge: "TEST-001"}
+    assert set(paths) == {target, merge / "A.strm", merge / "B.strm", veto / "A.strm", veto / "B.strm"}
+    listed = [call.args[0] for call in scandir.call_args_list]
+    assert sorted(listed) == sorted((tmp_path, merge, veto, excluded))
