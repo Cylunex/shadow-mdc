@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
 
@@ -462,6 +463,123 @@ def test_sidecar_plan_copies_cached_artwork_next_to_media(
     )
     assert (root / "fanart.jpg").read_bytes() == b"image"
     assert (root / "poster.jpg").read_bytes() == b"image"
+
+
+def test_in_place_plan_switches_to_owned_sidecars_in_a_mixed_directory(
+    repository: Repository, tmp_path: Path,
+) -> None:
+    root = tmp_path / "flat"
+    root.mkdir()
+    library, asset = _asset(repository, root, name="[Feature].mp4")
+    work = repository.upsert_provider_record(
+        ProviderRecord(provider="fixture", external_id="feature", title="Feature"), overwrite=False,
+    )
+    cached = tmp_path / "image.jpeg"
+    cached.write_bytes(b"feature image")
+    work.artwork = [{"kind": "poster", "local_path": str(cached)}]
+    organizer = Organizer(repository)
+    mode = OutputMode.SIDECAR
+    single = organizer.plan(asset=asset, work=work, library=library, mode=mode)
+    (root / "Other.STRM").touch()
+    for name in ("movie.nfo", "poster.jpg", "fanart.jpg"):
+        (root / name).write_bytes(b"other movie")
+    with pytest.raises(ValueError, match="plan changed"):
+        organizer.execute(asset=asset, work=work, library=library, identities=[], mode=mode,
+                          token=single.token, nfo_policy=NfoPolicy.REPLACE)
+    plan = organizer.plan(asset=asset, work=work, library=library, mode=mode)
+    assert [Path(op.destination).name for op in plan.operations] == [
+        "[Feature]-fanart.jpg", "[Feature]-poster.jpg", "[Feature].nfo",
+    ]
+    organizer.execute(asset=asset, work=work, library=library, identities=[], mode=mode,
+                      token=plan.token, nfo_policy=NfoPolicy.REPLACE)
+    for name in ("movie.nfo", "poster.jpg", "fanart.jpg"):
+        assert (root / name).read_bytes() == b"other movie"
+    nfo = ElementTree.parse(root / "[Feature].nfo")
+    assert nfo.findtext("thumb") == "[Feature]-poster.jpg"
+    assert nfo.findtext("fanart/thumb") == "[Feature]-fanart.jpg"
+    for kind in ("poster", "fanart"):
+        assert (root / f"[Feature]-{kind}.jpg").read_bytes() == b"feature image"
+
+
+def test_mixed_directory_references_only_matching_existing_artwork(
+    repository: Repository, tmp_path: Path,
+) -> None:
+    root = tmp_path / "flat"
+    root.mkdir()
+    library, asset = _asset(repository, root, name="[Film].strm")
+    (root / "Other.mkv").touch()
+    (root / "F-poster.jpg").touch()
+    (root / "[Film]-fanart.png").touch()
+    (root / "poster.jpg").touch()
+    work = repository.upsert_provider_record(
+        ProviderRecord(provider="fixture", external_id="film", title="Film"), overwrite=False,
+    )
+    organizer = Organizer(repository)
+    plan = organizer.plan(asset=asset, work=work, library=library, mode=OutputMode.SIDECAR)
+    organizer.execute(asset=asset, work=work, library=library, identities=[], mode=OutputMode.SIDECAR,
+                      token=plan.token)
+    nfo = ElementTree.parse(root / "[Film].nfo")
+    assert nfo.findtext("thumb") == "[Film]-fanart.png"
+    assert nfo.findtext("fanart/thumb") == "[Film]-fanart.png"
+
+
+@pytest.mark.parametrize(("name", "other"), [("movie.mp4", "Other.strm"), ("Film.strm", "Film.mp4")])
+def test_in_place_plan_rejects_ambiguous_nfo_basename(
+    repository: Repository, tmp_path: Path, name: str, other: str,
+) -> None:
+    library, asset = _asset(repository, tmp_path, name=name)
+    (tmp_path / other).touch()
+    work = repository.upsert_provider_record(
+        ProviderRecord(provider="fixture", external_id="one", title="One"), overwrite=False,
+    )
+    with pytest.raises(ValueError, match="ambiguous sidecar basename"):
+        Organizer(repository).plan(asset=asset, work=work, library=library, mode=OutputMode.SIDECAR)
+
+
+def test_missing_media_cannot_claim_remaining_siblings(
+    repository: Repository, tmp_path: Path,
+) -> None:
+    library, asset = _asset(repository, tmp_path, name="Gone.mp4")
+    work = repository.upsert_provider_record(
+        ProviderRecord(provider="fixture", external_id="gone", title="Gone"), overwrite=False,
+    )
+    organizer = Organizer(repository)
+    plan = organizer.plan(asset=asset, work=work, library=library, mode=OutputMode.SIDECAR)
+    Path(asset.path).rename(tmp_path / "Remaining.mkv")
+    nfo = tmp_path / "movie.nfo"
+    nfo.write_bytes(b"Remaining movie")
+    with pytest.raises(ValueError, match="media file unavailable"):
+        organizer.execute(asset=asset, work=work, library=library, identities=[], mode=OutputMode.SIDECAR,
+                          token=plan.token, nfo_policy=NfoPolicy.REPLACE)
+    assert nfo.read_bytes() == b"Remaining movie"
+
+
+def test_single_movie_updates_the_sidecars_used_by_scan(repository: Repository, tmp_path: Path) -> None:
+    library, asset = _asset(repository, tmp_path, name="Selected.strm")
+    work = repository.upsert_provider_record(
+        ProviderRecord(provider="fixture", external_id="selected", title="Selected title"), overwrite=False,
+    )
+    cached = tmp_path / "cached.png"
+    cached.write_bytes(b"cache")
+    work.artwork = [{"kind": "poster", "local_path": str(cached)}]
+    specific_nfo = tmp_path / "Selected.nfo"
+    specific_nfo.write_bytes(b"old")
+    shared_nfo = tmp_path / "movie.nfo"
+    shared_nfo.write_bytes(b"keep")
+    (tmp_path / "Selected-poster.webp").write_bytes(b"specific")
+    (tmp_path / "poster.jpg").write_bytes(b"unselected")
+    organizer = Organizer(repository)
+    plan = organizer.plan(asset=asset, work=work, library=library, mode=OutputMode.SIDECAR)
+    assert [Path(op.destination).name for op in plan.operations] == [
+        "fanart.png", "Selected-poster.webp", "Selected.nfo",
+    ]
+    organizer.execute(asset=asset, work=work, library=library, identities=[], mode=OutputMode.SIDECAR,
+                      token=plan.token, nfo_policy=NfoPolicy.REPLACE)
+    assert shared_nfo.read_bytes() == b"keep"
+    assert (tmp_path / "Selected-poster.webp").read_bytes() == b"specific"
+    nfo = ElementTree.parse(specific_nfo)
+    assert nfo.findtext("title") == "Selected title"
+    assert nfo.findtext("thumb") == "Selected-poster.webp"
 
 
 def test_default_jav_layout_writes_four_media_server_files(

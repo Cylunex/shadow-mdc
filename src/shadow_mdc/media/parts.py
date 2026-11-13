@@ -1,5 +1,7 @@
+import os
 import re
 import unicodedata
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,12 +45,16 @@ def detect_media_part(path: Path, code: str | None) -> MediaPart | None:
 
 
 # Strip only recognized language/accessibility tags, never release names or part numbers.
-_SUBTITLE_TAGS = re.compile(
-    r"(?i)(?:[. _-](?:zh(?:[-_](?:cn|tw|hans|hant))?|chs|cht|chi|zho|"
+_CHINESE_TAG = r"zh(?:[-_](?:cn|tw|hans|hant))?|chs|cht|chi|zho|简体|繁体|简中|繁中|中文|双语"
+_OTHER_LANGUAGE_TAG = (
     r"en|eng|ja|jpn|jp|ko|kor|fr|fra|fre|de|deu|ger|es|spa|it|ita|"
-    r"pt(?:[-_]br)?|por|ru|rus|ar|ara|th|tha|vi|vie|id|ind|"
-    r"forced|sdh|cc|default|简体|繁体|简中|繁中|中文|双语))+$"
+    r"pt(?:[-_]br)?|por|ru|rus|ar|ara|th|tha|vi|vie|id|ind"
 )
+_SUBTITLE_TAGS = re.compile(
+    rf"(?i)(?:[. _-](?:{_CHINESE_TAG}|{_OTHER_LANGUAGE_TAG}|forced|sdh|cc|default))+$"
+)
+_CHINESE_LANGUAGE = re.compile(rf"(?i)[. _-](?:{_CHINESE_TAG})(?=$|[. _-])")
+_OTHER_LANGUAGE = re.compile(rf"(?i)[. _-](?:{_OTHER_LANGUAGE_TAG})(?=$|[. _-])")
 
 
 def _subtitle_name(subtitle: Path) -> tuple[str, str]:
@@ -61,6 +67,34 @@ def _subtitle_name(subtitle: Path) -> tuple[str, str]:
 def subtitle_matches_stem(subtitle: Path, stem: str) -> bool:
     """Whether a sidecar names this media stem plus recognized subtitle tags."""
     return _exact_subtitle_tail(subtitle, stem) is not None
+
+
+def media_stem_is_ambiguous(siblings: Sequence[Path], stem: str) -> bool:
+    folded = _fold_name(stem)
+    matches = sum(
+        1 for peer in siblings
+        if peer.suffix.casefold() in _VIDEO_NAME_SUFFIXES
+        and _fold_name(peer.stem) == folded
+        and (peer.is_symlink() or peer.is_file())
+    )
+    return matches > 1
+
+
+def subtitle_satisfies_chinese_backfill(
+    subtitle: Path, stem: str, siblings: Sequence[Path] = (),
+) -> bool:
+    """Keep matching Chinese, bilingual and language-unspecified sidecars."""
+    tail = _exact_subtitle_tail(subtitle, stem)
+    if tail is None or (_OTHER_LANGUAGE.search(tail) and not _CHINESE_LANGUAGE.search(tail)):
+        return False
+    # Film.en.zh.srt belongs to Film.en when Film and Film.en coexist.
+    return not any(
+        peer.suffix.casefold() in _VIDEO_NAME_SUFFIXES
+        and len(_fold_name(peer.stem)) > len(_fold_name(stem))
+        and subtitle_matches_stem(subtitle, peer.stem)
+        and (peer.is_symlink() or peer.is_file())
+        for peer in siblings
+    )
 
 
 def _exact_subtitle_tail(subtitle: Path, stem: str) -> str | None:
@@ -348,3 +382,84 @@ def volume_merge_identity_blocks(directory_code: str, existing_code: str | None,
     if not confirmed or not existing_code:
         return False
     return not is_format_equivalent(existing_code, directory_code)
+
+
+def _sidecar_part(stem: str) -> tuple[str, int] | None:
+    match = _EXPLICIT_PART.search(stem)
+    if match and match.start() and len(match["number"]) <= 4:
+        return stem[:match.start()], int(match["number"])
+    return None
+
+
+def _explicit_stack(names: Sequence[str]) -> bool:
+    base: str | None = None
+    numbers: set[int] = set()
+    for name in names:
+        part = _sidecar_part(Path(name).stem)
+        if part is None:
+            return False
+        prefix = _fold_name(part[0])
+        if base is not None and prefix != base:
+            return False
+        base = prefix
+        numbers.add(part[1])
+    return numbers == set(range(1, len(names) + 1))
+
+
+@dataclass(frozen=True, slots=True)
+class SidecarDirectory:
+    """Ownership snapshot for one enumeration; media symlinks reserve their filenames."""
+
+    complete: bool = False
+    shared: bool = False
+    volume_code: str | None = None
+    duplicate_stems: frozenset[str] = frozenset()
+
+    @classmethod
+    def from_names(
+        cls, directory: Path, media: Sequence[str], sidecars: Sequence[str], *, linked_media: bool = False,
+    ) -> "SidecarDirectory":
+        if len(media) <= 1:
+            return cls(complete=True, shared=not linked_media)
+        volume_code = None if linked_media else directory_volume_merge_code(directory, media, sidecars)
+        counts = Counter(_fold_name(Path(name).stem) for name in media)
+        return cls(
+            complete=True,
+            shared=volume_code is not None or (not linked_media and _explicit_stack(media)),
+            volume_code=volume_code,
+            duplicate_stems=frozenset(stem for stem, count in counts.items() if count > 1),
+        )
+
+    @classmethod
+    def inspect(cls, directory: Path) -> "SidecarDirectory":
+        media: list[str] = []
+        sidecars: list[str] = []
+        linked_media = False
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    suffix = Path(entry.name).suffix.casefold()
+                    if suffix in _VIDEO_NAME_SUFFIXES and (
+                        entry.is_symlink() or entry.is_file(follow_symlinks=False)
+                    ):
+                        media.append(entry.name)
+                        linked_media |= entry.is_symlink()
+                    elif suffix in {".nfo", ".txt"} and entry.is_file():
+                        sidecars.append(entry.name)
+        except OSError:
+            return cls()
+        return cls.from_names(directory, media, sidecars, linked_media=linked_media)
+
+    def owns_stem(self, stem: str) -> bool:
+        key = _fold_name(stem)
+        return self.complete and key not in self.duplicate_stems and (self.shared or key != "movie")
+
+    def part_stem(self, stem: str) -> str | None:
+        if not self.shared:
+            return None
+        if part := _sidecar_part(stem):
+            return part[0]
+        # Existing single-title folders may use these older part suffixes.
+        if stem.casefold().endswith(("_1", "_2", "-a", "-b")):
+            return stem[:-2] or None
+        return None

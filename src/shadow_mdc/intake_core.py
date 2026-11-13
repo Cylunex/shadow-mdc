@@ -37,6 +37,7 @@ from .media.magnets import (
     parse_size_label_to_bytes,
     rank_magnets,
 )
+from .media.parts import find_subtitles
 from .services.offline_recovery import project_offline
 from .services.openlist import magnet_display_name
 from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
@@ -44,8 +45,6 @@ from .services.post_ingest import translate_after_ingest
 from .services.seed_auto_offline import enqueue_seeded_offline
 
 logger = logging.getLogger(__name__)
-
-SUBTITLE_SUFFIXES = (".srt", ".ass", ".ssa", ".vtt", ".sub")
 
 
 def _core():  # type: ignore[no-untyped-def]
@@ -569,14 +568,7 @@ def _magnet_brief(item: Any, *, with_uri: bool = False) -> MagnetBrief:
 def _has_subtitle(strm_path: str | None) -> bool:
     if not strm_path:
         return False
-    path = Path(strm_path)
-    try:
-        parent = path.parent
-        if not parent.is_dir():
-            return False
-        return any(child.suffix.lower() in SUBTITLE_SUFFIXES for child in parent.iterdir() if child.is_file())
-    except OSError:
-        return False
+    return bool(find_subtitles(Path(strm_path), code=None))
 
 
 def _stage(task: PanOfflineTask) -> str:

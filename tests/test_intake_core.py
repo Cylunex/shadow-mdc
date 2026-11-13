@@ -183,13 +183,17 @@ def test_offline_add_submits_then_idempotent(client: TestClient) -> None:
     strm_dir = Path(rt.settings.data_dir) / "strm" / "SSIS-123"
     strm_dir.mkdir(parents=True)
     (strm_dir / "SSIS-123.strm").write_text("x")
-    (strm_dir / "SSIS-123.zh.srt").write_text("1")
+    (strm_dir / "SSIS-1234.strm").write_text("x")
+    (strm_dir / "SSIS-1234.zh.srt").write_text("1")
     with rt.database.session() as session:
         repo = Repository(session)
         task = repo.get_pan_offline_task(job_id)
         assert task is not None
         task.status = "done"
         task.strm_path = str(strm_dir / "SSIS-123.strm")
+    assert client.get(f"/api/intake/v1/jobs/{job_id}", headers=AUTH).json()["subtitle"] is False
+    assert client.get("/api/intake/v1/library/SSIS-123", headers=AUTH).json()["subtitle"] is False
+    (strm_dir / "SSIS-123.en.sdh.srt").write_text("1")
     lib = client.get("/api/intake/v1/library/SSIS-123", headers=AUTH).json()
     assert lib["in_library"] is True and lib["subtitle"] is True
     exists = client.post("/api/intake/v1/offline", json={"code": "SSIS-123"}, headers=AUTH).json()

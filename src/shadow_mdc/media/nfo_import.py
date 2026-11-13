@@ -9,6 +9,7 @@ from datetime import date
 from hashlib import sha256
 from math import isfinite
 from pathlib import Path
+from stat import S_ISREG
 from xml.etree import ElementTree
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,6 +21,7 @@ from ..enums import ContentFamily, MatchDecision, MediaCategory
 from ..identity import extract_code
 from ..normalize_code import is_format_equivalent
 from ..remaster import parse_remaster_identity
+from .parts import SidecarDirectory
 
 _CODE_TAG = re.compile(r"(?i)^(?:num|id|code|jav)$")
 
@@ -101,11 +103,26 @@ class NfoImporter:
     repository: Repository
     policy: NfoImportPolicy = field(default_factory=NfoImportPolicy)
 
-    def import_library_assets(self, assets: list[MediaAsset]) -> NfoImportResult:
+    def import_library_assets(
+        self, assets: list[MediaAsset], *, directories: Mapping[Path, SidecarDirectory] | None = None,
+    ) -> NfoImportResult:
+        layouts = dict(directories or {})
         scanned = trusted = candidates = ignored = 0
         errors: list[str] = []
         for asset in assets:
-            nfo_path = resolve_sidecar_nfo(Path(asset.path))
+            path = Path(asset.path)
+            if directories is None or path.parent not in directories:
+                try:
+                    if not S_ISREG(path.lstat().st_mode):
+                        continue
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    errors.append(f"{path}: {exc}")
+                    continue
+            if path.parent not in layouts:
+                layouts[path.parent] = SidecarDirectory.inspect(path.parent)
+            nfo_path = resolve_sidecar_nfo(path, layouts[path.parent])
             if nfo_path is None:
                 continue
             scanned += 1
@@ -151,40 +168,32 @@ class NfoImporter:
         )
 
 
-def resolve_sidecar_nfo(media_path: Path) -> Path | None:
-    """Prefer media-specific metadata before a shared directory-level movie.nfo."""
+def resolve_sidecar_nfo(media_path: Path, layout: SidecarDirectory | None = None) -> Path | None:
+    """Read media-specific metadata, then fall back only within a single-work directory."""
 
-    directory = media_path.parent
-    candidates = [
-        media_path.with_suffix(".nfo"),
-    ]
+    layout = layout or SidecarDirectory.inspect(media_path.parent)
     stem = media_path.stem
-    # CD1/CD2 share the base stem when possible
-    for suffix in ("-CD1", "-CD2", "-cd1", "-cd2", "_1", "_2", "-A", "-B"):
-        if stem.endswith(suffix):
-            candidates.append(directory / f"{stem[: -len(suffix)]}.nfo")
-            break
-    candidates.append(directory / "movie.nfo")
-    for path in candidates:
-        if path.is_file():
-            return path
-    return None
+    candidates: list[Path] = []
+    if layout.owns_stem(stem):
+        candidates.append(media_path.with_suffix(".nfo"))
+    if layout.shared:
+        if base := layout.part_stem(stem):
+            candidates.append(media_path.with_name(f"{base}.nfo"))
+        candidates.append(media_path.parent / "movie.nfo")
+    return next((path for path in candidates if path.is_file()), None)
 
 
-def sibling_artwork_paths(media_path: Path) -> dict[str, Path]:
-    directory = media_path.parent
+def sibling_artwork_paths(media_path: Path, layout: SidecarDirectory | None = None) -> dict[str, Path]:
+    layout = layout or SidecarDirectory.inspect(media_path.parent)
     found: dict[str, Path] = {}
     for kind in ("poster", "fanart"):
-        names = [
-            f"{stem}.{extension}"
-            for stem in (f"{media_path.stem}-{kind}", kind)
-            for extension in ("jpg", "jpeg", "png", "webp", "gif")
-        ]
-        for name in names:
-            path = directory / name
-            if path.is_file():
-                found[kind] = path
-                break
+        stems = [f"{media_path.stem}-{kind}"] if layout.owns_stem(media_path.stem) else []
+        if layout.shared:
+            stems.append(kind)
+        paths = (media_path.with_name(f"{stem}.{ext}") for stem in stems
+                 for ext in ("jpg", "jpeg", "png", "webp", "gif"))
+        if (path := next((path for path in paths if path.is_file()), None)) is not None:
+            found[kind] = path
     return found
 
 

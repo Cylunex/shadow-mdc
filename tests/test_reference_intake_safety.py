@@ -284,9 +284,10 @@ def test_discovery_uses_one_directory_listing_and_no_media_stats(tmp_path: Path)
         patch.object(Path, "iterdir", side_effect=AssertionError("redundant directory listing")),
         patch.object(Path, "stat", side_effect=AssertionError("redundant path stat")),
     ):
-        paths, codes = _discover_files(tmp_path, recursive=True, errors=errors)
+        paths, directories = _discover_files(tmp_path, recursive=True, errors=errors)
     assert not errors
-    assert codes == {merge: "TEST-001"}
+    assert directories[merge].volume_code == "TEST-001"
+    assert directories[veto].volume_code is None
     assert set(paths) == {target, merge / "A.strm", merge / "B.strm", veto / "A.strm", veto / "B.strm"}
     listed = [call.args[0] for call in scandir.call_args_list]
     assert sorted(listed) == sorted((tmp_path, merge, veto, excluded))

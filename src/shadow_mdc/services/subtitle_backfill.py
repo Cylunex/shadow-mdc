@@ -1,8 +1,8 @@
 """Resumable, rate-limited subtitle backfill over an existing STRM library.
 
 The job walks every directory under a STRM root that contains ``.strm`` files,
-skips directories that already hold any subtitle, and asks SubtitleCat for the
-rest. Progress is stored in a :class:`JobCheckpoint` row after each directory so
+checks the primary STRM for a Chinese or language-unspecified sidecar, and asks
+SubtitleCat for the rest. Progress is stored in a :class:`JobCheckpoint` row after each directory so
 a restart (or a manual stop) continues from the last finished directory.
 
 Rate limiting is enforced by :class:`SubtitleCatFetcher` itself (a minimum gap
@@ -27,8 +27,7 @@ from pydantic import BaseModel, Field
 from ..db.repository import Database, Repository
 from ..enums import MediaCategory
 from ..identity import extract_code
-from ..media.parts import SUBTITLE_EXTENSIONS
-from .subtitlecat import SubtitleFetchResult
+from .subtitlecat import SubtitleFetchResult, chinese_subtitle_state
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +49,7 @@ class BackfillStats(BaseModel):
     processed: int = 0
     written: int = 0
     exists: int = 0
+    ambiguous: int = 0
     miss: int = 0
     cached_miss: int = 0
     no_code: int = 0
@@ -82,27 +82,19 @@ def iter_strm_dirs(root: Path) -> Iterator[Path]:
     """Yield directories under ``root`` containing a ``.strm`` file, in stable order."""
 
     seen: set[Path] = set()
-    for strm in root.rglob("*.strm"):
+    for strm in root.rglob("*.strm", case_sensitive=False):
         if strm.is_file():
             seen.add(strm.parent)
     yield from sorted(seen, key=lambda item: str(item))
-
-
-def directory_has_subtitle(directory: Path) -> bool:
-    try:
-        return any(
-            entry.suffix.casefold() in SUBTITLE_EXTENSIONS and entry.is_file()
-            for entry in directory.iterdir()
-        )
-    except OSError:
-        return False
 
 
 def primary_strm(directory: Path) -> Path | None:
     """The main-part ``.strm`` of a directory (shortest name, then alphabetical)."""
 
     try:
-        files = [entry for entry in directory.iterdir() if entry.suffix.casefold() == ".strm"]
+        files = [
+            entry for entry in directory.iterdir() if entry.suffix.casefold() == ".strm" and entry.is_file()
+        ]
     except OSError:
         return None
     if not files:
@@ -124,7 +116,7 @@ class SubtitleBackfillJob:
     fetcher_factory: Callable[[], SubtitleFetcherLike]
     dir_lister: Callable[[Path], Iterator[Path]] = iter_strm_dirs
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
-    _task: asyncio.Task[None] | None = field(default=None, repr=False)
+    _task: asyncio.Task[str] | None = field(default=None, repr=False)
     _reason: str | None = field(default=None, repr=False)
     _shutting_down: bool = field(default=False, repr=False)
 
@@ -278,11 +270,15 @@ class SubtitleBackfillJob:
         return final_status
 
     def _process(self, fetcher: SubtitleFetcherLike, directory: Path, *, dry_run: bool) -> str:
-        if directory_has_subtitle(directory):
-            return "exists"
         strm = primary_strm(directory)
         if strm is None:
             return "no-code"
+        try:
+            local_state = chinese_subtitle_state(directory, strm.stem)
+        except OSError:
+            return "error"
+        if local_state:
+            return local_state
         code = directory_code(directory, strm)
         if code is None:
             return "no-code"
@@ -340,6 +336,7 @@ def _count(stats: BackfillStats, outcome: str) -> None:
     attribute = {
         "written": "written",
         "exists": "exists",
+        "ambiguous": "ambiguous",
         "miss": "miss",
         "cached-miss": "cached_miss",
         "no-code": "no_code",

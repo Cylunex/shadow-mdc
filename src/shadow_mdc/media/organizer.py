@@ -14,8 +14,9 @@ from ..domain import FileOperation, OperationPlan
 from ..enums import NfoPolicy, OperationKind, OutputMode
 from ..services.path_filter import MediaPathFilter
 from .nfo import build_nfo, write_nfo
+from .nfo_import import resolve_sidecar_nfo, sibling_artwork_paths
 from .organize_journal import OrganizeJournal
-from .parts import detect_media_part, find_subtitles, subtitle_destination
+from .parts import SidecarDirectory, detect_media_part, find_subtitles, subtitle_destination
 
 _INVALID_SEGMENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _PORTABLE_PATH_LIMIT = 240
@@ -37,12 +38,29 @@ class Organizer:
         media_suffix: str | None = None,
         extra_operations: tuple[FileOperation, ...] = (),
     ) -> OperationPlan:
-        source = Path(asset.path).resolve()
+        source = Path(asset.path)
         operations: list[FileOperation] = []
 
+        artwork_prefix = ""
+        existing_artwork: dict[str, Path] = {}
         if mode is OutputMode.SIDECAR:
+            source = source.absolute()
+            if not source.is_file():
+                raise ValueError(f"media file unavailable for in-place sidecars: {asset.path}")
             destination = source
+            directory = SidecarDirectory.inspect(source.parent)
+            if not directory.complete:
+                raise ValueError(f"cannot inspect media directory for sidecar ownership: {source.parent}")
+            if not directory.shared:
+                if not directory.owns_stem(source.stem):
+                    raise ValueError(f"ambiguous sidecar basename in shared media directory: {source.name}")
+                artwork_prefix = f"{source.stem}-"
+            nfo_path = resolve_sidecar_nfo(source, directory)
+            if nfo_path is None:
+                nfo_path = source.parent / "movie.nfo" if directory.shared else source.with_suffix(".nfo")
+            existing_artwork = sibling_artwork_paths(source, directory)
         else:
+            source = source.resolve()
             root = _target_root(target_root)
             selected_template = template or library.organize_template
             rendered = _render_template(selected_template, asset=asset, work=work)
@@ -94,8 +112,8 @@ class Organizer:
                         detail="subtitle",
                     )
                 )
-        operations.extend(_artwork_operations(work, destination.parent))
-        nfo_path = destination.parent / "movie.nfo"
+            nfo_path = destination.parent / "movie.nfo"
+        operations.extend(_artwork_operations(work, destination.parent, artwork_prefix, existing_artwork))
         operations.append(
             FileOperation(
                 kind=OperationKind.WRITE_NFO,
@@ -189,13 +207,22 @@ class Organizer:
                 existed = destination.exists()
                 if journal is not None and existed:
                     journal.before_overwrite(destination, detail="nfo")
+                if mode is OutputMode.SIDECAR:
+                    images = sibling_artwork_paths(Path(asset.path))
+                    names = {
+                        (item.detail or "").removeprefix("artwork:"): Path(item.destination).name
+                        for item in plan.operations if (item.detail or "").startswith("artwork:")
+                    }
+                    names.update({kind: image.name for kind, image in images.items()})
+                else:
+                    names = _nfo_artwork_names_for_dir(destination.parent, work) or {}
                 write_nfo(
                     destination,
                     build_nfo(
                         work,
                         identities,
                         asset,
-                        local_artwork=_nfo_artwork_names_for_dir(destination.parent, work),
+                        local_artwork=names,
                     ),
                 )
                 if journal is not None and not existed:
@@ -486,7 +513,9 @@ def _nfo_artwork_names_for_dir(destination_dir: Path, work: Work) -> dict[str, s
     return names
 
 
-def _artwork_operations(work: Work, destination_dir: Path) -> list[FileOperation]:
+def _artwork_operations(
+    work: Work, destination_dir: Path, prefix: str, existing_artwork: dict[str, Path],
+) -> list[FileOperation]:
     operations: list[FileOperation] = []
     sources: dict[str, Path] = {}
     for item in work.artwork:
@@ -506,7 +535,7 @@ def _artwork_operations(work: Work, destination_dir: Path) -> list[FileOperation
     for kind in ("fanart", "poster"):
         source = sources[kind]
         extension = ".jpg" if source.suffix.casefold() in {".jpg", ".jpeg"} else source.suffix.casefold()
-        target = destination_dir / f"{kind}{extension}"
+        target = existing_artwork.get(kind, destination_dir / f"{prefix}{kind}{extension}")
         if _same_file(source, target):
             continue
         operations.append(

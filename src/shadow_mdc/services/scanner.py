@@ -21,7 +21,7 @@ from ..media.nfo_import import (
 )
 from ..media.oshash import compute_oshash
 from ..media.parts import (
-    directory_volume_merge_code,
+    SidecarDirectory,
     volume_merge_identity_blocks,
 )
 from ..media.probe import probe_media_info
@@ -136,7 +136,7 @@ class Scanner:
         obsolete_codes: list[str] = []
         if progress is not None:
             progress({"progress_current": 0, "progress_total": 0, "phase": "discover"})
-        paths, volume_codes = _discover_files(
+        paths, directories = _discover_files(
             root, recursive=library.recursive, errors=errors, cancelled=cancelled
         )
         total = len(paths)
@@ -177,7 +177,7 @@ class Scanner:
                     library,
                     root,
                     path,
-                    volume_code=volume_codes.get(path.parent),
+                    sidecars=directories[path.parent],
                     diagnostics=errors,
                 )
                 discovered += int(created)
@@ -207,7 +207,7 @@ class Scanner:
         root: Path,
         path: Path,
         *,
-        volume_code: str | None = None,
+        sidecars: SidecarDirectory,
         diagnostics: list[str] | None = None,
     ) -> tuple[bool, bool, tuple[str, ...]]:
         stat = path.stat()
@@ -252,7 +252,7 @@ class Scanner:
             path=path,
             existing=existing,
             hints_code=hints.code,
-            volume_code=volume_code,
+            volume_code=sidecars.volume_code,
             obsolete=obsolete,
         )
         if merged_code:
@@ -327,17 +327,17 @@ class Scanner:
                 self._repository.attach_asset_to_work(asset, existing_work)
         # NFO-first rebuild: trust sidecar metadata before remote scrape (miyabi-inspired).
         sibling_artwork_allowed = True
-        if asset.work_id is None and resolve_sidecar_nfo(path) is not None:
+        if asset.work_id is None:
             result = NfoImporter(
                 self._repository,
                 policy=NfoImportPolicy(mode="trust"),
-            ).import_library_assets([asset])
+            ).import_library_assets([asset], directories={path.parent: sidecars})
             sibling_artwork_allowed = not result.errors
             if diagnostics is not None:
                 diagnostics.extend(result.errors)
             if result.trusted:
                 asset = self._repository.get_asset(asset.id) or asset
-        elif asset.work_id is not None and (nfo_path := resolve_sidecar_nfo(path)) is not None:
+        elif (nfo_path := resolve_sidecar_nfo(path, sidecars)) is not None:
             warning = _adopt_nfo_manual_fields(self._repository, asset.work_id, nfo_path)
             sibling_artwork_allowed = warning is None
             if warning is not None and diagnostics is not None:
@@ -345,7 +345,7 @@ class Scanner:
         if sibling_artwork_allowed and asset.work_id is not None and self._artwork_dir is not None:
             work = self._repository.get_work(asset.work_id)
             if work is not None:
-                _adopt_sibling_artwork(self._repository, work, path, self._artwork_dir)
+                _adopt_sibling_artwork(self._repository, work, path, self._artwork_dir, sidecars)
         if (
             hints.code is None
             and confirmed_directory_actor
@@ -422,13 +422,13 @@ def _discover_files(
     recursive: bool,
     errors: list[str],
     cancelled: Callable[[], bool] | None = None,
-) -> tuple[list[Path], dict[Path, str]]:
+) -> tuple[list[Path], dict[Path, SidecarDirectory]]:
     paths: list[Path] = []
-    volume_codes: dict[Path, str] = {}
+    directories: dict[Path, SidecarDirectory] = {}
     pending = [root]
     while pending:
         if cancelled is not None and cancelled():
-            return paths, volume_codes
+            return paths, directories
         directory = pending.pop()
         try:
             with os.scandir(directory) as iterator:
@@ -438,19 +438,23 @@ def _discover_files(
         except OSError as exc:
             errors.append(f"{directory}: cannot list directory: {exc}")
             continue
+        complete = True
+        linked_media = False
         media: list[str] = []
         sidecars: list[str] = []
         for index, entry in enumerate(entries):
             if index % 128 == 0 and cancelled is not None and cancelled():
-                return paths, volume_codes
+                return paths, directories
             try:
                 path = Path(entry.path)
                 suffix = path.suffix.casefold()
                 if suffix in {".nfo", ".txt"} and entry.is_file():
                     sidecars.append(entry.name)
-                if entry.is_file(follow_symlinks=False):
-                    if suffix in MEDIA_EXTENSIONS:
-                        media.append(entry.name)
+                is_file = entry.is_file(follow_symlinks=False)
+                if suffix in MEDIA_EXTENSIONS and (is_file or entry.is_symlink()):
+                    media.append(entry.name)
+                    linked_media |= not is_file
+                if is_file:
                     paths.append(path)
                 elif (
                     recursive
@@ -459,10 +463,14 @@ def _discover_files(
                 ):
                     pending.append(path)
             except OSError as exc:
+                complete = False
                 errors.append(f"{entry.path}: cannot inspect entry: {exc}")
-        if len(media) >= 2 and (code := directory_volume_merge_code(directory, media, sidecars)):
-            volume_codes[directory] = code
-    return paths, volume_codes
+        if media:
+            directories[directory] = (
+                SidecarDirectory.from_names(directory, media, sidecars, linked_media=linked_media)
+                if complete else SidecarDirectory()
+            )
+    return paths, directories
 
 
 def _adopt_nfo_manual_fields(repository: Repository, work_id: str, nfo_path: Path) -> str | None:
@@ -486,10 +494,12 @@ def _adopt_nfo_manual_fields(repository: Repository, work_id: str, nfo_path: Pat
     return None
 
 
-def _adopt_sibling_artwork(repository: Repository, work: Work, media_path: Path, artwork_dir: Path) -> None:
+def _adopt_sibling_artwork(
+    repository: Repository, work: Work, media_path: Path, artwork_dir: Path, sidecars: SidecarDirectory,
+) -> None:
     """Copy NFO-adjacent poster/fanart into the local artwork cache and make a list thumb."""
 
-    siblings = sibling_artwork_paths(media_path)
+    siblings = sibling_artwork_paths(media_path, sidecars)
     if not siblings:
         return
     work_root = artwork_dir / work.id

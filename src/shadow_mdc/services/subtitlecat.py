@@ -20,11 +20,17 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urljoin
 
 import httpx
 
-from ..media.parts import SUBTITLE_EXTENSIONS, subtitle_matches_stem
+from ..media.parts import (
+    SUBTITLE_EXTENSIONS,
+    media_stem_is_ambiguous,
+    subtitle_matches_stem,
+    subtitle_satisfies_chinese_backfill,
+)
 from ..media.subtitle_validation import validate_srt
 
 logger = logging.getLogger(__name__)
@@ -64,7 +70,7 @@ class SubtitleCatPick:
 @dataclass(slots=True)
 class SubtitleFetchResult:
     code: str
-    status: str  # written | exists | miss | cached-miss | error | dry-run | disabled
+    status: str  # written | exists | ambiguous | miss | cached-miss | error | dry-run | disabled
     path: Path | None = None
     pick: SubtitleCatPick | None = None
     detail: str | None = None
@@ -111,15 +117,33 @@ def parse_detail_zh_links(page: str, base_url: str) -> dict[str, str]:
 
 
 def has_existing_subtitle(directory: Path, stem: str) -> bool:
+    """Return whether there is any matching subtitle, regardless of language."""
     try:
         return any(
             entry.suffix.casefold() in SUBTITLE_EXTENSIONS
-            and (entry.is_file() or entry.is_symlink())
+            and (entry.is_symlink() or entry.is_file())
             and subtitle_matches_stem(entry, stem)
             for entry in directory.iterdir()
         )
     except OSError:
         return False
+
+
+def chinese_subtitle_state(directory: Path, stem: str) -> Literal["exists", "ambiguous"] | None:
+    try:
+        siblings = list(directory.iterdir())
+    except FileNotFoundError:
+        return None
+    if media_stem_is_ambiguous(siblings, stem):
+        return "ambiguous"
+    for entry in siblings:
+        if (entry.suffix.casefold() in SUBTITLE_EXTENSIONS and (entry.is_symlink() or entry.is_file())
+                and subtitle_satisfies_chinese_backfill(entry, stem, siblings)):
+            return "exists"
+    # The destination may itself be another video's exact stem (Film.zh.strm).
+    if not subtitle_satisfies_chinese_backfill(directory / f"{stem}{SUBTITLE_SUFFIX}", stem, siblings):
+        return "ambiguous"
+    return None
 
 
 @dataclass
@@ -208,8 +232,9 @@ class SubtitleCatFetcher:
 
         target = directory / f"{stem}{SUBTITLE_SUFFIX}"
         try:
-            if has_existing_subtitle(directory, stem):
-                return SubtitleFetchResult(code=code, status="exists", path=target)
+            local_state = chinese_subtitle_state(directory, stem)
+            if local_state:
+                return SubtitleFetchResult(code=code, status=local_state, path=target)
             if not dry_run and self._miss_cached(code):
                 return SubtitleFetchResult(code=code, status="cached-miss")
             pick = self.lookup(code)

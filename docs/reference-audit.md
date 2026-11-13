@@ -3,6 +3,18 @@
 本审计基于本地参考仓库中的 JavSP、JavSP-Web、MDCX、MDC-NG、Amane 与 Peach。
 Shadow MDC 只吸收行为、边界和使用流程，所有代码、模型、接口与测试均独立实现。
 
+## 2026-11-13 混放目录的旁车归属与中文字幕补全
+
+| 参考项目或软件 | 核对的行为 | MDC 的实现 |
+| --- | --- | --- |
+| [Kodi 的媒体源设置](https://kodi.wiki/view/Scanning_videos_into_the_library) | 多片混放时按视频主名指定 NFO 和图片 | 扫描与原地整理依据同一目录的媒体名称决定能否共用旁车 |
+| [FileBot 的伴随文件规则](https://www.filebot.net/forums/viewtopic.php?t=12172) | 文件名可明确指出伴随文件所属的媒体 | 混放目录里的影片按自己的文件名导出资料，并在 NFO 中引用对应图片 |
+| [Bazarr 的缺失字幕判断](https://wiki.bazarr.media/Getting-Started/How-Bazarr-Connects-to-Sonarr-and-Radarr/) 与 [Subliminal CLI](https://subliminal.readthedocs.io/en/latest/user/cli.html) | 按具体视频和目标语言决定是否需要下载字幕 | 中文补全区分同片中文与其他语种，并沿用现有目录检查点 |
+| [Jellyfin 的外置字幕约定](https://jellyfin.org/docs/general/server/media/movies/#external-subtitles-and-audio-tracks) | 文件名可以携带语言及 SDH、forced 等标记 | 入库状态查询按媒体主名配对字幕，保留已识别的语言和辅助标记 |
+
+这些改动针对以后执行的扫描、整理和补全。历史误绑定作品仍需根据原文件核对。字幕规则依赖文件名，
+未标语言的同名字幕保守跳过；分段时轴与字幕正文语种没有自动校验。
+
 ## 2026-11-13 作品资料缺项和 NFO 诊断
 
 | 方案 | 上游行为 | 在 MDC 中的取舍 |

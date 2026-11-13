@@ -14,6 +14,7 @@ from shadow_mdc.api_models import ScanRequest
 from shadow_mdc.db.models import Library, LibraryScanSchedule, utc_now
 from shadow_mdc.db.repository import Database, Repository
 from shadow_mdc.domain import IdentityHints
+from shadow_mdc.media.parts import SidecarDirectory
 from shadow_mdc.providers.base import SearchBatch
 from shadow_mdc.services.library_jobs import CHECKPOINT_PREFIX, LibraryJobState, due_scans
 from shadow_mdc.services.scanner import Scanner
@@ -48,12 +49,12 @@ def test_queue_deduplicates_and_cancel_has_a_terminal_state(
     original = Scanner._scan_asset
 
     def pause(
-        self: Scanner, library: Library, base: Path, path: Path, *, volume_code: str | None = None,
+        self: Scanner, library: Library, base: Path, path: Path, *, sidecars: SidecarDirectory,
         diagnostics: list[str] | None = None,
     ) -> tuple[bool, bool, tuple[str, ...]]:
         started.set()
         assert release.wait(5)
-        return original(self, library, base, path, volume_code=volume_code, diagnostics=diagnostics)
+        return original(self, library, base, path, sidecars=sidecars, diagnostics=diagnostics)
 
     monkeypatch.setattr(Scanner, "_scan_asset", pause)
     with TestClient(app) as client:
