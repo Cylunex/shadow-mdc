@@ -423,7 +423,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability("system.health", "检查 MDC 服务状态。", "read", EmptyInput, "GET", "/api/health"),
     Capability(
         "works.query",
-        "按片名、演员、标签、分类和状态分页查询作品。",
+        "按片名、演员、标签、分类、资料缺项和状态分页查询作品。",
         "read",
         CatalogFilter,
         "POST",
@@ -436,6 +436,14 @@ CAPABILITIES: tuple[Capability, ...] = (
         CatalogFilter,
         "POST",
         "/api/catalog/facets",
+    ),
+    Capability(
+        "works.metadata_gaps",
+        "在当前筛选范围内按字段统计资料待补的作品数。",
+        "read",
+        CatalogFilter,
+        "POST",
+        "/api/catalog/metadata-gaps",
     ),
     Capability(
         "works.detail",

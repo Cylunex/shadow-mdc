@@ -2,7 +2,6 @@ import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path
-from xml.etree import ElementTree
 
 from pydantic import BaseModel, ConfigDict
 
@@ -474,8 +473,8 @@ def _adopt_nfo_manual_fields(repository: Repository, work_id: str, nfo_path: Pat
         return None
     try:
         parsed = parse_movie_nfo(nfo_path)
-    except (OSError, ElementTree.ParseError, ValueError):
-        return None
+    except (OSError, ValueError) as exc:
+        return f"{nfo_path}: invalid NFO: {exc}"
     if work.primary_code and parsed.code and not is_format_equivalent(work.primary_code, parsed.code):
         return f"{nfo_path}: NFO code conflict: expected={work.primary_code}; received={parsed.code}"
     if not parsed.locked_fields:

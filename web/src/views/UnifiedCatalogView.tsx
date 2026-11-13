@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { api, appUrl } from "../api";
-import { applyCatalogFiltersToUrl, EMPTY_CATALOG_FILTERS, filtersSchema, readCatalogFilters, type Filters } from "../lib/catalogFilters";
+import { applyCatalogFiltersToUrl, EMPTY_CATALOG_FILTERS, filtersSchema, metadataGapNames, readCatalogFilters, type Filters } from "../lib/catalogFilters";
 import {
   CatalogPeopleEditor, CatalogOrganizations, CatalogSeriesEditor, CatalogPlaylists, PersonPicker, catalogRequest,
   usePeopleCards, usePersonLabels, type ManagedPerson
@@ -27,6 +27,7 @@ type Person = ManagedPerson;
 type Facet = { id: string; name: string; count: number; role: string; aliases?: string[]; group?: string; parent_id?: string | null; redirect_ids?: string[] };
 export type { Filters } from "../lib/catalogFilters";
 export type CatalogFeedStart = { filters: Filters; items: Card[]; nextCursor: string | null; index?: number };
+const MetadataGapFilter = lazy(() => import("./MetadataGapFilter"));
 const empty = EMPTY_CATALOG_FILTERS;
 const actorBrowsingSchema = z.object({
   search: z.string().max(300), sort: z.enum(["works", "name"]), followed: z.boolean(),
@@ -149,7 +150,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     setWorkError(""); setAppendFailed(false);
     let snapshot: { filters: Filters; rows: Card[]; cursor: string | null; total: number; scroll: number; at: number } | null = null;
     try { snapshot = JSON.parse(sessionStorage.getItem("mdc:catalog-return") ?? "null"); } catch { /* Optional cache. */ }
-    if (snapshot && Date.now() - snapshot.at < 300000 && JSON.stringify(snapshot.filters) === JSON.stringify(filters)) {
+    if (snapshot && !filters.missing_metadata && Date.now() - snapshot.at < 300000 && JSON.stringify(snapshot.filters) === JSON.stringify(filters)) {
       loadedFilters.current = filters;
       setRows(snapshot.rows); setCursor(snapshot.cursor); setTotal(snapshot.total); setLoading(false);
       const position = snapshot.scroll;
@@ -287,6 +288,10 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       <button className="ghost" aria-expanded={showFilters} onClick={() => setShowFilters(value => !value)}>{showFilters ? "收起筛选" : "分类与筛选"}</button>
     </div>
     {showFilters && <div className="works-extra-filters">
+      <Suspense fallback={<label>资料待补<select disabled><option>正在加载…</option></select></label>}>
+        <MetadataGapFilter filters={filters} revision={revision} refresh={refresh}
+          onSelect={missing_metadata => patch({ missing_metadata })} />
+      </Suspense>
       <label>系列<select aria-label="筛选系列" value={filters.series[0] ?? ""} onChange={e => patch({ series: e.target.value ? [e.target.value] : [], collection: "", series_name: "" })}><option value="">全部系列</option>{(facets.series ?? []).map(f => <option key={f.id} value={f.id}>{f.name} · {f.count}</option>)}</select></label>
       <select aria-label="年代" value={filters.unknown_year ? "unknown" : filters.year_from && filters.year_to === filters.year_from + 9 ? String(filters.year_from) : ""} onChange={e => patch(e.target.value === "unknown" ? { unknown_year: true, year_from: undefined, year_to: undefined } : { unknown_year: false, year_from: e.target.value ? Number(e.target.value) : undefined, year_to: e.target.value ? Number(e.target.value) + 9 : undefined })}>
         <option value="">全部年代</option>{(facets.decades ?? []).map(f => <option key={f.id} value={f.id}>{f.id === "unknown" ? "年份待补" : f.name + " 年代"} · {f.count}</option>)}
@@ -324,6 +329,8 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     </div>}
     <div className="active-filter-chips">
       {filters.category && filters.category !== "all" && <button onClick={() => patch({ category: "all" })}>{({ Japan: "JAV", China: "国产", Korea: "韩国", Europe: "欧美", Other: "其他" })[filters.category]} ×</button>}
+      {filters.missing_metadata && <button onClick={() => patch({ missing_metadata: undefined })}>
+        {metadataGapNames[filters.missing_metadata]} ×</button>}
       {filters.collection && <button onClick={() => patch({ collection: "" })}>{filters.collection} ×</button>}
       {filters.actor_name && <button onClick={() => patch({ actor_name: "" })}>{filters.actor_name} ×</button>}
       {filters.studio_name && <button onClick={() => patch({ studio_name: "" })}>{filters.studio_name} ×</button>}

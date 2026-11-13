@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { catalogCategorySchema, catalogSortSchema, catalogStatusSchema, mediaAvailabilitySchema, organizationRoleSchema } from "./catalogTypes";
 
+export const metadataGapSchema = z.enum(["any", "plot", "cover", "tags", "year", "duration"]);
+export const metadataGapNames: Record<z.infer<typeof metadataGapSchema>, string> = {
+  any: "任一资料缺项", plot: "缺简介", cover: "缺封面记录", tags: "缺标签", year: "缺发行年份", duration: "缺时长",
+};
 export const filtersSchema = z.object({
   q: z.string().default(""),
   category: catalogCategorySchema.optional().catch(undefined),
@@ -16,6 +20,7 @@ export const filtersSchema = z.object({
   organizations: z.array(z.string()).default([]), organization_role: z.union([organizationRoleSchema, z.literal(""), z.literal("series")]).optional().catch(undefined),
   labels: z.array(z.string()).default([]), platforms: z.array(z.string()).default([]),
   year_from: z.number().int().optional().catch(undefined), year_to: z.number().int().optional().catch(undefined),
+  missing_metadata: metadataGapSchema.nullish().catch(undefined),
   unknown_year: z.boolean().default(false),
   duration_min: z.number().int().min(0).optional().catch(undefined),
   duration_max: z.number().int().positive().optional().catch(undefined),
@@ -32,7 +37,7 @@ const lists = {
   forms: "form", regions: "region", organizations: "org", series: "series", labels: "label", platforms: "platform",
   contents: "content", types: "type", languages: "language", subtitle_languages: "subtitle",
 } as const;
-const strings = { q: "q", actor_name: "cast", studio_name: "studio", series_name: "series_name", organization_role: "role", collection: "col" } as const;
+const strings = { missing_metadata: "missing", q: "q", actor_name: "cast", studio_name: "studio", series_name: "series_name", organization_role: "role", collection: "col" } as const;
 const keys = [...Object.values(lists), ...Object.values(strings), "year", "from", "to", "sort", "status", "availability", "wanted", "cast_all", "match", "cat", "seed", "page", "duration_min", "duration_max", "duration_unknown"];
 
 function year(value: string | null): number | undefined {

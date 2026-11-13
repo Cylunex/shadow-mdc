@@ -167,6 +167,24 @@ it("keeps a legacy tag selection readable and removes it when toggling the new I
   expect(container.querySelector(".active-filter-chips")?.textContent).toContain("爱好者 ×");
 });
 
+it("opens a metadata gap from its count and clears it from the work list", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(
+    url.endsWith("/metadata-gaps") ? [{ id: "cover", name: "缺封面记录", count: 3 }]
+      : url.endsWith("/facets") ? {}
+      : { items: [], next_cursor: null, total: 0 },
+  ))));
+  await act(async () => root.render(<UnifiedCatalogView mode="works" onOpenWork={vi.fn()} onOpenActor={vi.fn()} />));
+  await act(async () => button("分类与筛选").click());
+  await vi.waitFor(async () => {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(container.querySelector('[aria-label="资料待补"]')?.textContent).toContain("缺封面记录 · 3");
+  });
+  await change("资料待补", "cover");
+  expect(readCatalogFilters(window.location.search).missing_metadata).toBe("cover");
+  await act(async () => button("缺封面记录 ×").click());
+  expect(readCatalogFilters(window.location.search).missing_metadata).toBeUndefined();
+});
+
 it("filters runtime and keeps work types under more filters", async () => {
   const fetch = vi.fn(async (url: string) => new Response(JSON.stringify(
     url.endsWith("/facets") ? { durations: [{ id: "30to60", name: "30-60 分钟", count: 2 }] }

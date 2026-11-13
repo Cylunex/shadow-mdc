@@ -1,10 +1,10 @@
 from collections.abc import Mapping
 from pathlib import Path
-from xml.etree.ElementTree import Element, SubElement, fromstring, indent, tostring
+from xml.etree.ElementTree import Element, SubElement, indent, tostring
 
 from ..db.models import ExternalIdentity, MediaAsset, Work
 from ..domain import MediaTechnicalInfo
-from .nfo_import import WORK_TO_EMBY_LOCK
+from .nfo_import import WORK_TO_EMBY_LOCK, read_movie_element
 
 
 def build_nfo(
@@ -230,13 +230,7 @@ def write_nfo(path: str | Path, content: str) -> None:
 def parse_nfo(path: str | Path) -> dict[str, object]:
     """Parse a Kodi/Emby-style movie.nfo into a flat field dict for reverse import."""
 
-    text = Path(path).read_text(encoding="utf-8-sig")
-    root = fromstring(text)
-    if root.tag.lower() != "movie":
-        movie = root.find("movie")
-        if movie is None:
-            raise ValueError("nfo root is not <movie>")
-        root = movie
+    root = read_movie_element(Path(path), allow_wrapper=True)
 
     def text_of(tag: str) -> str | None:
         node = root.find(tag)

@@ -3,6 +3,19 @@
 本审计基于本地参考仓库中的 JavSP、JavSP-Web、MDCX、MDC-NG、Amane 与 Peach。
 Shadow MDC 只吸收行为、边界和使用流程，所有代码、模型、接口与测试均独立实现。
 
+## 2026-11-13 作品资料缺项和 NFO 诊断
+
+| 方案 | 上游行为 | 在 MDC 中的取舍 |
+| --- | --- | --- |
+| [tinyMediaManager](https://www.tinymediamanager.org/blog/display-missing-metadata/) | 逐字段显示缺少的资料与图片 | 五项资料分别计数，选择一项可查看作品 |
+| [MediaElch](https://mediaelch.github.io/mediaelch-doc/movie/index.html) | 在影片列表筛选，按字段选择刮削内容 | 缺项查询接入作品库，用户可沿用已有详情与维护入口 |
+| [MediaClinic](https://github.com/junqueirach/mediaclinic) | 离线检查 NFO/XML 与图片 | 扫描报告定位到损坏 NFO；数据库封面记录与文件可读性分别看待 |
+| [Kometa](https://kometa.wiki/en/latest/files/builders/plex/smart-filter/) 与 [Plex](https://support.plex.tv/articles/201273953-collections/) | 资料变化时重新计算智能集合成员 | 动态片单保存缺项条件，再次读取时计算成员 |
+| [Stash Identify](https://docs.stashapp.cc/in-app-manual/tasks/identify/) | 按字段选择更新方式，对跳过的匹配可再筛选处理 | 查询只统计资料；补全继续走已有的来源匹配和字段锁 |
+
+本次核对上游公开文档，功能在 MDC 内独立实现。此前 P1 中的作品缺项已可查询；来源失败历史、
+图片实际可读性与按资产聚合的 NFO 历史仍未纳入这项统计。NFO 报错可在本次扫描结果查看。
+
 ## 2026-11-10 同步笔记核对与扩展
 
 本轮将外部 `SYNC-NOTES.md` 当作线索清单，并重新查询公开项目、读取上游 README、CHANGELOG

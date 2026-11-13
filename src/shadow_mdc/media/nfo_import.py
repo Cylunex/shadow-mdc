@@ -124,7 +124,7 @@ class NfoImporter:
                     and not is_format_equivalent(expected, parsed.code)
                 ):
                     raise ValueError(f"NFO code conflict: expected={expected}; received={parsed.code}")
-            except (OSError, ElementTree.ParseError, ValueError) as exc:
+            except (OSError, ValueError) as exc:
                 errors.append(f"{nfo_path}: {exc}")
                 continue
             record = _to_provider_record(parsed)
@@ -188,11 +188,21 @@ def sibling_artwork_paths(media_path: Path) -> dict[str, Path]:
     return found
 
 
+def read_movie_element(path: Path, *, allow_wrapper: bool = False) -> ElementTree.Element:
+    try:
+        root = ElementTree.parse(path).getroot()
+    except (ElementTree.ParseError, LookupError) as exc:
+        raise ValueError(f"invalid NFO XML: {exc}") from exc
+    if root is not None:
+        if root.tag.lower() == "movie":
+            return root
+        if allow_wrapper and (movie := root.find("movie")) is not None:
+            return movie
+    raise ValueError("expected <movie> NFO root")
+
+
 def parse_movie_nfo(path: Path) -> ParsedNfo:
-    tree = ElementTree.parse(path)
-    root = tree.getroot()
-    if root is None:
-        raise ValueError("empty nfo")
+    root = read_movie_element(path)
     title = _text(root, "title")
     original = _text(root, "originaltitle")
     plot = _text(root, "plot")

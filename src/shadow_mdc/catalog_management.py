@@ -14,6 +14,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.selectable import Subquery
 
+from .catalog_gaps import MetadataGap
 from .catalog_series import ORGANIZATION_KINDS, ensure_series, find_series, link_series, series_relationships
 from .classifications import ClassificationSelection
 from .collection_names import normalize_collection_name
@@ -100,6 +101,7 @@ class CatalogFilter(ClassificationSelection):
     duration_min: int | None = Field(default=None, ge=0, description="最小时长(秒, 含边界)")
     duration_max: int | None = Field(default=None, gt=0, description="最大时长(秒, 不含边界)")
     unknown_duration: bool = False
+    missing_metadata: MetadataGap | None = None
     q: str = Field(default="", max_length=200)
     category: MediaCategory | Literal["all"] = "all"
     collection: str = ""

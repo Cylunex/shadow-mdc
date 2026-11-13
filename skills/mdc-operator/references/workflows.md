@@ -58,6 +58,10 @@ HTTP 配置只存于实际的私有文件；示例不含真实连接：
 
 SSH 端使用已有 HTTP 私有配置。CLI 不跟随 HTTP 重定向，不输出 SSH stderr 或凭据；失败时先核对配置与原操作结果。
 
+查询资料缺项时，先用 `works.metadata_gaps` 读取当前范围的去重计数，再用 `works.query` 的
+`missing_metadata` 传 `plot`、`cover`、`tags`、`year`、`duration` 或 `any` 分页取作品。
+封面按登记记录统计。动态片单可保存同一筛选；修复后重新查询即可核对。
+
 作品时长筛选可用 `works.query` / `works.facets` 的 `duration_min`、`duration_max`（秒，左闭右开）或 `unknown_duration`。
 想看与媒体情况可组合：`{"wanted":true,"availability":"files"}` 查询想看且有关联文件的作品；
 `wanted=false` 排除想看，省略不筛选。`availability` 支持 all/files/emby/metadata/undownloaded；

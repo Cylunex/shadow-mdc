@@ -55,6 +55,11 @@ def test_skill_auth_catalog_reads_and_idempotent_domain_changes(
         assert call("playlists.list", {})["result"] == []
         assert call("tasks.list", {"limit": 2})["ok"]
         assert call("works.facets", {})["ok"]
+        assert capabilities["works.metadata_gaps"]["effect"] == "read"
+        gaps = call("works.metadata_gaps", {})["result"]
+        assert isinstance(gaps, list) and next(item["count"] for item in gaps if item["id"] == "tags") == 0
+        incomplete = call("works.query", {"missing_metadata": "plot"})["result"]
+        assert isinstance(incomplete, dict) and incomplete["total"] == 1
         assert call("system.health", {})["ok"]
         assert call("classifications.assign", {"work_id": "work", "languages": ["languages:ja"]})["ok"]
         assert call("classifications.assign", {"work_id": "work", "languages": ["languages:ja"]})["ok"]

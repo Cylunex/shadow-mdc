@@ -28,7 +28,7 @@ it("round-trips every active filter without changing AND/OR or repeated values",
     series: ["series-1"], labels: ["brand-1"], platforms: ["channel-1"],
     contents: ["contents:jav"], types: ["types:movie"], languages: ["languages:ja"], subtitle_languages: ["subtitle_languages:zh"],
     organization_role: "studio", year_from: 2000, year_to: 2009, unknown_year: false,
-    sort: "newest", status: "emby",
+    sort: "newest", status: "emby", missing_metadata: "plot",
     duration_min: 1800, duration_max: 3600,
   };
   const url = new URL("https://example.com/mdc/?actor=detail-id");

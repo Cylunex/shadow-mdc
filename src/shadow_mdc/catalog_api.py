@@ -23,7 +23,6 @@ from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from sqlalchemy import (
-    Integer,
     Select,
     SQLColumnExpression,
     String,
@@ -47,6 +46,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from .catalog_duration import DURATION_BANDS, duration_condition, work_duration
+from .catalog_gaps import GAP_NAMES, catalog_year, gap_conditions
 from .catalog_management import CatalogFilter, build_management_router, organization_relationships
 from .catalog_series import find_series, series_relationships
 from .classifications import DURATION_FORM_IDS, ClassificationSelection, classification_dimensions
@@ -549,10 +549,9 @@ def build_catalog_router(
                 statement = statement.where(Work.id.in_(select(links.c.work_id).join(
                     Collection, Collection.id == links.c.organization_id,
                 ).where(links.c.organization_id.in_(identities), Collection.kind == kind)))
-        year = func.coalesce(
-            select(WorkTaxonomy.release_year).where(WorkTaxonomy.work_id == Work.id).scalar_subquery(),
-            cast(func.strftime("%Y", Work.release_date), Integer),
-        )
+        if filters.missing_metadata is not None:
+            statement = statement.where(gap_conditions()[filters.missing_metadata])
+        year = catalog_year()
         if filters.unknown_year:
             statement = statement.where(year.is_(None))
         if filters.year_from is not None:
@@ -623,7 +622,10 @@ def build_catalog_router(
         statement = filtered_statement(filters, request, session)
         total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
         order_column, ascending = work_order(filters, request)
-        scope = hashlib.sha256(filters.model_dump_json(exclude={"cursor", "limit"}).encode()).hexdigest()
+        scope_fields = {"cursor", "limit"}
+        if filters.missing_metadata is None:
+            scope_fields.add("missing_metadata")
+        scope = hashlib.sha256(filters.model_dump_json(exclude=scope_fields).encode()).hexdigest()
         if filters.cursor:
             try:
                 cursor_scope, value, last_id = json.loads(base64.urlsafe_b64decode(filters.cursor))
@@ -738,6 +740,19 @@ def build_catalog_router(
                     next_offset=offset + limit if offset + limit < len(matches) else None,
                     total=len(matches),
                 )
+
+    @router.post("/metadata-gaps")
+    def metadata_gaps(filters: CatalogFilter, request: Request) -> list[Facet]:
+        with runtime(request).database.session() as session:
+            gap_base = filtered_statement(
+                filters.model_copy(update={"missing_metadata": None}), request, session,
+            )
+            gaps = gap_conditions()
+            gap_counts = session.execute(gap_base.with_only_columns(*(
+                func.count(case((condition, 1))) for condition in gaps.values()
+            ), maintain_column_froms=True)).one()
+            return [Facet(id=gap, name=GAP_NAMES[gap], count=n)
+                    for gap, n in zip(gaps, gap_counts, strict=True)]
 
     @router.post("/facets")
     def facets(filters: CatalogFilter, request: Request) -> dict[str, list[Facet | TagFacet]]:

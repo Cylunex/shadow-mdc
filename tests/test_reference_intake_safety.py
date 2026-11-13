@@ -290,3 +290,32 @@ def test_discovery_uses_one_directory_listing_and_no_media_stats(tmp_path: Path)
     assert set(paths) == {target, merge / "A.strm", merge / "B.strm", veto / "A.strm", veto / "B.strm"}
     listed = [call.args[0] for call in scandir.call_args_list]
     assert sorted(listed) == sorted((tmp_path, merge, veto, excluded))
+
+
+@pytest.mark.parametrize("xml", [
+    "<movie><title>Truncated",
+    "<tvshow><title>Wrong type</title><lockdata>true</lockdata></tvshow>",
+    "<?xml version='1.0' encoding='unsupported-codec'?><movie/>",
+])
+def test_bad_nfo_reports_path_on_rescan_and_recovers_after_correction(
+    tmp_path: Path, repository: Repository, xml: str,
+) -> None:
+    root = tmp_path / "media"
+    root.mkdir()
+    (root / "TEST-001.strm").write_text("https://example.com/movie.mp4", encoding="utf-8")
+    nfo = root / "movie.nfo"
+    nfo.write_text("<movie><id>TEST-001</id><title>Initial</title></movie>", encoding="utf-8")
+    library = repository.create_library(name="test", root_path=str(root), recursive=True,
+                                        organize_template="{title}")
+    scanner = Scanner(repository, artwork_dir=tmp_path / "artwork")
+    assert not scanner.scan(library).errors
+    work = repository.list_works()[0]
+    nfo.write_text(xml, encoding="utf-8")
+    (root / "poster.jpg").write_bytes(b"untrusted artwork")
+    errors = scanner.scan(library).errors
+    assert len(errors) == 1 and str(nfo) in errors[0] and "NFO" in errors[0]
+    assert work.title == "Initial" and not work.artwork and not work.field_locks
+    nfo.write_text("<movie><id>TEST-001</id><title>Repaired</title><lockdata>true</lockdata></movie>",
+                   encoding="utf-8")
+    assert not scanner.scan(library).errors
+    assert work.title == "Repaired" and "title" in work.field_locks

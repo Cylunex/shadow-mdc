@@ -1,6 +1,7 @@
 """Work/source separation, lossless tag migration and derived runtime filters."""
 
 from collections.abc import Iterator
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from shadow_mdc.api import app
-from shadow_mdc.db.models import CatalogClassificationTerm, Work, WorkClassification
+from shadow_mdc.db.models import CatalogClassificationTerm, Work, WorkClassification, WorkTaxonomy
 from shadow_mdc.services.classification_tags import migrate_genres_to_tags
 from shadow_mdc.services.media_server import MediaServerSettings
 
@@ -183,3 +184,55 @@ def test_ambiguous_aliases_preserve_existing_tags_and_migrate_the_explicit_name(
     migrated = runtime.tag_dictionary.load()
     migrate_genres_to_tags(runtime.database.engine, runtime.tag_dictionary)
     assert runtime.tag_dictionary.load() == migrated
+
+
+def test_metadata_gaps_count_works_and_update_saved_rules(client: TestClient) -> None:
+    runtime = app.state.runtime
+    with runtime.database.session() as session:
+        session.add_all([
+            Work(id="a", title="Blank", plot="　\n", category="Japan", tags=[" "],
+                 runtime_seconds=0, artwork=[{"kind": "sample", "url": "https://example.com/frame.jpg"}]),
+            Work(id="b", title="No cover", category="Japan", tags=["tag"], plot="Synopsis",
+                 runtime_seconds=3600, artwork=[{"kind": "poster", "url": "  "}]),
+            Work(id="c", title="Complete", category="Japan", tags=["tag"], plot="Text",
+                 release_date=date(2020, 1, 1), runtime_seconds=60,
+                 artwork=[{"local_path": "cached.jpg"}]),
+            Work(id="d", title="Other category", category="Other"),
+        ])
+        session.flush()
+        session.add(WorkTaxonomy(work_id="b", release_year=1999))
+    scope = {"category": "Japan"}
+    expected = {"any": {"a", "b"}, "plot": {"a"}, "cover": {"a", "b"}, "tags": {"a"},
+                "year": {"a"}, "duration": {"a"}}
+    facets = client.post("/api/catalog/metadata-gaps", json={**scope, "missing_metadata": "plot"}).json()
+    assert {f["id"]: f["count"] for f in facets} == {
+        key: len(ids) for key, ids in expected.items()
+    }
+    for key, ids in expected.items():
+        result = client.post("/api/catalog/works/query", json={**scope, "missing_metadata": key}).json()
+        assert {row["id"] for row in result["items"]} == ids
+    assert client.post("/api/catalog/works/query", json={"missing_metadata": "other"}).status_code == 422
+
+    headers = {"X-Catalog-Owner": "test"}
+    payload = {"name": "需要封面", "filters": {**scope, "missing_metadata": "cover"}}
+    playlist = client.post("/api/catalog/playlists", headers=headers, json=payload).json()
+    assert set(playlist["work_ids"]) == {"a", "b"}
+    with runtime.database.session() as session:
+        work = session.get(Work, "b")
+        assert work is not None
+        work.artwork = [{"kind": "poster", "url": "https://example.com/poster.jpg"}]
+    assert client.get("/api/catalog/playlists", headers=headers).json()[0]["work_ids"] == ["a"]
+
+
+def test_manual_nfo_preview_reports_invalid_xml_and_reads_declared_encoding(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    path = tmp_path / "film.nfo"
+    payload = {"path": str(path), "dry_run": True}
+    path.write_text("<movie><title>Broken", encoding="utf-8")
+    response = client.post("/api/nfo/import", json=payload)
+    assert response.status_code == 422 and "invalid NFO XML" in response.json()["detail"]
+    path.write_bytes('<?xml version="1.0" encoding="UTF-16"?><root><movie><title>片名</title></movie></root>'
+                     .encode("utf-16"))
+    assert client.post("/api/nfo/import", json=payload).json()["title"] == "片名"
+    assert client.post("/api/catalog/works/query", json={}).json()["total"] == 0
