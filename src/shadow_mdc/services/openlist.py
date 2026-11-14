@@ -95,7 +95,8 @@ STATE_BEFORE_RETRY = 9
 
 _TASK_NAME_RE = re.compile(r"^download (?P<url>.+) to \((?P<dst>.*)\)$", re.S)
 _TRANSFER_DST_RE = re.compile(r" to \[(?P<mount>[^\]]*)\]\((?P<path>[^)]*)\)\s*$")
-_EXISTS_MARKERS = ("already exist", "exists", "已存在", "重复", "10008")
+_EXISTS_MARKERS = ("already exist", "任务已存在", "重复的链接")
+_EXISTS_CODE_RE = re.compile(r"\b10008\b")
 
 
 class OpenListApiError(PanApiError):
@@ -241,7 +242,17 @@ class OpenListTask:
 
     @property
     def local_status(self) -> str:
+        if self.already_exists:
+            return "done"
         return map_openlist_state(self.state)
+
+    @property
+    def already_exists(self) -> bool:
+        """A duplicate submission is accepted, even in OpenList's retry states."""
+
+        return self.state not in (STATE_CANCELING, STATE_CANCELED) and looks_like_exists_error(
+            self.error or self.status
+        )
 
 
 @dataclass(slots=True)
@@ -320,7 +331,7 @@ def _entry_from_obj(parent: str, item: dict[str, Any]) -> OpenListEntry | None:
 
 def looks_like_exists_error(message: str) -> bool:
     lowered = message.casefold()
-    return any(marker in lowered for marker in _EXISTS_MARKERS)
+    return bool(_EXISTS_CODE_RE.search(lowered)) or any(marker in lowered for marker in _EXISTS_MARKERS)
 
 
 def looks_like_not_found(message: str) -> bool:
@@ -839,8 +850,9 @@ class OpenListService:
                 snapshot.by_id[task.id] = task
                 if task.info_hash:
                     current = snapshot.by_hash.get(task.info_hash)
-                    # Prefer an undone task over an older finished one.
-                    if current is None or current.local_status != "running":
+                    # A later failed history row must not hide an accepted task.
+                    priority = {"running": 2, "done": 1, "failed": 0}
+                    if current is None or priority[task.local_status] > priority[current.local_status]:
                         snapshot.by_hash[task.info_hash] = task
         try:
             for task in await client.task_list("offline_download_transfer", done=False):
@@ -858,11 +870,9 @@ class OpenListService:
         """Cancel then delete one offline_download task so a failover can submit next."""
 
         client = self.client()
-        try:
+        # Already finished / missing: still try delete so history is cleared.
+        with contextlib.suppress(OpenListApiError):
             await client.cancel_task("offline_download", tid)
-        except OpenListApiError:
-            # Already finished / missing: still try delete so history is cleared.
-            pass
         try:
             await client.delete_task("offline_download", tid)
         except OpenListApiError as exc:
@@ -882,8 +892,8 @@ class OpenListService:
         """Submit one URL with OpenList-side dedup/reconcile.
 
         Order: adopt a matching undone task → adopt a succeeded task for the same
-        target → submit → on "already exists", adopt an existing result folder
-        under the target path (by work code / magnet name) or refuse with 409.
+        target → submit → on "already exists", accept without resubmitting and
+        let the poller locate the existing result under the configured target.
         """
 
         cfg = self.config()
@@ -906,7 +916,10 @@ class OpenListService:
                     )
                 return self._result(digest, existing.id, adopted=True, message="adopted running task")
             if existing.local_status == "done" and same_target:
-                return self._result(digest, existing.id, adopted=True, message="adopted finished task")
+                return self._result(
+                    digest, existing.id, adopted=True, message="adopted finished task",
+                    already_exists=existing.already_exists,
+                )
         try:
             tasks = await client.add_offline_download(
                 [url], path=target_path, tool=cfg.tool, delete_policy=cfg.delete_policy
@@ -914,27 +927,26 @@ class OpenListService:
         except OpenListApiError as exc:
             if isinstance(exc, OpenListAuthError) or not looks_like_exists_error(str(exc)):
                 raise
-            entry = await self.find_result(
-                target_path, work_code=work_code, display_name=magnet_display_name(url), since=None
+            return self._result(
+                digest, None, adopted=True, message="offline task already exists", already_exists=True
             )
-            if entry is None:
-                raise PanOfflineConflictError(
-                    "115 提示该离线任务已存在，但 OpenList 目标目录下未找到对应结果；"  # noqa: RUF001
-                    "请在 115 清理该离线记录或检查目标路径",
-                    code=409,
-                ) from exc
-            return self._result(digest, None, adopted=True, message="adopted existing result folder")
         if not tasks or not tasks[0].id:
             raise OpenListApiError("OpenList offline submit returned no task")
-        return self._result(digest, tasks[0].id, adopted=False, message="submitted")
+        return self._result(
+            digest, tasks[0].id, adopted=tasks[0].already_exists, message="submitted",
+            already_exists=tasks[0].already_exists,
+        )
 
     @staticmethod
-    def _result(digest: str, task_id: str | None, *, adopted: bool, message: str) -> dict[str, Any]:
+    def _result(
+        digest: str, task_id: str | None, *, adopted: bool, message: str, already_exists: bool = False
+    ) -> dict[str, Any]:
         return {
             "info_hash": digest,
             "state": True,
             "message": message,
             "adopted": adopted,
+            "already_exists": already_exists,
             "remote": None,
             "remote_task_id": task_id,
             "backend": "openlist",

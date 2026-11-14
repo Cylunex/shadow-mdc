@@ -1397,10 +1397,18 @@ class Repository:
             stmt = stmt.where(PanOfflineTask.status == status)
         return list(self._session.scalars(stmt))
 
-    def list_running_pan_offline_tasks(self, *, backend: str | None = None) -> list[PanOfflineTask]:
-        """Running rows; ``backend="openlist"`` / ``"115_open"`` filters (NULL counts as 115_open)."""
+    def list_running_pan_offline_tasks(
+        self, *, backend: str | None = None, include_existing_results: bool = False
+    ) -> list[PanOfflineTask]:
+        """Running rows, optionally including accepted duplicates awaiting their files."""
 
-        stmt = select(PanOfflineTask).where(PanOfflineTask.status == "running")
+        pending = PanOfflineTask.status == "running"
+        if include_existing_results:
+            pending = pending | (
+                (PanOfflineTask.status == "done")
+                & PanOfflineTask.recovery_json["existing_result_pending"].as_boolean().is_(True)
+            )
+        stmt = select(PanOfflineTask).where(pending)
         if backend == "openlist":
             stmt = stmt.where(PanOfflineTask.backend == "openlist")
         elif backend is not None:

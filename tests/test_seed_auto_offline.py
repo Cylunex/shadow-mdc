@@ -13,7 +13,9 @@ from shadow_mdc.db.models import WorkMagnet
 from shadow_mdc.db.repository import Database, Repository
 from shadow_mdc.domain import ProviderRecord
 from shadow_mdc.enums import ContentFamily, MediaCategory
+from shadow_mdc.services.offline_recovery import seed_recovery
 from shadow_mdc.services.pan import PanService
+from shadow_mdc.services.pan_offline_enqueue import enqueue_work_offline
 from shadow_mdc.services.seed_auto_offline import (
     collect_new_seed_work_ids,
     enqueue_seeded_offline,
@@ -32,7 +34,9 @@ def test_collect_new_seed_work_ids_filters_created() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enqueue_seeded_offline_picks_code_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_enqueue_seeded_offline_picks_code_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_path = tmp_path / "t.db"
     database = Database(f"sqlite:///{db_path}")
     database.initialize()
@@ -61,9 +65,9 @@ async def test_enqueue_seeded_offline_picks_code_match(tmp_path: Path, monkeypat
                 family=ContentFamily.JAV,
                 category=MediaCategory.JAPAN,
                 source_url="https://javdb.com/v/x1",
-                actors=["A"],
+                actors=("A",),
                 release_date=date(2026, 1, 1),
-                tags=["daily-chart-2026-10-10"],
+                tags=("daily-chart-2026-10-10",),
             ),
             overwrite=True,
         )
@@ -117,7 +121,9 @@ async def test_enqueue_seeded_offline_picks_code_match(tmp_path: Path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_enqueue_seeded_offline_skips_when_pan_not_ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_enqueue_seeded_offline_skips_when_pan_not_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     database = Database(f"sqlite:///{tmp_path / 't.db'}")
     database.initialize()
     pan = PanService(data_dir=tmp_path / "data")
@@ -131,6 +137,68 @@ async def test_enqueue_seeded_offline_skips_when_pan_not_ready(tmp_path: Path, m
     )
     assert stats.skipped_pan == 1
     assert stats.submitted == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_offline_keeps_exhausted_magnets_terminal_and_allows_new_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(f"sqlite:///{tmp_path / 't.db'}")
+    database.initialize()
+    pan = PanService(data_dir=tmp_path / "data")
+    pan.save_settings({"offline_directory_id": "target"})
+    monkeypatch.setattr(pan, "status", lambda: {"connected": True, "offline_ready": True})
+    submit = AsyncMock(side_effect=lambda url, **kwargs: {"info_hash": kwargs["info_hash_hint"]})
+    monkeypatch.setattr(pan, "submit_offline_url", submit)
+    discover = SimpleNamespace(sukebei_available=False, list_magnets=AsyncMock(return_value=()))
+    failed_hash = "A" * 40
+    with database.session() as session:
+        repo = Repository(session)
+        work = repo.upsert_provider_record(ProviderRecord(
+            provider="fixture", external_id="exhausted", code="ABC-123", title="Title",
+            family=ContentFamily.JAV,
+        ), overwrite=True)
+        work_id = work.id
+        repo.save_work_magnets(work, [{
+            "uri": "magnet:?xt=urn:btih:" + failed_hash, "info_hash": failed_hash,
+            "name": "ABC-123-C", "size_bytes": 10 << 30, "has_subtitle": True,
+        }], provider="fixture")
+        state = seed_recovery(info_hash=failed_hash, magnet_id=None, url=None)
+        state.exhausted = True
+        task = repo.create_pan_offline_task(
+            work_id=work_id, info_hash=failed_hash, directory_id="target", recovery_json=state.to_dict(),
+        )
+        repo.update_pan_offline_task(task, status="failed", error="code: 10004, message: 错误的链接")
+
+    for _ in range(2):
+        stats = await enqueue_seeded_offline(
+            database=database, pan=pan, discover=discover,  # type: ignore[arg-type]
+            work_ids=[work_id], pace_seconds=0,
+        )
+        assert stats.submitted == 0 and stats.hunting == 1
+    submit.assert_not_awaited()
+
+    with database.session() as session:
+        repo = Repository(session)
+        stored_work = repo.get_work(work_id)
+        assert stored_work is not None
+        repo.save_work_magnets(stored_work, [{
+            "uri": "magnet:?xt=urn:btih:" + "B" * 40, "info_hash": "B" * 40,
+            "name": "ABC-123", "size_bytes": 1 << 30,
+        }], provider="new-source")
+    stats = await enqueue_seeded_offline(
+        database=database, pan=pan, discover=discover,  # type: ignore[arg-type]
+        work_ids=[work_id], pace_seconds=0,
+    )
+    assert stats.submitted == 1
+    assert submit.await_args is not None and submit.await_args.kwargs["info_hash_hint"] == "B" * 40
+    # An explicit user retry is still allowed to override the automatic attempt limit.
+    with database.session() as session:
+        repo = Repository(session)
+        magnet = next(item for item in repo.list_work_magnets(work_id) if item.info_hash == failed_hash)
+        result = await enqueue_work_offline(repo, pan, work_id, magnet_id=magnet.id)
+        assert result.task.status == "running"
+    assert submit.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -157,7 +225,7 @@ async def test_enqueue_seeded_offline_hunting_adds_want_list(
                 family=ContentFamily.JAV,
                 category=MediaCategory.JAPAN,
                 source_url="https://javdb.com/v/hunt1",
-                actors=["A"],
+                actors=("A",),
                 release_date=date(2026, 1, 1),
             ),
             overwrite=True,

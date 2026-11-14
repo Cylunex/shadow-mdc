@@ -9,7 +9,7 @@ import httpx
 from ..db.models import PanOfflineTask, WorkMagnet, utc_now
 from ..db.repository import Repository
 from ..media.magnets import magnet_sort_key
-from .offline_recovery import seed_recovery
+from .offline_recovery import attempted_hashes, load_recovery, seed_recovery
 from .openlist import offline_info_hash
 from .pan import (
     PanApiError,
@@ -133,19 +133,22 @@ async def enqueue_work_offline(
 
     recovery = seed_recovery(
         info_hash=info_hash, magnet_id=resolved_magnet_id, url=resolved_url
-    ).to_dict()
+    )
+    recovery.existing_result_pending = bool(submit_result.get("already_exists"))
+    task_status = "done" if recovery.existing_result_pending else "running"
+    task_progress = 100.0 if recovery.existing_result_pending else 0.0
 
     existing = repo.find_pan_offline_by_hash(work_id, info_hash)
     if existing is not None:
-        existing.status = "running"
-        existing.progress = 0.0
+        existing.status = task_status
+        existing.progress = task_progress
         existing.error = None
         existing.directory_id = directory_id
         existing.url = resolved_url
         existing.magnet_id = resolved_magnet_id
         existing.backend = row_backend
         existing.remote_task_id = remote_task_id
-        existing.recovery_json = recovery
+        existing.recovery_json = recovery.to_dict()
         existing.updated_at = utc_now()
         repo._session.flush()
         return OfflineEnqueueResult(task=existing, created=False)
@@ -158,8 +161,9 @@ async def enqueue_work_offline(
         magnet_id=resolved_magnet_id,
         backend=row_backend,
         remote_task_id=remote_task_id,
-        recovery_json=recovery,
+        recovery_json=recovery.to_dict(),
     )
+    repo.update_pan_offline_task(task, status=task_status, progress=task_progress)
     return OfflineEnqueueResult(task=task, created=True)
 
 
@@ -181,4 +185,24 @@ def pick_best_magnet(
             hd=bool(item.hd),
             expected_code=expected_code,
         ),
+    )
+
+
+def pick_automatic_magnet(
+    repo: Repository,
+    work_id: str,
+    magnets: list[WorkMagnet],
+    *,
+    expected_code: str | None = None,
+) -> WorkMagnet | None:
+    """Keep exhausted attempts terminal across watch ticks; new magnets remain eligible."""
+
+    exhausted: set[str] = set()
+    for task in repo.list_pan_offline_tasks(work_id=work_id, status="failed"):
+        state = load_recovery(task)
+        if state.exhausted:
+            exhausted.update(attempted_hashes(state))
+    return pick_best_magnet(
+        [magnet for magnet in magnets if magnet.info_hash.upper() not in exhausted],
+        expected_code=expected_code,
     )

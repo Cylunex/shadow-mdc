@@ -97,6 +97,7 @@ class RecoveryCheckpoint:
     removal_started: bool = False
     submission_started: bool = False
     manual: bool = False
+    existing_result_pending: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -130,6 +131,7 @@ class RecoveryCheckpoint:
             removal_started=bool(raw.get("removal_started")),
             submission_started=bool(raw.get("submission_started")),
             manual=bool(raw.get("manual")),
+            existing_result_pending=bool(raw.get("existing_result_pending")),
         )
 
 
@@ -279,7 +281,7 @@ def detect_stall_or_fail(
 ) -> str | None:
     """Return a switch reason when recovery should start, else None."""
 
-    if state.exhausted or state.action:
+    if state.exhausted or state.action or state.existing_result_pending:
         return None
     if remote_failed:
         return SWITCH_REASON_FAILED if auto_switch else None
@@ -385,6 +387,7 @@ def after_submit(
     state.submission_started = False
     state.stalled = False
     state.progress = 0.0
+    state.existing_result_pending = False
     state.progress_at = started
     state.observed_at = started
     return state

@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from dataclasses import dataclass, replace
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -7,9 +8,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from shadow_mdc.api import app
+from shadow_mdc.db.models import Work
 from shadow_mdc.db.repository import Repository
 from shadow_mdc.domain import Artwork, IdentityHints, ProviderDescriptor, ProviderRecord
 from shadow_mdc.enums import ContentFamily, QueryMode
+from shadow_mdc.media.artwork import ArtworkDownloadResult, ArtworkStore
 from shadow_mdc.providers.base import ProviderRegistry
 
 
@@ -856,6 +859,52 @@ def test_lookup_by_number_creates_work_without_media(
         assert payload["work"]["plot"] == "Lookup plot"
         assert client.get("/api/assets").json() == []
         assert client.get("/api/tasks").json()[0]["kind"] == "lookup"
+
+
+def test_lookup_releases_writer_before_provider_and_artwork_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / "data"
+    database_path = data_dir / "lookup.db"
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{database_path}")
+    checked: list[str] = []
+
+    def check_writer(stage: str) -> None:
+        # A separate connection must be able to write while the network is pending.
+        with sqlite3.connect(database_path, timeout=0.1) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.rollback()
+        checked.append(stage)
+
+    record = ProviderRecord(
+        provider="lookup-fixture", external_id="sone-118", code="SONE-118",
+        title="本地标题", family=ContentFamily.JAV,
+        artwork=(Artwork(url="https://images.example/cover.jpg", kind="thumb"),),
+    )
+
+    class ConcurrentProvider(LookupProvider):
+        async def search(self, hints: IdentityHints) -> list[ProviderRecord]:
+            check_writer("provider")
+            return [self.record]
+
+    async def acquire(
+        self: ArtworkStore, work: Work
+    ) -> tuple[ArtworkDownloadResult, dict[str, str]]:
+        check_writer("artwork")
+        return ArtworkDownloadResult(
+            work_id=work.id, downloaded=0, cached=0, failed=0, errors=(),
+        ), {}
+
+    monkeypatch.setattr(ArtworkStore, "acquire", acquire)
+    with TestClient(app) as client:
+        app.state.runtime = replace(
+            app.state.runtime, providers=ProviderRegistry([ConcurrentProvider(record)]),
+        )
+        response = client.post("/api/works/lookup", json={"code": "SONE-118"})
+        assert response.status_code == 200
+        assert response.json()["work"]["title"] == "本地标题"
+        assert checked == ["provider", "artwork"]
 
 
 def test_work_detail_manual_edit_locks_and_refresh_respect(

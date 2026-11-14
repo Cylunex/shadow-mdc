@@ -342,9 +342,10 @@ class OfflineRecoveryController:
                     magnet_id=next_magnet_id,
                     url=next_url,
                 )
+                state.existing_result_pending = bool(submit_result.get("already_exists"))
                 updates: dict[str, object] = {
-                    "status": "running",
-                    "progress": 0.0,
+                    "status": "done" if state.existing_result_pending else "running",
+                    "progress": 100.0 if state.existing_result_pending else 0.0,
                     "error": None,
                     "info_hash": info_hash,
                     "url": next_url,

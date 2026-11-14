@@ -273,6 +273,9 @@ class WorkTranslator:
             )
         errors: list[str] = []
         for backend in self._backends:
+            # Ingest/title writes from the preceding field must not block every
+            # other writer while a remote translator is slow or unavailable.
+            repository.commit()
             try:
                 translated = await backend.translate(source, target_language=self._target_language)
             except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
@@ -282,6 +285,16 @@ class WorkTranslator:
                 errors.append(f"{backend.name}:empty")
                 continue
             self._cache.put(source, self._target_language, field_name, translated)
+            repository._session.refresh(work)
+            if (
+                field_name in (work.field_locks or [])
+                or (work.field_sources or {}).get(field_name) in {"local-manual", "local-path"}
+                or _field_source_text(work, field_name) != source
+            ):
+                return TranslationResult(
+                    work_id=work.id, status="skipped", source=source, field_name=field_name,
+                    detail="field changed during translation",
+                )
             _apply_translation(
                 repository, work, field_name, source=source, translated=translated, provider=backend.name
             )

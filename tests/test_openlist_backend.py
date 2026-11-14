@@ -25,6 +25,7 @@ from shadow_mdc.services.media_server import MediaServerStore
 from shadow_mdc.services.openlist import (
     build_openlist_d_url,
     code_pattern,
+    looks_like_exists_error,
     map_openlist_state,
     normalize_openlist_path,
     parse_task,
@@ -429,18 +430,194 @@ def test_enqueue_submits_with_tool_and_dedups(tmp_path: Path, monkeypatch: pytes
     asyncio.run(scenario())
 
 
-def test_exists_error_adopts_result_or_conflicts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_exists_error_accepts_before_result_is_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _no_pacing(monkeypatch)
     fake = FakeOpenList()
     fake.add_error = "failed to add offline download task: 任务已存在"
     pan = _pan(tmp_path, fake)
+    database, work_id = _database(tmp_path)
 
     async def scenario() -> None:
-        with pytest.raises(PanOfflineConflictError):
-            await pan.submit_offline_url(MAGNET, directory_id=TARGET, work_code="ABC-123")
+        with database.session() as session:
+            result = await enqueue_work_offline(Repository(session), pan, work_id, url=MAGNET)
+            assert result.task.status == "done"
+            assert result.task.progress == 100.0
+            assert result.task.recovery_json is not None
+            assert result.task.recovery_json["existing_result_pending"] is True
+        async with httpx.AsyncClient() as http:
+            poller = _poller(database, pan, tmp_path / "data", http)
+            assert await poller.poll_once() is True
+            with database.session() as session:
+                row = Repository(session).list_pan_offline_tasks()[0]
+                assert row.status == "done" and row.strm_path is None
         fake.add_result("ABC-123", [("ABC-123.mp4", 5_000)])
-        result = await pan.submit_offline_url(MAGNET, directory_id=TARGET, work_code="ABC-123")
-        assert result["adopted"] is True and result["remote_task_id"] is None
+        # Pending result discovery survives a poller restart without another submit.
+        async with httpx.AsyncClient() as http:
+            poller = _poller(database, pan, tmp_path / "data", http)
+            assert await poller.poll_once() is True
+            with database.session() as session:
+                row = Repository(session).list_pan_offline_tasks()[0]
+                assert row.status == "done" and row.remote_path == f"{TARGET}/ABC-123"
+                assert row.recovery_json is not None
+                assert row.recovery_json["existing_result_pending"] is False
+        assert len([call for call in fake.calls if call[1] == "/api/fs/add_offline_download"]) == 1
+        await pan.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("state", [5, 6, 7, 8, 9])
+@pytest.mark.parametrize("field", ["error", "status"])
+def test_duplicate_task_states_are_successful(state: int, field: str) -> None:
+    task = parse_task({
+        "id": "existing", "state": state,
+        field: (
+            "failed to add offline download task: code: 10008, "
+            "message: 任务已存在，请勿输入重复的链接地址"  # noqa: RUF001
+        ),
+    })
+    assert task.already_exists is True and task.local_status == "done"
+
+
+def test_duplicate_detection_preserves_real_failures_and_cancellation() -> None:
+    assert looks_like_exists_error("task already exists") is True
+    assert looks_like_exists_error("code: 10008") is True
+    for error in ("file not exists", "code: 110008", "code: 10004, message: 错误的链接"):
+        assert looks_like_exists_error(error) is False
+    assert parse_task({"state": 4, "error": "任务已存在"}).local_status == "failed"
+
+
+@pytest.mark.parametrize("duplicate", [True, False])
+def test_finished_task_result_lookup_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, duplicate: bool
+) -> None:
+    _no_pacing(monkeypatch)
+    monkeypatch.setattr(poller_module, "OPENLIST_RESULT_LIMIT", 2)
+    fake = FakeOpenList()
+    pan = _pan(tmp_path, fake, auto_switch=True)
+    database, work_id = _database(tmp_path)
+
+    async def scenario() -> None:
+        with database.session() as session:
+            await enqueue_work_offline(Repository(session), pan, work_id, url=MAGNET)
+        fake.finish("tid-1", state=7 if duplicate else 2, error="code: 10008" if duplicate else "")
+        async with httpx.AsyncClient() as http:
+            poller = _poller(database, pan, tmp_path / "data", http)
+            assert await poller.poll_once() is True
+            with database.session() as session:
+                row = Repository(session).list_pan_offline_tasks()[0]
+                assert row.status == ("done" if duplicate else "running")
+            assert await poller.poll_once() is True
+            assert await poller.poll_once() is False
+            with database.session() as session:
+                row = Repository(session).list_pan_offline_tasks()[0]
+                assert row.status == ("done" if duplicate else "failed")
+                assert "no matching result" in (row.error or "")
+                assert row.recovery_json is not None
+                assert not row.recovery_json.get("existing_result_pending")
+                assert not row.recovery_json.get("action")
+                assert not row.recovery_json.get("exhausted")
+        assert len([call for call in fake.calls if call[1] == "/api/fs/add_offline_download"]) == 1
+        await pan.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_task_exports_existing_result_without_failover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_pacing(monkeypatch)
+    fake = FakeOpenList()
+    export_root = tmp_path / "emby"
+    pan = _pan(tmp_path, fake, auto_switch=True, strm_enabled=True, strm_output_root=str(export_root))
+    database, work_id = _database(tmp_path)
+
+    async def scenario() -> None:
+        with database.session() as session:
+            repo = Repository(session)
+            work = repo.get_work(work_id)
+            assert work is not None
+            repo.save_work_magnets(work, [{"uri": "magnet:?xt=urn:btih:" + "B" * 40,
+                                          "info_hash": "B" * 40}], provider="other")
+            await enqueue_work_offline(repo, pan, work_id, url=MAGNET)
+        fake.finish("tid-1", state=8, error="failed to add offline download task: code: 10008")
+        async with httpx.AsyncClient() as http:
+            poller = _poller(database, pan, tmp_path / "data", http)
+            await poller.poll_once()
+            fake.add_result("ABC-123", [("ABC-123.mp4", 5_000)])
+            await poller.poll_once()
+            with database.session() as session:
+                row = Repository(session).list_pan_offline_tasks()[0]
+                assert row.status == "done" and row.error is None
+                assert row.strm_path and Path(row.strm_path).is_file()
+                assert row.recovery_json is not None
+                assert len(row.recovery_json["attempts"]) == 1
+        assert len([call for call in fake.calls if call[1] == "/api/fs/add_offline_download"]) == 1
+        assert not any("/cancel" in call[1] or "/delete" in call[1] for call in fake.calls)
+        # Do not re-submit a duplicate already present in OpenList history.
+        result = await pan.submit_offline_url(MAGNET, directory_id=TARGET)
+        assert result["adopted"] is True and result["already_exists"] is True
+        assert len([call for call in fake.calls if call[1] == "/api/fs/add_offline_download"]) == 1
+        await pan.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_snapshot_does_not_hide_success_with_failed_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_pacing(monkeypatch)
+    fake = FakeOpenList()
+    fake.done = [
+        {"id": "success", "name": fake.task_name(MAGNET, TARGET), "state": 2},
+        {"id": "old-failure", "name": fake.task_name(MAGNET, TARGET), "state": 7,
+         "error": "invalid torrent"},
+    ]
+    pan = _pan(tmp_path, fake)
+
+    async def scenario() -> None:
+        result = await pan.submit_offline_url(MAGNET, directory_id=TARGET)
+        assert result["adopted"] is True and result["remote_task_id"] == "success"
+        assert not any(call[1] == "/api/fs/add_offline_download" for call in fake.calls)
+        fake.undone = [{"id": "elsewhere", "name": fake.task_name(MAGNET, "/other"), "state": 1}]
+        with pytest.raises(PanOfflineConflictError):
+            await pan.submit_offline_url(MAGNET, directory_id=TARGET)
+        await pan.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_failover_stops_after_replacement_already_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_pacing(monkeypatch)
+    fake = FakeOpenList()
+    pan = _pan(tmp_path, fake, auto_switch=True)
+    database, work_id = _database(tmp_path)
+
+    async def scenario() -> None:
+        with database.session() as session:
+            repo = Repository(session)
+            work = repo.get_work(work_id)
+            assert work is not None
+            repo.save_work_magnets(work, [{"uri": "magnet:?xt=urn:btih:" + "B" * 40,
+                                          "info_hash": "B" * 40}], provider="other")
+            await enqueue_work_offline(repo, pan, work_id, url=MAGNET)
+        fake.finish("tid-1", state=7, error="code: 10004, message: 错误的链接")
+        fake.add_error = "code: 10008, message: 任务已存在"
+        async with httpx.AsyncClient() as http:
+            poller = _poller(database, pan, tmp_path / "data", http)
+            await poller.poll_once()
+            with database.session() as session:
+                row = Repository(session).list_pan_offline_tasks()[0]
+                assert row.status == "done" and row.info_hash == "B" * 40
+                assert row.recovery_json is not None
+                assert row.recovery_json["existing_result_pending"] is True
+                assert row.recovery_json["action"] == ""
+            await poller.poll_once()
+        assert len([call for call in fake.calls if call[1] == "/api/fs/add_offline_download"]) == 2
         await pan.aclose()
 
     asyncio.run(scenario())

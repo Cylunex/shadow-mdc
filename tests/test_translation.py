@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import httpx
@@ -9,6 +10,49 @@ from shadow_mdc.db.repository import Database, Repository
 from shadow_mdc.domain import ProviderRecord
 from shadow_mdc.enums import ContentFamily
 from shadow_mdc.services.translation import GoogleTitleTranslator, TranslationCache, needs_translation
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual_edit", [False, True])
+async def test_translation_releases_writer_and_preserves_concurrent_edits(
+    tmp_path: Path, manual_edit: bool
+) -> None:
+    database_path = tmp_path / "translation.db"
+    database = Database(f"sqlite:///{database_path}")
+    database.initialize()
+    requests: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        field = "title" if not requests else "plot"
+        # The previous ingest/translation write cannot hold the writer lock.
+        with sqlite3.connect(database_path, timeout=0.1) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if manual_edit:
+                connection.execute(
+                    "UPDATE works SET title=?, field_sources=?, field_locks=?",
+                    ("人工标题", '{"title":"local-manual"}', '["title"]'),
+                )
+        requests.append(field)
+        return httpx.Response(200, json=[[["中文标题" if field == "title" else "中文剧情"]]])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        translator = GoogleTitleTranslator(
+            client, TranslationCache(tmp_path / "cache.db"), enabled=True,
+            endpoint="https://translate.example/translate", target_language="zh-CN",
+        )
+        with database.session() as session:
+            repo = Repository(session)
+            work = repo.upsert_provider_record(ProviderRecord(
+                provider="fixture", external_id="one", title="Original title", plot="Original plot",
+                family=ContentFamily.JAV,
+            ), overwrite=True)
+            result = await translator.translate_work(repo, work)
+            assert work.title == ("人工标题" if manual_edit else "中文标题")
+            assert work.plot == "中文剧情"
+            if manual_edit:
+                assert work.field_sources["title"] == "local-manual"
+            assert result.status == "translated"
+            assert requests == ["title", "plot"]
 
 
 @pytest.mark.asyncio
@@ -114,10 +158,7 @@ async def test_local_catalog_title_is_not_translated(tmp_path: Path) -> None:
 async def test_plot_translation_preserves_original_plot(tmp_path: Path) -> None:
     def handle(request: httpx.Request) -> httpx.Response:
         source = request.url.params.get("q") or ""
-        if "隠された秘密" in source:
-            translated = "这是中文剧情译文"
-        else:
-            translated = "邻居的垃圾房"
+        translated = "这是中文剧情译文" if "隠された秘密" in source else "邻居的垃圾房"
         return httpx.Response(
             200,
             json=[[[translated, source, None, None]], None, "ja"],

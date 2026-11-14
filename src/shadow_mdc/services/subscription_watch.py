@@ -22,7 +22,7 @@ from .pan import PanService
 from .pan_offline_enqueue import (
     OfflineEnqueueError,
     enqueue_work_offline,
-    pick_best_magnet,
+    pick_automatic_magnet,
 )
 from .subscriptions import filter_works_for_subscription, initialize_subscription_cursor
 from .task_events import TaskEventHub
@@ -132,7 +132,7 @@ class SubscriptionWatchStateStore:
 
 
 def collect_watch_work_ids(prefs: LibraryPrefs, repo: Repository) -> list[str]:
-    """want_list ∪ accepted queue ∪ enabled-subscription matches, minus dismissed."""
+    """Combine wanted works, accepted queue and subscription matches, minus dismissed."""
 
     dismissed: set[str] = set()
     accepted: set[str] = set()
@@ -170,8 +170,8 @@ def collect_watch_work_ids(prefs: LibraryPrefs, repo: Repository) -> list[str]:
         matched = filter_works_for_subscription(
             payloads, start_date=sub.effective_start_date(), max_cast=sub.max_cast
         )
-        for item in matched:
-            work_id = item.get("work_id")
+        for matched_work in matched:
+            work_id = matched_work.get("work_id")
             if isinstance(work_id, str) and work_id:
                 targets.add(work_id)
 
@@ -222,11 +222,7 @@ def _work_needs_offline(repo: Repository, work_id: str, magnet: WorkMagnet) -> b
     existing = repo.find_pan_offline_by_hash(work_id, magnet.info_hash)
     if existing is None:
         return True
-    if existing.status == "running":
-        return False
-    if existing.status in {"done", "completed"}:
-        return False
-    return True
+    return existing.status not in {"running", "done", "completed"}
 
 
 class SubscriptionWatchService:
@@ -445,14 +441,13 @@ class SubscriptionWatchService:
             stats.hunting += 1
             return touched
 
-        best = pick_best_magnet(magnets, expected_code=primary_code)
-        if best is None:
-            # Magnets exist but none matches the preferences yet: keep hunting.
-            stats.hunting += 1
-            return touched
-
         with self._database.session() as session:
             repo = Repository(session)
+            best = pick_automatic_magnet(repo, work_id, magnets, expected_code=primary_code)
+            if best is None:
+                # New magnets can revive the watch; exhausted attempts cannot.
+                stats.hunting += 1
+                return touched
             if not _work_needs_offline(repo, work_id, best):
                 stats.queued += 1
                 return touched

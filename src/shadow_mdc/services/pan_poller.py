@@ -17,12 +17,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..db.models import ExternalIdentity, Work
 from ..db.repository import Database, Repository
 from ..media.artwork import ArtworkStore
 from .emby_notify import EmbyNotifier
 from .media_server import MediaServerStore
 from .obsolete_exports import ObsoleteExportDrainResult, ObsoleteExportQueue
 from .offline_control import OfflineRecoveryController
+from .offline_recovery import load_recovery
 from .openlist import (
     OpenListEntry,
     OpenListTask,
@@ -329,7 +331,8 @@ class PanOfflinePoller:
                 if remote is None:
                     continue
                 local_status = str(remote.get("local_status") or "running")
-                progress = float(remote.get("progress") or 0.0)
+                raw_progress = remote.get("progress")
+                progress = float(raw_progress) if isinstance(raw_progress, (str, int, float)) else 0.0
                 file_id = remote.get("file_id")
                 name = remote.get("name")
                 remote_name = str(name) if isinstance(name, str) and name else row.remote_name
@@ -524,7 +527,9 @@ class PanOfflinePoller:
                     row.url,
                     row.created_at,
                 )
-                for row in repo.list_running_pan_offline_tasks(backend="openlist")
+                for row in repo.list_running_pan_offline_tasks(
+                    backend="openlist", include_existing_results=True
+                )
             ]
         if not rows:
             return False
@@ -542,7 +547,7 @@ class PanOfflinePoller:
             repo = Repository(session)
             for task_id, _work_id, info_hash, remote_id, target, url, created_at in rows:
                 row = repo.get_pan_offline_task(task_id)
-                if row is None:
+                if row is None or row.status not in {"running", "done"}:
                     continue
                 task: OpenListTask | None = snapshot.by_id.get(remote_id) if remote_id else None
                 if task is None:
@@ -551,9 +556,24 @@ class PanOfflinePoller:
                     # Unknown to OpenList right now: try the result folder below.
                     finished.append((task_id, target, info_hash, url, created_at))
                     continue
-                self._openlist_misses.pop(task_id, None)
+                state = load_recovery(row)
+                if task.already_exists or state.existing_result_pending:
+                    if state.action == "cancel" and state.manual:
+                        continue
+                    state.existing_result_pending = True
+                    state.action = ""
+                    state.exhausted = False
+                    state.stalled = False
+                    state.reason = None
+                    repo.update_pan_offline_task(
+                        row, status="done", progress=100.0, remote_task_id=task.id or None,
+                        error=None, recovery_json=state.to_dict(),
+                    )
+                    finished.append((task_id, target, info_hash, url, created_at))
+                    continue
                 status = task.local_status
                 if status == "running":
+                    self._openlist_misses.pop(task_id, None)
                     repo.update_pan_offline_task(
                         row, progress=task.progress, remote_task_id=task.id or None, error=None
                     )
@@ -566,6 +586,7 @@ class PanOfflinePoller:
                     )
                     continue
                 if status == "failed":
+                    self._openlist_misses.pop(task_id, None)
                     repo.update_pan_offline_task(
                         row,
                         status="failed",
@@ -582,6 +603,7 @@ class PanOfflinePoller:
                     )
                     continue
                 if any(path_within(dst, target) for dst in snapshot.pending_transfer_dsts):
+                    self._openlist_misses.pop(task_id, None)
                     repo.update_pan_offline_task(
                         row, progress=99.0, remote_task_id=task.id or None, error="transferring"
                     )
@@ -640,16 +662,26 @@ class PanOfflinePoller:
                 with self._database.session() as session:
                     repo = Repository(session)
                     row = repo.get_pan_offline_task(task_id)
-                    if row is not None:
+                    if row is not None and row.status in {"running", "done"}:
+                        state = load_recovery(row)
+                        accepted_existing = state.existing_result_pending
+                        state.existing_result_pending = False
+                        if accepted_existing:
+                            missing_error = (
+                                "OpenList offline task already exists (accepted); "
+                                f"no matching result was found under {target}"
+                            )
+                        elif had_task:
+                            missing_error = (
+                                f"OpenList task finished but no matching result was found under {target}"
+                            )
+                        else:
+                            missing_error = f"OpenList task not found and no matching result under {target}"
                         repo.update_pan_offline_task(
                             row,
-                            status="failed",
-                            error=(
-                                "OpenList task finished but no matching result was found under "
-                                f"{target}"
-                                if had_task
-                                else f"OpenList task not found and no matching result under {target}"
-                            ),
+                            status="done" if accepted_existing else "failed",
+                            recovery_json=state.to_dict(),
+                            error=missing_error,
                         )
             return
         self._openlist_misses.pop(task_id, None)
@@ -699,7 +731,9 @@ class PanOfflinePoller:
         with self._database.session() as session:
             repo = Repository(session)
             row = repo.get_pan_offline_task(task_id)
-            if row is not None:
+            if row is not None and row.status in {"running", "done"}:
+                state = load_recovery(row)
+                state.existing_result_pending = False
                 repo.update_pan_offline_task(
                     row,
                     status="done",
@@ -708,6 +742,7 @@ class PanOfflinePoller:
                     remote_path=entry.path,
                     strm_path=strm_path,
                     error=error,
+                    recovery_json=state.to_dict(),
                 )
         if export_result is not None:
             self._notify_export(export_result, cfg)
@@ -828,7 +863,7 @@ class PanOfflinePoller:
         assert cfg.strm_output_root
         root = Path(cfg.strm_output_root)
 
-        def resolve_work(code: str, work_id: str | None):
+        def resolve_work(code: str, work_id: str | None) -> Work | None:
             with self._database.session() as session:
                 repo = Repository(session)
                 if work_id:
@@ -837,7 +872,7 @@ class PanOfflinePoller:
                         return work
                 return repo.find_work_by_code(code)
 
-        def identities_for(work):
+        def identities_for(work: Work) -> list[ExternalIdentity]:
             with self._database.session() as session:
                 return Repository(session).identities_for_work(work.id)
 

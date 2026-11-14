@@ -87,12 +87,15 @@
 
 先用 `intake.job`、`intake.status` 和 `intake.pipeline` 读取原任务和作品：
 
-- OpenList“任务已存在”优先由现有提交服务接管同任务/结果目录；已有本地任务用
+- OpenList/115 的 10008“任务已存在”按离线成功接管，不重交、不自动换磁。
+  `status=done`、`stage=organizing` 表示仍在查找既有文件和补 STRM，不能当作可播放。
+  查找超时保留成功状态并记录缺少结果的原因；已有本地任务用
   `intake.recover {"task_id":"REPLACE_OFFLINE_TASK_ID"}` 重新交给轮询器核对结果并补导出。
   它不提交第二次下载，返回 `rechecking` 仍是等待核对。源文件找不到或权限/配置有误时按实际错误收口。
 - 已完成却缺导出、或导出失败，也用 `intake.recover`，保留原下载身份和远端任务 ID。
   已取消任务不能这样复活；已有实际 STRM 文件会跳过。
 - 确认需要换磁后用 `intake.next`；需要停止时用 `intake.cancel`。既有恢复控制器先确认撤销，再提交替代磁力。
+  盯磁和榜单自动离线不会重试已耗尽的磁力清单；发现新磁力后可继续尝试，明确的手动提交仍可重试。
 - `strm.status` 看导出配置和 Emby 待通知；`strm.rewrite` 按当前配置重写已管理 STRM，
   `strm.notify` 重试待通知。重写不能替代远端源文件恢复，也不保证 Emby 已完成索引。
 - skill 不开放删除对账、迁移导出根目录、删除源文件、账号登录或凭据变更。

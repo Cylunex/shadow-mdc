@@ -4462,6 +4462,8 @@ async def lookup_work_by_code(
         )
         scope = code
     task = repo.create_task_run(kind="lookup", scope=scope)
+    # Provider requests can take minutes; never hold SQLite's writer during I/O.
+    repo.commit()
 
     batch = await runtime(request).providers.search(hints)
     ranked = rank_candidates(hints, list(batch.records))
@@ -4488,6 +4490,7 @@ async def lookup_work_by_code(
         ):
             work = repo.upsert_provider_record(record, overwrite=False)
     app_runtime = runtime(request)
+    repo.commit()
     await app_runtime.translator.translate_work(repo, work)
     await _ensure_artwork_cached(work, app_runtime, repo)
     repo.finish_task_run(
@@ -6171,6 +6174,7 @@ async def _ensure_artwork_cached(work: Work, app_runtime: Runtime, repo: Reposit
         if needs or any(
             isinstance(item, dict) and isinstance(item.get("url"), str) for item in work.artwork
         ):
+            repo.commit()
             _, local_paths = await ArtworkStore(
                 app_runtime.settings.data_dir / "artwork",
                 app_runtime.http,
@@ -6193,6 +6197,7 @@ async def _localize_work_actor_images(work: Work, repo: Repository) -> int:
         assert url is not None
         key = remote_key(url)
         cache.display_url(url)  # register key → url for localize
+        repo.commit()
         path = await cache.localize(key)
         if path is None:
             continue

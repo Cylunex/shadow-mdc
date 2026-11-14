@@ -17,6 +17,7 @@ from pathlib import Path
 
 from sqlalchemy import select, text
 
+from ..config import Settings
 from ..db.models import SourceSnapshot, WorkMagnet
 from ..db.repository import Database, Repository
 from .discover import DiscoverService
@@ -25,7 +26,7 @@ from .pan import PanService
 from .pan_offline_enqueue import (
     OfflineEnqueueError,
     enqueue_work_offline,
-    pick_best_magnet,
+    pick_automatic_magnet,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,11 +88,7 @@ def _work_needs_offline(repo: Repository, work_id: str, magnet: WorkMagnet) -> b
     existing = repo.find_pan_offline_by_hash(work_id, magnet.info_hash)
     if existing is None:
         return True
-    if existing.status == "running":
-        return False
-    if existing.status in {"done", "completed"}:
-        return False
-    return True
+    return existing.status not in {"running", "done", "completed"}
 
 
 def _pan_ready(pan: PanService) -> bool:
@@ -271,7 +268,7 @@ async def enqueue_seeded_offline(
                 stats=stats,
             )
             pace_next = bool(touched)
-        except Exception as exc:  # noqa: BLE001 - continue remaining works
+        except Exception as exc:  # Continue processing the remaining works.
             message = f"{work_id}: {type(exc).__name__}: {exc}"
             stats.errors.append(message)
             stats.record(work_id, None, "error", message)
@@ -312,7 +309,7 @@ async def _process_one(
                 external_id=external_id,
                 source_url=source_url,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             stats.errors.append(f"{work_id}: magnet refresh {type(exc).__name__}")
             fetched = ()
         if fetched:
@@ -335,7 +332,7 @@ async def _process_one(
         touched = True
         try:
             fetched = await discover.list_magnets(provider="sukebei", external_id=primary_code)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             stats.errors.append(f"{work_id}: sukebei magnets {type(exc).__name__}")
             fetched = ()
         if fetched:
@@ -353,14 +350,13 @@ async def _process_one(
         stats.record(work_id, primary_code, "hunting", "no magnets found (javdb/sukebei)")
         return touched
 
-    best = pick_best_magnet(magnets, expected_code=primary_code)
-    if best is None:
-        stats.hunting += 1
-        stats.record(work_id, primary_code, "hunting", "no suitable magnet")
-        return touched
-
     with database.session() as session:
         repo = Repository(session)
+        best = pick_automatic_magnet(repo, work_id, magnets, expected_code=primary_code)
+        if best is None:
+            stats.hunting += 1
+            stats.record(work_id, primary_code, "hunting", "no untried suitable magnet")
+            return touched
         if not _work_needs_offline(repo, work_id, best):
             stats.skipped_existing += 1
             stats.record(work_id, primary_code, "skipped", "offline task already running/done")
@@ -468,7 +464,7 @@ def resolve_work_ids_created_on(repo: Repository, *, day: date) -> list[str]:
 
 async def auto_offline_new_works(
     *,
-    settings: object,
+    settings: Settings,
     database: Database,
     discover: DiscoverService,
     work_ids: Sequence[str],
@@ -479,10 +475,10 @@ async def auto_offline_new_works(
     ids = [item for item in work_ids if item and item != "dry-run"]
     if not ids:
         return None
-    data_dir = getattr(settings, "data_dir")
+    data_dir = settings.data_dir
     pan = PanService(
         data_dir=data_dir,
-        proxy_url=getattr(settings, "proxy_url", None),
+        proxy_url=settings.proxy_url,
     )
     return await enqueue_seeded_offline(
         database=database,

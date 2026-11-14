@@ -510,7 +510,7 @@ Token、用户名和密码只通过 `POST /api/pan/openlist/credentials` 写入 
 
 工作方式：
 
-- **离线**：「推到离线」与订阅自动离线都调用 `POST /api/fs/add_offline_download`（`urls`、目标 `path`、`tool`、`delete_policy`），本地任务行记录 `backend=openlist` 和 OpenList 任务 id。仍按 info_hash 加锁去重：OpenList 上已有同一磁力的未完成任务时直接接管；115 报“任务已存在”时，若目标目录下已能按番号 / 磁力 `dn` 找到结果则直接接管，否则返回 409。
+- **离线**：「推到离线」与订阅自动离线都调用 `POST /api/fs/add_offline_download`（`urls`、目标 `path`、`tool`、`delete_policy`），本地任务行记录 `backend=openlist` 和 OpenList 任务 id。仍按 info_hash 加锁去重：OpenList 上已有同一磁力的未完成任务时直接接管；115 的 10008“任务已存在”一律按离线成功接管，包括 OpenList 后台的失败和等待重试状态，不重复提交或自动换磁。后台继续按番号 / 磁力 `dn` 查找目标目录中的既有文件并补 STRM；查找超时仍保留离线成功，单独记录未找到文件，供手动恢复核对。
 - **状态**：后台轮询 `GET /api/task/offline_download/{undone,done}`（任务状态 2=完成，4/7=取消/失败，其余视为进行中），并参考 `offline_download_transfer/undone`，转存未结束时保持 99%。OpenList 重启导致任务丢失时，按番号在目标目录里找结果；长时间找不到才标记失败。
 - **STRM**：完成后在目标目录中按磁力 `dn` 名称 → 番号匹配结果文件夹，用 `/api/fs/list`（与 115 冷遍历相同的 ~350 ms + 抖动节奏）遍历视频文件，仍按 poster/fanart → `movie.nfo` → `.strm` 最后的顺序导出，多分段命名 `{番号}-cdN.strm`，并通知 Emby。导出目录为多级 Emby 友好布局（默认 `{studio}/{code}/`，例如 `SODクリエイト/STARS-145/`，可用设置项 `strm_layout_template` 改为 `{group}/{subgroup}/{studio}/{code}` 等；占位符与整理模板一致）。`.strm` 内容为 `{OpenList 地址}/d{路径}`（路径按 URL 编码，开启签名时附 `?sign=`）。
 - **302 中转**：STRM 模式选“本服务 302 中转”时写 `{对外地址}/api/strm/openlist{路径}[?token=]`，请求时 302 到 OpenList `/d` 链接（开启签名时实时取 sign）；只允许离线目标路径以内的文件。
