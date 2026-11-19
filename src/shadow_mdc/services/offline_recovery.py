@@ -429,7 +429,7 @@ def project_offline(task: PanOfflineTask, *, now: datetime | None = None) -> Off
     elif task.status == "failed":
         download_state = "failed"
     elif task.status == "done":
-        download_state = "done"
+        download_state = "verifying" if state.existing_result_pending else "done"
         can_cancel = False
         can_switch = False
     if not can_cancel and download_state in {"cancelling", "switching", "submitting"}:

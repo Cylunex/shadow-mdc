@@ -8,15 +8,31 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, select
 
 from .classifications import DURATION_FORM_IDS, ClassificationSelection
-from .db.models import CatalogClassificationTerm, WorkClassification
+from .db.models import (
+    CatalogClassificationTerm,
+    CatalogPersonCredit,
+    CatalogWorkOrganization,
+    CatalogWorkSeries,
+    ExternalIdentity,
+    MediaEmbyBinding,
+    PanOfflineTask,
+    SourceSnapshot,
+    Work,
+    WorkActor,
+    WorkClassification,
+    WorkMagnet,
+    WorkTaxonomy,
+)
 from .db.repository import Repository
 from .domain import IdentityHints
 from .enums import MatchDecision, MediaCategory, QueryMode
 from .identity import extract_code
 from .intake_core import (
+    MAGNET_INGEST_PROVIDER,
+    MAGNET_INGEST_TAGS,
     OfflineAddRequest,
     OfflineMagnetAddRequest,
     intake_offline_add,
@@ -62,6 +78,10 @@ class ClassificationFill(ClassificationSelection, WorkTarget):
 
 class RecoverInput(OperationInput):
     task_id: str = Field(min_length=1, max_length=240, pattern=r"^[A-Za-z0-9:_-]+$")
+
+
+class DiscardPlaceholderInput(WorkTarget, RecoverInput):
+    dry_run: bool = True
 
 
 class LinkInput(WorkTarget):
@@ -116,6 +136,65 @@ def apply_tags(repo: Repository, work_id: str, add: list[str], remove: list[str]
 def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
     """Expose domain operations through the authenticated skill allowlist only."""
     router = APIRouter(prefix="/api/operator/v1", dependencies=[Depends(require_service_token)])
+
+    @router.post("/discard-placeholder")
+    def discard_placeholder(payload: DiscardPlaceholderInput, request: Request) -> dict[str, str]:
+        app_runtime = runtime(request)
+        result = {"work_id": payload.work_id, "task_id": payload.task_id}
+        with app_runtime.database.session() as session:
+            if not payload.dry_run:
+                # Protect the eligibility check and delete from concurrent poller/catalog writes.
+                if session.bind is not None and session.bind.dialect.name == "sqlite":
+                    session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                else:
+                    session.scalar(select(Work).where(Work.id == payload.work_id).with_for_update())
+                    session.scalar(
+                        select(PanOfflineTask).where(PanOfflineTask.id == payload.task_id).with_for_update()
+                    )
+            repo = Repository(session)
+            work = repo.get_work(payload.work_id)
+            task = repo.get_pan_offline_task(payload.task_id)
+            if work is None and task is None:
+                return {**result, "outcome": "absent"}
+            if work is None or task is None or task.work_id != work.id:
+                raise HTTPException(409, "work and offline task do not match")
+            if (task.status not in {"done", "failed", "cancelled"}
+                or any((task.file_id, task.remote_path, task.remote_name, task.strm_path))
+                or (task.recovery_json or {}).get("action")
+                or [row.id for row in repo.list_pan_offline_tasks(work_id=work.id, limit=2)] != [task.id]):
+                raise HTTPException(409, "offline task can still own results or active work")
+            identities = {(row.provider, row.value.upper()) for row in repo.identities_for_work(work.id)}
+            magnets = repo.list_work_magnets(work.id)
+            digest = task.info_hash.upper()
+            metadata = (work.plot, work.original_plot, work.original_title, work.studio, work.label,
+                        work.series, work.artwork, work.runtime_seconds, work.release_date,
+                        work.rating_value, work.reviews)
+            if (not digest or identities != {(MAGNET_INGEST_PROVIDER, digest), ("btih", digest)}
+                or len(magnets) != 1 or magnets[0].provider != MAGNET_INGEST_PROVIDER
+                or magnets[0].info_hash.upper() != digest
+                or work.family != "unknown" or work.primary_code or work.field_locks
+                or set(work.tags or []) != set(MAGNET_INGEST_TAGS)
+                or set((work.field_sources or {}).values()) != {MAGNET_INGEST_PROVIDER}
+                or any(metadata)):
+                raise HTTPException(409, "work has catalog data beyond the original magnet placeholder")
+            if (work.id in app_runtime.library_prefs_store.load().want_list
+                or repo.list_assets_for_work(work.id) or repo.collections_for_work(work.id)
+                or session.scalar(select(exists().where(
+                    SourceSnapshot.work_id == work.id, SourceSnapshot.provider != MAGNET_INGEST_PROVIDER
+                )))
+                or any(session.scalar(select(exists().where(model.work_id == work.id))) for model in (
+                    MediaEmbyBinding, WorkClassification, WorkTaxonomy, CatalogPersonCredit,
+                    CatalogWorkOrganization, CatalogWorkSeries,
+                ))):
+                raise HTTPException(409, "work has linked catalog or media data")
+            if payload.dry_run:
+                return {**result, "outcome": "planned"}
+            # Older SQLite installations do not enforce cascades on these tables.
+            for model in (PanOfflineTask, WorkMagnet, ExternalIdentity, SourceSnapshot, WorkActor):
+                session.execute(delete(model).where(model.work_id == work.id))
+            repo.delete_work(work.id)
+        app_runtime.response_cache.clear()
+        return {**result, "outcome": "removed"}
 
     @router.post("/tags")
     def tags(payload: TagsEdit, request: Request) -> dict[str, object]:

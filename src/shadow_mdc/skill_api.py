@@ -46,7 +46,15 @@ from .db.models import Work
 from .intake_core import SubscribeRequest
 from .services.catalog_people import MergeRequest, PersonEdit
 from .services.discover import DiscoverList
-from .skill_operations import ClassificationFill, FillInput, IntakeItem, LinkInput, RecoverInput, TagsEdit
+from .skill_operations import (
+    ClassificationFill,
+    DiscardPlaceholderInput,
+    FillInput,
+    IntakeItem,
+    LinkInput,
+    RecoverInput,
+    TagsEdit,
+)
 from .tag_dictionary_api import RulesEdit, TagCreate, TagEdit, TagMerge
 
 if TYPE_CHECKING:
@@ -842,6 +850,14 @@ CAPABILITIES += (
         "POST",
         "/api/pan/offline/tasks/{task_id}/cancel",
         "task_id",
+    ),
+    Capability(
+        "intake.discard_placeholder",
+        "按明确要求清理无媒体的原始磁力占位档案及本地任务,默认预演。不操作远端或源文件。",
+        "write",
+        DiscardPlaceholderInput,
+        "POST",
+        "/api/operator/v1/discard-placeholder",
     ),
     Capability(
         "intake.pipeline",

@@ -153,6 +153,33 @@ def test_code_less_magnet_uses_hash_identity_without_inventing_a_number(client: 
     assert isinstance(detail["tags"], list) and "magnet-ingest" in detail["tags"]
 
 
+def test_discard_only_unbound_magnet_placeholder(client: TestClient) -> None:
+    result = call(client, "intake.magnet.submit", {"magnet": f"magnet:?xt=urn:btih:{'C' * 40}"})
+    args = {"work_id": result["work_id"], "task_id": result["job_id"]}
+    name = "intake.discard_placeholder"
+
+    def rejected() -> None:
+        reply = client.post("/api/skill/v1/call", json={"name": name, "arguments": args}).json()
+        assert reply["status"] == 409
+
+    rejected()
+    with app.state.runtime.database.session() as session:
+        repo = Repository(session)
+        task = repo.get_pan_offline_task(str(args["task_id"]))
+        assert task is not None
+        repo.update_pan_offline_task(task, status="done", remote_path="/media/clip")
+    rejected()
+    with app.state.runtime.database.session() as session:
+        task = Repository(session).get_pan_offline_task(str(args["task_id"]))
+        assert task is not None
+        task.remote_path = None
+    assert call(client, name, args)["outcome"] == "planned"
+    assert call(client, "works.detail", {"work_id": args["work_id"]})["id"] == args["work_id"]
+    assert call(client, name, {**args, "dry_run": False})["outcome"] == "removed"
+    assert call(client, name, {**args, "dry_run": False})["outcome"] == "absent"
+    app.state.runtime.pan_service.submit_offline_url.assert_awaited_once()
+
+
 def test_no_resource_means_hunting_not_a_completed_import(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

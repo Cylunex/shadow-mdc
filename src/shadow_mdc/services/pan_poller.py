@@ -542,7 +542,7 @@ class PanOfflinePoller:
             logger.warning("OpenList task listing failed: %s", type(exc).__name__)
             return True
 
-        finished: list[tuple[str, str, str, str | None, datetime | None]] = []
+        finished: list[tuple[str, str, str | None, datetime | None]] = []
         with self._database.session() as session:
             repo = Repository(session)
             for task_id, _work_id, info_hash, remote_id, target, url, created_at in rows:
@@ -554,7 +554,7 @@ class PanOfflinePoller:
                     task = snapshot.by_hash.get(info_hash.upper())
                 if task is None:
                     # Unknown to OpenList right now: try the result folder below.
-                    finished.append((task_id, target, info_hash, url, created_at))
+                    finished.append((task_id, target, url, None))
                     continue
                 state = load_recovery(row)
                 if task.already_exists or state.existing_result_pending:
@@ -569,7 +569,7 @@ class PanOfflinePoller:
                         row, status="done", progress=100.0, remote_task_id=task.id or None,
                         error=None, recovery_json=state.to_dict(),
                     )
-                    finished.append((task_id, target, info_hash, url, created_at))
+                    finished.append((task_id, target, url, None))
                     continue
                 status = task.local_status
                 if status == "running":
@@ -609,10 +609,10 @@ class PanOfflinePoller:
                     )
                     continue
                 repo.update_pan_offline_task(row, progress=100.0, remote_task_id=task.id or None)
-                finished.append((task_id, target, info_hash, url, created_at))
+                finished.append((task_id, target, url, created_at))
 
         cfg = self._pan.config_store.load()
-        for done_id, done_target, _done_hash, done_url, started_at in finished:
+        for done_id, done_target, done_url, started_at in finished:
             try:
                 await self._complete_openlist(done_id, done_target, done_url, started_at, cfg)
             except Exception as exc:
