@@ -98,6 +98,23 @@ def wait_task(client: TestClient, task_id: str) -> dict[str, object]:
     pytest.fail("local fixture task did not complete")
 
 
+def test_recover_with_verified_openlist_name_checks_original_task(client: TestClient) -> None:
+    first = call(client, "intake.magnet.submit", {"magnet": MAGNET})
+    task_id = first["job_id"]
+    url = "/api/operator/v1/recover"
+    args = {"task_id": task_id, "info_hash": HASH, "result_name": "Verified media"}
+    assert client.post(url, json={**args, "result_name": "../escape"}).status_code == 422
+    assert client.post(url, json={**args, "info_hash": "C" * 40}).status_code == 409
+    result = call(client, "intake.recover", args)
+    assert result["outcome"] == "rechecking"
+    assert client.post(url, json={**args, "result_name": "Different media"}).status_code == 409
+    call(client, "intake.recover", {"task_id": task_id})
+    with app.state.runtime.database.session() as session:
+        task = Repository(session).get_pan_offline_task(str(task_id))
+        assert task and task.recovery_json and task.recovery_json["verified_result_name"] == "Verified media"
+    app.state.runtime.pan_service.submit_offline_url.assert_awaited_once()
+
+
 def test_preview_is_read_only_and_cannot_be_switched_to_submit(client: TestClient) -> None:
     assert call(client, "intake.status", {"code": "SSIS-123"})["in_catalog"] is False
     assert call(client, "intake.code.preview", {"code": "SSIS-123"})["action"] == "planned"

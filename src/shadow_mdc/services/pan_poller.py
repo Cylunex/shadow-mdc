@@ -14,7 +14,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from ..db.models import ExternalIdentity, Work
@@ -549,6 +549,10 @@ class PanOfflinePoller:
                 row = repo.get_pan_offline_task(task_id)
                 if row is None or row.status not in {"running", "done"}:
                     continue
+                state = load_recovery(row)
+                if state.verified_result_name and not state.action:
+                    finished.append((task_id, target, url, None))
+                    continue
                 task: OpenListTask | None = snapshot.by_id.get(remote_id) if remote_id else None
                 if task is None:
                     task = snapshot.by_hash.get(info_hash.upper())
@@ -556,7 +560,6 @@ class PanOfflinePoller:
                     # Unknown to OpenList right now: try the result folder below.
                     finished.append((task_id, target, url, None))
                     continue
-                state = load_recovery(row)
                 if task.already_exists or state.existing_result_pending:
                     if state.action == "cancel" and state.manual:
                         continue
@@ -612,9 +615,10 @@ class PanOfflinePoller:
                 finished.append((task_id, target, url, created_at))
 
         cfg = self._pan.config_store.load()
+        listings: dict[str, list[OpenListEntry] | None] = {}
         for done_id, done_target, done_url, started_at in finished:
             try:
-                await self._complete_openlist(done_id, done_target, done_url, started_at, cfg)
+                await self._complete_openlist(done_id, done_target, done_url, started_at, cfg, listings)
             except Exception as exc:
                 logger.warning("OpenList completion failed: %s", type(exc).__name__)
         await self.recovery.advance_pending()
@@ -629,6 +633,7 @@ class PanOfflinePoller:
         url: str | None,
         created_at: datetime | None,
         cfg: PanSettings,
+        listings: dict[str, list[OpenListEntry] | None],
     ) -> None:
         with self._database.session() as session:
             repo = Repository(session)
@@ -639,6 +644,10 @@ class PanOfflinePoller:
             work_id = row.work_id
             work_code = work.primary_code if work is not None else None
             had_task = bool(row.remote_task_id)
+            state = load_recovery(row)
+            if state.action or row.status not in {"running", "done"}:
+                return
+            verified_name = state.verified_result_name
             needs_art = work is not None and any(
                 isinstance(item, dict) and item.get("url") and not item.get("local_path")
                 for item in (work.artwork or [])
@@ -647,13 +656,24 @@ class PanOfflinePoller:
         since: datetime | None = created_at
         if since is not None and since.tzinfo is None:
             since = since.replace(tzinfo=UTC)
-        entry: OpenListEntry | None = await service.find_result(
-            target,
-            work_code=work_code,
-            display_name=magnet_display_name(url),
-            since=since,
-            pacer=ScanPacer(),
-        )
+        entry: OpenListEntry | None
+        if verified_name:
+            path = str(PurePosixPath(target) / verified_name)
+            info = await service.client().get(path)
+            if info.get("name") != verified_name:
+                return
+            entry = OpenListEntry(name=verified_name, path=path, is_dir=bool(info.get("is_dir")))
+        else:
+            if target not in listings:
+                listings[target] = None  # A failed listing is also shared within this poll.
+                listings[target] = await service.list_all(target, refresh=True)
+            entries = listings[target]
+            if entries is None:
+                return
+            entry = await service.find_result(
+                target, work_code=work_code, display_name=magnet_display_name(url),
+                since=since, entries=entries,
+            )
         if entry is None:
             misses = self._miss(task_id)
             limit = OPENLIST_RESULT_LIMIT if had_task else OPENLIST_MISSING_LIMIT
@@ -731,8 +751,10 @@ class PanOfflinePoller:
         with self._database.session() as session:
             repo = Repository(session)
             row = repo.get_pan_offline_task(task_id)
-            if row is not None and row.status in {"running", "done"}:
+            if row is not None and row.status in {"running", "done"} and row.url == url:
                 state = load_recovery(row)
+                if state.action or state.verified_result_name != verified_name:
+                    return
                 state.existing_result_pending = False
                 repo.update_pan_offline_task(
                     row,

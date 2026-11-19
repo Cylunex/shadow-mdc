@@ -52,7 +52,7 @@ from .skill_operations import (
     FillInput,
     IntakeItem,
     LinkInput,
-    RecoverInput,
+    RecoverResultInput,
     TagsEdit,
 )
 from .tag_dictionary_api import RulesEdit, TagCreate, TagEdit, TagMerge
@@ -827,9 +827,10 @@ CAPABILITIES += (
     ),
     Capability(
         "intake.recover",
-        "重新核对既有离线结果并补导出,不新提交下载。",
+        "重新核对既有离线结果并补导出。仅在115原任务哈希已查到同一目标目录的实际文件或文件夹时,"
+        "传入info_hash和准确result_name。不会重新提交下载。",
         "write",
-        RecoverInput,
+        RecoverResultInput,
         "POST",
         "/api/operator/v1/recover",
     ),

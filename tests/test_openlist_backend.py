@@ -468,6 +468,35 @@ def test_exists_error_accepts_before_result_is_visible(
     asyncio.run(scenario())
 
 
+def test_adopted_task_uses_explicit_result_instead_of_guessing_by_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_pacing(monkeypatch)
+    fake = FakeOpenList()
+    fake.add_error = "failed to add offline download task: 任务已存在"
+    pan = _pan(tmp_path, fake)
+    database, work_id = _database(tmp_path)
+
+    async def scenario() -> None:
+        with database.session() as session:
+            repo = Repository(session)
+            result = await enqueue_work_offline(repo, pan, work_id, url=MAGNET.split("&")[0])
+            state = {**(result.task.recovery_json or {}), "verified_result_name": "verified-folder"}
+            repo.update_pan_offline_task(result.task, status="running", recovery_json=state)
+        fake.add_result("unrelated-folder", [("different.mp4", 7_000)])
+        fake.add_result("verified-folder", [("verified.mp4", 5_000)])
+        async with httpx.AsyncClient() as http:
+            poller = _poller(database, pan, tmp_path / "data", http)
+            assert await poller.poll_once() is True
+            with database.session() as session:
+                row = Repository(session).list_pan_offline_tasks()[0]
+                assert row.status == "done" and row.remote_path == f"{TARGET}/verified-folder"
+        assert len([call for call in fake.calls if call[1] == "/api/fs/add_offline_download"]) == 1
+        await pan.aclose()
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("state", [5, 6, 7, 8, 9])
 @pytest.mark.parametrize("field", ["error", "status"])
 def test_duplicate_task_states_are_successful(state: int, field: str) -> None:

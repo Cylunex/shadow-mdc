@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import delete, exists, select
+from sqlalchemy import and_, delete, exists, or_, select
 
 from .classifications import DURATION_FORM_IDS, ClassificationSelection
 from .db.models import (
@@ -44,6 +44,7 @@ from .intake_core import (
 from .matching import rank_candidates
 from .media.artwork import ArtworkStore
 from .services.catalog_classifications import validate_selection, work_classifications
+from .services.offline_recovery import load_recovery
 from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
 from .services.translation import WorkTranslator
 from .tag_models import fold_tag
@@ -78,6 +79,23 @@ class ClassificationFill(ClassificationSelection, WorkTarget):
 
 class RecoverInput(OperationInput):
     task_id: str = Field(min_length=1, max_length=240, pattern=r"^[A-Za-z0-9:_-]+$")
+
+
+class RecoverResultInput(RecoverInput):
+    result_name: str | None = Field(default=None, min_length=1, max_length=512)
+    info_hash: str | None = Field(default=None, pattern=r"^[0-9A-Fa-f]{40}$")
+
+    @model_validator(mode="after")
+    def validate_result(self) -> RecoverResultInput:
+        if (self.result_name is None) != (self.info_hash is None):
+            raise ValueError("result_name and verified info_hash are required together")
+        name = self.result_name
+        if name is not None and (
+            name != name.strip() or name in {".", ".."}
+            or any(c in "/\\" or ord(c) < 32 for c in name)
+        ):
+            raise ValueError("result_name must be an exact child name")
+        return self
 
 
 class DiscardPlaceholderInput(WorkTarget, RecoverInput):
@@ -159,7 +177,8 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
             if work is None or task is None or task.work_id != work.id:
                 raise HTTPException(409, "work and offline task do not match")
             if (task.status not in {"done", "failed", "cancelled"}
-                or any((task.file_id, task.remote_path, task.remote_name, task.strm_path))
+                or any((task.file_id, task.remote_path, task.remote_name, task.strm_path,
+                        load_recovery(task).verified_result_name))
                 or (task.recovery_json or {}).get("action")
                 or [row.id for row in repo.list_pan_offline_tasks(work_id=work.id, limit=2)] != [task.id]):
                 raise HTTPException(409, "offline task can still own results or active work")
@@ -360,18 +379,53 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
         }
 
     @router.post("/recover")
-    def recover(payload: RecoverInput, request: Request) -> dict[str, object]:
+    def recover(payload: RecoverResultInput, request: Request) -> dict[str, object]:
         # Re-adopt an existing remote result. Never submit a second remote download here.
         with runtime(request).database.session() as session:
+            if (
+                payload.result_name is not None and session.bind is not None
+                and session.bind.dialect.name == "sqlite"
+            ):
+                session.connection().exec_driver_sql("BEGIN IMMEDIATE")
             repo = Repository(session)
             task = repo.get_pan_offline_task(payload.task_id)
             if task is None:
                 raise HTTPException(404, "offline task not found")
             if task.status == "cancelled":
                 raise HTTPException(409, "cancelled task needs an explicit new intake")
+            state = load_recovery(task)
+            if payload.result_name is not None:
+                if task.backend != "openlist" or task.info_hash.upper() != (payload.info_hash or "").upper():
+                    raise HTTPException(409, "verified result does not belong to this OpenList magnet task")
+                if state.action:
+                    raise HTTPException(409, "offline task has another action in progress")
+                path = str(PurePosixPath(task.directory_id) / payload.result_name)
+                if task.remote_path not in (None, path) or state.verified_result_name not in (
+                    None, payload.result_name,
+                ):
+                    raise HTTPException(409, "offline task already has a different result")
+                same_hint = PanOfflineTask.recovery_json["verified_result_name"].as_string()
+                other = session.scalar(select(PanOfflineTask.id).where(
+                    PanOfflineTask.id != task.id,
+                    or_(
+                        PanOfflineTask.remote_path == path,
+                        and_(
+                            PanOfflineTask.directory_id == task.directory_id,
+                            same_hint == payload.result_name,
+                        ),
+                    ),
+                ).limit(1))
+                if other is not None:
+                    raise HTTPException(409, "result already belongs to another offline task")
+                state.verified_result_name = payload.result_name
             if task.strm_path and Path(task.strm_path).is_file():
                 return {"outcome": "skipped", "job": job_out(task, repo.get_work(task.work_id)).model_dump()}
-            repo.update_pan_offline_task(task, status="running", error=None)
+            if payload.result_name is None:
+                repo.update_pan_offline_task(task, status="running", error=None)
+            else:
+                repo.update_pan_offline_task(
+                    task, status="running", error=None, recovery_json=state.to_dict(),
+                )
             return {"outcome": "rechecking", "job": job_out(task, repo.get_work(task.work_id)).model_dump()}
 
     @router.post("/link")

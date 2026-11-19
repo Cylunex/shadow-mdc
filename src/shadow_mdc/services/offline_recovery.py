@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from ..db.models import PanOfflineTask, WorkMagnet, utc_now
 from ..media.magnets import magnet_sort_key
@@ -98,6 +98,7 @@ class RecoveryCheckpoint:
     submission_started: bool = False
     manual: bool = False
     existing_result_pending: bool = False
+    verified_result_name: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -113,7 +114,7 @@ class RecoveryCheckpoint:
             RecoveryAttempt.from_dict(item) for item in attempts_raw if isinstance(item, dict)
         ]
         action_raw = str(raw.get("action") or "")
-        action: Action = action_raw if action_raw in {"", "cancel", "switch", "submit"} else ""
+        action = cast(Action, action_raw) if action_raw in {"", "cancel", "switch", "submit"} else ""
         return cls(
             attempts=attempts,
             current_hash=str(raw.get("current_hash") or "").upper(),
@@ -132,6 +133,7 @@ class RecoveryCheckpoint:
             submission_started=bool(raw.get("submission_started")),
             manual=bool(raw.get("manual")),
             existing_result_pending=bool(raw.get("existing_result_pending")),
+            verified_result_name=_opt_str(raw.get("verified_result_name")),
         )
 
 

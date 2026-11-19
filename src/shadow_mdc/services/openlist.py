@@ -982,6 +982,7 @@ class OpenListService:
         display_name: str | None,
         since: datetime | None,
         pacer: ScanPacer | None = None,
+        entries: list[OpenListEntry] | None = None,
     ) -> OpenListEntry | None:
         """Locate the folder/file a finished offline task produced under ``target_path``.
 
@@ -990,7 +991,8 @@ class OpenListService:
         newest entry modified after the task started.
         """
 
-        entries = await self.list_all(target_path, pacer=pacer, refresh=True)
+        if entries is None:
+            entries = await self.list_all(target_path, pacer=pacer, refresh=True)
         if not entries:
             return None
         if display_name:
