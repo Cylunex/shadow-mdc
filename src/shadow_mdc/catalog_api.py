@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from sqlalchemy import (
+    Integer,
     Select,
     SQLColumnExpression,
     String,
@@ -461,7 +462,7 @@ def build_catalog_router(
             if len(q) >= 3 and q.replace("-", "").isalnum() and session.scalar(text(
                 "SELECT 1 FROM sqlite_master WHERE name = 'mdc_works_fts'"
             )):
-                candidates = select(literal_column("rowid")).select_from(text("mdc_works_fts")).where(
+                candidates = select(literal_column("rowid", Integer)).select_from(text("mdc_works_fts")).where(
                     text("mdc_works_fts MATCH :catalog_query").bindparams(catalog_query=f'"{q}"')
                 )
                 local_match = and_(literal_column("works.rowid").in_(candidates), local_match)
@@ -765,7 +766,8 @@ def build_catalog_router(
             limit: int = Query(default=48, ge=1, le=100),
             cursor: str | None = Query(default=None, max_length=512),
         ) -> MobilePeoplePage:
-            fold = lambda value: unicodedata.normalize("NFKC", value).casefold().strip()
+            def fold(value: str) -> str:
+                return unicodedata.normalize("NFKC", value).casefold().strip()
             query = fold(q)
             with runtime(request).database.session() as session:
                 revision, projection = _mobile_person_cards(runtime(request), session)

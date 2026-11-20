@@ -92,11 +92,13 @@ def test_nfo_runtime_locks_and_nested_set(repository: Repository, tmp_path: Path
         _nfo(
             tmp_path / "movie.nfo",
             "<title>Film</title><runtime>90.5</runtime><lockedfields>Runtime</lockedfields>"
+            "<country>韩国</country>"
             "<set><name>Series</name></set><tag>   </tag><tag>Tag</tag><genre>Tag</genre>"
             "<actor><name>Actor</name></actor><actor><name>Actor</name></actor>",
         )
     )
     record = nfo_provider_record(parsed)
+    assert record.category.value == "Korea"
     work = repository.upsert_provider_record(
         record.model_copy(update={"runtime_seconds": 100}), overwrite=False
     )

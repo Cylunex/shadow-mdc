@@ -55,7 +55,7 @@ def _append(path: Path, record: ReceiptHeader | ReceiptEvent) -> None:
         os.fsync(stream.fileno())
 
 
-def _load_receipt(path: Path, digest: str, total: int) -> BatchReceipt:
+def _load_receipt(path: Path, digest: str, total: int, *, repair: bool = True) -> BatchReceipt:
     if path.stat().st_mode & 0o077:
         raise ValueError("batch receipt must have permissions 0600")
     data = path.read_bytes()
@@ -72,12 +72,71 @@ def _load_receipt(path: Path, digest: str, total: int) -> BatchReceipt:
         if event.index >= total:
             raise ValueError("invalid batch receipt item")
         receipt.items[event.index] = event.item
-    if boundary < len(data):
+    if repair and boundary < len(data):
         # The previous complete event is authoritative after an interrupted append.
         # A result append is always preceded by a durable unknown event.
         with path.open("r+b") as stream:
             stream.truncate(boundary)
     return receipt
+
+
+def check_batch(
+    manifest_path: Path, receipt_path: Path,
+    call: Callable[[str, dict[str, JsonValue]], JsonValue],
+) -> dict[str, JsonValue]:
+    """Read original evidence for unknown items without replaying operations."""
+    manifest = BatchManifest.model_validate_json(manifest_path.read_text())
+    digest = hashlib.sha256(manifest.model_dump_json().encode()).hexdigest()
+    if receipt_path.is_symlink():
+        raise ValueError("batch receipt must be a regular file")
+    receipt = _load_receipt(receipt_path, digest, len(manifest.calls), repair=False)
+    rows: list[JsonValue] = []
+    for index, (operation, item) in enumerate(zip(manifest.calls, receipt.items, strict=True)):
+        if item.state != "unknown":
+            continue
+        body = item.result.get("result") if isinstance(item.result, dict) else None
+        job = body.get("job") if isinstance(body, dict) else None
+        if not isinstance(job, dict) and isinstance(body, dict):
+            job = body.get("offline_task")
+        job_id = (job.get("job_id") or job.get("id")) if isinstance(job, dict) else None
+        task_id = body.get("task_id") if isinstance(body, dict) else None
+        code = operation.arguments.get("code")
+        target: dict[str, JsonValue]
+        if isinstance(job_id, str) and job_id:
+            lookup, target = "intake.job", {"job_id": job_id}
+        elif isinstance(task_id, str) and task_id:
+            lookup, target = "tasks.get", {"task_id": task_id}
+        elif isinstance(code, str) and code:
+            lookup, target = "intake.status", {"code": code}
+        else:
+            lookup, target = "", {}
+        row: dict[str, JsonValue] = {
+            "index": index, "request_ref": f"{digest}:{index}",
+            "capability": operation.name, "state": "unknown",
+        }
+        if lookup:
+            result = call(lookup, target)
+            value = result.get("result") if isinstance(result, dict) and result.get("ok") is True else None
+            if isinstance(value, dict):
+                public_fields = (
+                    "id", "job_id", "code", "status", "state", "stage",
+                    "work_id", "in_catalog", "in_library", "subtitle",
+                )
+                evidence = {key: value[key] for key in public_fields if key in value}
+                jobs = value.get("jobs")
+                if isinstance(jobs, list):
+                    evidence["jobs"] = [
+                        {key: candidate[key] for key in public_fields if key in candidate}
+                        for candidate in jobs[:8] if isinstance(candidate, dict)
+                    ]
+                row["evidence"] = evidence
+            row["lookup"] = lookup
+            row["target"] = target
+        rows.append(row)
+    return {
+        "ok": not rows, "unknown": rows, "total": len(receipt.items),
+        "states": dict(Counter(item.state for item in receipt.items)),
+    }
 
 
 def run_batch(

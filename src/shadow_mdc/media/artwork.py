@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import ipaddress
+import json
 import os
 import re
 import shutil
@@ -11,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
-from PIL import Image
+from PIL import Image, ImageChops, ImageOps, ImageStat
 from pydantic import BaseModel, ConfigDict
 
 from ..db.models import Work
@@ -121,6 +122,8 @@ class ArtworkStore:
                 failed += 1
                 if len(errors) < 20:
                     errors.append(f"{url}: {type(exc).__name__}: {exc}")
+        if directory_index.file_with_stem(work_root, "fanart") is not None:
+            await asyncio.to_thread(_derive_package_portrait, work, work_root)
         return (
             ArtworkDownloadResult(
                 work_id=work.id,
@@ -410,6 +413,93 @@ def ensure_list_thumbnail(
 
 _FANART_KINDS = frozenset({"fanart", "background", "backdrop"})
 _SAMPLE_KINDS = frozenset({"sample"})
+_PACKAGE_PORTRAIT = "package-portrait"
+_PACKAGE_RULE = 1
+
+
+def _manual_poster(work: Work) -> bool:
+    return "artwork" in (getattr(work, "field_locks", None) or []) or any(
+        item.get("preferred") is True
+        and str(item.get("kind", "poster")).casefold() not in _FANART_KINDS | _SAMPLE_KINDS
+        for item in work.artwork
+    )
+
+
+def _original_revision(path: Path) -> list[int]:
+    stat = path.stat()
+    return [stat.st_ino, stat.st_dev, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+
+
+def package_portrait(work: Work, root: Path) -> Path | None:
+    image = root / f"{_PACKAGE_PORTRAIT}.jpg"
+    if not _path_is_file(image) or _manual_poster(work):
+        return None
+    try:
+        data = json.loads((root / f"{_PACKAGE_PORTRAIT}.json").read_bytes())
+        if data["rule"] != _PACKAGE_RULE or image.is_symlink() or _original_revision(image) != data["output"]:
+            return None
+        for name, expected in data["inputs"].items():
+            if Path(name).name != name or _original_revision(root / name) != expected:
+                return None
+    except (OSError, ValueError, TypeError, AttributeError, KeyError):
+        return None
+    return image
+
+
+def _derive_package_portrait(work: Work, root: Path) -> None:
+    if _manual_poster(work) or package_portrait(work, root):
+        return
+    reference = directory_index.file_with_stem(root, "poster")
+    package = directory_index.file_with_stem(root, "fanart")
+    if reference is None or package is None or reference.is_symlink() or package.is_symlink():
+        return
+    image_path = root / f"{_PACKAGE_PORTRAIT}.jpg"
+    temporary = None
+    try:
+        revisions = {path.name: _original_revision(path) for path in (reference, package)}
+        with Image.open(reference) as thumb, Image.open(package) as wide:
+            front, artwork = (ImageOps.exif_transpose(image).convert("RGB") for image in (thumb, wide))
+        if not (0.5 <= front.width / front.height <= 0.85 and 100 <= front.width < 360
+                and artwork.width / artwork.height >= 1.25 and artwork.height >= front.height * 1.5):
+            return
+        width = round(artwork.height * front.width / front.height)
+        sample_size = (32, 48)
+        standard = front.resize(sample_size, Image.Resampling.LANCZOS)
+        if max(ImageStat.Stat(standard).stddev) < 12:
+            return
+        ranked = []
+        for left in (0, artwork.width - width):
+            box = (left, 0, left + width, artwork.height)
+            sample = artwork.crop(box).resize(sample_size, Image.Resampling.LANCZOS)
+            error = sum(ImageStat.Stat(ImageChops.difference(standard, sample)).mean) / 3
+            ranked.append((error, box))
+        ranked.sort()
+        (error, box), (other, _) = ranked
+        if error > 18 or other - error < 12:
+            return
+        with tempfile.NamedTemporaryFile(dir=root, suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            artwork.crop(box).save(stream, format="JPEG", quality=92, optimize=True)
+        with package.open("rb") as stream:
+            signature = hashlib.file_digest(stream, "sha256").hexdigest()
+        if revisions != {path.name: _original_revision(path) for path in (reference, package)}:
+            return
+        os.replace(temporary, image_path)
+        temporary = None
+        metadata = {
+            "rule": _PACKAGE_RULE, "inputs": revisions, "source_sha256": signature,
+            "box": box, "output": _original_revision(image_path),
+        }
+        with tempfile.NamedTemporaryFile(dir=root, suffix=".tmp", mode="w", encoding="utf-8", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(metadata, stream)
+        os.replace(temporary, root / f"{_PACKAGE_PORTRAIT}.json")
+        directory_index.invalidate(root)
+    except (ValueError, OSError, Image.DecompressionBombError):
+        pass
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def artwork_dir_for_work(work: Work, data_dir: Path | None = None) -> Path | None:
@@ -553,6 +643,8 @@ def _work_display_image(work: Work, kind: str, root: Path | None) -> str | None:
         return next(iter(_remote_cover_urls(work, fanart_only=True)), None)
 
     if root is not None:
+        if package_portrait(work, root) is not None:
+            return f"/api/works/{work.id}/artwork/package-portrait"
         stem = _existing_stem(root, ("thumb", "poster", "fanart"))
         if stem is not None:
             return f"/api/works/{work.id}/artwork/{stem}"

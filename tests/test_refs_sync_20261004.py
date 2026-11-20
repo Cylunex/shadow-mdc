@@ -282,6 +282,48 @@ def test_app_api_auth_envelope_raises_auth_required() -> None:
         asyncio.run(run())
 
 
+@pytest.mark.parametrize("response", ["success", "empty", "unauthorized", "redirect"])
+async def test_javdb_search_uses_saved_token_only_on_configured_app_hosts(response: str) -> None:
+    requests = []
+    fixture = _json_fixture("javdb_api_movie_detail.json")
+    movie = fixture["data"]["movie"]
+    movie_id = movie["id"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.host == "public.test":
+            assert "authorization" not in request.headers
+            return httpx.Response(200, text="<html><body></body></html>")
+        assert request.url.host == "app.test"
+        assert request.headers["authorization"] == "Bearer FIXTURE"
+        if request.url.path == "/api/v2/search":
+            assert request.url.params["type"] == "movie"
+            assert request.url.params["q"] == movie["number"]
+            if response == "unauthorized":
+                return httpx.Response(401)
+            if response == "redirect":
+                return httpx.Response(302, headers={"Location": "https://external.test/collect"})
+            return httpx.Response(200, json={"success": 1, "data": {"movies": [movie] if response == "success" else []}})
+        if request.url.path == f"/api/v4/movies/{movie_id}":
+            return httpx.Response(200, json=fixture)
+        return httpx.Response(200, json=_json_fixture("javdb_api_reviews.json"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True) as client:
+        api = JavDBAppApi(client, hosts=("https://app.test",), token="FIXTURE")
+        provider = JavDBProvider(client, "https://public.test", app_api=api)
+        hints = IdentityHints(mode=QueryMode.CODE, term=movie["number"], code=movie["number"])
+        if response in {"unauthorized", "redirect"}:
+            with pytest.raises(ProviderError):
+                await provider.search(hints)
+            assert [request.url.host for request in requests] == ["app.test", "public.test"]
+        elif response == "success":
+            results = await provider.search(hints)
+            assert [record.external_id for record in results] == [movie_id]
+        else:
+            assert await provider.search(hints) == []
+            assert len(requests) == 1
+
+
 RANKINGS_HTML = """<html><body><nav><a href="/rankings/movies?p=daily&t=censored">有碼</a></nav>
 <div class="movie-list"><div class="item"><a href="/v/AbC12" class="box" title="t">
 <div class="video-title"><strong>SONE-001</strong> HTML title</div></a></div></div></body></html>"""

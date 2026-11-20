@@ -187,22 +187,24 @@ class Database:
             if not connection.exec_driver_sql(
                 "SELECT 1 FROM sqlite_master WHERE name = 'mdc_works_fts'"
             ).first():
-                columns = "title, primary_code, actors, studio, label, series"
+                fts_columns = "title, primary_code, actors, studio, label, series"
                 try:
                     connection.exec_driver_sql(
-                        f"CREATE VIRTUAL TABLE mdc_works_fts USING fts5({columns}, content='', tokenize='trigram')"
+                        f"CREATE VIRTUAL TABLE mdc_works_fts USING fts5({fts_columns}, content='', tokenize='trigram')"
                     )
                 except OperationalError:
                     pass  # SQLite without the trigram tokenizer keeps the normal containment query.
                 else:
-                    connection.exec_driver_sql(f"INSERT INTO mdc_works_fts(rowid,{columns}) SELECT rowid,{columns} FROM works")
-                    new = ", ".join("new." + column for column in columns.split(", "))
-                    old = ", ".join("old." + column for column in columns.split(", "))
-                    add = f"INSERT INTO mdc_works_fts(rowid,{columns}) VALUES(new.rowid,{new});"
-                    drop = f"INSERT INTO mdc_works_fts(mdc_works_fts,rowid,{columns}) VALUES('delete',old.rowid,{old});"
+                    connection.exec_driver_sql(
+                        f"INSERT INTO mdc_works_fts(rowid,{fts_columns}) SELECT rowid,{fts_columns} FROM works"
+                    )
+                    new = ", ".join("new." + column for column in fts_columns.split(", "))
+                    old = ", ".join("old." + column for column in fts_columns.split(", "))
+                    add = f"INSERT INTO mdc_works_fts(rowid,{fts_columns}) VALUES(new.rowid,{new});"
+                    drop = f"INSERT INTO mdc_works_fts(mdc_works_fts,rowid,{fts_columns}) VALUES('delete',old.rowid,{old});"
                     for suffix, operation, statements in (
                         ("insert", "INSERT", add), ("delete", "DELETE", drop),
-                        ("update", f"UPDATE OF {columns}", drop + add),
+                        ("update", f"UPDATE OF {fts_columns}", drop + add),
                     ):
                         connection.exec_driver_sql(
                             f"CREATE TRIGGER mdc_works_fts_{suffix} AFTER {operation} ON works BEGIN {statements} END"

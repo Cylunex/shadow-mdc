@@ -21,6 +21,7 @@ from sqlalchemy.dialects.sqlite import insert
 
 from .catalog_api import build_catalog_router, catalog_credit_names
 from .db.models import MediaEmbyBinding, Work
+from .media.artwork import package_portrait
 from .services.playback import (
     PlaybackSettings,
     PlaySource,
@@ -180,6 +181,9 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
         with runtime(request).database.session() as session:
             work = session.get(Work, work_id)
             artwork = list(work.artwork) if work is not None else []
+            derived = package_portrait(work, directory) if work is not None else None
+        if derived is not None:
+            return FileResponse(derived, headers={"Cache-Control": "private, no-cache"})
         for item in artwork:
             if item.get("kind") not in {"poster", "thumb"} or not isinstance(local := item.get("local_path"), str):
                 continue

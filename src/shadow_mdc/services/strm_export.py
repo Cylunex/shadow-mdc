@@ -43,6 +43,7 @@ from threading import RLock
 from urllib.parse import quote, urlencode, urlsplit
 
 from ..db.models import ExternalIdentity, Work
+from ..media.artwork import artwork_dir_for_work, package_portrait
 from ..media.nfo import build_nfo, merge_export_nfo, nfo_export_fields, write_nfo
 from ..media.strm import write_strm
 from .openlist import build_openlist_d_url
@@ -435,6 +436,9 @@ def _artwork_sources(work: Work) -> dict[str, Path]:
         first = next(iter(sources.values()))
         sources.setdefault("poster", sources.get("fanart", first))
         sources.setdefault("fanart", sources.get("poster", first))
+        root = artwork_dir_for_work(work)
+        if root is not None and (portrait := package_portrait(work, root)) is not None:
+            sources["poster"] = portrait
     return sources
 
 
@@ -1116,7 +1120,7 @@ def remove_export_dirs_for_code(root: Path, code: str) -> list[Path]:
         try:
             remaining = [p for p in directory.iterdir()]
         except OSError:
-            remaining = ["?"]
+            continue
         if not remaining:
             with contextlib.suppress(OSError):
                 directory.rmdir()

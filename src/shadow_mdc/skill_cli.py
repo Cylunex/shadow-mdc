@@ -17,7 +17,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
-from .skill_batch import prepare_batch, run_batch
+from .skill_batch import check_batch, prepare_batch, run_batch
 
 _MAX_RESPONSE = 8 * 1024 * 1024
 _JSON: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
@@ -147,6 +147,9 @@ def main(argv: list[str] | None = None) -> int:
         help="only after reading original target/task state and reconciling the unknown write",
     )
     batch.add_argument("--pace-seconds", type=float, default=0.25)
+    check = commands.add_parser("batch-check", help="read target and task evidence for interrupted batch items")
+    check.add_argument("manifest")
+    check.add_argument("--receipt", required=True)
     args = parser.parse_args(argv)
     output: JsonValue
     try:
@@ -183,6 +186,10 @@ def main(argv: list[str] | None = None) -> int:
                 retry_unknown=args.retry_unknown,
                 pace_seconds=args.pace_seconds,
             )
+            print(json.dumps(output, ensure_ascii=False))
+            return 0 if output["ok"] else 1
+        if args.command == "batch-check":
+            output = check_batch(Path(args.manifest), Path(args.receipt), execute)
             print(json.dumps(output, ensure_ascii=False))
             return 0 if output["ok"] else 1
         arguments: JsonValue = {}

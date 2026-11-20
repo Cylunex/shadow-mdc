@@ -18,6 +18,7 @@ from .html import (
     parse_date,
     parse_runtime_seconds,
 )
+from .javdb_api import JavDBApiAuthRequired, JavDBApiError, JavDBAppApi
 from .ratings import parse_short_reviews
 
 
@@ -28,15 +29,15 @@ class JavDBProvider(HttpProvider):
         base_url: str,
         retries: int = 1,
         *,
-        app_api: object | None = None,
-    ):
+        app_api: JavDBAppApi | None = None,
+    ) -> None:
         super().__init__(client, retries)
         self._base_url = base_url.rstrip("/")
         # Optional JavDBAppApi: used to persist short reviews into ProviderRecord.reviews.
         self._app_api = app_api
 
-    def bind_app_api(self, app_api: object | None) -> None:
-        """Attach the signed app API client after construction (reviews enrichment)."""
+    def bind_app_api(self, app_api: JavDBAppApi | None) -> None:
+        """Attach the configured App search and review client."""
 
         self._app_api = app_api
 
@@ -74,7 +75,39 @@ class JavDBProvider(HttpProvider):
     async def search(self, hints: IdentityHints) -> list[ProviderRecord]:
         if hints.mode is QueryMode.URL and hints.source_url:
             return [await self._detail(hints.source_url)]
-        url = f"{self._base_url}/search?q={quote(hints.term)}&f=all"
+        api = self._app_api
+        if api is not None and api.has_token:
+            app_error: ProviderError
+            try:
+                rows = await api.search_movies(hints.term)
+                ids = [row.id for row in rows if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", row.id)][:5]
+                if not rows:
+                    return []
+                records = await asyncio.gather(
+                    *(api.movie_detail(movie_id) for movie_id in ids), return_exceptions=True,
+                )
+                matches = [
+                    record for movie_id, record in zip(ids, records, strict=True)
+                    if isinstance(record, ProviderRecord) and record.external_id == movie_id
+                ]
+                if matches:
+                    return matches
+                failure = next((item for item in records if isinstance(item, JavDBApiError)), None)
+                raise failure or JavDBApiError("movie search details were unavailable")
+            except JavDBApiError as exc:
+                reason = "blocked" if isinstance(exc, JavDBApiAuthRequired) or exc.status in (403, 429) else "http"
+                app_error = ProviderError(self.descriptor.id, reason, "authenticated app search unavailable")
+            try:
+                fallback = await self._search_html(hints.term)
+            except ProviderError as exc:
+                raise app_error from exc
+            if fallback:
+                return fallback
+            raise app_error
+        return await self._search_html(hints.term)
+
+    async def _search_html(self, term: str) -> list[ProviderRecord]:
+        url = f"{self._base_url}/search?q={quote(term)}&f=all"
         html = await self._get_text(self.descriptor.id, url, params={"locale": "zh"})
         _check_region_restriction(html, self.descriptor.id)
         root = HTMLParser(html)
@@ -113,7 +146,7 @@ class JavDBProvider(HttpProvider):
         api = self._app_api
         if api is not None and record.external_id:
             try:
-                highlights = await api.reviews(record.external_id)  # type: ignore[attr-defined]
+                highlights = await api.reviews(record.external_id)
             except Exception:  # noqa: BLE001 — reviews must not fail HTML scrape
                 highlights = ()
             if highlights:

@@ -193,6 +193,7 @@ from .matching import normalize_title, rank_candidates, score_candidate
 from .media.artwork import (
     ArtworkDownloadResult,
     ArtworkStore,
+    package_portrait,
     resolve_work_display_image,
     resolve_work_display_images,
 )
@@ -1596,8 +1597,8 @@ def scan_actor_subscriptions(request: Request, repo: Repo) -> SubscriptionScanOu
         known = merge_seen_codes(sub.seen_codes, queue_keys_by_actor.get(sub.actor_key, []))
         fresh, fresh_keys = filter_unseen_works(matched, seen_codes=known)
         seen_by_actor[sub.actor_key] = merge_seen_codes(known, fresh_keys)
-        for item in fresh:
-            release = item.get("release_date")
+        for match in fresh:
+            release = match.get("release_date")
             release_date: date_cls | None
             if isinstance(release, date_cls):
                 release_date = release
@@ -1605,17 +1606,19 @@ def scan_actor_subscriptions(request: Request, repo: Repo) -> SubscriptionScanOu
                 release_date = date_cls.fromisoformat(release[:10])
             else:
                 release_date = None
-            code_value = item.get("code")
+            code_value = match.get("code")
+            work_id = match.get("work_id")
+            cast_count = match.get("cast_count")
             incoming.append(
                 SubscriptionQueueItem(
                     id=new_queue_id(),
                     actor_key=sub.actor_key,
                     actor_name=sub.actor_name,
-                    work_id=str(item["work_id"]) if item.get("work_id") else None,
+                    work_id=str(work_id) if work_id else None,
                     code=code_value if isinstance(code_value, str) else None,
-                    title=str(item.get("title") or ""),
+                    title=str(match.get("title") or ""),
                     release_date=release_date,
-                    cast_count=int(item.get("cast_count") or 0),
+                    cast_count=cast_count if isinstance(cast_count, int) else 0,
                     status="pending",
                 )
             )
@@ -4847,19 +4850,23 @@ def subtitlecat_lookup(code: str) -> SubtitleLookupOut:
 
 @app.get("/api/works/{work_id}/artwork/{kind}", response_class=FileResponse)
 def work_artwork_file(work_id: str, kind: str, request: Request, repo: Repo) -> Response:
-    if kind not in {"poster", "fanart", "thumb"}:
+    if kind not in {"poster", "fanart", "thumb", "package-portrait"}:
         raise HTTPException(status_code=404, detail="artwork kind not found")
-    if repo.get_work(work_id) is None:
+    work = repo.get_work(work_id)
+    if work is None:
         raise HTTPException(status_code=404, detail="work not found")
     root = (runtime(request).settings.data_dir / "artwork" / work_id).resolve()
-    path = next((item for item in sorted(root.glob(f"{kind}.*")) if item.is_file()), None)
+    path = package_portrait(work, root) if kind == "package-portrait" else next(
+        (item for item in sorted(root.glob(f"{kind}.*")) if item.is_file()), None,
+    )
     if path is None:
         raise HTTPException(status_code=404, detail="cached artwork not found")
     media_type, _ = mimetypes.guess_type(str(path))
     return FileResponse(
         path,
         media_type=media_type or "application/octet-stream",
-        headers={"Cache-Control": "public, max-age=604800, immutable"},
+        headers={"Cache-Control": "private, no-cache" if kind == "package-portrait"
+                 else "public, max-age=604800, immutable"},
     )
 
 

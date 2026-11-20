@@ -5,7 +5,7 @@ from xml.etree.ElementTree import Element, ParseError, SubElement, TreeBuilder, 
 
 from ..db.models import ExternalIdentity, MediaAsset, Work
 from ..domain import MediaTechnicalInfo
-from .nfo_import import WORK_TO_EMBY_LOCK, read_movie_element
+from .nfo_import import NFO_COUNTRIES, WORK_TO_EMBY_LOCK, read_movie_element
 
 
 def build_nfo(
@@ -49,12 +49,7 @@ def build_nfo(
         _element(rating, "value", work.rating_value)
         _element(rating, "votes", work.rating_count)
     if work.category and work.category != "Other":
-        SubElement(movie, "country").text = {
-            "Japan": "日本",
-            "China": "中国",
-            "Korea": "韩国",
-            "Europe": "欧美",
-        }.get(work.category, work.category)
+        SubElement(movie, "country").text = NFO_COUNTRIES.get(work.category, work.category)
     if work.series:
         SubElement(movie, "set").text = work.series
     for actor_name in work.actors:

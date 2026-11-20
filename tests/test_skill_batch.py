@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import JsonValue
 
-from shadow_mdc.skill_batch import prepare_batch, run_batch
+from shadow_mdc.skill_batch import check_batch, prepare_batch, run_batch
 
 
 def test_receipt_resumes_without_replaying_successes_or_silent_failure_retry(tmp_path: Path) -> None:
@@ -127,5 +127,17 @@ def test_remote_connection_error_keeps_receipt_unknown_and_blocks_later_items(tm
     # A torn final append must not erase the durable unknown checkpoint.
     with receipt.open("ab") as stream:
         stream.write(b'{"index":0,"item":')
+    old = receipt.read_bytes()
+
+    def lookup(name: str, target: dict[str, JsonValue]) -> JsonValue:
+        assert name == "intake.status"
+        assert target == {"code": "A-001"}
+        return {"ok": True, "result": {"in_library": True, "magnet": "private"}}
+
+    checked = check_batch(manifest, receipt, lookup)
+    assert checked["states"] == {"unknown": 1, "pending": 1}
+    assert checked["unknown"][0]["evidence"] == {"in_library": True}
+    assert checked["unknown"][0]["state"] == "unknown"
+    assert receipt.read_bytes() == old
     assert run_batch(manifest, receipt, call, retry_failed=True, pace_seconds=0)["counts"] == result["counts"]
     assert calls == ["A-001"]

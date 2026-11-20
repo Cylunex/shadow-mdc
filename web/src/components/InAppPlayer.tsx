@@ -192,6 +192,7 @@ function PlayerSession({
   const [status, setStatus] = useState<"idle" | "loading" | "playing" | "error">("idle");
   const [errorText, setErrorText] = useState<string | null>(null);
   const [muted, setMuted] = useState(true);
+  const [subtitlesShown, setSubtitlesShown] = useState(true);
   const triedRef = useRef<Set<number>>(new Set(playable.length ? [index] : []));
   const resumeAtRef = useRef(0);
 
@@ -412,8 +413,9 @@ function PlayerSession({
             muted={muted}
             preload="metadata"
           >
-            {current?.subtitle_url && current.kind === "local" ? (
-              <track key={current.subtitle_url} kind="subtitles" src={appUrl(current.subtitle_url) ?? current.subtitle_url} label="外挂字幕" />
+            {current?.subtitle_url && current.kind === "local" && subtitlesShown ? (
+              <track key={current.subtitle_url} kind="captions" src={appUrl(current.subtitle_url) ?? current.subtitle_url}
+                label="外挂字幕" default />
             ) : null}
           </video>
         ) : (
@@ -438,6 +440,14 @@ function PlayerSession({
             aria-label={muted ? "取消静音" : "静音"}
           >
             {muted ? "🔇" : "🔊"}
+          </button>
+        ) : null}
+        {embedded && current?.kind === "local" && current.subtitle_url ? (
+          <button
+            type="button" className="in-app-player-mute in-app-player-captions" aria-pressed={subtitlesShown}
+            onClick={() => setSubtitlesShown(value => !value)}
+          >
+            字幕
           </button>
         ) : null}
       </div>

@@ -10,6 +10,7 @@ from hashlib import sha256
 from math import isfinite
 from pathlib import Path
 from stat import S_ISREG
+from typing import TypedDict
 from xml.etree import ElementTree
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,6 +25,12 @@ from ..remaster import parse_remaster_identity
 from .parts import SidecarDirectory
 
 _CODE_TAG = re.compile(r"(?i)^(?:num|id|code|jav)$")
+NFO_COUNTRIES: dict[str, str] = {
+    MediaCategory.JAPAN: "日本",
+    MediaCategory.CHINA: "中国",
+    MediaCategory.KOREA: "韩国",
+    MediaCategory.EUROPE: "欧美",
+}
 
 SHADOW_LOCKS_TAG = "shadowmdc_locks"
 # Emby <lockedfields> names → Work field names.
@@ -70,6 +77,7 @@ class ParsedNfo(BaseModel):
     plot: str | None = None
     code: str | None = None
     studio: str | None = None
+    category: MediaCategory | None = None
     label: str | None = None
     series: str | None = None
     premiered: str | None = None
@@ -221,6 +229,11 @@ def parse_movie_nfo(path: Path, *, allow_wrapper: bool = False) -> ParsedNfo:
     original = _text(root, "originaltitle")
     plot = _text(root, "plot")
     studio = _text(root, "studio")
+    country = (_text(root, "country") or "").casefold()
+    category = next((
+        value for value in MediaCategory
+        if country in (value.casefold(), NFO_COUNTRIES.get(value, value).casefold())
+    ), None)
     series = _text(root, "set/name") or _text(root, "set") or _text(root, "showtitle")
     premiered = _text(root, "premiered") or _text(root, "releasedate")
     code = _text(root, "num")
@@ -278,6 +291,7 @@ def parse_movie_nfo(path: Path, *, allow_wrapper: bool = False) -> ParsedNfo:
         plot=plot,
         code=code,
         studio=studio,
+        category=category,
         label=_text(root, "label"),
         series=series,
         premiered=premiered,
@@ -292,7 +306,13 @@ def parse_movie_nfo(path: Path, *, allow_wrapper: bool = False) -> ParsedNfo:
     )
 
 
-def _rating_fields(root: ElementTree.Element) -> dict[str, float | int]:
+class _NfoRating(TypedDict, total=False):
+    rating: float
+    rating_max: float
+    rating_count: int
+
+
+def _rating_fields(root: ElementTree.Element) -> _NfoRating:
     ratings = root.findall("ratings/rating")
     for node in sorted(ratings, key=lambda rating: rating.get("default", "").casefold() != "true"):
         try:
@@ -301,7 +321,7 @@ def _rating_fields(root: ElementTree.Element) -> dict[str, float | int]:
             continue
         if not (isfinite(value) and isfinite(maximum) and 0 <= value <= maximum and maximum > 0):
             continue
-        result: dict[str, float | int] = {"rating": value, "rating_max": maximum}
+        result: _NfoRating = {"rating": value, "rating_max": maximum}
         votes = _text(node, "votes")
         if votes and votes.isascii() and votes.isdecimal() and len(votes) <= 10:
             result["rating_count"] = int(votes)
@@ -327,7 +347,7 @@ def nfo_provider_record(parsed: ParsedNfo) -> ProviderRecord:
         except ValueError:
             release = None
     family = ContentFamily.JAV if parsed.code else ContentFamily.UNKNOWN
-    category = MediaCategory.JAPAN if parsed.code else MediaCategory.OTHER
+    category = parsed.category or (MediaCategory.JAPAN if parsed.code else MediaCategory.OTHER)
     if parsed.code:
         external_id = parsed.code
     elif "nfo-import" in parsed.unique_ids:

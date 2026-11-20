@@ -443,13 +443,20 @@ class JavDBAppApi:
         last_error: Exception | None = None
         for host in self._hosts:
             try:
-                response = await self._client.get(f"{host}{path}", params=query, headers=self._headers())
+                response = await self._client.get(
+                    f"{host}{path}", params=query, headers=self._headers(), follow_redirects=False,
+                )
             except httpx.HTTPError as exc:
                 last_error = JavDBApiError(f"{host}: {type(exc).__name__}: {exc}".strip())
                 continue
             if response.status_code >= 500 or response.status_code in {403, 429}:
                 last_error = JavDBApiError(f"{host}: HTTP {response.status_code}", status=response.status_code)
                 continue
+            if response.is_redirect:
+                last_error = JavDBApiError(f"{host}: unexpected redirect", status=response.status_code)
+                continue
+            if response.status_code == 401:
+                raise JavDBApiAuthRequired("HTTP 401", status=response.status_code)
             if response.status_code >= 400:
                 raise JavDBApiError(f"HTTP {response.status_code}", status=response.status_code)
             try:
@@ -469,6 +476,16 @@ class JavDBAppApi:
             data = payload.get("data")
             return data if isinstance(data, dict) else {}
         raise last_error or JavDBApiError("no JavDB API host reachable")
+
+    async def search_movies(self, query: str, *, page: int = 1) -> list[JavDBApiMovie]:
+        data = await self.get_json("/api/v2/search", {"q": query, "type": "movie", "page": str(max(1, page))})
+        rows = data.get("movies")
+        if not isinstance(rows, list):
+            raise JavDBApiError("movie search result has no movies list")
+        movies = parse_movie_rows(data)
+        if rows and not movies:
+            raise JavDBApiError("movie search returned invalid records")
+        return movies
 
     async def rankings(self, zone: str = "censored", period: str = "daily") -> list[JavDBApiMovie]:
         """``GET /api/v1/rankings`` — one fixed list (~60 rows) per zone × period."""

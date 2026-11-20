@@ -2583,6 +2583,11 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   color: #fff;
   cursor: pointer;
 }
+.in-app-player-captions {
+  right: 62px;
+  width: auto;
+  padding: 0 10px;
+}
 .in-app-player--empty {
   display: flex;
   flex-direction: column;
