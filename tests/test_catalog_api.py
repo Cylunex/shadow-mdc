@@ -410,7 +410,7 @@ def test_web_catalog_uses_existing_artwork_and_legacy_filters(
         ]
         assert client.post("/api/catalog/works/query", json={"status": "downloaded"}).json()["total"] == 0
         assert client.post("/api/catalog/works/query", json={"status": "undownloaded"}).json()["total"] == 3
-        for sort in ("code", "ranked", "random"):
+        for sort in ("code", "ranked", "random", "swipe"):
             ids: list[str] = []
             cursor = None
             for _ in range(3):
@@ -422,3 +422,5 @@ def test_web_catalog_uses_existing_artwork_and_legacy_filters(
                 cursor = page.json()["next_cursor"]
             assert len(set(ids)) == 3, (sort, ids)
             assert cursor is None
+            if sort == "swipe":
+                assert ids[0] == "b"

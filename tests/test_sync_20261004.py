@@ -276,7 +276,11 @@ def test_settings_api_reports_config_errors_and_rewrite_400(
 
 def test_relay_uses_sidecar_pick_code_so_only_downurl_hits_api(tmp_path: Path) -> None:
     root = tmp_path / "emby"
-    export_work(settings=_relay(root), code="ABC-9", videos=[_video("77", "a.mp4")])
+    from shadow_mdc.services.pan import SourceFingerprint
+
+    source = SourceFingerprint(account_id="a", directory_id="d", auth_version=1, backend="115_open")
+    export_work(settings=_relay(root), code="ABC-9", videos=[_video("77", "a.mp4")],
+                source_scope=strm_export.export_source_scope(source))
     calls: list[str] = []
     future = 1_900_000_000
 
@@ -289,8 +293,6 @@ def test_relay_uses_sidecar_pick_code_so_only_downurl_hits_api(tmp_path: Path) -
             calls.append(f"downurl:{pick_code}")
             return f"https://cdn.115/{pick_code}?t={future}"
 
-    from shadow_mdc.services.pan import SourceFingerprint
-
     async def _read(factory):
         return await factory()
 
@@ -298,15 +300,21 @@ def test_relay_uses_sidecar_pick_code_so_only_downurl_hits_api(tmp_path: Path) -
         status=lambda: {"connected": True},
         get_client=lambda: _Client(),
         config_store=SimpleNamespace(load=lambda: _relay(root)),
-        source_fingerprint=lambda: SourceFingerprint(
-            account_id="a", directory_id="d", auth_version=1, backend="115_open"
-        ),
+        source_fingerprint=lambda: source,
         read_after_check=_read,
     )
-    relay = StrmRelay(pan)  # type: ignore[arg-type]
+    index_dir = tmp_path / "relay-index"
+    relay = StrmRelay(pan, index_dir=index_dir)  # type: ignore[arg-type]
     target = asyncio.run(relay.resolve("77", "Emby"))
     assert target.url.startswith("https://cdn.115/pc77")
     assert calls == ["downurl:pc77"]
+    restarted = StrmRelay(pan, index_dir=index_dir)  # type: ignore[arg-type]
+    with pytest.MonkeyPatch.context() as patch:
+        def no_walk(*_args):
+            pytest.fail("A known manifest should be resolved without walking the export tree after restart")
+
+        patch.setattr(restarted, "_build_sidecar_index", no_walk)
+        assert asyncio.run(restarted.resolve("77", "Preloader")).url.startswith("https://cdn.115/pc77")
     # Unknown id (never exported) still falls back to the API lookup.
     asyncio.run(relay.resolve("88", "Emby"))
     assert calls[-2:] == ["info:88", "downurl:api-88"]

@@ -12,14 +12,12 @@ import { memoryStorage } from "./test/storage";
 vi.mock("./api", () => ({ appUrl: (path: string) => path, api: {
   libraries: vi.fn(), libraryPrefs: vi.fn(), tasks: vi.fn(), works: vi.fn(),
   actors: vi.fn(), nonJavActors: vi.fn(), assets: vi.fn(), setWantList: vi.fn(), categories: vi.fn(), classifications: vi.fn(),
+  swipeFeed: vi.fn(async () => ({ items: [], hasMore: false })), swipeSites: vi.fn(async () => []),
 } }));
 vi.mock("./panels", () => ({ Inbox: () => null }));
 vi.mock("./views/WorkDetailView", () => ({ WorkDetailView: () => <div>detail-ready</div> }));
 vi.mock("./components/DiscoverPanel", () => ({ DiscoverPanel: ({ onToggleWant }: { onToggleWant: (id: string, wanted: boolean) => void }) => (
   <button onClick={() => onToggleWant("fixture", true)}>want-from-ranking</button>
-) }));
-vi.mock("./views/SwipeFeedView", () => ({ SwipeFeedView: ({ onLibraryMode }: { onLibraryMode: (active: boolean) => void }) => (
-  <button onClick={() => onLibraryMode(true)}>load-library-feed</button>
 ) }));
 
 function deferred<T>() {
@@ -39,7 +37,7 @@ describe("page load request budget", () => {
     vi.stubGlobal("sessionStorage", memoryStorage());
     vi.stubGlobal("localStorage", memoryStorage());
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    vi.stubGlobal("fetch", vi.fn(async (url: string) =>
+    vi.stubGlobal("fetch", vi.fn(async (url: string, _init?: RequestInit) =>
       new Response(JSON.stringify(url.endsWith("/works/query")
         ? { items: [{ ...work, poster: "", year: 2024 }], next_cursor: null, total: 1 }
         : url.includes("/people-cards") ? { items: [], next_offset: null, labels: {} }
@@ -210,12 +208,18 @@ describe("page load request budget", () => {
   });
 
   it("does not download the library until the local swipe feed is selected", async () => {
+    vi.stubGlobal("IntersectionObserver", class { observe() {} disconnect() {} });
     window.history.replaceState({}, "", "/?view=swipe");
     await act(async () => root.render(<App />));
-    expect(api.works).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(container.textContent).toContain("改用本库"));
+    const pages = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/works/query"));
+    expect(pages()).toHaveLength(0);
     await act(async () => [...container.querySelectorAll("button")]
-      .find((button) => button.textContent === "load-library-feed")!.click());
-    expect(api.works).toHaveBeenCalledTimes(1);
+      .find((button) => button.textContent === "改用本库")!.click());
+    expect(api.works).not.toHaveBeenCalled();
+    expect(pages()).toHaveLength(1);
+    expect(JSON.parse(String(pages()[0]?.[1]?.body))).toMatchObject({ sort: "swipe", limit: 18 });
+    expect(container.textContent).toContain("Fixture");
   });
 
   it("does not turn an unloaded library into a cached empty list when a ranking item is marked wanted", async () => {

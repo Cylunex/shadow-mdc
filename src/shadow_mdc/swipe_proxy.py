@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urljoin
 
 import httpx
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import Settings
@@ -36,7 +37,14 @@ _HOP_BY_HOP = {
 
 
 def create_swipe_proxy_router(settings: Settings) -> APIRouter:
-    router = APIRouter(prefix="/api/swipe", tags=["swipe"])
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        timeout = httpx.Timeout(settings.swipe_proxy_timeout_seconds, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            app.state.swipe_http = client
+            yield
+
+    router = APIRouter(prefix="/api/swipe", tags=["swipe"], lifespan=lifespan)
 
     @router.get("/health")
     async def swipe_health() -> JSONResponse:
@@ -90,11 +98,10 @@ def create_swipe_proxy_router(settings: Settings) -> APIRouter:
 
         headers = _forward_request_headers(request.headers)
         body = await request.body()
-        timeout = httpx.Timeout(settings.swipe_proxy_timeout_seconds, connect=10.0)
-
-        client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+        client: httpx.AsyncClient = request.app.state.swipe_http
         try:
-            req = client.build_request(
+            # A raw request uses the pool without applying any stored upstream cookies.
+            req = httpx.Request(
                 request.method,
                 url,
                 headers=headers,
@@ -102,7 +109,6 @@ def create_swipe_proxy_router(settings: Settings) -> APIRouter:
             )
             upstream_resp = await client.send(req, stream=True)
         except httpx.RequestError as exc:
-            await client.aclose()
             logger.warning("swipe upstream error %s %s: %s", request.method, url, exc)
             return JSONResponse({"error": f"swipe upstream unreachable: {exc}"}, status_code=502)
 
@@ -115,7 +121,6 @@ def create_swipe_proxy_router(settings: Settings) -> APIRouter:
                     yield chunk
             finally:
                 await upstream_resp.aclose()
-                await client.aclose()
 
         return StreamingResponse(
             stream(),
@@ -131,7 +136,7 @@ def _forward_request_headers(headers: Mapping[str, str]) -> dict[str, str]:
     out: dict[str, str] = {}
     for key, value in headers.items():
         lk = key.lower()
-        if lk in _HOP_BY_HOP or lk == "cookie":
+        if lk in _HOP_BY_HOP or lk in {"cookie", "authorization"}:
             # Cookie stays on the mdc OIDC edge; sidecar does not need browser cookies.
             continue
         out[key] = value
@@ -144,7 +149,7 @@ def _forward_response_headers(headers: Mapping[str, Any]) -> dict[str, str]:
     out: dict[str, str] = {}
     for key, value in headers.items():
         lk = key.lower()
-        if lk in _HOP_BY_HOP:
+        if lk in _HOP_BY_HOP or lk == "set-cookie":
             continue
         out[key] = value
     return out

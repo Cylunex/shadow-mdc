@@ -28,6 +28,8 @@ def test_swipe_health_unset_upstream() -> None:
 
 def test_swipe_proxy_maps_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[str] = []
+    requests: list[httpx.Request] = []
+    clients: list[object] = []
 
     class FakeStreamResp:
         status_code = 200
@@ -41,13 +43,17 @@ def test_swipe_proxy_maps_paths(monkeypatch: pytest.MonkeyPatch) -> None:
 
     class FakeClient:
         def __init__(self, *args, **kwargs):
-            pass
+            clients.append(self)
 
-        def build_request(self, method, url, headers=None, content=None):
-            seen.append(url)
-            return httpx.Request(method, url)
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            await self.aclose()
 
         async def send(self, req, stream=False):
+            requests.append(req)
+            seen.append(str(req.url))
             return FakeStreamResp()
 
         async def aclose(self):
@@ -73,9 +79,11 @@ def test_swipe_proxy_maps_paths(monkeypatch: pytest.MonkeyPatch) -> None:
         assert seen and seen[0].startswith("http://127.0.0.1:8791/api/feed")
 
         seen.clear()
-        resp = client.get("/api/swipe/api/hls?u=http://example.invalid/a.m3u8")
+        resp = client.get("/api/swipe/api/hls?u=http://example.invalid/a.m3u8", headers={"Authorization": "Bearer secret", "Cookie": "user=secret"})
         assert resp.status_code == 200
         assert "/api/hls" in seen[0]
+        assert len(clients) == 1
+        assert "authorization" not in requests[-1].headers and "cookie" not in requests[-1].headers
 
 
 def test_swipe_entry_mentions_tube(

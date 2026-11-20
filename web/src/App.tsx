@@ -6,11 +6,12 @@ import { invalidateLibrary, queryClient, queryKeys } from "./query/client";
 import { resources } from "./query/resources";
 import { TaskCenter } from "./components/TaskCenter";
 import { TopNav, type AppView } from "./components/TopNav";
-import type { Asset, Candidate, LibraryPrefs, TaskRun, Work } from "./model";
+import type { Asset, Candidate, LibraryPrefs, TaskRun } from "./model";
 import { Inbox } from "./panels";
 import { UnifiedCatalogView, type CatalogFeedStart } from "./views/UnifiedCatalogView";
 import { WorkDetailView } from "./views/WorkDetailView";
 import { CategoriesView } from "./views/CategoriesView";
+import type { SwipeLibrarySnapshot } from "./views/SwipeFeedView";
 import {
   patchWorksFilters,
   type WorksFilterState
@@ -117,7 +118,7 @@ export function App() {
   const [selectedActorRef, setSelectedActorRef] = useState<string | null>(initialActorRef);
   const [worksListScroll, setWorksListScroll] = useState(0);
   const [actorsListScroll, setActorsListScroll] = useState(0);
-  const [detailReturnView, setDetailReturnView] = useState<"works" | "actors" | "actor-detail">(
+  const [detailReturnView, setDetailReturnView] = useState<"works" | "actors" | "actor-detail" | "swipe">(
     initialActorRef && !initialWorkId ? "actors" : "works"
   );
   const [taskTab, setTaskTab] = useState<"inbox" | "runs">("runs");
@@ -126,16 +127,14 @@ export function App() {
   function startCatalogFeed(state: CatalogFeedStart) {
     setCatalogFeed(state); setCatalogFeedReturn(view); setView("swipe");
   }
-  const [swipeNeedsWorks, setSwipeNeedsWorks] = useState(false);
+  const [swipeLibrary, setSwipeLibrary] = useState<SwipeLibrarySnapshot>();
   const [catalogRefresh, setCatalogRefresh] = useState(0);
   const refreshCatalog = useCallback(() => {
     try { sessionStorage.removeItem("mdc:catalog-return"); } catch { /* Storage is optional. */ }
     setCatalogRefresh(value => value + 1);
   }, []);
   const showingActors = view === "tasks" && taskTab === "inbox";
-  const showingWorks = view === "swipe" && swipeNeedsWorks;
   const libraryQuery = useQuery({ ...resources.libraries(), enabled: view === "settings" || view === "tasks" }, queryClient);
-  const worksQuery = useQuery({ ...resources.works(), enabled: showingWorks }, queryClient);
   const actorsQuery = useQuery({ ...resources.actors(), enabled: showingActors }, queryClient);
   const nonJavQuery = useQuery({ ...resources.nonJavActors(), enabled: showingActors }, queryClient);
   const inboxQuery = useQuery({ ...resources.inbox(), enabled: view === "tasks" }, queryClient);
@@ -143,15 +142,10 @@ export function App() {
   const prefsQuery = useQuery(resources.prefs(), queryClient);
   const libraries = libraryQuery.data ?? EMPTY_ROWS;
   const assets = inboxQuery.data ?? EMPTY_ROWS;
-  const workRows = worksQuery.data ?? EMPTY_ROWS;
   const nonJavActors = nonJavQuery.data ?? EMPTY_ROWS;
   const tasks = tasksQuery.data ?? EMPTY_ROWS;
   const prefs = prefsQuery.data ?? EMPTY_PREFS;
   const setPrefs = useCallback((next: LibraryPrefs) => { queryClient.setQueryData(queryKeys.prefs, next); }, []);
-  const setWorks = useCallback((next: Work[] | ((current: Work[]) => Work[])) => {
-    queryClient.setQueryData<Work[]>(queryKeys.works, (current) =>
-      typeof next === "function" ? (current ? next(current) : undefined) : next);
-  }, []);
   const setTasks = useCallback((next: TaskRun[]) => {
     void queryClient.cancelQueries({ queryKey: queryKeys.tasks });
     queryClient.setQueryData(queryKeys.tasks, next);
@@ -172,25 +166,16 @@ export function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState("正在连接 Shadow MDC…");
   const loaded = {
-    works: worksQuery.data !== undefined,
     actors: actorsQuery.data !== undefined || nonJavQuery.data !== undefined,
     tasks: inboxQuery.data !== undefined,
   };
-  const wantIds = useMemo(() => new Set(prefs.want_list), [prefs.want_list]);
-  const works = useMemo(
-    () => workRows.map((item) => item.want_list === wantIds.has(item.id)
-      ? item : { ...item, want_list: wantIds.has(item.id) }),
-    [workRows, wantIds],
-  );
   const refreshCore = useCallback(async () => {
     await queryClient.fetchQuery({ ...resources.prefs(), staleTime: 0 });
   }, []);
   const refreshWorks = useCallback(async () => {
     refreshCatalog();
-    if (showingWorks) {
-      await queryClient.fetchQuery({ ...resources.works(), staleTime: 0 });
-    } else await queryClient.invalidateQueries({ queryKey: queryKeys.works, refetchType: "none" });
-  }, [showingWorks, refreshCatalog]);
+    await queryClient.invalidateQueries({ queryKey: queryKeys.works, refetchType: "none" });
+  }, [refreshCatalog]);
   const refreshActors = useCallback(async () => {
     refreshCatalog();
     void queryClient.invalidateQueries({ queryKey: queryKeys.personCards });
@@ -211,11 +196,11 @@ export function App() {
   const refreshTasks = useCallback(async () => { await queryClient.fetchQuery(resources.tasks()); }, []);
 
   useEffect(() => {
-    const error = [prefsQuery.error, libraryQuery.error, worksQuery.error, actorsQuery.error,
+    const error = [prefsQuery.error, libraryQuery.error, actorsQuery.error,
       nonJavQuery.error, inboxQuery.error, tasksQuery.error].find(Boolean);
     if (error) setMessage(errorMessage(error));
     else if (prefsQuery.data) setMessage("数据已同步");
-  }, [prefsQuery.error, prefsQuery.data, libraryQuery.error, worksQuery.error, actorsQuery.error,
+  }, [prefsQuery.error, prefsQuery.data, libraryQuery.error, actorsQuery.error,
     nonJavQuery.error, inboxQuery.error, tasksQuery.error]);
 
   useEffect(() => {
@@ -304,10 +289,11 @@ export function App() {
   }
 
 
-  const openWorkDetail = useCallback((workId: string) => {
+  const openWorkDetail = useCallback((workId: string, swipeState?: SwipeLibrarySnapshot) => {
     if (view === "works") setWorksListScroll(window.scrollY);
     if (view === "actor-detail") setDetailReturnView("actor-detail");
-    else if (view === "actors" || view === "works") setDetailReturnView(view);
+    else if (view === "actors" || view === "works" || view === "swipe") setDetailReturnView(view);
+    if (view === "swipe") setSwipeLibrary(swipeState);
     setSelectedWorkId(workId);
     setView("work-detail");
     writeDetailToUrl({ workId });
@@ -505,20 +491,12 @@ export function App() {
               setMessage("已移除磁力链接");
             }, "none")}
             onRefresh={(workId) => {
-              const work = works.find((item) => item.id === workId);
-              if (!work) {
-                void run(`work-${workId}`, async () => {
-                  const result = await api.refreshWork(workId);
-                  setMessage(result.accepted_work_id ? "已刷新元数据" : "未找到可自动接受的在线结果");
-                }, "works");
-                return;
-              }
-              void run(`work-${work.id}`, async () => {
-                const result = await api.refreshWork(work.id);
+              void run(`work-${workId}`, async () => {
+                const result = await api.refreshWork(workId);
                 const failures = result.failures.map((failure) => failure.provider).join("、");
                 setMessage(
                   result.accepted_work_id
-                    ? `已更新 ${work.primary_code ?? work.title} 的在线元数据`
+                    ? "已刷新元数据"
                     : `未找到可自动接受的在线结果${failures ? `；失败来源：${failures}` : ""}`
                 );
               }, "works");
@@ -541,9 +519,8 @@ export function App() {
         {view === "swipe" && !catalogFeed && (
           <Suspense fallback={<p className="muted" aria-busy="true">正在打开播放器…</p>}>
           <SwipeFeedView
-            works={works}
-            loading={worksQuery.isPending}
-            onLibraryMode={setSwipeNeedsWorks}
+            pagedLibrary
+            initialLibrary={swipeLibrary}
             onOpenDetail={openWorkDetail}
             report={setMessage}
           />
@@ -564,9 +541,6 @@ export function App() {
                 await run(`want-${workId}`, async () => {
                   const next = await api.setWantList(workId, wanted);
                   setPrefs(next);
-                  setWorks((items) =>
-                    items.map((item) => (item.id === workId ? { ...item, want_list: wanted } : item))
-                  );
                   setMessage(wanted ? "已加入想看" : "已移出想看");
                 }, "none");
               }}

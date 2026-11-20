@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,7 +12,7 @@ import httpx
 
 from ..db.models import MediaAsset, Work
 from ..db.repository import Repository
-from ..media.artwork import ArtworkStore
+from ..media.artwork import ArtworkDownloadResult, ArtworkStore
 from ..media.screenshots import DEFAULT_SAMPLE_RATIOS, capture_sample_frames
 
 
@@ -49,6 +52,29 @@ def sample_urls_for_work(work: Work) -> list[str]:
     return urls
 
 
+async def acquire_work_artwork(
+    repo: Repository, store: ArtworkStore, work: Work,
+) -> tuple[Work, ArtworkDownloadResult]:
+    work_id = work.id
+    snapshot = Work(id=work_id, artwork=[dict(item) for item in work.artwork])
+    repo.commit()
+    result, local_paths = await store.acquire(snapshot)
+    if local_paths:
+        latest = repo.begin_artwork_update(work_id)
+        if latest is None:
+            repo.rollback()
+            raise ValueError("作品已被移除")
+        original = {item.get("url"): item.get("local_path") for item in snapshot.artwork if isinstance(item.get("url"), str)}
+        filtered = {url: path for url, path in local_paths.items() if any(
+            item.get("url") == url and item.get("local_path") == original.get(url) for item in latest.artwork
+        )}
+        if filtered and "artwork" not in (latest.field_locks or []):
+            repo.update_artwork_local_paths(latest, filtered)
+        work = latest
+        repo.commit()
+    return work, result
+
+
 async def enrich_work_samples(
     repo: Repository,
     work: Work,
@@ -68,9 +94,8 @@ async def enrich_work_samples(
     errors: list[str] = []
     store = ArtworkStore(artwork_root, http_client, max_bytes=max_bytes)
     # Download remote artwork (samples first via store kind handling; posters also cached).
-    result, local_paths = await store.acquire(work)
-    if local_paths:
-        repo.update_artwork_local_paths(work, local_paths)
+    work_id = work.id
+    work, result = await acquire_work_artwork(repo, store, work)
 
     sample_total = count_samples(work)
     local_generated = 0
@@ -132,17 +157,23 @@ async def enrich_work_samples(
             errors=result.errors,
         )
 
-    samples_dir = artwork_root / work.id / "samples"
+    samples_root = artwork_root / work_id / "samples"
+    samples_root.mkdir(parents=True, exist_ok=True)
+    samples_dir = Path(tempfile.mkdtemp(prefix="frames-", dir=samples_root))
+    asset_id, input_path, duration = chosen.id, chosen.path, chosen.duration_seconds
+    repo.commit()
     try:
-        frames = capture_sample_frames(
-            chosen.path,
+        frames = await asyncio.to_thread(
+            capture_sample_frames,
+            input_path,
             samples_dir,
-            duration_seconds=chosen.duration_seconds,
+            duration_seconds=duration,
             ratios=ratios,
             limit=needed,
         )
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
-        errors.append(f"{chosen.path}: {exc}")
+        shutil.rmtree(samples_dir, ignore_errors=True)
+        errors.append(f"{input_path}: {exc}")
         return SampleEnrichResult(
             work_id=work.id,
             web_downloaded=result.downloaded,
@@ -157,16 +188,28 @@ async def enrich_work_samples(
             "kind": "sample",
             "local_path": str(frame.path),
             "source": "local-sample",
-            "asset_id": chosen.id,
+            "asset_id": asset_id,
             "index": frame.index,
             "ratio": frame.ratio,
             "timestamp_seconds": frame.timestamp_seconds,
         }
         for frame in frames
     ]
-    repo.set_sample_frames(work, samples=payload, replace_local=True)
+    latest = repo.begin_artwork_update(work_id)
+    current_asset = repo.get_asset(asset_id)
+    if not latest or not current_asset or current_asset.work_id != work_id or current_asset.path != input_path or "artwork" in (latest.field_locks or []):
+        repo.rollback()
+        shutil.rmtree(samples_dir, ignore_errors=True)
+        return SampleEnrichResult(work_id, result.downloaded, result.cached, 0, sample_total,
+                                  errors=(*result.errors, "抽帧期间文件归属或作品锁已变化"))
+    payload = payload[:max(0, target_count - count_samples(latest))]
+    if payload:
+        repo.set_sample_frames(latest, samples=payload)
+    repo.commit()
+    if not payload:
+        shutil.rmtree(samples_dir, ignore_errors=True)
     local_generated = len(payload)
-    sample_total = count_samples(work)
+    sample_total = count_samples(latest)
     return SampleEnrichResult(
         work_id=work.id,
         web_downloaded=result.downloaded,

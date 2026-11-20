@@ -47,6 +47,7 @@ from .pan_common import (
     PanNotConfiguredError,
     PanOfflineConflictError,
     RemoteVideo,
+    VideoListing,
     ScanPacer,
     SingleFlight,
     is_video_name,
@@ -1042,7 +1043,7 @@ class OpenListService:
             if not is_video_name(root_entry.name):
                 return []
             return [_video(root_entry)]
-        found: list[RemoteVideo] = []
+        found = VideoListing()
         queue: list[tuple[str, int]] = [(root_entry.path, 0)]
         seen = 0
         while queue:
@@ -1050,10 +1051,13 @@ class OpenListService:
             for entry in await self.list_all(folder, pacer=pace):
                 seen += 1
                 if seen > max_entries:
+                    found.complete = False
                     return found
                 if entry.is_dir:
                     if depth + 1 <= max_depth:
                         queue.append((entry.path, depth + 1))
+                    else:
+                        found.complete = False
                     continue
                 if is_video_name(entry.name):
                     found.append(_video(entry))

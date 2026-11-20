@@ -19,8 +19,12 @@ singleflight coalesce so one caller's cancel cannot poison another's resolve.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
+import json
 import logging
+import os
+import tempfile
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -30,7 +34,7 @@ from pathlib import Path
 from .offline_recovery import stream_cache_expiry
 from .pan import DEFAULT_MEDIA_USER_AGENT, PanService, SourceChangedError
 from .pan_common import SingleFlight
-from .strm_export import iter_export_dirs, read_sidecar
+from .strm_export import SIDECAR_NAME, export_revision, export_source_scope, iter_export_dirs, read_sidecar, read_sidecar_scope
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +43,8 @@ URL_CACHE_SIZE = 256
 # Rebuild the sidecar pick-code index on a miss at most this often.
 SIDECAR_INDEX_MIN_AGE = 10.0
 RESOLVE_TIMEOUT_SECONDS = 45.0
+_ManifestStat = tuple[int, int, int, int, int]
+_IndexedPick = tuple[str, str, _ManifestStat]
 
 
 class RelayError(Exception):
@@ -64,14 +70,16 @@ def token_ok(expected: str | None, supplied: str | None) -> bool:
 
 
 class StrmRelay:
-    def __init__(self, pan: PanService) -> None:
+    def __init__(self, pan: PanService, *, index_dir: Path | None = None) -> None:
         self._pan = pan
-        self._picks: OrderedDict[str, str] = OrderedDict()
+        self._index_dir = index_dir
+        self._picks: OrderedDict[tuple[str, int, str, str], str] = OrderedDict()
         # key → (monotonic_expires, target); only entries with known URL expiry.
         self._urls: OrderedDict[str, tuple[float, RelayTarget]] = OrderedDict()
         self._flight: SingleFlight[RelayTarget] = SingleFlight()
-        self._sidecar_picks: dict[str, str] = {}
-        self._sidecar_root: str | None = None
+        self._sidecar_picks: dict[str, _IndexedPick] = {}
+        self._sidecar_generation: tuple[str, str, int] | None = None
+        self._sidecar_lock = asyncio.Lock()
         self._sidecar_built_at: float | None = None
         self.api_pick_lookups = 0
 
@@ -86,6 +94,7 @@ class StrmRelay:
         fingerprint = self._pan.source_fingerprint()
         return "|".join(
             [
+                fingerprint.backend,
                 str(fingerprint.auth_version),
                 fingerprint.account_id,
                 fingerprint.directory_id,
@@ -94,45 +103,116 @@ class StrmRelay:
             ]
         )
 
-    def _build_sidecar_index(self, root: str) -> dict[str, str]:
-        index: dict[str, str] = {}
-        for directory in iter_export_dirs(Path(root)):
-            for entry in read_sidecar(directory):
-                if entry.pick_code and not entry.is_openlist:
-                    index[entry.file_id] = entry.pick_code
-        return index
-
-    async def _sidecar_pick(self, file_id: str) -> str | None:
-        root = self._pan.config_store.load().strm_output_root
-        if not root:
-            return None
-        if self._sidecar_root == root and file_id in self._sidecar_picks:
-            return self._sidecar_picks[file_id]
-        now = time.monotonic()
-        fresh = (
-            self._sidecar_root == root
-            and self._sidecar_built_at is not None
-            and now - self._sidecar_built_at < SIDECAR_INDEX_MIN_AGE
-        )
-        if fresh:
-            return None
+    @staticmethod
+    def _manifest_stat(root: Path, relative: str) -> _ManifestStat | None:
+        manifest = root / relative / SIDECAR_NAME
         try:
-            index = await asyncio.to_thread(self._build_sidecar_index, root)
+            if manifest.is_symlink() or not manifest.resolve().is_relative_to(root):
+                return None
+            entry = manifest.stat()
+            return entry.st_dev, entry.st_ino, entry.st_size, entry.st_mtime_ns, entry.st_ctime_ns
         except OSError:
             return None
-        self._sidecar_picks = index
-        self._sidecar_root = root
-        self._sidecar_built_at = time.monotonic()
-        return index.get(file_id)
+
+    def _index_path(self, root: str, scope: str) -> Path | None:
+        if self._index_dir is None:
+            return None
+        key = hashlib.sha256(json.dumps([root, scope]).encode()).hexdigest()
+        return self._index_dir / f"{key}.json"
+
+    def _read_sidecar_index(self, root: str, scope: str) -> dict[str, _IndexedPick]:
+        path = self._index_path(root, scope)
+        if path is None:
+            return {}
+        try:
+            raw = json.loads(path.read_bytes())
+            if raw.get("version") != 1:
+                return {}
+            return {key: (pick, relative, tuple(revision)) for key, (pick, relative, revision) in raw["picks"].items()}
+        except (OSError, ValueError, TypeError, AttributeError, KeyError):
+            return {}
+
+    def _save_sidecar_index(self, root: str, scope: str, index: dict[str, _IndexedPick]) -> None:
+        path = self._index_path(root, scope)
+        if path is None:
+            return
+        temporary = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=path.parent, mode="w", encoding="utf-8", delete=False) as target:
+                temporary = Path(target.name)
+                json.dump({"version": 1, "picks": index}, target, ensure_ascii=False)
+            os.replace(temporary, path)
+        except OSError:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _build_sidecar_index(self, root: str, scope: str) -> dict[str, _IndexedPick]:
+        export_root = Path(root)
+        index: dict[str, _IndexedPick] = {}
+        for directory in iter_export_dirs(export_root):
+            relative = directory.relative_to(export_root).as_posix()
+            revision = self._manifest_stat(export_root, relative)
+            if revision is None or read_sidecar_scope(directory) != scope:
+                continue
+            entries = read_sidecar(directory)
+            if self._manifest_stat(export_root, relative) != revision:
+                continue
+            for entry in entries:
+                if entry.pick_code and not entry.is_openlist:
+                    index[entry.file_id] = (entry.pick_code, relative, revision)
+        return index
+
+    def _indexed_pick(self, file_id: str, root: str) -> str | None:
+        entry = self._sidecar_picks.get(file_id)
+        if entry is None:
+            return None
+        pick, relative, revision = entry
+        if revision == self._manifest_stat(Path(root), relative):
+            return pick
+        self._sidecar_picks.pop(file_id, None)
+        return None
+
+    async def _sidecar_pick(self, file_id: str, scope: str, root: str) -> str | None:
+        if not root:
+            return None
+        root = str(Path(root).resolve())
+        async with self._sidecar_lock:
+            generation = (root, scope, export_revision())
+            same = generation == self._sidecar_generation
+            if self._sidecar_generation is None or self._sidecar_generation[:2] != generation[:2]:
+                self._sidecar_picks = await asyncio.to_thread(self._read_sidecar_index, root, scope)
+                self._sidecar_generation = generation
+                self._sidecar_built_at = None
+                same = True
+            local = await asyncio.to_thread(self._indexed_pick, file_id, root)
+            if local:
+                return local
+            if same and self._sidecar_built_at is not None and time.monotonic() - self._sidecar_built_at < SIDECAR_INDEX_MIN_AGE:
+                return None
+            try:
+                index = await asyncio.to_thread(self._build_sidecar_index, root, scope)
+            except OSError:
+                return None
+            await asyncio.to_thread(self._save_sidecar_index, root, scope, index)
+            self._sidecar_picks = index
+            self._sidecar_generation = generation
+            self._sidecar_built_at = time.monotonic()
+            return await asyncio.to_thread(self._indexed_pick, file_id, root)
 
     async def _pick_code(self, file_id: str) -> str:
-        cached = self._picks.get(file_id)
+        source = self._pan.source_fingerprint()
+        scope = export_source_scope(source)
+        root = self._pan.config_store.load().strm_output_root or ""
+        key = (scope, source.auth_version, root, file_id)
+        cached = self._picks.get(key)
         if cached:
-            self._picks.move_to_end(file_id)
+            self._picks.move_to_end(key)
             return cached
-        local = await self._sidecar_pick(file_id)
+        local = await self._sidecar_pick(file_id, scope, root)
+        if source != self._pan.source_fingerprint():
+            raise SourceChangedError("pan source changed during STRM lookup")
         if local:
-            self._remember_pick(file_id, local)
             return local
         self.api_pick_lookups += 1
         client = self._pan.get_client()
@@ -140,11 +220,11 @@ class StrmRelay:
         pick = info.get("pick_code") or info.get("pc")
         if not pick:
             raise RelayError(404, "115 file not found")
-        self._remember_pick(file_id, str(pick))
+        self._remember_pick(key, str(pick))
         return str(pick)
 
-    def _remember_pick(self, file_id: str, pick: str) -> None:
-        self._picks[file_id] = pick
+    def _remember_pick(self, key: tuple[str, int, str, str], pick: str) -> None:
+        self._picks[key] = pick
         while len(self._picks) > PICK_CACHE_SIZE:
             self._picks.popitem(last=False)
 
@@ -207,6 +287,8 @@ class StrmRelay:
             raise
         except Exception as exc:
             raise RelayError(502, f"115 lookup failed: {type(exc).__name__}") from exc
+        if self.cache_key(file_id, ua) != key:
+            raise SourceChangedError("pan source changed during STRM lookup")
         client = self._pan.get_client()
         target: RelayTarget | None = None
         try:

@@ -1,5 +1,6 @@
 import os
 import shutil
+from dataclasses import dataclass
 from collections.abc import Callable
 from pathlib import Path
 
@@ -97,6 +98,14 @@ class ScanResult(BaseModel):
     errors: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ScanProbe:
+    stat: os.stat_result
+    locator: str | None
+    media_info: MediaTechnicalInfo
+    oshash: str | None
+
+
 class Scanner:
     def __init__(
         self,
@@ -114,6 +123,7 @@ class Scanner:
         self._non_jav_actor_catalog = non_jav_actor_catalog or NonJavActorCatalog()
         self._artwork_dir = artwork_dir
         self.last_obsolete_codes: tuple[str, ...] = ()
+        self._probes: dict[Path, ScanProbe | Exception] = {}
 
     def scan(
         self,
@@ -124,6 +134,7 @@ class Scanner:
         cancelled: Callable[[], bool] | None = None,
         completed: Callable[[Path], bool] | None = None,
         checkpoint: Callable[[Path, tuple[str, ...]], None] | None = None,
+        release_writes: Callable[[], None] | None = None,
     ) -> ScanResult:
         root = _resolve_library_root(library.root_path)
         discovered = 0
@@ -136,6 +147,8 @@ class Scanner:
         obsolete_codes: list[str] = []
         if progress is not None:
             progress({"progress_current": 0, "progress_total": 0, "phase": "discover"})
+        if release_writes is not None:
+            release_writes()
         paths, directories = _discover_files(
             root, recursive=library.recursive, errors=errors, cancelled=cancelled
         )
@@ -143,8 +156,23 @@ class Scanner:
         for index, path in enumerate(paths, start=1):
             if cancelled is not None and cancelled():
                 break
-            if progress is not None and (index == 1 or index % 25 == 0 or index == total):
-                progress({"progress_current": index, "progress_total": total, "phase": "scan"})
+            if progress is not None and (index - 1) % 25 == 0:
+                progress({"progress_current": index - 1, "progress_total": total, "phase": "scan"})
+            if release_writes is not None and (index - 1) % 25 == 0:
+                release_writes()
+                self._probes.clear()
+                for candidate in paths[index - 1:index + 24]:
+                    if (candidate.suffix.casefold() not in MEDIA_EXTENSIONS or self._path_filter.match(candidate, root)
+                            or (completed is not None and completed(candidate))):
+                        continue
+                    if cancelled is not None and cancelled():
+                        break
+                    try:
+                        self._probes[candidate] = self._probe_asset(candidate)
+                    except (OSError, ValueError) as exc:
+                        self._probes[candidate] = exc
+                if cancelled is not None and cancelled():
+                    break
             if completed is not None and completed(path):
                 skipped += 1
                 continue
@@ -190,6 +218,7 @@ class Scanner:
             else:
                 if checkpoint is not None:
                     checkpoint(path, tuple(obsolete))
+        self._probes.clear()
         self.last_obsolete_codes = tuple(dict.fromkeys(obsolete_codes))
         return ScanResult(
             discovered=discovered,
@@ -201,6 +230,20 @@ class Scanner:
             errors=tuple(errors),
         )
 
+    def _probe_asset(self, path: Path) -> ScanProbe:
+        stat = path.stat()
+        is_strm = path.suffix.casefold() == ".strm"
+        existing = self._repository.get_asset_by_path(str(path))
+        unchanged = bool(existing and existing.size == stat.st_size and existing.modified_ns == stat.st_mtime_ns)
+        locator = read_strm_locator(path) if is_strm else None
+        media_info = (
+            MediaTechnicalInfo.model_validate(existing.media_info)
+            if unchanged and existing is not None and existing.media_info
+            else MediaTechnicalInfo() if is_strm else probe_media_info(path)
+        )
+        oshash = existing.oshash if unchanged and existing is not None else None if is_strm else compute_oshash(path)
+        return ScanProbe(stat, locator, media_info, oshash)
+
     def _scan_asset(
         self,
         library: Library,
@@ -210,29 +253,20 @@ class Scanner:
         sidecars: SidecarDirectory,
         diagnostics: list[str] | None = None,
     ) -> tuple[bool, bool, tuple[str, ...]]:
+        probe = self._probes.pop(path, None)
+        if isinstance(probe, Exception):
+            raise probe
+        if probe is None:
+            probe = self._probe_asset(path)
         stat = path.stat()
-        is_strm = path.suffix.casefold() == ".strm"
+        if (stat.st_dev, stat.st_ino, stat.st_size, stat.st_ctime_ns, stat.st_mtime_ns) != (
+                probe.stat.st_dev, probe.stat.st_ino, probe.stat.st_size, probe.stat.st_ctime_ns, probe.stat.st_mtime_ns):
+            raise ValueError("file changed during scan")
         existing = self._repository.get_asset_by_path(str(path))
-        unchanged = bool(
-            existing and existing.size == stat.st_size and existing.modified_ns == stat.st_mtime_ns
-        )
-        raw_media_locator = read_strm_locator(path) if is_strm else None
-        existing_media_info = (
-            MediaTechnicalInfo.model_validate(existing.media_info)
-            if existing is not None and existing.media_info
-            else None
-        )
-        media_info = (
-            existing_media_info
-            if unchanged and existing_media_info is not None
-            else (MediaTechnicalInfo() if is_strm else probe_media_info(path))
-        )
+        raw_media_locator = probe.locator
+        media_info = probe.media_info
         duration = media_info.duration_seconds
-        oshash = (
-            existing.oshash
-            if unchanged and existing is not None
-            else (None if is_strm else compute_oshash(path))
-        )
+        oshash = probe.oshash
         fingerprints = {"oshash": oshash} if oshash else {}
         context_names = local_context_names(path, root)
         hints = build_identity_hints(

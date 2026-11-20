@@ -33,6 +33,7 @@ from sqlalchemy import (
     event,
     exists,
     func,
+    literal_column,
     or_,
     select,
     text,
@@ -46,7 +47,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from .catalog_duration import DURATION_BANDS, duration_condition, work_duration
-from .catalog_gaps import GAP_NAMES, catalog_year, gap_conditions
+from .catalog_gaps import GAP_NAMES, MetadataGap, catalog_year, gap_conditions
 from .catalog_management import CatalogFilter, build_management_router, organization_relationships
 from .catalog_series import find_series, series_relationships
 from .classifications import DURATION_FORM_IDS, ClassificationSelection, classification_dimensions
@@ -195,6 +196,45 @@ class PeoplePage(BaseModel):
     next_offset: int | None
     total: int = 0
     labels: dict[str, str] = Field(default_factory=dict)
+
+
+class MobilePeoplePage(BaseModel):
+    items: list[PersonCard]
+    next_cursor: str | None
+
+
+_people_projection: WeakKeyDictionary[Engine, tuple[tuple[int, int], tuple[PersonCard, ...]]] = WeakKeyDictionary()
+_people_projection_lock = Lock()
+
+
+def _mobile_person_cards(runtime_state: Runtime, session: Session) -> tuple[tuple[int, int], tuple[PersonCard, ...]]:
+    _sync_people(runtime_state, session)
+    current = dict(session.execute(text(
+        "SELECT name, revision FROM catalog_source_revisions WHERE name IN ('people', 'people_projection')"
+    )).tuples().all())
+    revision = (current.get("people", 0), current.get("people_projection", 0))
+    engine = runtime_state.database.engine
+    with _people_projection_lock:
+        cached = _people_projection.get(engine)
+    if cached is not None and cached[0] == revision and "catalog_signature" not in session.info:
+        return cached
+    profiles = stored_people(session)
+    names = Counter(person.name for person in profiles)
+    cards = tuple(PersonCard(
+        id=person.id, name=person.name, aliases=person.aliases,
+        image_url=f"/api/media/v1/catalog/people/{person.id}/image",
+        work_count=len(person.work_ids), revision=person.revision, same_name=names[person.name] > 1,
+    ) for person in sorted(profiles, key=lambda p: (-len(p.work_ids), p.name.casefold(), p.id)))
+    projection = (revision, cards)
+
+    def committed(_session: Session) -> None:
+        with _people_projection_lock:
+            stored = _people_projection.get(engine)
+            if stored is None or stored[0] <= revision:
+                _people_projection[engine] = projection
+
+    event.listen(session, "after_commit", committed, once=True)
+    return projection
 
 
 class Facet(BaseModel):
@@ -412,11 +452,21 @@ def build_catalog_router(
                 CatalogSeries, CatalogSeries.id == memberships.c.series_id,
             ).where(or_(CatalogSeries.name.icontains(q, autoescape=True),
                         cast(CatalogSeries.aliases, String).icontains(q, autoescape=True)))
-            statement = statement.where(or_(
+            local_match = or_(
                 Work.title.icontains(q, autoescape=True), Work.primary_code.icontains(q, autoescape=True),
                 cast(Work.actors, String).icontains(q, autoescape=True),
                 Work.studio.icontains(q, autoescape=True), Work.label.icontains(q, autoescape=True),
                 Work.series.icontains(q, autoescape=True),
+            )
+            if len(q) >= 3 and q.replace("-", "").isalnum() and session.scalar(text(
+                "SELECT 1 FROM sqlite_master WHERE name = 'mdc_works_fts'"
+            )):
+                candidates = select(literal_column("rowid")).select_from(text("mdc_works_fts")).where(
+                    text("mdc_works_fts MATCH :catalog_query").bindparams(catalog_query=f'"{q}"')
+                )
+                local_match = and_(literal_column("works.rowid").in_(candidates), local_match)
+            statement = statement.where(or_(
+                local_match,
                 Work.id.in_(actor_work_ids), Work.id.in_(organization_matches), Work.id.in_(series_matches),
                 Work.id.in_(select(WorkActor.work_id).join(
                     Actor, Actor.id == WorkActor.actor_id,
@@ -585,6 +635,12 @@ def build_catalog_router(
                                     "999999999", String,
                                 )
             ascending = True
+        elif filters.sort == "swipe":
+            missing_cover = gap_conditions()[MetadataGap.COVER]
+            local = exists(select(1).select_from(MediaAsset).where(MediaAsset.work_id == Work.id))
+            bucket = case((missing_cover, "2"), else_="0").op("||")(case((local, "0"), else_="1"))
+            order_column = cast(bucket, String) + func.substr(Work.id, filters.seed % 24 + 1)
+            ascending = True
         elif filters.sort == "random":
             order_column = func.substr(Work.id, filters.seed % 24 + 1)
             ascending = True
@@ -649,7 +705,7 @@ def build_catalog_router(
         next_cursor = None
         if len(rows) > filters.limit:
             last = rows[filters.limit - 1]
-            if filters.sort in ("title", "code", "random", "ranked"):
+            if filters.sort in ("title", "code", "random", "ranked", "swipe"):
                 value = str(session.scalar(select(order_column).where(Work.id == last.id)))
             elif filters.sort in ("newest", "oldest"):
                 explicit = taxonomies.get(last.id)
@@ -700,6 +756,34 @@ def build_catalog_router(
                  and (work_id is None or work_id in p.work_ids or work_id in p.directed_work_ids)],
                 key=lambda p: (-len(p.work_ids), p.name, p.id),
             )
+
+    if prefix != "/api/catalog":
+        @router.get("/people-cards")
+        def mobile_person_cards(
+            request: Request, q: str = Query(default="", max_length=200),
+            sort: Literal["works", "name"] = "works",
+            limit: int = Query(default=48, ge=1, le=100),
+            cursor: str | None = Query(default=None, max_length=512),
+        ) -> MobilePeoplePage:
+            fold = lambda value: unicodedata.normalize("NFKC", value).casefold().strip()
+            query = fold(q)
+            with runtime(request).database.session() as session:
+                revision, projection = _mobile_person_cards(runtime(request), session)
+            scope = hashlib.sha256(json.dumps([query, sort, revision]).encode()).hexdigest()
+            offset = 0
+            if cursor:
+                try:
+                    offset, fingerprint = json.loads(base64.urlsafe_b64decode(cursor))
+                    if type(offset) is not int or offset < 0 or fingerprint != scope:
+                        raise ValueError("stale pagination")
+                except (ValueError, TypeError) as error:
+                    raise HTTPException(400, "person catalog changed; restart pagination") from error
+            candidates = projection if sort == "works" else sorted(projection, key=lambda p: (fold(p.name), p.id))
+            items = [person for person in candidates if not query or any(
+                query in fold(value) for value in (person.name, *person.aliases)
+            )][offset:offset + limit + 1]
+            next_cursor = base64.urlsafe_b64encode(json.dumps([offset + limit, scope]).encode()).decode() if len(items) > limit else None
+            return MobilePeoplePage(items=items[:limit], next_cursor=next_cursor)
 
     if prefix == "/api/catalog":
         @router.get("/people-cards")

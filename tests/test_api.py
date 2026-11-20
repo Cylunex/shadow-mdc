@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from shadow_mdc.api import app
-from shadow_mdc.db.models import Work
+from shadow_mdc.db.models import MediaAsset, Work
 from shadow_mdc.db.repository import Repository
 from shadow_mdc.domain import Artwork, IdentityHints, ProviderDescriptor, ProviderRecord
 from shadow_mdc.enums import ContentFamily, QueryMode
@@ -123,6 +123,26 @@ def test_library_scan_api_smoke(
         assert item["hints"]["code"] == "SSIS-123"
         assert item["hints"]["mode"] == "code"
 
+        (media_dir / "SSIS-123.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\n测试字幕\n", encoding="utf-8")
+        with app.state.runtime.database.session() as session:
+            session.add(Work(id="local-work", title="Local movie", primary_code="SSIS-123"))
+            session.flush()
+            stored = session.get(MediaAsset, item["id"])
+            assert stored is not None
+            stored.work_id = "local-work"
+        play = client.get("/api/works/local-work/play")
+        assert play.status_code == 200, play.text
+        local = next(source for source in play.json()["sources"] if source["kind"] == "local")
+        assert local["version_id"] == local["source_id"] == item["id"]
+        ranged = client.get(local["url"], headers={"Range": "bytes=0-2"})
+        assert ranged.status_code == 206
+        assert ranged.content == b"not"
+        assert client.head(local["url"]).status_code == 200
+        subtitle = client.get(local["subtitle_url"])
+        assert subtitle.headers["content-type"].startswith("text/vtt")
+        assert "00:00:01.000 --> 00:00:02.000\n测试字幕" in subtitle.text
+        assert client.get(local["url"].replace("local-work", "other-work")).status_code == 404
+
 
 def test_non_jav_local_video_requires_screenshot_but_strm_does_not(
     tmp_path: Path,
@@ -144,7 +164,7 @@ def test_non_jav_local_video_requires_screenshot_but_strm_does_not(
         Path(args[-1]).write_bytes(b"\xff\xd8generated-frame")
         return CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr("shadow_mdc.media.screenshots.shutil.which", lambda command: "ffmpeg")
+    monkeypatch.setattr("shadow_mdc.media.screenshots.shutil.which", lambda command: "ffmpeg" if command == "ffmpeg" else None)
     monkeypatch.setattr("shadow_mdc.media.screenshots.subprocess.run", fake_ffmpeg_run)
 
     with TestClient(app) as client:

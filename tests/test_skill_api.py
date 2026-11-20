@@ -61,6 +61,8 @@ def test_skill_auth_catalog_reads_and_idempotent_domain_changes(
         incomplete = call("works.query", {"missing_metadata": "plot"})["result"]
         assert isinstance(incomplete, dict) and incomplete["total"] == 1
         assert call("system.health", {})["ok"]
+        report = call("catalog.health", {"work_id": "work"})["result"]
+        assert isinstance(report, dict) and report["missing"]["plot"] == 1
         assert call("classifications.assign", {"work_id": "work", "languages": ["languages:ja"]})["ok"]
         assert call("classifications.assign", {"work_id": "work", "languages": ["languages:ja"]})["ok"]
         taxonomy = call("classifications.work", {"work_id": "work"})

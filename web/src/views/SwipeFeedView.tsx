@@ -1,21 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api } from "../api";
+import { api, appUrl } from "../api";
 import { CoverImage } from "../components/CoverImage";
 import { InAppPlayer, type PlayerSource } from "../components/InAppPlayer";
 import { mediaUrl } from "../lib/mediaUrl";
 import type { Work } from "../model";
 
 type Props = {
-  works: Work[];
-  loading: boolean;
-  onOpenDetail: (workId: string) => void;
+  works?: Work[];
+  loading?: boolean;
+  pagedLibrary?: boolean;
+  initialLibrary?: SwipeLibrarySnapshot;
+  onOpenDetail: (workId: string, state?: SwipeLibrarySnapshot) => void;
   report: (message: string) => void;
-  onLibraryMode?: (active: boolean) => void;
 };
 
 type Mode = "tube" | "library";
 type LibraryFilter = "all" | "local" | "want";
+type LibraryCard = Pick<Work, "id" | "title" | "primary_code" | "image_url" | "studio" | "actors" | "has_local_media">;
+type LibraryPage = { items: LibraryCard[]; next: string | null; total: number };
+export type SwipeLibrarySnapshot = LibraryPage & { filter: LibraryFilter; seed: number; activeId: string };
+const EMPTY_WORKS: Work[] = [];
 const MAX_RESOLVE_CACHE = 48;
 const RESOLVE_TTL_MS = 5 * 60 * 1000;
 
@@ -100,14 +105,14 @@ async function enqueueOffline(workId: string, report: (message: string) => void)
   }
 }
 
-export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryMode }: Props) {
-  const [mode, setMode] = useState<Mode>("tube");
-  useEffect(() => {
-    onLibraryMode?.(mode === "library");
-    return () => onLibraryMode?.(false);
-  }, [mode, onLibraryMode]);
-  const [orderKey, setOrderKey] = useState(0);
-  const [filter, setFilter] = useState<LibraryFilter>("all");
+export function SwipeFeedView({ works = EMPTY_WORKS, loading, pagedLibrary, initialLibrary, onOpenDetail, report }: Props) {
+  const [mode, setMode] = useState<Mode>(initialLibrary ? "library" : "tube");
+  const [orderKey, setOrderKey] = useState(() => initialLibrary?.seed ?? Math.floor(Math.random() * 1_000_000));
+  const [filter, setFilter] = useState<LibraryFilter>(initialLibrary?.filter ?? "all");
+  const [page, setPage] = useState<LibraryPage | null>(initialLibrary ?? null);
+  const [pageError, setPageError] = useState("");
+  const pageRequest = useRef<AbortController | null>(null);
+  const restoreCard = useRef(initialLibrary?.activeId);
   const [activeLibId, setActiveLibId] = useState<string | null>(null);
   const [libSources, setLibSources] = useState<PlayerSource[]>([]);
   const [libResolving, setLibResolving] = useState(false);
@@ -135,7 +140,69 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
     return works;
   }, [works, filter]);
 
-  const libraryFeed = useMemo(() => rankWorks(filtered), [filtered, orderKey]);
+  const rankedWorks = useMemo(() => pagedLibrary ? EMPTY_WORKS : rankWorks(filtered), [filtered, orderKey, pagedLibrary]);
+  const libraryFeed = pagedLibrary ? page?.items ?? EMPTY_WORKS : rankedWorks;
+  const nextPage = page?.next ?? null;
+  const loadLibrary = useCallback(async (cursor: string | null) => {
+    if (pageRequest.current) return;
+    const controller = new AbortController();
+    pageRequest.current = controller;
+    setPageError("");
+    try {
+      const path = "/api/catalog/works/query";
+      const response = await fetch(appUrl(path) ?? path, {
+        method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
+        body: JSON.stringify({
+          sort: "swipe", seed: orderKey, cursor, limit: 18,
+          status: filter === "local" ? "files" : filter,
+        }),
+      });
+      if (!response.ok) throw new Error("片库读取失败");
+      const result: {
+        items: (Pick<LibraryCard, "id" | "title" | "studio" | "actors" | "has_local_media"> & {
+          code: string | null; poster: string;
+        })[];
+        next_cursor: string | null;
+        total: number;
+      } = await response.json();
+      if (controller.signal.aborted) return;
+      const added = result.items.map(item => ({ ...item, primary_code: item.code, image_url: item.poster }));
+      setPage(previous => ({
+        items: [...new Map([...(cursor ? previous?.items ?? [] : []), ...added].map(item => [item.id, item])).values()],
+        next: result.next_cursor, total: result.total,
+      }));
+    } catch (error) {
+      if (!controller.signal.aborted) setPageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (pageRequest.current === controller) pageRequest.current = null;
+    }
+  }, [filter, orderKey]);
+
+  useEffect(() => {
+    if (!pagedLibrary || mode !== "library") return;
+    if (!restoreCard.current) void loadLibrary(null);
+    return () => {
+      pageRequest.current?.abort();
+      pageRequest.current = null;
+    };
+  }, [loadLibrary, mode, pagedLibrary]);
+
+  useEffect(() => {
+    const id = restoreCard.current;
+    const scroller = scrollerRef.current;
+    if (mode !== "library" || !id || !scroller) return;
+    const card = document.getElementById(`swipe-card-${id}`);
+    if (!card) return;
+    scroller.scrollTo({ top: card.offsetTop - (scroller.firstElementChild as HTMLElement).offsetTop, behavior: "instant" });
+    restoreCard.current = undefined;
+  }, [libraryFeed, mode]);
+
+  function changeFilter(value: LibraryFilter) {
+    if (value === filter) return;
+    setPage(null);
+    setPageError("");
+    setFilter(value);
+  }
   const activeTubeItem = useMemo(
     () => tubeItems.find((item) => tubeKey(item) === activeTubeKey),
     [tubeItems, activeTubeKey],
@@ -261,7 +328,9 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
   }, [mode, tubeReady, tubeLoading, loadTube]);
 
   const reshuffle = useCallback(() => {
-    setOrderKey((value) => value + 1);
+    setPage(null);
+    setPageError("");
+    setOrderKey((value) => (value + 1) % 1_000_000);
     requestAnimationFrame(() => {
       scrollerRef.current?.scrollTo({ top: 0 });
     });
@@ -296,21 +365,23 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
           .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
         if (!visible) return;
         const key = (visible.target as HTMLElement).dataset.swipeKey || null;
+        const index = cards.findIndex((card) => card.dataset.swipeKey === key);
         if (mode === "tube") {
           setActiveTubeKey(key);
-          const idx = cards.findIndex((c) => c.dataset.swipeKey === key);
-          if (idx >= cards.length - 3 && tubeHasMore && !tubeLoading && !tubeError) {
+          if (index >= cards.length - 3 && tubeHasMore && !tubeLoading && !tubeError) {
             void loadTube();
           }
         } else {
           if (libraryRequest.current && libraryRequest.current.workId !== key) stopLibraryPlay();
+          if (index >= cards.length - 4 && pagedLibrary && nextPage && !pageError) void loadLibrary(nextPage);
         }
       },
       { root, threshold: [0.55, 0.75] },
     );
     cards.forEach((c) => io.observe(c));
     return () => io.disconnect();
-  }, [mode, tubeItems, libraryFeed, tubeHasMore, tubeLoading, tubeError, loadTube, orderKey, stopLibraryPlay]);
+  }, [mode, tubeItems, libraryFeed, tubeHasMore, tubeLoading, tubeError, loadTube, orderKey,
+    stopLibraryPlay, pagedLibrary, nextPage, pageError, loadLibrary]);
 
   // Resolve active tube item
   useEffect(() => {
@@ -359,7 +430,7 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
     };
   }, [activeTubeKey, activeTubeItem, mode, report]);
 
-  const openLibraryPlay = async (work: Work) => {
+  const openLibraryPlay = async (work: LibraryCard) => {
     libraryRequest.current?.controller.abort();
     const controller = new AbortController();
     libraryRequest.current = { workId: work.id, controller };
@@ -371,7 +442,7 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
       if (controller.signal.aborted) return;
       const preferred = resolved.chosen || resolved.preferred;
       const list = (resolved.sources ?? []).map((s) => ({
-        mime_type: s.mime_type, source_id: s.source_id, version_id: s.version_id,
+        mime_type: s.mime_type, subtitle_url: s.subtitle_url, source_id: s.source_id, version_id: s.version_id,
         kind: s.kind,
         label: s.label,
         url: s.url,
@@ -425,21 +496,22 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
       </div>
       {mode === "library" ? (
         <>
-          <span className="swipe-feed-hint">上下滑 · J/K · {libraryFeed.length} 部</span>
+          <span className="swipe-feed-hint">上下滑 · J/K · {page?.total ?? libraryFeed.length} 部</span>
           <div className="swipe-feed-filters" role="group" aria-label="本库筛选">
-            <button type="button" className={filter === "all" ? "warm" : "ghost"} onClick={() => setFilter("all")}>
+            <button type="button" className={filter === "all" ? "warm" : "ghost"} onClick={() => changeFilter("all")}>
               全部
             </button>
-            <button type="button" className={filter === "local" ? "warm" : "ghost"} onClick={() => setFilter("local")}>
+            <button type="button" className={filter === "local" ? "warm" : "ghost"} onClick={() => changeFilter("local")}>
               本地
             </button>
-            <button type="button" className={filter === "want" ? "warm" : "ghost"} onClick={() => setFilter("want")}>
+            <button type="button" className={filter === "want" ? "warm" : "ghost"} onClick={() => changeFilter("want")}>
               想看
             </button>
           </div>
           <button type="button" className="ghost" onClick={reshuffle}>
             打乱
           </button>
+          {pageError && <button type="button" className="secondary" onClick={() => void loadLibrary(nextPage)}>重试加载</button>}
         </>
       ) : (
         <>
@@ -489,7 +561,7 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
   );
 
   if (mode === "library") {
-    if (loading) {
+    if (loading || (pagedLibrary && !page && !pageError)) {
       return (
         <section className="swipe-feed swipe-feed--loading" aria-busy="true" aria-label="刷流加载中">
           {toolbar}
@@ -501,7 +573,7 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
       return (
         <section className="swipe-feed swipe-feed--empty">
           {toolbar}
-          <p>片库为空。先在「影片」里扫库或导入作品。</p>
+          <p>{pageError || "没有符合筛选的作品。"}</p>
         </section>
       );
     }
@@ -567,7 +639,7 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
               return (
                 <article
                   key={`${work.id}-${orderKey}`}
-                  className="swipe-card"
+                  className="swipe-card swipe-card--library"
                   data-swipe-key={work.id}
                   data-index={index}
                   id={`swipe-card-${work.id}`}
@@ -622,7 +694,9 @@ export function SwipeFeedView({ works, loading, onOpenDetail, report, onLibraryM
                           >
                             {offlineId === work.id ? "提交中…" : "入库"}
                           </button>
-                          <button type="button" className="secondary" onClick={() => onOpenDetail(work.id)}>
+                          <button type="button" className="secondary" onClick={() => onOpenDetail(
+                            work.id, page ? { ...page, filter, seed: orderKey, activeId: work.id } : undefined,
+                          )}>
                             详情
                           </button>
                         </div>

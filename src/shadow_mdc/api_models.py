@@ -739,6 +739,7 @@ class MediaServerSettingsPayload(BaseModel):
 
 
 class PlaySourceOut(BaseModel):
+    subtitle_url: str | None = None
     mime_type: str | None = None
     version_id: str | None = None
     source_id: str | None = None

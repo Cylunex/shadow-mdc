@@ -197,10 +197,12 @@ from .media.artwork import (
     resolve_work_display_images,
 )
 from .media.magnets import MagnetLink
-from .media.nfo import build_nfo, parse_nfo
+from .media.nfo import build_nfo
+from .media.nfo_import import apply_nfo_locked_fields, nfo_provider_record, parse_movie_nfo
 from .media.organize_journal import JournalEntry, OrganizeJournal, UndoReport, undo_entries
 from .media.organizer import Organizer, plan_move_cleanup
-from .media.parts import part_group_key
+from .media.parts import find_subtitles, part_group_key
+from .media.subtitle_validation import srt_to_webvtt
 from .media.screenshots import capture_screenshot
 from .media_api import build_media_router
 from .providers import (
@@ -664,7 +666,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task_events=task_events,
         discover=discover_service,
         response_cache=response_cache,
-        strm_relay=StrmRelay(pan_service),
+        strm_relay=StrmRelay(pan_service, index_dir=settings.data_dir / "strm-pick-index"),
         subtitle_backfill=SubtitleBackfillJob(
             database=database,
             fetcher_factory=settings.subtitlecat_fetcher,
@@ -1650,6 +1652,51 @@ def work_emby_link(work_id: str, request: Request, repo: Repo) -> dict[str, str 
 
 
 
+_LOCAL_WEB_VIDEO = {".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm"}
+
+
+def _local_play_path(repo: Repository, asset: MediaAsset) -> Path | None:
+    library = repo.get_library(asset.library_id)
+    if library is None:
+        return None
+    try:
+        root = Path(library.root_path).resolve()
+        target = Path(asset.path).resolve()
+        if target.is_relative_to(root) and target.suffix.casefold() in _LOCAL_WEB_VIDEO and target.is_file():
+            return target
+    except OSError:
+        return None
+    return None
+
+
+@app.api_route("/api/works/{work_id}/local/{asset_id}", methods=["GET", "HEAD"])
+def work_local_video(work_id: str, asset_id: str, repo: Repo) -> FileResponse:
+    asset = repo.get_asset(asset_id)
+    path = _local_play_path(repo, asset) if asset is not None and asset.work_id == work_id else None
+    if path is None:
+        raise HTTPException(404, "local media is not available")
+    return FileResponse(path, media_type=_LOCAL_WEB_VIDEO[path.suffix.casefold()], headers={"Cache-Control": "private, no-store"})
+
+
+@app.get("/api/works/{work_id}/local/{asset_id}/subtitle.vtt")
+def work_local_subtitle(work_id: str, asset_id: str, repo: Repo) -> Response:
+    asset = repo.get_asset(asset_id)
+    work = repo.get_work(work_id)
+    path = _local_play_path(repo, asset) if asset is not None and asset.work_id == work_id else None
+    if path is None or work is None:
+        raise HTTPException(404, "local media is not available")
+    for subtitle in find_subtitles(path, work.primary_code):
+        if subtitle.suffix.casefold() != ".srt":
+            continue
+        try:
+            with subtitle.open("rb") as stream:
+                content = srt_to_webvtt(stream.read(8 * 1024 * 1024 + 1))
+        except (OSError, ValueError):
+            continue
+        return Response(content, media_type="text/vtt", headers={"Cache-Control": "private, no-store"})
+    raise HTTPException(404, "paired SRT subtitle is not available")
+
+
 @app.get("/api/works/{work_id}/play", response_model=PlayResolveOut)
 async def work_play_resolve(work_id: str, request: Request, repo: Repo) -> PlayResolveOut:
     """Resolve Emby deep link + local-configured external / VOD m3u8 sources for a work."""
@@ -1669,12 +1716,22 @@ async def work_play_resolve(work_id: str, request: Request, repo: Repo) -> PlayR
         client=app_runtime.http,
     )
     chosen = result.chosen or result.preferred
+    local = []
+    for asset in repo.list_assets_for_work(work_id):
+        path = _local_play_path(repo, asset)
+        if path is None:
+            continue
+        url = f"/api/works/{work_id}/local/{asset.id}"
+        subtitle = any(p.suffix.casefold() == ".srt" for p in find_subtitles(path, work.primary_code))
+        local.append(PlaySourceOut(kind="local", label=path.name, url=url, playable_in_app=True,
+                                   version_id=asset.id, source_id=asset.id, mime_type=_LOCAL_WEB_VIDEO[path.suffix.casefold()],
+                                   subtitle_url=f"{url}/subtitle.vtt" if subtitle else None))
     return PlayResolveOut(
         work_id=result.work_id,
         code=result.code,
         preferred=PlaySourceOut.model_validate(result.preferred.model_dump()) if result.preferred else None,
-        chosen=PlaySourceOut.model_validate(chosen.model_dump()) if chosen else None,
-        sources=[PlaySourceOut.model_validate(s.model_dump()) for s in result.sources],
+        chosen=PlaySourceOut.model_validate(chosen.model_dump()) if chosen else (local[0] if local else None),
+        sources=[*local, *(PlaySourceOut.model_validate(s.model_dump()) for s in result.sources)],
         failures=[PlayProbeFailureOut.model_validate(f.model_dump()) for f in result.failures],
         emby_in_library=result.emby_in_library,
         sites_loaded=bool(sites.external_sites or sites.vod_providers),
@@ -2227,36 +2284,19 @@ def import_nfo(payload: NfoImportRequest, repo: Repo) -> NfoImportResultOut:
     if not path.is_file():
         raise HTTPException(status_code=404, detail="nfo file not found")
     try:
-        fields = parse_nfo(path)
+        parsed = parse_movie_nfo(path, allow_wrapper=True)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"invalid nfo: {exc}") from exc
-    title = fields.get("title")
-    if not isinstance(title, str) or not title.strip():
+    title = parsed.title
+    if not title:
         raise HTTPException(status_code=422, detail="nfo missing title")
     if payload.dry_run:
         return NfoImportResultOut(path=str(path), dry_run=True, title=title, detail="ok")
-    code = fields.get("code") if isinstance(fields.get("code"), str) else None
-    actors_raw = fields.get("actors") if isinstance(fields.get("actors"), list) else []
-    tags_raw = fields.get("tags") if isinstance(fields.get("tags"), list) else []
-    actors = tuple(str(item) for item in actors_raw if isinstance(item, str) and item.strip())
-    tags = tuple(str(item) for item in tags_raw if isinstance(item, str) and item.strip())
-    record = ProviderRecord(
-        provider="nfo-import",
-        external_id=f"nfo:{path.resolve()}",
-        title=title.strip(),
-        original_title=fields.get("original_title") if isinstance(fields.get("original_title"), str) else None,
-        family=ContentFamily.UNKNOWN,
-        category=MediaCategory.OTHER,
-        code=code,
-        studio=fields.get("studio") if isinstance(fields.get("studio"), str) else None,
-        series=fields.get("series") if isinstance(fields.get("series"), str) else None,
-        plot=fields.get("plot") if isinstance(fields.get("plot"), str) else None,
-        actors=actors,
-        tags=tags,
-    )
-    existing = repo.find_work_by_code(code) if code else None
+    existing = repo.find_work_by_code(parsed.code) if parsed.code else None
     created = existing is None
+    record = nfo_provider_record(parsed).model_copy(update={"external_id": f"nfo:{path.resolve()}"})
     work = repo.upsert_provider_record(record, overwrite=True)
+    apply_nfo_locked_fields(repo, work, parsed)
     return NfoImportResultOut(
         path=str(path),
         dry_run=False,
@@ -3349,7 +3389,6 @@ def _execute_scan(
     def save_file(path: Path, obsolete: tuple[str, ...]) -> None:
         repo.save_library_scan_item(task.id, path_key(path), obsolete)
         obsolete_codes.update(obsolete)
-        repo.commit()
 
     try:
         with app_runtime.library_scan_setup:
@@ -3368,7 +3407,7 @@ def _execute_scan(
             non_jav_actor_catalog = app_runtime.non_jav_actor_store.load()
         def _scan_progress(summary: dict[str, object]) -> None:
             repo.update_task_progress(task, summary)
-            if background:
+            if summary.get("phase") == "discover":
                 repo.commit()
             app_runtime.task_events.notify()
 
@@ -3387,6 +3426,7 @@ def _execute_scan(
             cancelled=lambda: _task_cancelled(app_runtime, repo, task.id, background=background),
             completed=(lambda path: path_key(path) in completed_paths) if background else None,
             checkpoint=save_file if background else None,
+            release_writes=repo.commit,
         )
         obsolete_codes.update(scanner.last_obsolete_codes)
         if obsolete_codes:
@@ -4987,6 +5027,7 @@ async def generate_library_samples(
     if library is None:
         raise HTTPException(status_code=404, detail="library not found")
     task = repo.create_task_run(kind="samples", scope=library.root_path)
+    repo.commit()
     attempted = 0
     enriched = 0
     web_downloaded = 0
@@ -5091,6 +5132,7 @@ async def generate_library_screenshots(
     if library is None:
         raise HTTPException(status_code=404, detail="library not found")
     task = repo.create_task_run(kind="screenshots:non-jav", scope=library.root_path)
+    repo.commit()
     generated = 0
     skipped_strm = 0
     skipped_cached = 0
@@ -5120,19 +5162,36 @@ async def generate_library_screenshots(
             continue
         attempted += 1
         try:
+            asset_id, input_path, duration, work_id = asset.id, asset.path, asset.duration_seconds, work.id
+            repo.commit()
+            output = runtime(request).settings.data_dir / "artwork" / work_id
+            output.mkdir(parents=True, exist_ok=True)
+            destination = Path(tempfile.mkdtemp(prefix="screenshot-", dir=output))
             capture = await asyncio.to_thread(
                 capture_screenshot,
-                asset.path,
-                runtime(request).settings.data_dir / "artwork" / work.id,
-                duration_seconds=asset.duration_seconds,
+                input_path,
+                destination,
+                duration_seconds=duration,
             )
+            current = repo.begin_artwork_update(work_id)
+            current_asset = repo.get_asset(asset_id)
+            if (current is None or current_asset is None or current_asset.work_id != work_id
+                    or current_asset.path != input_path or "artwork" in (current.field_locks or [])
+                    or _asset_generated_artwork_ready(current_asset, current)):
+                repo.rollback()
+                skipped_cached += 1
+                for path in (capture.poster, capture.fanart):
+                    path.unlink(missing_ok=True)
+                destination.rmdir()
+                continue
             repo.set_generated_artwork(
-                work,
-                asset_id=asset.id,
+                current,
+                asset_id=asset_id,
                 fanart_path=str(capture.fanart),
                 poster_path=str(capture.poster),
                 timestamp_seconds=capture.timestamp_seconds,
             )
+            repo.commit()
             generated += 1
         except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
             failed += 1

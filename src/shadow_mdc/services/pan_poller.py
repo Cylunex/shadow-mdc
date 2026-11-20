@@ -36,9 +36,11 @@ from .pan import (
     PanSettings,
     RemoteVideo,
     ScanPacer,
+    SourceChangedError,
     is_file_gone_error,
     write_offline_strm_changed,
 )
+from .pan_common import VideoListing
 from .strm_export import (
     ExportResult,
     MigrateResult,
@@ -46,6 +48,7 @@ from .strm_export import (
     RematerializeResult,
     RewriteResult,
     StrmConfigError,
+    export_source_scope,
     export_work,
     map_to_emby_path,
     migrate_strm_tree,
@@ -380,6 +383,7 @@ class PanOfflinePoller:
         return True
 
     async def _complete(self, completion: _Completion, cfg: PanSettings) -> None:
+        source = self._pan.source_fingerprint()
         client = self._pan.get_client()
         remote_name = completion.name
         remote_path = remote_name
@@ -435,6 +439,7 @@ class PanOfflinePoller:
                 except Exception as exc:
                     logger.warning("115 walk failed for %s: %s", completion.file_id, type(exc).__name__)
             if videos:
+                complete = not isinstance(videos, VideoListing) or videos.complete
                 prefix = "/".join(ancestors)
                 videos = [
                     RemoteVideo(
@@ -454,12 +459,16 @@ class PanOfflinePoller:
                         work = repo.get_work(completion.work_id)
                         identities = repo.identities_for_work(work.id) if work is not None else []
                         code = work_code or Path(remote_name or "offline").stem
+                        if self._pan.source_fingerprint() != source:
+                            raise SourceChangedError("网盘来源在导出前已变更")
                         export_result = export_work(
                             settings=cfg,
                             code=code,
                             videos=videos,
                             work=work,
                             identities=identities,
+                            source_scope=export_source_scope(source),
+                            complete=complete,
                         )
                     export_dir = export_result.directory
                     strm_path = str(export_result.strm_paths[0]) if export_result.strm_paths else None
@@ -635,6 +644,7 @@ class PanOfflinePoller:
         cfg: PanSettings,
         listings: dict[str, list[OpenListEntry] | None],
     ) -> None:
+        source = self._pan.source_fingerprint()
         with self._database.session() as session:
             repo = Repository(session)
             row = repo.get_pan_offline_task(task_id)
@@ -725,6 +735,7 @@ class PanOfflinePoller:
                 logger.warning("OpenList walk failed: %s", type(exc).__name__)
                 error = f"OpenList walk failed: {type(exc).__name__}"
             if videos:
+                complete = not isinstance(videos, VideoListing) or videos.complete
                 if needs_art and self._data_dir is not None:
                     await self._acquire_artwork(work_id)
                 try:
@@ -733,12 +744,16 @@ class PanOfflinePoller:
                         work = repo.get_work(work_id)
                         identities = repo.identities_for_work(work.id) if work is not None else []
                         code = work_code or Path(entry.name).stem
+                        if self._pan.source_fingerprint() != source:
+                            raise SourceChangedError("网盘来源在导出前已变更")
                         export_result = export_work(
                             settings=cfg,
                             code=code,
                             videos=videos,
                             work=work,
                             identities=identities,
+                            source_scope=export_source_scope(source),
+                            complete=complete,
                         )
                     strm_path = str(export_result.strm_paths[0]) if export_result.strm_paths else None
                     await self._fetch_subtitle(code, export_result)
@@ -992,6 +1007,7 @@ class PanOfflinePoller:
         if not cfg.strm_output_root or not (open115_ready or openlist_ready):
             return ReconcileResult()
         pacer = ScanPacer()
+        source = self._pan.source_fingerprint()
 
         async def exists(file_id: str) -> bool | None:
             # Sidecar ids: 115 file id, or an absolute OpenList path (keyed by path).
@@ -1016,7 +1032,11 @@ class PanOfflinePoller:
         async with self._maintenance_lock:
             self.maintenance.running = "reconcile"
             try:
-                result = await reconcile_deleted(Path(cfg.strm_output_root), exists)
+                async def check_source(file_id: str) -> bool | None:
+                    status = await exists(file_id)
+                    return status if self._pan.source_fingerprint() == source else None
+
+                result = await reconcile_deleted(Path(cfg.strm_output_root), check_source, source_scope=export_source_scope(source))
             finally:
                 self.maintenance.running = None
         if result.removed:

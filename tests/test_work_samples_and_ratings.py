@@ -54,6 +54,27 @@ async def test_fanza_parses_samples_rating_and_reviews() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fanza_keeps_graphql_identity_and_enriches_with_html() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "graphql" in str(request.url):
+            import json
+            content_id = json.loads(request.content)["variables"]["id"]
+            return httpx.Response(200, json={"data": {"ppvContent": {
+                "id": content_id, "title": "GraphQL title",
+            }}}, request=request)
+        return httpx.Response(200, text=_fixture("fanza_detail.html"), request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        records = await FanzaProvider(client, "https://fixture.test").search(
+            IdentityHints(term="IPX-219", mode=QueryMode.CODE, code="IPX-219"),
+        )
+    record, = records
+    assert record.title == "GraphQL title"
+    assert record.rating == pytest.approx(4.52) and record.rating_count == 128
+    assert record.reviews and any(art.kind == "sample" for art in record.artwork)
+
+
+@pytest.mark.asyncio
 async def test_javbus_and_jav321_and_r18dev_expose_sample_stills() -> None:
     async def javbus_handler(request: httpx.Request) -> httpx.Response:
         if "/search/" in request.url.path:
@@ -141,7 +162,7 @@ def test_capture_sample_frames_writes_ratio_files(
         Path(args[-1]).write_bytes(b"\xff\xd8frame")
         return CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr("shadow_mdc.media.screenshots.shutil.which", lambda command: "ffmpeg")
+    monkeypatch.setattr("shadow_mdc.media.screenshots.shutil.which", lambda command: "ffmpeg" if command == "ffmpeg" else None)
     monkeypatch.setattr("shadow_mdc.media.screenshots.subprocess.run", fake_ffmpeg_run)
     frames = capture_sample_frames(source, out, duration_seconds=100.0, ratios=(0.1, 0.5), limit=2)
     assert len(frames) == 2
@@ -166,7 +187,7 @@ def test_work_samples_api_prefers_web_then_local_fallback(
         Path(args[-1]).write_bytes(b"\xff\xd8generated-frame")
         return CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr("shadow_mdc.media.screenshots.shutil.which", lambda command: "ffmpeg")
+    monkeypatch.setattr("shadow_mdc.media.screenshots.shutil.which", lambda command: "ffmpeg" if command == "ffmpeg" else None)
     monkeypatch.setattr("shadow_mdc.media.screenshots.subprocess.run", fake_ffmpeg_run)
 
     with TestClient(app) as client:

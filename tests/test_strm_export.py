@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -188,7 +189,7 @@ def test_openlist_mode_export_uses_prefix(tmp_path: Path) -> None:
 def test_rewrite_rotates_token_and_base_in_place(tmp_path: Path) -> None:
     root = tmp_path / "emby"
     export_work(settings=_relay_settings(root), code="AAA-1", videos=[_video("101", "a.mp4")])
-    # A hand-made relay .strm without sidecar is still rewritable by file id.
+    # A hand-made relay link has no ownership evidence.
     manual = root / "manual" / "M.strm"
     manual.parent.mkdir(parents=True)
     manual.write_text("http://old:1/api/strm/play/777?token=t1\n")
@@ -198,11 +199,11 @@ def test_rewrite_rotates_token_and_base_in_place(tmp_path: Path) -> None:
 
     rotated = _relay_settings(root, strm_public_base_url="https://media.example", strm_token="t2")
     result = rewrite_strm_tree(root, rotated)
-    assert len(result.rewritten) == 2
+    assert len(result.rewritten) == 1
     assert (
         root / "Unknown Studio" / "AAA-1" / "AAA-1.strm"
     ).read_text().strip() == "https://media.example/api/strm/play/101?token=t2"
-    assert manual.read_text().strip() == "https://media.example/api/strm/play/777?token=t2"
+    assert manual.read_text().strip() == "http://old:1/api/strm/play/777?token=t1"
     assert other.read_text().strip() == "/mnt/media/k.mp4"
     assert rewrite_strm_tree(root, rotated).rewritten == []
 
@@ -247,6 +248,65 @@ def test_reconcile_removes_only_definitively_gone(tmp_path: Path) -> None:
     assert (root / "Unknown Studio" / "LIVE-1").is_dir() and (root / "Unknown Studio" / "HALF-1").is_dir() and (root / "Unknown Studio" / "UNK-1").is_dir()
     assert result.unknown == 1 and result.kept == 2 and root.is_dir()
 
+
+def test_reexport_and_reconcile_preserve_manual_files(tmp_path: Path) -> None:
+    settings = _relay_settings(tmp_path)
+    initial = export_work(settings=settings, code="ABC-123", videos=[_video("one", "ABC-123.mp4")])
+    modified = initial.strm_paths[0]
+    modified.write_text("https://example.test/manual\n")
+    notes = initial.directory / "notes.txt"
+    notes.write_text("keep")
+    added = initial.directory / "bonus.strm"
+    added.write_text("https://example.test/bonus\n")
+
+    result = export_work(settings=settings, code="ABC-123", videos=[_video("one", "ABC-123.mp4")])
+    assert result.strm_paths != initial.strm_paths
+    assert not export_work(settings=settings, code="ABC-123", videos=[_video("one", "ABC-123.mp4")]).changed
+
+    async def unknown(_: str) -> bool | None:
+        return None
+
+    assert asyncio.run(reconcile_deleted(tmp_path, unknown)).unknown == 1
+    assert result.strm_paths[0].is_file()
+
+    async def gone(_: str) -> bool | None:
+        return False
+
+    asyncio.run(reconcile_deleted(tmp_path, gone))
+    assert not result.strm_paths[0].exists()
+    assert modified.read_text() == "https://example.test/manual\n"
+    assert notes.read_text() == "keep"
+    assert added.read_text() == "https://example.test/bonus\n"
+
+
+def test_strm_quality_versions_and_short_explicit_parts(tmp_path: Path) -> None:
+    versions = export_work(settings=_relay_settings(tmp_path), code="ABC-123",
+                           videos=[_video("u", "ABC-123-4K.mp4", 100), _video("h", "ABC-123-1080p.mp4", 100)])
+    assert len(versions.strm_paths) == 2 and all("-cd" not in path.name for path in versions.strm_paths)
+    stacked = plan_strm_entries("ABC-456", [_video("p1", "movie-disc1.mp4", 100), _video("p2", "movie-disc2.mp4", 2)])
+    assert [entry.name for entry in stacked] == ["ABC-456-cd1.strm", "ABC-456-cd2.strm"]
+
+
+def test_export_nfo_keeps_external_fields_across_reexports(tmp_path: Path) -> None:
+    from shadow_mdc.db.models import Work
+
+    work = Work(id="work", primary_code="ABC-123", title="影片", plot="旧简介",
+                actors=[], tags=[], directors=["自动导演"], artwork=[])
+    options = dict(settings=_relay_settings(tmp_path), code="ABC-123", videos=[_video("id", "movie.mp4")], work=work)
+    first = export_work(**options)
+    assert first.nfo_path is not None
+    nfo = first.nfo_path
+    nfo.write_text(nfo.read_text().replace("自动导演", "手工导演").replace(
+        "</movie>", '<plugin data="manual" />\n</movie>',
+    ))
+    work.plot = "新简介"
+    work.directors = ["另一自动导演"]
+    export_work(**options)
+    work.plot = "再更新简介"
+    export_work(**options)
+    assert "手工导演" in nfo.read_text()
+    assert 'data="manual"' in nfo.read_text()
+    assert "再更新简介" in nfo.read_text()
 
 def test_file_gone_error_codes() -> None:
     assert is_file_gone_error(PanApiError("gone", code=430004))
@@ -563,6 +623,7 @@ def test_rematerialize_layout_moves_flat_to_studio_code(tmp_path: Path) -> None:
         "AAA-1",
         [StrmEntry("AAA-1.strm", "/media/115/a.mp4", remote_path="/media/115/a.mp4")],
         work_id="w1",
+        managed={"AAA-1.strm": hashlib.sha256((old / "AAA-1.strm").read_bytes()).hexdigest()},
     )
     work = Work(
         id="w1",
@@ -602,8 +663,8 @@ def test_rematerialize_layout_moves_flat_to_studio_code(tmp_path: Path) -> None:
     assert again.skipped == 1
 
 
-def test_reconcile_drops_unlisted_strm(tmp_path: Path) -> None:
-    """Incremental orphan cleanup: keep live sources, delete stale .strm not in sidecar."""
+def test_reconcile_preserves_unlisted_strm(tmp_path: Path) -> None:
+    """Unlisted STRM files are user files until ownership is established."""
 
     root = tmp_path / "emby"
     settings = _relay_settings(root)
@@ -621,7 +682,7 @@ def test_reconcile_drops_unlisted_strm(tmp_path: Path) -> None:
 
     result = asyncio.run(reconcile_deleted(root, exists))
     assert result.kept == 1
-    assert [path.name for path in result.orphan_strm_removed] == ["KEEP-1-cd9.strm"]
-    assert not ghost.exists()
+    assert result.orphan_strm_removed == []
+    assert ghost.exists()
     assert (folder / "KEEP-1-cd1.strm").is_file()
     assert (folder / "KEEP-1-cd2.strm").is_file()

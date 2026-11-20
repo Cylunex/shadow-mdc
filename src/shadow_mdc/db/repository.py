@@ -7,8 +7,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, delete, event, exists, func, literal, or_, select
+from sqlalchemy import Engine, create_engine, delete, event, exists, func, literal, or_, select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, load_only, sessionmaker
 
 from ..actress_aliases import merge_actor_names
@@ -160,6 +161,17 @@ class Database:
             connection.exec_driver_sql(
                 "INSERT OR IGNORE INTO catalog_source_revisions VALUES ('people', 0)"
             )
+            connection.exec_driver_sql(
+                "INSERT OR IGNORE INTO catalog_source_revisions VALUES ('people_projection', 0)"
+            )
+            for table in ("catalog_people", "catalog_person_references", "catalog_person_credits"):
+                for operation in ("INSERT", "UPDATE", "DELETE"):
+                    connection.exec_driver_sql(
+                        f"CREATE TRIGGER IF NOT EXISTS catalog_projection_{table}_{operation.lower()} "
+                        f"AFTER {operation} ON {table} BEGIN "
+                        "UPDATE catalog_source_revisions SET revision = revision + 1 "
+                        "WHERE name = 'people_projection'; END"
+                    )
             for table in ("actors", "works", "work_actors"):
                 for operation in ("INSERT", "UPDATE", "DELETE"):
                     connection.exec_driver_sql(
@@ -172,6 +184,29 @@ class Database:
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_works_mobile_created_at_id ON works (created_at, id)"
             )
+            if not connection.exec_driver_sql(
+                "SELECT 1 FROM sqlite_master WHERE name = 'mdc_works_fts'"
+            ).first():
+                columns = "title, primary_code, actors, studio, label, series"
+                try:
+                    connection.exec_driver_sql(
+                        f"CREATE VIRTUAL TABLE mdc_works_fts USING fts5({columns}, content='', tokenize='trigram')"
+                    )
+                except OperationalError:
+                    pass  # SQLite without the trigram tokenizer keeps the normal containment query.
+                else:
+                    connection.exec_driver_sql(f"INSERT INTO mdc_works_fts(rowid,{columns}) SELECT rowid,{columns} FROM works")
+                    new = ", ".join("new." + column for column in columns.split(", "))
+                    old = ", ".join("old." + column for column in columns.split(", "))
+                    add = f"INSERT INTO mdc_works_fts(rowid,{columns}) VALUES(new.rowid,{new});"
+                    drop = f"INSERT INTO mdc_works_fts(mdc_works_fts,rowid,{columns}) VALUES('delete',old.rowid,{old});"
+                    for suffix, operation, statements in (
+                        ("insert", "INSERT", add), ("delete", "DELETE", drop),
+                        ("update", f"UPDATE OF {columns}", drop + add),
+                    ):
+                        connection.exec_driver_sql(
+                            f"CREATE TRIGGER mdc_works_fts_{suffix} AFTER {operation} ON works BEGIN {statements} END"
+                        )
         with self.engine.connect() as connection:
             connection.exec_driver_sql("PRAGMA journal_mode=WAL")
             connection.exec_driver_sql("PRAGMA busy_timeout=30000")
@@ -524,6 +559,11 @@ class Repository:
 
     def rollback(self) -> None:
         self._session.rollback()
+
+    def begin_artwork_update(self, work_id: str) -> Work | None:
+        self._session.expire_all()
+        self._session.execute(text("BEGIN IMMEDIATE"))
+        return self.get_work(work_id)
 
     def is_task_cancel_requested(self, task_id: str) -> bool:
         row = self._session.execute(select(TaskRun.status, TaskRun.summary).where(TaskRun.id == task_id)).first()

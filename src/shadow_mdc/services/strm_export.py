@@ -32,22 +32,26 @@ no code; openStrm MIT patterns for the 302 gateway):
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
-import shutil
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from threading import RLock
 from urllib.parse import quote, urlencode, urlsplit
 
 from ..db.models import ExternalIdentity, Work
-from ..media.nfo import build_nfo, write_nfo
+from ..media.nfo import build_nfo, merge_export_nfo, nfo_export_fields, write_nfo
 from ..media.strm import write_strm
 from .openlist import build_openlist_d_url
-from .pan import PanSettings, RemoteVideo
+from .pan import PanSettings, RemoteVideo, SourceFingerprint
 
 SIDECAR_NAME = ".shadow-strm.json"
+_EXPORT_LOCK = RLock()
+_export_revision = 0
+_SAMPLE_RE = re.compile(r"(?i)(?:^|[ ._-])(?:sample|trailer|preview)(?:$|[ ._-])")
 RELAY_PATH = "/api/strm/play/"
 OPENLIST_RELAY_PATH = "/api/strm/openlist"
 _RELAY_RE = re.compile(r"/api/strm/play/(?P<fid>[A-Za-z0-9_-]{1,64})(?:[?#]|$)")
@@ -329,42 +333,45 @@ def detect_part_number(name: str) -> int | None:
 
 
 def plan_strm_entries(code: str, videos: Sequence[RemoteVideo]) -> list[StrmEntry]:
-    """Name ``{code}.strm`` for one file or ``{code}-cdN.strm`` for multi-part works.
-
-    Tiny extras (samples/trailers) are dropped when a clearly larger main file exists.
-    """
-
+    """Group by explicit part markers and by the release name around each marker."""
     stem = safe_stem(code)
-    items = list(videos)
-    sized = [item.size for item in items if item.size]
-    if len(items) > 1 and sized:
-        largest = max(sized)
-        items = [item for item in items if not item.size or item.size >= largest * 0.2]
-    if not items:
-        return []
-    if len(items) == 1:
-        only = items[0]
-        return [
-            StrmEntry(
-                f"{stem}.strm", only.file_id, only.pick_code, only.relative_path or only.name, only.sign
-            )
-        ]
-
-    def sort_key(item: RemoteVideo) -> tuple[int, str]:
+    items = sorted({item.file_id: item for item in videos}.values(),
+                   key=lambda item: (item.name.casefold(), item.file_id))
+    if any(not _SAMPLE_RE.search(Path(item.name).stem) for item in items):
+        items = [item for item in items if not _SAMPLE_RE.search(Path(item.name).stem)]
+    groups: dict[str, list[tuple[RemoteVideo, int | None]]] = {}
+    for item in items:
+        name = Path(item.name).stem
         part = detect_part_number(item.name)
-        return (part if part is not None else 999, item.name.casefold())
-
-    ordered = sorted(items, key=sort_key)
-    return [
-        StrmEntry(
-            f"{stem}-cd{index}.strm",
-            item.file_id,
-            item.pick_code,
-            item.relative_path or item.name,
-            item.sign,
-        )
-        for index, item in enumerate(ordered, start=1)
-    ]
+        marker = _PART_RE.search(name)
+        if marker and part:
+            release = (name[:marker.start()] + name[marker.end():]).strip(" -_.").casefold()
+        elif part:
+            release = name[:-1].rstrip(" -_.").casefold()
+        else:
+            release = ""
+        groups.setdefault(release, []).append((item, part))
+    result = []
+    single_stack = len(groups) == 1
+    for group in groups.values():
+        numbers = sorted(part for _, part in group if part)
+        multipart = len(numbers) > 1 and len(group) == len(numbers) and numbers == list(range(1, len(group) + 1))
+        ordered = sorted(group, key=lambda entry: entry[1] or 0) if multipart else group
+        group_suffix = ""
+        if multipart and not single_stack:
+            key = "\0".join(sorted(item.file_id for item, _ in group))
+            group_suffix = "-version-" + hashlib.sha256(key.encode()).hexdigest()[:12]
+        for item, part in ordered:
+            if multipart:
+                name = f"{stem}{group_suffix}-cd{part}.strm"
+            elif len(items) == 1 and not _PART_RE.search(Path(item.name).stem):
+                name = f"{stem}.strm"
+            else:
+                key = hashlib.sha256(item.file_id.encode()).hexdigest()[:12]
+                label = _PART_RE.sub("", Path(item.name).stem).strip(" ._-")
+                name = f"{stem} - {safe_stem(label)[:48]} [{key}].strm"
+            result.append(StrmEntry(name, item.file_id, item.pick_code, item.relative_path or item.name, item.sign))
+    return result
 
 
 def _atomic_copy(source: Path, destination: Path) -> None:
@@ -431,17 +438,78 @@ def _artwork_sources(work: Work) -> dict[str, Path]:
     return sources
 
 
-def read_sidecar(directory: Path) -> list[StrmEntry]:
+def _sidecar(directory: Path) -> dict[str, object]:
     path = directory / SIDECAR_NAME
-    if not path.is_file():
-        return []
+    if path.is_symlink():
+        return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
     except (OSError, UnicodeError, ValueError):
-        return []
+        return {}
+
+
+def _basename(name: object) -> bool:
+    return isinstance(name, str) and bool(name) and name not in {".", "..", SIDECAR_NAME} and "/" not in name and "\\" not in name
+
+
+def _digest_file(path: Path) -> str | None:
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        with path.open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+    except OSError:
+        return None
+
+
+def _can_publish(path: Path, previous: str | None) -> bool:
+    return _digest_file(path) == previous if previous else not os.path.lexists(path)
+
+
+def _digests(payload: dict[str, object], key: str) -> dict[str, str]:
+    raw = payload.get(key)
+    return {name: value for name, value in raw.items() if _basename(name)
+            and isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value)} if isinstance(raw, dict) else {}
+
+
+def _owned(directory: Path, payload: dict[str, object]) -> dict[str, str]:
+    return {name: value for name, value in _digests(payload, "managed").items()
+            if _digest_file(directory / name) == value}
+
+
+def _publish_sidecar(directory: Path, payload: dict[str, object]) -> bool:
+    global _export_revision
+    target = directory / SIDECAR_NAME
+    if target.is_symlink():
+        raise ValueError("STRM 清单路径是符号链接")
+    output = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    if _same_bytes(target, output.encode("utf-8")):
+        return False
+    _atomic_write_text(target, output)
+    _export_revision += 1
+    return True
+
+
+def export_revision() -> int:
+    return _export_revision
+
+
+def export_source_scope(source: SourceFingerprint) -> str:
+    return hashlib.sha256(json.dumps([source.backend, source.account_id, source.directory_id]).encode()).hexdigest()
+
+
+def read_sidecar_scope(directory: Path) -> str | None:
+    value = _sidecar(directory).get("source_scope")
+    return value if isinstance(value, str) else None
+
+
+def read_sidecar(directory: Path) -> list[StrmEntry]:
+    payload = _sidecar(directory)
+    raw = payload.get("entries")
     entries: list[StrmEntry] = []
-    for item in payload.get("entries", []) if isinstance(payload, dict) else []:
-        if not isinstance(item, dict) or not item.get("name") or not item.get("file_id"):
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not _basename(item.get("name")) or not item.get("file_id"):
             continue
         entries.append(
             StrmEntry(
@@ -456,12 +524,14 @@ def read_sidecar(directory: Path) -> list[StrmEntry]:
 
 
 def write_sidecar(
-    directory: Path, code: str, entries: Sequence[StrmEntry], *, work_id: str | None
+    directory: Path, code: str, entries: Sequence[StrmEntry], *, work_id: str | None,
+    managed: dict[str, str] | None = None, nfo_fields: dict[str, str] | None = None,
+    source_scope: str | None = None,
 ) -> bool:
     """Write the sidecar; returns False (and leaves the file alone) when unchanged."""
 
-    payload = {
-        "version": 1,
+    payload: dict[str, object] = {
+        "version": 2 if managed is not None else 1,
         "code": code,
         "work_id": work_id,
         "entries": [
@@ -475,12 +545,88 @@ def write_sidecar(
             for entry in entries
         ],
     }
-    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    target = directory / SIDECAR_NAME
-    if _same_bytes(target, text.encode("utf-8")):
-        return False
-    _atomic_write_text(target, text)
-    return True
+    if managed is not None:
+        payload.update(managed=managed, nfo_fields=nfo_fields or {})
+    if source_scope:
+        payload["source_scope"] = source_scope
+    return _publish_sidecar(directory, payload)
+
+
+def _write_planned(directory: Path, payload: dict[str, object], name: str, digest: str) -> None:
+    pending = _digests(payload, "pending")
+    pending[name] = digest
+    payload["pending"] = pending
+    _publish_sidecar(directory, payload)
+
+
+def _select_output(directory: Path, name: str, allowed: dict[str, str], identity: str) -> Path:
+    target = directory / name
+    if name in allowed or not os.path.lexists(target):
+        return target
+    key = hashlib.sha256(identity.encode()).hexdigest()[:12]
+    counter = 0
+    while True:
+        suffix = f"-{counter}" if counter else ""
+        alternative = target.with_name(f"{target.stem} [{key}{suffix}]{target.suffix}")
+        if alternative.name in allowed or not os.path.lexists(alternative):
+            return alternative
+        counter += 1
+
+
+def _write_details(
+    directory: Path, payload: dict[str, object], owned: dict[str, str],
+    work: Work, identities: list[ExternalIdentity], result: ExportResult,
+) -> dict[str, str]:
+    local_artwork: dict[str, str] = {}
+    for kind, source in _artwork_sources(work).items():
+        extension = ".jpg" if source.suffix.casefold() in {".jpg", ".jpeg"} else source.suffix.casefold()
+        target = directory / f"{kind}{extension}"
+        if target.is_symlink():
+            continue
+        if target.name in owned or not target.exists():
+            digest = _digest_file(source)
+            if digest is None:
+                continue
+            if _digest_file(target) != digest:
+                _write_planned(directory, payload, target.name, digest)
+                if not _can_publish(target, owned.get(target.name)):
+                    raise OSError("Artwork changed during export")
+                _atomic_copy(source, target)
+                result.changed_paths.append(target)
+            if _digest_file(target) == digest:
+                owned[target.name] = digest
+        if target.is_file():
+            result.artwork_paths.append(target)
+            local_artwork[kind] = target.name
+    nfo_path = directory / "movie.nfo"
+    result.nfo_path = nfo_path
+    baseline = _digests(payload, "nfo_fields")
+    if nfo_path.is_symlink() or (nfo_path.exists() and not nfo_path.is_file()):
+        return baseline
+    content = build_nfo(work, identities, local_artwork=local_artwork or None)
+    existed = nfo_path.is_file()
+    previous = nfo_path.read_bytes() if existed else None
+    # An untracked or malformed document remains untouched.
+    if existed and nfo_path.name not in owned and not baseline:
+        return baseline
+    merged = merge_export_nfo(previous, content, baseline)
+    if merged is None:
+        return baseline
+    output, fields = merged
+    encoded = output.encode("utf-8")
+    if encoded != previous:
+        _write_planned(directory, payload, nfo_path.name, hashlib.sha256(encoded).hexdigest())
+        if nfo_path.is_symlink() or (existed and nfo_path.read_bytes() != previous) or (not existed and os.path.lexists(nfo_path)):
+            raise OSError("NFO changed during export")
+        write_nfo(nfo_path, output)
+        result.changed_paths.append(nfo_path)
+    if fields:
+        # A retained manual field makes the document ineligible for bulk deletion.
+        if fields == nfo_export_fields(content) and (nfo_path.name in owned or not existed):
+            owned[nfo_path.name] = hashlib.sha256(encoded).hexdigest()
+        else:
+            owned.pop(nfo_path.name, None)
+    return fields
 
 
 def export_work(
@@ -490,6 +636,8 @@ def export_work(
     videos: Sequence[RemoteVideo],
     work: Work | None = None,
     identities: list[ExternalIdentity] | None = None,
+    source_scope: str | None = None,
+    complete: bool = True,
 ) -> ExportResult:
     """Write ``{root}/{studio}/{CODE}/``: artwork → movie.nfo → sidecar → ``.strm`` last.
 
@@ -506,52 +654,68 @@ def export_work(
         raise ValueError("no video files to export")
     # Resolve every locator before touching disk so a bad config writes nothing.
     locators = [(entry, locator_for(settings, entry)) for entry in entries]
-    stem = safe_stem(code)
     relative = export_relative_dir(code, work, template=settings.strm_layout_template)
     directory = Path(root) / relative
-    result = ExportResult(directory=directory, created=not directory.exists())
-    directory.mkdir(parents=True, exist_ok=True)
-
-    # 1) poster / fanart (local files beside STRM; NFO must reference these names)
-    local_artwork: dict[str, str] = {}
-    if work is not None:
-        for kind, source in _artwork_sources(work).items():
-            extension = ".jpg" if source.suffix.casefold() in {".jpg", ".jpeg"} else source.suffix.casefold()
-            target = directory / f"{kind}{extension}"
-            if not _same_file(source, target):
-                _atomic_copy(source, target)
+    with _EXPORT_LOCK:
+        if not _is_within(directory, Path(root)):
+            raise ValueError("STRM 导出目录超出根路径")
+        result = ExportResult(directory=directory, created=not directory.exists())
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = _sidecar(directory)
+        previous_scope = read_sidecar_scope(directory)
+        if previous_scope and source_scope and previous_scope != source_scope:
+            raise ValueError("目录属于其他网盘账号或目录")
+        previous = read_sidecar(directory)
+        owned = _owned(directory, payload)
+        pending = _digests(payload, "pending")
+        owned.update({name: digest for name, digest in pending.items()
+                      if _digest_file(directory / name) == digest})
+        # An old manifest can be adopted only when the published locator is reproducible.
+        if payload.get("version") == 1:
+            for entry in previous:
+                try:
+                    digest = hashlib.sha256(strm_payload(locator_for(settings, entry))).hexdigest()
+                except ValueError:
+                    continue
+                if _digest_file(directory / entry.name) == digest:
+                    owned[entry.name] = digest
+        old_streams = {name: digest for name, digest in owned.items() if name.lower().endswith(".strm")}
+        old_ids = {entry.name: entry.file_id for entry in previous}
+        nfo_fields = _digests(payload, "nfo_fields")
+        if work is not None:
+            nfo_fields = _write_details(directory, payload, owned, work, identities or [], result)
+        published: list[StrmEntry] = []
+        previous_names = {entry.file_id: entry.name for entry in previous}
+        for entry, locator in locators:
+            if not complete and entry.file_id in previous_names:
+                entry = replace(entry, name=previous_names[entry.file_id])
+            writable = {name: digest for name, digest in owned.items()
+                        if old_ids.get(name, entry.file_id) == entry.file_id}
+            target = _select_output(directory, entry.name, writable, entry.file_id)
+            digest = hashlib.sha256(strm_payload(locator)).hexdigest()
+            current = _digest_file(target)
+            if current != digest:
+                _write_planned(directory, payload, target.name, digest)
+                if not _can_publish(target, writable.get(target.name)):
+                    raise OSError("STRM changed during export")
+                write_strm(target, locator)
                 result.changed_paths.append(target)
-            result.artwork_paths.append(target)
-            local_artwork[kind] = target.name
-    # 2) NFO (Emby/Kodi movie.nfo beside the .strm, same as Organizer)
-    if work is not None:
-        nfo_path = directory / "movie.nfo"
-        content = build_nfo(work, identities or [], local_artwork=local_artwork or None)
-        if not _same_bytes(nfo_path, content.encode("utf-8")):
-            write_nfo(nfo_path, content)
-            result.changed_paths.append(nfo_path)
-        result.nfo_path = nfo_path
-        # Drop a legacy {CODE}.nfo left by older flat exports in this folder.
-        legacy_nfo = directory / f"{stem}.nfo"
-        if legacy_nfo.is_file() and legacy_nfo != nfo_path:
-            legacy_nfo.unlink(missing_ok=True)
-            result.changed_paths.append(legacy_nfo)
-    # 3) sidecar (needed for later rewrite / reconcile; invisible to Emby)
-    write_sidecar(directory, code, entries, work_id=work.id if work is not None else None)
-    # 4) .strm last
-    keep = {entry.name for entry in entries}
-    for entry, locator in locators:
-        target = directory / entry.name
-        if not _same_bytes(target, strm_payload(locator)):
-            write_strm(target, locator)
-            result.changed_paths.append(target)
-        result.strm_paths.append(target)
-    # Drop stale .strm from a previous layout (e.g. single → multi-part).
-    for stale in directory.glob("*.strm"):
-        if stale.name not in keep:
-            stale.unlink(missing_ok=True)
-            result.changed_paths.append(stale)
-    return result
+            owned[target.name] = digest
+            result.strm_paths.append(target)
+            published.append(replace(entry, name=target.name))
+        if not complete:
+            demonstrated = {entry.file_id for entry in published}
+            published.extend(entry for entry in previous if entry.file_id not in demonstrated)
+        keep = {entry.name for entry in published}
+        for name, digest in old_streams.items():
+            target = directory / name
+            if complete and name not in keep and _digest_file(target) == digest:
+                target.unlink()
+                result.changed_paths.append(target)
+                owned.pop(name, None)
+        write_sidecar(directory, code, published, work_id=work.id if work is not None else None,
+                      managed=owned, nfo_fields=nfo_fields, source_scope=source_scope or previous_scope)
+        return result
 
 
 def iter_export_dirs(root: Path) -> Iterable[Path]:
@@ -572,66 +736,77 @@ def rewrite_strm_tree(root: Path, settings: PanSettings) -> RewriteResult:
     result = RewriteResult()
     if not root.is_dir():
         return result
-    for strm in sorted(root.rglob("*.strm")):
-        result.scanned += 1
-        sidecar = {entry.name: entry for entry in read_sidecar(strm.parent)}
-        try:
-            current = strm.read_text(encoding="utf-8").strip()
-        except (OSError, UnicodeError):
-            result.skipped += 1
-            continue
-        entry = sidecar.get(strm.name)
-        if entry is None:
-            file_id = parse_relay_file_id(current)
-            if file_id is None:
-                result.skipped += 1
+    with _EXPORT_LOCK:
+        for directory in iter_export_dirs(root):
+            if not _is_within(directory, root):
                 continue
-            entry = StrmEntry(strm.name, file_id)
-        if settings.strm_mode != "relay" and not entry.remote_path:
-            # OpenList mode needs a remote path we do not know; leave untouched.
-            result.skipped += 1
-            continue
-        try:
-            locator = locator_for(settings, entry)
-        except ValueError:
-            result.skipped += 1
-            continue
-        if locator == current:
-            continue
-        write_strm(strm, locator)
-        result.rewritten.append(strm)
+            payload = _sidecar(directory)
+            if payload.get("pending"):
+                continue
+            managed = _digests(payload, "managed")
+            before = len(result.rewritten)
+            for entry in read_sidecar(directory):
+                result.scanned += 1
+                strm = directory / entry.name
+                current = _digest_file(strm)
+                if current is None or managed.get(entry.name) != current:
+                    result.skipped += 1
+                    continue
+                try:
+                    locator = locator_for(settings, entry)
+                except ValueError:
+                    result.skipped += 1
+                    continue
+                digest = hashlib.sha256(strm_payload(locator)).hexdigest()
+                if digest == current:
+                    continue
+                _write_planned(directory, payload, entry.name, digest)
+                if _digest_file(strm) != current:
+                    result.skipped += 1
+                    continue
+                write_strm(strm, locator)
+                managed[entry.name] = digest
+                result.rewritten.append(strm)
+            if len(result.rewritten) > before or "pending" in payload:
+                payload["managed"] = managed
+                payload.pop("pending", None)
+                _publish_sidecar(directory, payload)
     return result
 
 
-def _same_device(source: Path, target_parent: Path) -> bool:
-    try:
-        return source.stat().st_dev == target_parent.stat().st_dev
-    except OSError:
-        return False
-
-
 def _move_export_dir(source: Path, target: Path) -> None:
-    """Move one export folder so the target only ever appears complete.
+    """Publish only verified generated files in the new layout."""
+    import tempfile
 
-    Same filesystem → a single ``rename``. Across filesystems → copy into a
-    hidden sibling of the target, rename it into place, then delete the source
-    (a crash mid-copy leaves the source intact and only a hidden temp dir).
-    """
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if _same_device(source, target.parent):
-        os.rename(source, target)
-        return
-    staging = target.parent / f".{target.name}.migrating"
-    if staging.exists():
-        shutil.rmtree(staging)
-    try:
-        shutil.copytree(source, staging, copy_function=shutil.copy2)
-        os.rename(staging, target)
-    except Exception:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-    shutil.rmtree(source)
+    with _EXPORT_LOCK:
+        payload = _sidecar(source)
+        owned = _owned(source, payload)
+        entries = read_sidecar(source)
+        if not entries or not all(entry.name in owned for entry in entries) or payload.get("pending"):
+            raise OSError("STRM 清单缺少迁移所需的文件归属")
+        if target.exists():
+            raise FileExistsError(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=f".{target.name}-", dir=target.parent) as temp:
+            staged = Path(temp) / "export"
+            staged.mkdir()
+            for name, digest in owned.items():
+                _atomic_copy(source / name, staged / name)
+                if _digest_file(staged / name) != digest or _digest_file(source / name) != digest:
+                    raise OSError("STRM 文件在迁移期间变化")
+            payload["managed"] = owned
+            if "movie.nfo" not in owned:
+                payload.pop("nfo_fields", None)
+            _publish_sidecar(staged, payload)
+            if target.exists():
+                raise FileExistsError(target)
+            os.rename(staged, target)
+        for name, digest in owned.items():
+            if _digest_file(source / name) == digest:
+                (source / name).unlink()
+        (source / SIDECAR_NAME).unlink()
+        with contextlib.suppress(OSError):
+            source.rmdir()
 
 
 def _prune_empty_parents(start: Path, root: Path) -> None:
@@ -678,7 +853,7 @@ def migrate_strm_tree(old_root: Path, new_root: Path, settings: PanSettings) -> 
                 result.failed.append(source)
                 continue
             target = new_root / relative
-            if target.exists():
+            if target.exists() or not _is_within(target, new_root):
                 result.conflicts.append(source)
                 continue
             try:
@@ -704,61 +879,43 @@ def _is_within(child: Path, parent: Path) -> bool:
 async def reconcile_deleted(
     root: Path,
     exists: Callable[[str], Awaitable[bool | None]],
+    *, source_scope: str | None = None,
 ) -> ReconcileResult:
-    """Remove export folders whose 115 / OpenList source files are all gone.
-
-    ``exists(file_id)`` (115 id, or OpenList path for ``/``-prefixed ids) returns
-    True/False, or None when unknown (network error,
-    rate limit). Folders are only removed when *every* entry is definitively gone.
-
-    Also performs an incremental orphan pass inside *kept* managed folders: any
-    ``.strm`` not listed in the sidecar is deleted (same rule as ``export_work``),
-    so a partial re-export or layout change cannot leave stale ghost titles for Emby.
-    """
-
+    """Reconcile fully missing sources against the last successful publication."""
     result = ReconcileResult()
     for directory in list(iter_export_dirs(root)):
-        entries = read_sidecar(directory)
+        if not _is_within(directory, root):
+            continue
+        with _EXPORT_LOCK:
+            payload = _sidecar(directory)
+            entries = read_sidecar(directory)
         if not entries:
             continue
         result.checked += 1
+        if source_scope is not None and payload.get("source_scope") != source_scope:
+            result.unknown += 1
+            continue
         states = [await exists(entry.file_id) for entry in entries]
-        if any(state is None for state in states):
-            result.unknown += 1
-            # Still tidy stale .strm names while the remote check is inconclusive.
-            result.orphan_strm_removed.extend(_drop_unlisted_strm(directory, entries))
-            continue
-        if any(states):
-            result.kept += 1
-            result.orphan_strm_removed.extend(_drop_unlisted_strm(directory, entries))
-            continue
-        if not _is_within(directory, root):
-            result.unknown += 1
-            continue
-        shutil.rmtree(directory, ignore_errors=True)
-        with contextlib.suppress(OSError):
-            # Tidy an empty parent (e.g. grouped layouts) but never the root itself.
-            parent = directory.parent
-            if parent != root and _is_within(parent, root) and not any(parent.iterdir()):
-                parent.rmdir()
-        result.removed.append(directory)
+        with _EXPORT_LOCK:
+            if any(state is None for state in states) or payload != _sidecar(directory) or payload.get("pending"):
+                result.unknown += 1
+                continue
+            if any(states):
+                result.kept += 1
+                continue
+            deleted = cleanup_generated_export_files(directory, str(payload.get("code", "")))
+            if not deleted:
+                result.kept += 1
+                continue
+            try:
+                directory.rmdir()
+            except OSError:
+                result.orphan_strm_removed.extend(path for path in deleted if path.suffix == ".strm")
+                result.kept += 1
+            else:
+                result.removed.append(directory)
+                _prune_empty_parents(directory.parent, root)
     return result
-
-
-def _drop_unlisted_strm(directory: Path, entries: Sequence[StrmEntry]) -> list[Path]:
-    """Delete ``.strm`` files in ``directory`` that the sidecar no longer lists."""
-
-    keep = {entry.name for entry in entries}
-    removed: list[Path] = []
-    for stale in directory.glob("*.strm"):
-        if stale.name in keep:
-            continue
-        with contextlib.suppress(OSError):
-            stale.unlink(missing_ok=True)
-            removed.append(stale)
-    return removed
-
-
 
 
 def rematerialize_layout(
@@ -810,7 +967,7 @@ def rematerialize_layout(
         except OSError:
             same = False
         if not same:
-            if target.exists():
+            if target.exists() or not _is_within(target, root) or not _is_within(directory, root):
                 result.conflicts.append(directory)
                 continue
             try:
@@ -824,33 +981,19 @@ def rematerialize_layout(
             directory = target
         else:
             result.skipped += 1
-        # Regenerate artwork then NFO (local sibling filenames in NFO, never remote URLs).
         if work is not None:
-            identities = list(identities_for(work)) if identities_for is not None else []
-            local_artwork: dict[str, str] = {}
-            for kind, source in _artwork_sources(work).items():
-                extension = (
-                    ".jpg" if source.suffix.casefold() in {".jpg", ".jpeg"} else source.suffix.casefold()
-                )
-                art_target = directory / f"{kind}{extension}"
-                if not art_target.is_file() or not _same_file(source, art_target):
-                    _atomic_copy(source, art_target)
-                    result.artwork_written += 1
-                local_artwork[kind] = art_target.name
-            # Prefer already-present siblings when cache was empty but files exist on disk.
-            if not local_artwork:
-                for kind in ("poster", "fanart"):
-                    match = next(directory.glob(f"{kind}.*"), None)
-                    if match is not None and match.is_file():
-                        local_artwork[kind] = match.name
-            nfo_path = directory / "movie.nfo"
-            content = build_nfo(work, identities, local_artwork=local_artwork or None)
-            if not nfo_path.is_file() or not _same_bytes(nfo_path, content.encode("utf-8")):
-                write_nfo(nfo_path, content)
-                result.nfo_written += 1
-            legacy_nfo = directory / f"{safe_stem(code)}.nfo"
-            if legacy_nfo.is_file() and legacy_nfo != nfo_path:
-                legacy_nfo.unlink(missing_ok=True)
+            with _EXPORT_LOCK:
+                payload = _sidecar(directory)
+                entries = read_sidecar(directory)
+                owned = _owned(directory, payload)
+                updates = ExportResult(directory)
+                identities = list(identities_for(work)) if identities_for is not None else []
+                fields = _write_details(directory, payload, owned, work, identities, updates)
+                if updates.changed:
+                    write_sidecar(directory, code, entries, work_id=work.id, managed=owned, nfo_fields=fields,
+                                  source_scope=read_sidecar_scope(directory))
+                result.nfo_written += sum(path.name == "movie.nfo" for path in updates.changed_paths)
+                result.artwork_written += sum(path.name != "movie.nfo" for path in updates.changed_paths)
     return result
 
 
@@ -933,29 +1076,25 @@ def is_generated_export_name(filename: str, code: str) -> bool:
 
 
 def cleanup_generated_export_files(directory: Path, code: str) -> list[Path]:
-    """Delete only generated NFO/STRM/cdN/poster/fanart/sidecar; keep user files.
-
-    Used on code correction / obsolete drain so custom attachments (custom.nfo,
-    bonus.strm, notes.txt, …) in the old Emby export folder survive.
-    """
-
-    if not directory.is_dir():
-        return []
+    """Remove files proven to be unchanged outputs of this export."""
+    global _export_revision
     deleted: list[Path] = []
-    try:
-        entries = list(directory.iterdir())
-    except OSError:
-        return []
-    for entry in entries:
-        if not entry.is_file() and not entry.is_symlink():
-            continue
-        if not is_generated_export_name(entry.name, code):
-            continue
-        try:
-            entry.unlink(missing_ok=True)
-            deleted.append(entry)
-        except OSError:
-            continue
+    with _EXPORT_LOCK:
+        payload = _sidecar(directory)
+        if payload.get("version") != 2 or payload.get("code") != code or payload.get("pending"):
+            return deleted
+        managed = _digests(payload, "managed")
+        for name, digest in managed.items():
+            target = directory / name
+            if _digest_file(target) == digest:
+                target.unlink()
+                deleted.append(target)
+        target = directory / SIDECAR_NAME
+        if not target.is_symlink() and target.is_file():
+            target.unlink()
+            deleted.append(target)
+        if deleted:
+            _export_revision += 1
     return deleted
 
 
@@ -971,7 +1110,7 @@ def remove_export_dirs_for_code(root: Path, code: str) -> list[Path]:
     for directory in find_export_dirs_for_code(root, code):
         if not _is_within(directory, root):
             continue
-        deleted = cleanup_generated_export_files(directory, code)
+        deleted = cleanup_generated_export_files(directory, str(_sidecar(directory).get("code", "")))
         touched.extend(deleted)
         # Remove the folder only when nothing user-owned remains.
         try:

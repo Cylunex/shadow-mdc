@@ -15,7 +15,7 @@ from shadow_mdc.db.repository import Database, Repository
 from shadow_mdc.domain import IdentityHints, ProviderRecord
 from shadow_mdc.enums import ContentFamily, QueryMode
 from shadow_mdc.media.nfo_import import (
-    _to_provider_record,
+    nfo_provider_record,
     apply_nfo_locked_fields,
     parse_movie_nfo,
     resolve_sidecar_nfo,
@@ -63,11 +63,11 @@ def test_same_title_nfos_create_distinct_works(repository: Repository, tmp_path:
 
 def test_nfo_path_identity_survives_title_edits_and_exported_identity(tmp_path: Path) -> None:
     path = _nfo(tmp_path / "movie.nfo", "<title>Original</title>")
-    first = _to_provider_record(parse_movie_nfo(path))
+    first = nfo_provider_record(parse_movie_nfo(path))
     _nfo(path, "<title>Edited</title>")
-    assert _to_provider_record(parse_movie_nfo(path)).external_id == first.external_id
+    assert nfo_provider_record(parse_movie_nfo(path)).external_id == first.external_id
     _nfo(path, f'<title>Rebuilt</title><uniqueid type="nfo-import">{first.external_id}</uniqueid>')
-    assert _to_provider_record(parse_movie_nfo(path)).external_id == first.external_id
+    assert nfo_provider_record(parse_movie_nfo(path)).external_id == first.external_id
 
 
 @pytest.mark.parametrize(
@@ -79,7 +79,7 @@ def test_nfo_path_identity_survives_title_edits_and_exported_identity(tmp_path: 
     ],
 )
 def test_nfo_external_ids_do_not_become_jav_codes(tmp_path: Path, identity: str) -> None:
-    record = _to_provider_record(
+    record = nfo_provider_record(
         parse_movie_nfo(_nfo(tmp_path / "movie.nfo", f"<title>Film</title>{identity}"))
     )
     assert record.code is None
@@ -96,7 +96,7 @@ def test_nfo_runtime_locks_and_nested_set(repository: Repository, tmp_path: Path
             "<actor><name>Actor</name></actor><actor><name>Actor</name></actor>",
         )
     )
-    record = _to_provider_record(parsed)
+    record = nfo_provider_record(parsed)
     work = repository.upsert_provider_record(
         record.model_copy(update={"runtime_seconds": 100}), overwrite=False
     )

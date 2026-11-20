@@ -1,6 +1,7 @@
+import hashlib
 from collections.abc import Mapping
 from pathlib import Path
-from xml.etree.ElementTree import Element, SubElement, indent, tostring
+from xml.etree.ElementTree import Element, ParseError, SubElement, TreeBuilder, XMLParser, fromstring, indent, tostring
 
 from ..db.models import ExternalIdentity, MediaAsset, Work
 from ..domain import MediaTechnicalInfo
@@ -39,6 +40,14 @@ def build_nfo(
     SubElement(movie, "mpaa").text = "NC-17"
     if work.studio:
         SubElement(movie, "studio").text = work.studio
+    label = getattr(work, "label", None)
+    if label:
+        SubElement(movie, "label").text = label
+    if getattr(work, "rating_value", None) is not None and work.rating_max:
+        rating = SubElement(SubElement(movie, "ratings"), "rating",
+                            {"name": work.rating_source or "default", "max": str(work.rating_max), "default": "true"})
+        _element(rating, "value", work.rating_value)
+        _element(rating, "votes", work.rating_count)
     if work.category and work.category != "Other":
         SubElement(movie, "country").text = {
             "Japan": "日本",
@@ -82,6 +91,66 @@ def build_nfo(
     body = tostring(movie, encoding="unicode")
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n' + body + "\n"
 
+
+def _nfo_field_digest(nodes: list[Element]) -> str:
+    # Root indentation is unrelated to the field value.
+    serialized = []
+    for node in nodes:
+        raw = tostring(node, encoding="unicode")
+        serialized.append(raw.rstrip())
+    return hashlib.sha256("\0".join(serialized).encode()).hexdigest()
+
+
+def nfo_export_fields(content: str) -> dict[str, str]:
+    root = fromstring(content)
+    return {tag: _nfo_field_digest(root.findall(tag)) for tag in sorted({node.tag for node in root})}
+
+
+def merge_export_nfo(
+    current: bytes | None, desired: str, baseline: Mapping[str, str],
+) -> tuple[str, dict[str, str]] | None:
+    """Merge owned XML fields and keep external edits, including cleared fields."""
+    proposed = nfo_export_fields(desired)
+    if current is None:
+        return desired, proposed
+    try:
+        existing = fromstring(current, parser=XMLParser(target=TreeBuilder(insert_comments=True, insert_pis=True)))
+        incoming = fromstring(desired)
+    except ParseError:
+        return None
+    if existing.tag != "movie" or incoming.tag != "movie":
+        return None
+    result: dict[str, str] = {}
+    changed = False
+    empty = _nfo_field_digest([])
+    for tag in sorted(set(proposed) | {key for key in baseline if not key.startswith("manual_")}):
+        nodes = existing.findall(tag)
+        actual = _nfo_field_digest(nodes)
+        target = proposed.get(tag, empty)
+        was = baseline.get(tag, empty)
+        if f"manual_{tag}" in baseline or actual not in (was, target):
+            result[f"manual_{tag}"] = actual
+            result[tag] = was
+            continue
+        if target != empty:
+            result[tag] = target
+        if actual == target:
+            continue
+        index = list(existing).index(nodes[0]) if nodes else len(existing)
+        for node in nodes:
+            existing.remove(node)
+        for node in incoming.findall(tag):
+            existing.insert(index, node)
+            index += 1
+        changed = True
+    if not changed:
+        try:
+            return current.decode("utf-8"), result
+        except UnicodeError:
+            return None
+    indent(existing, space="  ")
+    output = tostring(existing, encoding="unicode")
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n' + output + "\n", result
 
 
 def _nfo_local_artwork_refs(

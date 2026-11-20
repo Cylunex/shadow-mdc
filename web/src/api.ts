@@ -696,6 +696,7 @@ export const api = {
             probe_ok: z.boolean().nullable().optional(),
             probe_reason: z.string().nullable().optional(),
             mime_type: z.string().nullable().optional(),
+            subtitle_url: z.string().nullable().optional(),
             version_id: z.string().nullable().optional(),
             source_id: z.string().nullable().optional(),
           })
@@ -713,6 +714,7 @@ export const api = {
             probe_ok: z.boolean().nullable().optional(),
             probe_reason: z.string().nullable().optional(),
             mime_type: z.string().nullable().optional(),
+            subtitle_url: z.string().nullable().optional(),
             version_id: z.string().nullable().optional(),
             source_id: z.string().nullable().optional(),
           })
@@ -731,6 +733,7 @@ export const api = {
             probe_ok: z.boolean().nullable().optional(),
             probe_reason: z.string().nullable().optional(),
             mime_type: z.string().nullable().optional(),
+            subtitle_url: z.string().nullable().optional(),
             version_id: z.string().nullable().optional(),
             source_id: z.string().nullable().optional(),
           }),

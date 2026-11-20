@@ -9,6 +9,7 @@ import re
 import secrets
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import httpx
@@ -110,7 +111,7 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
     def capabilities() -> dict[str, object]:
         return {"api_version": 1, "features": [
             "browse", "search", "detail", "emby", "binding", "catalog", "playback_plan",
-            "people_v2", "playlists", "organizations", "media_mime",
+            "people_v2", "people_cards_paged", "playlists", "organizations", "media_mime",
         ]}
 
     @router.get("/works", response_model=MediaPage)
@@ -170,9 +171,21 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
     @router.get("/works/{work_id}/poster")
     def poster(work_id: str, request: Request) -> FileResponse:
         # Only generated local artwork is exposed through the mobile contract.
-        directory = runtime(request).settings.data_dir / "artwork" / work_id
+        root = (runtime(request).settings.data_dir / "artwork").resolve()
         if not re.fullmatch(r"[A-Za-z0-9-]+", work_id):
             raise HTTPException(404)
+        directory = (root / work_id).resolve()
+        if not directory.is_relative_to(root):
+            raise HTTPException(404)
+        with runtime(request).database.session() as session:
+            work = session.get(Work, work_id)
+            artwork = list(work.artwork) if work is not None else []
+        for item in artwork:
+            if item.get("kind") not in {"poster", "thumb"} or not isinstance(local := item.get("local_path"), str):
+                continue
+            path = Path(local).resolve()
+            if path.is_relative_to(directory) and path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".webp"} and path.is_file():
+                return FileResponse(path)
         for stem in ("thumb", "poster", "fanart"):
             for extension in (".jpg", ".jpeg", ".png", ".webp"):
                 path = directory / f"{stem}{extension}"

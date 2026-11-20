@@ -54,7 +54,7 @@ class JavDBProvider(HttpProvider):
         )
 
     async def fetch_html(self, url: str, *, params: dict[str, str] | None = None) -> str:
-        return await self._get_text(
+        html = await self._get_text(
             self.descriptor.id,
             url,
             params=params,
@@ -68,12 +68,15 @@ class JavDBProvider(HttpProvider):
                 "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7,ja;q=0.6",
             },
         )
+        _check_region_restriction(html, self.descriptor.id)
+        return html
 
     async def search(self, hints: IdentityHints) -> list[ProviderRecord]:
         if hints.mode is QueryMode.URL and hints.source_url:
             return [await self._detail(hints.source_url)]
         url = f"{self._base_url}/search?q={quote(hints.term)}&f=all"
         html = await self._get_text(self.descriptor.id, url, params={"locale": "zh"})
+        _check_region_restriction(html, self.descriptor.id)
         root = HTMLParser(html)
         links: list[str] = []
         for selector in (".movie-list .item a", "a.box", ".grid-item a"):
@@ -98,6 +101,7 @@ class JavDBProvider(HttpProvider):
 
     async def _detail(self, url: str) -> ProviderRecord:
         html = await self._get_text(self.descriptor.id, url, params={"locale": "zh"})
+        _check_region_restriction(html, self.descriptor.id)
         record = parse_javdb_detail(html, url)
         return await self._attach_reviews(record, html=html)
 
@@ -128,7 +132,20 @@ class JavDBProvider(HttpProvider):
         else:
             url = f"{self._base_url}/v/{external_id_or_url}"
         html = await self._get_text(self.descriptor.id, url, params={"locale": "zh"})
+        _check_region_restriction(html, self.descriptor.id)
         return parse_magnet_links_from_html(html, provider=self.descriptor.id)
+
+
+def _check_region_restriction(html: str, provider: str) -> None:
+    body = HTMLParser(html).body
+    if body is None:
+        return
+    for node in body.css("script, style, template, [hidden]"):
+        node.decompose()
+    visible = " ".join(body.text(separator=" ").casefold().split())
+    notice = "access to this site is prohibited in the country where your internet is located"
+    if "due to copyright restrictions" in visible and notice in visible:
+        raise ProviderError(provider, "blocked", "country restriction")
 
 
 # JavDB's site chrome (navbar dropdowns, footer) links to ``/actors/censored``,

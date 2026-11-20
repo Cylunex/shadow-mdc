@@ -7,6 +7,7 @@ export type PlayerSource = {
   mime_type?: string | null;
   version_id?: string | null;
   source_id?: string | null;
+  subtitle_url?: string | null;
   kind: string;
   label: string;
   url: string;
@@ -114,6 +115,7 @@ function isSameOrigin(url: string): boolean {
 export function proxiedPlayUrl(source: PlayerSource): string {
   const raw = source.url;
   if (!raw || source.skip_proxy) return raw;
+  if (source.kind === "local") return appUrl(raw) ?? raw;
   // Resolve / HLS rewrite emit absolute `/api/swipe/...`. Under the /mdc SPA that
   // hits host nginx (OIDC 401). Prefix via appUrl → `./api/swipe/...` → `/mdc/api/swipe/...`.
   try {
@@ -409,7 +411,11 @@ function PlayerSession({
             controls={!embedded}
             muted={muted}
             preload="metadata"
-          />
+          >
+            {current?.subtitle_url && current.kind === "local" ? (
+              <track key={current.subtitle_url} kind="subtitles" src={appUrl(current.subtitle_url) ?? current.subtitle_url} label="外挂字幕" />
+            ) : null}
+          </video>
         ) : (
           <div className="in-app-player-status">无应用内片源 — 下方选择外站 / Emby 打开</div>
         )}

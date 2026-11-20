@@ -313,3 +313,9 @@ class RemoteVideo:
     size: int | None = None
     # OpenList backend only: per-file `sign` from /api/fs/list or /api/fs/get.
     sign: str | None = None
+
+
+class VideoListing(list[RemoteVideo]):
+    """An otherwise usable walk that can carry a partial-directory flag."""
+
+    complete = True

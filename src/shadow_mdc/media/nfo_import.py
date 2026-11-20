@@ -70,10 +70,15 @@ class ParsedNfo(BaseModel):
     plot: str | None = None
     code: str | None = None
     studio: str | None = None
+    label: str | None = None
     series: str | None = None
     premiered: str | None = None
     runtime_seconds: int | None = None
     actors: tuple[str, ...] = ()
+    directors: tuple[str, ...] = ()
+    rating: float | None = None
+    rating_max: float | None = None
+    rating_count: int | None = None
     tags: tuple[str, ...] = ()
     unique_ids: dict[str, str] = Field(default_factory=dict)
     # Work fields the user marked manual in the NFO (``<shadowmdc_locks>``,
@@ -144,7 +149,7 @@ class NfoImporter:
             except (OSError, ValueError) as exc:
                 errors.append(f"{nfo_path}: {exc}")
                 continue
-            record = _to_provider_record(parsed)
+            record = nfo_provider_record(parsed)
             if self.policy.mode == "trust":
                 work = self.repository.upsert_provider_record(record, overwrite=False)
                 self.repository.attach_asset_to_work(asset, work)
@@ -210,8 +215,8 @@ def read_movie_element(path: Path, *, allow_wrapper: bool = False) -> ElementTre
     raise ValueError("expected <movie> NFO root")
 
 
-def parse_movie_nfo(path: Path) -> ParsedNfo:
-    root = read_movie_element(path)
+def parse_movie_nfo(path: Path, *, allow_wrapper: bool = False) -> ParsedNfo:
+    root = read_movie_element(path, allow_wrapper=allow_wrapper)
     title = _text(root, "title")
     original = _text(root, "originaltitle")
     plot = _text(root, "plot")
@@ -273,15 +278,35 @@ def parse_movie_nfo(path: Path) -> ParsedNfo:
         plot=plot,
         code=code,
         studio=studio,
+        label=_text(root, "label"),
         series=series,
         premiered=premiered,
         runtime_seconds=_runtime_seconds(_text(root, "runtime")),
         actors=actors,
+        directors=tuple(dict.fromkeys(value for node in root.findall("director") if (value := (node.text or "").strip()))),
         tags=tags,
         unique_ids=unique_ids,
         locked_fields=locked,
         source_path=str(path.resolve()),
+        **_rating_fields(root),
     )
+
+
+def _rating_fields(root: ElementTree.Element) -> dict[str, float | int]:
+    ratings = root.findall("ratings/rating")
+    for node in sorted(ratings, key=lambda rating: rating.get("default", "").casefold() != "true"):
+        try:
+            value, maximum = float(_text(node, "value") or ""), float(node.get("max", "10"))
+        except ValueError:
+            continue
+        if not (isfinite(value) and isfinite(maximum) and 0 <= value <= maximum and maximum > 0):
+            continue
+        result: dict[str, float | int] = {"rating": value, "rating_max": maximum}
+        votes = _text(node, "votes")
+        if votes and votes.isascii() and votes.isdecimal() and len(votes) <= 10:
+            result["rating_count"] = int(votes)
+        return result
+    return {}
 
 
 def _runtime_seconds(value: str | None) -> int | None:
@@ -294,7 +319,7 @@ def _runtime_seconds(value: str | None) -> int | None:
         return None
 
 
-def _to_provider_record(parsed: ParsedNfo) -> ProviderRecord:
+def nfo_provider_record(parsed: ParsedNfo) -> ProviderRecord:
     release: date | None = None
     if parsed.premiered:
         try:
@@ -323,10 +348,15 @@ def _to_provider_record(parsed: ParsedNfo) -> ProviderRecord:
         family=family,
         category=category,
         studio=parsed.studio,
+        label=parsed.label,
         series=parsed.series,
         release_date=release,
         runtime_seconds=parsed.runtime_seconds,
         actors=parsed.actors,
+        directors=parsed.directors,
+        rating=parsed.rating,
+        rating_max=parsed.rating_max,
+        rating_count=parsed.rating_count,
         tags=parsed.tags,
         source_url=None,
     )

@@ -66,6 +66,7 @@ from .pan_common import (
 )
 from .pan_common import (
     RemoteVideo as RemoteVideo,
+    VideoListing,
 )
 from .pan_common import (
     ScanPacer as ScanPacer,
@@ -103,7 +104,7 @@ ACCESS_TOKEN_CODES = frozenset({99, 990001, 40101032, 40140116, 40140119, 401401
 THROTTLE_CODES = frozenset({590075, 40140117})
 # refreshToken answers with these when the refresh token itself is dead
 # (revoked, expired, superseded by a newer login): permanent, never retried.
-REFRESH_REJECT_CODES = frozenset({99, 40140114, 40140115, 40140116, 40140118, 40140119, 40140120})
+REFRESH_REJECT_CODES = frozenset({99, 40140114, 40140115, 40140116, 40140118, 40140119, 40140120, 40140137})
 # One UA for every 115 media call (downurl / play / probe). 115 binds download
 # URLs to the UA that requested them, so the relay passes the player UA through
 # and only falls back to this when the player sends none.
@@ -1173,7 +1174,7 @@ class Pan115Client:
                     size=int(size) if isinstance(size, int) else None,
                 )
             ]
-        found: list[RemoteVideo] = []
+        found = VideoListing()
         queue: list[tuple[str, str, int]] = [(str(root_id), name, 0)]
         seen = 0
         while queue:
@@ -1186,12 +1187,15 @@ class Pan115Client:
                 for entry in items:
                     seen += 1
                     if seen > max_entries:
+                        found.complete = False
                         return found
                     entry_name = str(entry.get("name") or "")
                     relative = f"{prefix}/{entry_name}" if prefix else entry_name
                     if entry.get("is_directory"):
                         if depth + 1 <= max_depth:
                             queue.append((str(entry.get("id")), relative, depth + 1))
+                        else:
+                            found.complete = False
                         continue
                     if _is_video_name(entry_name):
                         found.append(

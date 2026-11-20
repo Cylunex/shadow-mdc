@@ -47,6 +47,7 @@ from .intake_core import SubscribeRequest
 from .services.catalog_people import MergeRequest, PersonEdit
 from .services.discover import DiscoverList
 from .skill_operations import (
+    CatalogHealthInput,
     ClassificationFill,
     DiscardPlaceholderInput,
     FillInput,
@@ -429,6 +430,8 @@ class Capability:
 
 CAPABILITIES: tuple[Capability, ...] = (
     Capability("system.health", "检查 MDC 服务状态。", "read", EmptyInput, "GET", "/api/health"),
+    Capability("catalog.health", "按作品查看片库缺项、NFO、离线导出及来源状态。", "read",
+               CatalogHealthInput, "POST", "/api/operator/v1/catalog-health"),
     Capability(
         "works.query",
         "按片名、演员、标签、分类、资料缺项和状态分页查询作品。",

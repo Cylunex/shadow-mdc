@@ -6,6 +6,8 @@ implemented against OpenList + shadow-mdc — no product switch.
 
 from __future__ import annotations
 
+import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +18,7 @@ from ..db.repository import Repository
 from .media_server import MediaServerSettings
 from .pan import PanService
 from .pan_poller import PanOfflinePoller
-from .strm_export import SIDECAR_NAME, iter_export_dirs, strm_config_problems
+from .strm_export import SIDECAR_NAME, export_revision, strm_config_problems
 from .subscription_watch import SubscriptionWatchStatus
 
 # Cap filesystem walks so the status endpoint stays cheap on large libraries.
@@ -52,7 +54,8 @@ def _scan_export_tree(root: Path | None) -> dict[str, Any]:
     orphan_strm = 0
     managed_parents: set[Path] = set()
     truncated = False
-    for directory in iter_export_dirs(path):
+    for sidecar in path.rglob(SIDECAR_NAME):
+        directory = sidecar.parent
         export_dirs += 1
         managed_parents.add(directory)
         has_strm = any(directory.glob("*.strm"))
@@ -89,6 +92,11 @@ def _scan_export_tree(root: Path | None) -> dict[str, Any]:
     }
 
 
+@lru_cache(maxsize=32)
+def _cached_export_tree(root: Path | None, _revision: int, _interval: int) -> dict[str, Any]:
+    return _scan_export_tree(root)
+
+
 def build_pipeline_status(
     *,
     pan: PanService,
@@ -116,7 +124,10 @@ def build_pipeline_status(
         }
         for row in repo.list_pan_offline_tasks(limit=12)
     ]
-    export = _scan_export_tree(cfg.strm_output_root if cfg.strm_enabled else None)
+    export = _cached_export_tree(
+        Path(cfg.strm_output_root) if cfg.strm_enabled and cfg.strm_output_root else None,
+        export_revision(), int(time.monotonic() // 30),
+    )
     config_errors = strm_config_problems(cfg, emby_notify=bool(media_settings.enabled))
     maintenance = poller.maintenance
     notifier = poller.notifier

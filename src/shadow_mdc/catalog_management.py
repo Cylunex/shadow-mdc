@@ -125,7 +125,7 @@ class CatalogFilter(ClassificationSelection):
     status: Literal["all", "files", "emby", "metadata", "want", "downloaded", "undownloaded"] = "all"
     availability: MediaAvailability = MediaAvailability.ALL
     wanted: bool | None = None
-    sort: Literal["added", "newest", "oldest", "title", "code", "ranked", "random"] = "added"
+    sort: Literal["added", "newest", "oldest", "title", "code", "ranked", "random", "swipe"] = "added"
     cursor: str | None = None
     limit: int = Field(default=60, ge=1, le=100)
 

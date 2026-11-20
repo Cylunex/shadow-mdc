@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import and_, delete, exists, or_, select
+from sqlalchemy import and_, delete, exists, func, or_, select
 
+from .catalog_gaps import gap_conditions
 from .classifications import DURATION_FORM_IDS, ClassificationSelection
 from .db.models import (
     CatalogClassificationTerm,
@@ -17,6 +18,7 @@ from .db.models import (
     CatalogWorkOrganization,
     CatalogWorkSeries,
     ExternalIdentity,
+    MediaAsset,
     MediaEmbyBinding,
     PanOfflineTask,
     SourceSnapshot,
@@ -43,6 +45,8 @@ from .intake_core import (
 )
 from .matching import rank_candidates
 from .media.artwork import ArtworkStore
+from .media.nfo_import import read_movie_element, resolve_sidecar_nfo
+from .services.work_samples import acquire_work_artwork
 from .services.catalog_classifications import validate_selection, work_classifications
 from .services.offline_recovery import load_recovery
 from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
@@ -60,6 +64,12 @@ class OperationInput(BaseModel):
 
 class WorkTarget(OperationInput):
     work_id: str = Field(min_length=1, max_length=240, pattern=r"^[A-Za-z0-9:_-]+$")
+
+
+class CatalogHealthInput(OperationInput):
+    work_id: str | None = Field(default=None, max_length=240)
+    limit: int = Field(default=48, ge=1, le=100)
+    after: str = Field(default="", max_length=240)
 
 
 class TagsEdit(WorkTarget):
@@ -154,6 +164,50 @@ def apply_tags(repo: Repository, work_id: str, add: list[str], remove: list[str]
 def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
     """Expose domain operations through the authenticated skill allowlist only."""
     router = APIRouter(prefix="/api/operator/v1", dependencies=[Depends(require_service_token)])
+
+    @router.post("/catalog-health")
+    def catalog_health(payload: CatalogHealthInput, request: Request) -> dict[str, object]:
+        app_runtime = runtime(request)
+        conditions = gap_conditions()
+        with app_runtime.database.session() as session:
+            scope = [] if payload.work_id is None else [Work.id == payload.work_id]
+            if payload.work_id is not None and session.get(Work, payload.work_id) is None:
+                raise HTTPException(404, "work not found")
+            counters = {
+                key.value: session.scalar(select(func.count()).select_from(Work).where(*scope, condition)) or 0
+                for key, condition in conditions.items()
+            }
+            matches = session.execute(select(Work, *conditions.values()).where(
+                *scope, Work.id > payload.after,
+            ).order_by(Work.id).limit(payload.limit + 1)).all()
+            page = matches[:payload.limit]
+            ids = [row[0].id for row in page]
+            assets = [(asset.id, asset.work_id, asset.path) for asset in session.scalars(
+                select(MediaAsset).where(MediaAsset.work_id.in_(ids))
+            ).all()]
+            tasks = [
+                {"task_id": task.id, "work_id": task.work_id, "status": task.status}
+                for task in session.scalars(select(PanOfflineTask).where(
+                    PanOfflineTask.work_id.in_(ids), PanOfflineTask.status == "done", PanOfflineTask.strm_path.is_(None),
+                )).all()
+            ]
+        malformed = []
+        for asset_id, work_id, location in assets:
+            try:
+                sidecar = resolve_sidecar_nfo(Path(location))
+                if sidecar is not None:
+                    read_movie_element(sidecar)
+            except (OSError, ValueError):
+                malformed.append({"asset_id": asset_id, "work_id": work_id})
+        return {
+            "missing": counters,
+            "items": [{"work_id": row[0].id, "missing": [key.value for key, missed in zip(conditions, row[1:]) if missed]}
+                      for row in page],
+            "nfo_unreadable": malformed,
+            "offline_without_export": tasks,
+            "providers": app_runtime.providers.health_snapshot(),
+            "next": page[-1][0].id if len(matches) > payload.limit else None,
+        }
 
     @router.post("/discard-placeholder")
     def discard_placeholder(payload: DiscardPlaceholderInput, request: Request) -> dict[str, str]:
@@ -359,13 +413,11 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                     item.detail or "translation failed" for item in results if item.status == "failed"
                 )
             if "artwork" in fields and work.artwork:
-                result, paths = await ArtworkStore(
+                _, result = await acquire_work_artwork(repo, ArtworkStore(
                     app_runtime.settings.data_dir / "artwork",
                     app_runtime.http,
                     max_bytes=app_runtime.settings.artwork_max_bytes,
-                ).acquire(work)
-                if paths:
-                    repo.update_artwork_local_paths(work, paths)
+                ), work)
                 if result.downloaded:
                     changed.append("artwork:cache")
                 if result.failed:

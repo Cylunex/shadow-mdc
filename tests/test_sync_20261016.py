@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import os
 import stat
 import time
@@ -70,10 +71,13 @@ def test_generated_export_name_rules() -> None:
 def test_cleanup_generated_keeps_custom_files(tmp_path: Path) -> None:
     folder = tmp_path / "SSIS-001"
     folder.mkdir()
-    write_sidecar(folder, "SSIS-001", [], work_id=None)
     (folder / "SSIS-001.strm").write_text("x\n", encoding="utf-8")
     (folder / "bonus.strm").write_text("keep\n", encoding="utf-8")
     (folder / "notes.txt").write_text("keep\n", encoding="utf-8")
+    write_sidecar(folder, "SSIS-001", [], work_id=None, managed={
+        name: hashlib.sha256((folder / name).read_bytes()).hexdigest()
+        for name in ('SSIS-001.strm',)
+    })
     deleted = cleanup_generated_export_files(folder, "SSIS-001")
     assert {path.name for path in deleted} >= {"SSIS-001.strm", ".shadow-strm.json"}
     assert sorted(path.name for path in folder.iterdir()) == ["bonus.strm", "notes.txt"]

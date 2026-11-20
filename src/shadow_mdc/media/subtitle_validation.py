@@ -1,5 +1,6 @@
 """Conservative structural checks for downloaded SRT; no identity inference."""
 
+import html
 import re
 
 _MAX_BYTES = 8 * 1024 * 1024
@@ -17,16 +18,7 @@ def validate_srt(payload: bytes) -> str | None:
     """
     if len(payload) > _MAX_BYTES:
         return "srt payload exceeds 8 MiB"
-    encodings = (
-        ("utf-16",) if payload.startswith((b"\xff\xfe", b"\xfe\xff")) else ("utf-8-sig", "gb18030", "big5")
-    )
-    text: str | None = None
-    for encoding in encodings:
-        try:
-            text = payload.decode(encoding)
-            break
-        except UnicodeError:
-            continue
+    text = _decode_srt(payload)
     if text is None or "\x00" in text:
         return "srt payload cannot be decoded"
     if _HTML.search(text):
@@ -50,3 +42,34 @@ def validate_srt(payload: bytes) -> str | None:
         previous_start = start
         cues += 1
     return None if cues else "srt payload has no cues"
+
+
+def _decode_srt(payload: bytes) -> str | None:
+    encodings = (
+        ("utf-16",) if payload.startswith((b"\xff\xfe", b"\xfe\xff")) else ("utf-8-sig", "gb18030", "big5")
+    )
+    for encoding in encodings:
+        try:
+            return payload.decode(encoding)
+        except UnicodeError:
+            continue
+    return None
+
+
+def srt_to_webvtt(payload: bytes) -> str:
+    diagnostic = validate_srt(payload)
+    if diagnostic:
+        raise ValueError(diagnostic)
+    text = _decode_srt(payload)
+    assert text is not None
+    blocks = re.split(r"\n\s*\n", text.replace("\r\n", "\n").replace("\r", "\n").strip())
+    rendered = []
+    for block in blocks:
+        lines = block.strip().splitlines()
+        index = int(lines[0].strip().isdigit())
+        match = _TIMING.fullmatch(lines[index].strip())
+        assert match is not None
+        h1, m1, s1, ms1, h2, m2, s2, ms2 = match.groups()
+        timing = f"{h1.zfill(2)}:{m1}:{s1}.{ms1} --> {h2.zfill(2)}:{m2}:{s2}.{ms2}"
+        rendered.append(timing + "\n" + "\n".join(html.escape(line, quote=False) for line in lines[index + 1:]))
+    return "WEBVTT\n\n" + "\n\n".join(rendered) + "\n"

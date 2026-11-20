@@ -4,7 +4,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from shadow_mdc.media.subtitle_validation import validate_srt
+from shadow_mdc.media.subtitle_validation import srt_to_webvtt, validate_srt
 from shadow_mdc.services.subtitlecat import SubtitleCatFetcher, SubtitleCatPick, has_existing_subtitle
 
 SRT = "1\n00:00:01,000 --> 00:00:02,000\n你好\n"
@@ -13,6 +13,11 @@ SRT = "1\n00:00:01,000 --> 00:00:02,000\n你好\n"
 @pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "gb18030", "big5"])
 def test_valid_srt_encodings(encoding: str) -> None:
     assert validate_srt(SRT.encode(encoding)) is None
+
+
+def test_srt_export_has_webvtt_timings_and_escaped_text() -> None:
+    converted = srt_to_webvtt(SRT.replace("你好", "一 < 二 & 三").encode("utf-16"))
+    assert converted == "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n一 &lt; 二 &amp; 三\n"
 
 
 @pytest.mark.parametrize(

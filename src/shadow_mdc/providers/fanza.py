@@ -523,6 +523,23 @@ class FanzaProvider(HttpProvider):
 
 
 
+def _merge_fanza_enrichment(base: ProviderRecord, detail: ProviderRecord) -> ProviderRecord:
+    if (base.provider, base.external_id) != (detail.provider, detail.external_id):
+        return base
+    if base.code and detail.code and base.code != detail.code:
+        return base
+    artwork: dict[tuple[str, str], Artwork] = {}
+    for image in base.artwork + detail.artwork:
+        artwork.setdefault((image.kind, str(image.url)), image)
+    merged = {
+        "artwork": tuple(artwork.values()),
+        "reviews": tuple(dict.fromkeys(base.reviews + detail.reviews)),
+    }
+    if detail.rating is not None and detail.rating_max is not None and detail.rating <= detail.rating_max:
+        merged.update(rating=detail.rating, rating_max=detail.rating_max, rating_count=detail.rating_count)
+    return base.model_copy(update=merged)
+
+
 def is_fanza_vr_item(item: FanzaRankingItem) -> bool:
     """True when ranking row looks like a FANZA VR title (title marker or VR cid/code)."""
 
