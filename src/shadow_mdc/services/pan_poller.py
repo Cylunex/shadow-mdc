@@ -26,8 +26,11 @@ from .obsolete_exports import ObsoleteExportDrainResult, ObsoleteExportQueue
 from .offline_control import OfflineRecoveryController
 from .offline_recovery import load_recovery
 from .openlist import (
+    OpenListApiError,
+    OpenListAuthError,
     OpenListEntry,
     OpenListTask,
+    looks_like_not_found,
     magnet_display_name,
     path_within,
 )
@@ -670,10 +673,18 @@ class PanOfflinePoller:
         entry: OpenListEntry | None
         if verified_name:
             path = str(PurePosixPath(target) / verified_name)
-            info = await service.client().get(path)
-            if info.get("name") != verified_name:
-                return
-            entry = OpenListEntry(name=verified_name, path=path, is_dir=bool(info.get("is_dir")))
+            try:
+                info = await service.client().get(path)
+            except OpenListApiError as exc:
+                if isinstance(exc, OpenListAuthError) or not looks_like_not_found(str(exc)):
+                    raise
+                info = {}
+            sign = info.get("sign")
+            entry = (
+                OpenListEntry(name=verified_name, path=path, is_dir=bool(info.get("is_dir")),
+                              sign=sign if isinstance(sign, str) else None)
+                if info.get("name") == verified_name else None
+            )
         else:
             if target not in listings:
                 listings[target] = None  # A failed listing is also shared within this poll.
@@ -686,6 +697,8 @@ class PanOfflinePoller:
                 since=since, entries=entries,
             )
         if entry is None:
+            if source != self._pan.source_fingerprint():
+                return
             misses = self._miss(task_id)
             limit = OPENLIST_RESULT_LIMIT if had_task else OPENLIST_MISSING_LIMIT
             if misses >= limit:
@@ -693,8 +706,10 @@ class PanOfflinePoller:
                 with self._database.session() as session:
                     repo = Repository(session)
                     row = repo.get_pan_offline_task(task_id)
-                    if row is not None and row.status in {"running", "done"}:
+                    if row is not None and row.status in {"running", "done"} and row.url == url:
                         state = load_recovery(row)
+                        if state.action or state.verified_result_name != verified_name:
+                            return
                         accepted_existing = state.existing_result_pending
                         state.existing_result_pending = False
                         if accepted_existing:
@@ -813,7 +828,7 @@ class PanOfflinePoller:
 
     # ------------------------------------------------------------- maintenance
 
-    async def rewrite(self) -> RewriteResult:
+    async def rewrite(self, previous_settings: PanSettings | None = None) -> RewriteResult:
         """Rewrite .strm bodies in place for the current mode / public URL / token."""
 
         cfg = self._pan.config_store.load()
@@ -823,7 +838,9 @@ class PanOfflinePoller:
         async with self._maintenance_lock:
             self.maintenance.running = "rewrite"
             try:
-                result = await asyncio.to_thread(rewrite_strm_tree, Path(cfg.strm_output_root), cfg)
+                result = await asyncio.to_thread(
+                    rewrite_strm_tree, Path(cfg.strm_output_root), cfg, previous_settings=previous_settings,
+                )
             finally:
                 self.maintenance.running = None
         if result.rewritten:
@@ -834,6 +851,7 @@ class PanOfflinePoller:
             "scanned": result.scanned,
             "rewritten": len(result.rewritten),
             "skipped": result.skipped,
+            "skipped_paths": [str(path) for path in result.skipped_paths[:50]],
         }
         self._save_state()
         return result
@@ -855,9 +873,13 @@ class PanOfflinePoller:
             self.maintenance.running = "migrate"
             try:
                 if old_root:
-                    result = await asyncio.to_thread(migrate_strm_tree, Path(old_root), new_root, cfg)
+                    result = await asyncio.to_thread(
+                        migrate_strm_tree, Path(old_root), new_root, cfg, previous_settings=old_settings,
+                    )
                 else:
-                    rewrite = await asyncio.to_thread(rewrite_strm_tree, new_root, cfg)
+                    rewrite = await asyncio.to_thread(
+                        rewrite_strm_tree, new_root, cfg, previous_settings=old_settings,
+                    )
                     result = MigrateResult(new_root=new_root, rewrite=rewrite)
             finally:
                 self.maintenance.running = None
@@ -889,12 +911,13 @@ class PanOfflinePoller:
             "scanned": result.rewrite.scanned,
             "rewritten": len(result.rewrite.rewritten),
             "skipped": result.rewrite.skipped,
+            "skipped_paths": [str(path) for path in result.rewrite.skipped_paths[:50]],
         }
         self._save_state()
         return result
 
 
-    async def rematerialize(self) -> RematerializeResult:
+    async def rematerialize(self, previous_settings: PanSettings | None = None) -> RematerializeResult:
         """Apply current ``strm_layout_template`` to managed export folders."""
 
         cfg = self._pan.config_store.load()
@@ -915,6 +938,10 @@ class PanOfflinePoller:
             with self._database.session() as session:
                 return Repository(session).identities_for_work(work.id)
 
+        def series_for(work: Work) -> tuple[str, ...]:
+            with self._database.session() as session:
+                return Repository(session).series_names_for_work(work.id)
+
         async with self._maintenance_lock:
             self.maintenance.running = "rematerialize"
             try:
@@ -924,6 +951,8 @@ class PanOfflinePoller:
                     cfg,
                     resolve_work=resolve_work,
                     identities_for=identities_for,
+                    series_for=series_for,
+                    previous_settings=previous_settings,
                 )
             finally:
                 self.maintenance.running = None

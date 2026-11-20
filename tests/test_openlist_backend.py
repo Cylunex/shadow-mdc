@@ -491,6 +491,17 @@ def test_adopted_task_uses_explicit_result_instead_of_guessing_by_time(
             with database.session() as session:
                 row = Repository(session).list_pan_offline_tasks()[0]
                 assert row.status == "done" and row.remote_path == f"{TARGET}/verified-folder"
+                Repository(session).update_pan_offline_task(row, status="running")
+            fake.tree[TARGET] = [entry for entry in fake.tree[TARGET] if entry["name"] != "verified-folder"]
+            fake.tree.pop(f"{TARGET}/verified-folder")
+            monkeypatch.setattr("shadow_mdc.services.pan_poller.OPENLIST_MISSING_LIMIT", 2)
+            monkeypatch.setattr("shadow_mdc.services.pan_poller.OPENLIST_RESULT_LIMIT", 2)
+            assert await poller.poll_once() is True
+            with database.session() as session:
+                assert Repository(session).list_pan_offline_tasks()[0].status == "running"
+            assert await poller.poll_once() is True
+            with database.session() as session:
+                assert Repository(session).list_pan_offline_tasks()[0].status == "failed"
         assert len([call for call in fake.calls if call[1] == "/api/fs/add_offline_download"]) == 1
         await pan.aclose()
 

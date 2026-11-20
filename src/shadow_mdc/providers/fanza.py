@@ -531,7 +531,7 @@ def _merge_fanza_enrichment(base: ProviderRecord, detail: ProviderRecord) -> Pro
     artwork: dict[tuple[str, str], Artwork] = {}
     for image in base.artwork + detail.artwork:
         artwork.setdefault((image.kind, str(image.url)), image)
-    merged = {
+    merged: dict[str, object] = {
         "artwork": tuple(artwork.values()),
         "reviews": tuple(dict.fromkeys(base.reviews + detail.reviews)),
     }

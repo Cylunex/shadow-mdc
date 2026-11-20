@@ -91,11 +91,20 @@ def work_ids_for_names(session: Session, names: set[str]) -> set[str]:
 
 
 def refresh_cards(session: Session) -> int:
-    version = state_value(session, "cards")
     dirty = take_dirty(session, "card")
-    if version is not None and not dirty:
+    states = dict(session.execute(text(
+        "SELECT key, value FROM mdc_people_state WHERE key IN ('cards', 'portrait_backfill')"
+    )).tuples().all())
+    version = states.get("cards")
+    backfill = False
+    if "portrait_backfill" in states:
+        backfill = session.execute(text(
+            "DELETE FROM mdc_people_state WHERE key='portrait_backfill' RETURNING key"
+        )).scalar_one_or_none() is not None
+        version = state_value(session, "cards")
+    if version is not None and not dirty and not backfill:
         return int(version)
-    if version is None:
+    if version is None or backfill:
         session.execute(text("DELETE FROM mdc_people_cards"))
         session.execute(text("DELETE FROM mdc_people_card_works"))
         profiles = build_profiles(session)
@@ -119,12 +128,15 @@ def refresh_cards(session: Session) -> int:
     rows = [
         {"id": doc.id, "name": doc.name, "sort": fold_name(doc.name), "aliases": json.dumps(doc.aliases),
          "search": "\n".join(fold_name(name) for name in (doc.name, *doc.aliases)), "works": len(doc.work_ids),
-         "revision": doc.revision, "portrait": hashlib.sha256((doc.image_url or "").encode()).hexdigest()[:16]}
+         "revision": doc.revision, "portrait": hashlib.sha256((doc.image_url or "").encode()).hexdigest()[:16],
+         "url": doc.image_url}
         for doc in profiles
     ]
     if rows:
         session.execute(text("""
-            INSERT INTO mdc_people_cards VALUES (:id,:name,:sort,:aliases,:search,:works,:revision,:portrait)
+            INSERT INTO mdc_people_cards
+                (id, name, sort_name, aliases, search, works, revision, portrait_revision, portrait_url)
+            VALUES (:id,:name,:sort,:aliases,:search,:works,:revision,:portrait,:url)
         """), rows)
     credits = [{"person": doc.id, "work": work} for doc in profiles for work in doc.work_ids]
     if credits:
@@ -151,3 +163,31 @@ def page_cards(
                    image_url=f"/api/media/v1/catalog/people/{key}/image?v={portrait}")
         for key, name, aliases, works, revision, portrait, same_name in rows
     ]
+
+
+def web_cards(
+    session: Session, query: str, sort: Literal["works", "name"], offset: int, limit: int,
+) -> tuple[list[PersonCard], int]:
+    where = """
+        WHERE :query='' OR instr(mdc_casefold(p.name), :query)>0 OR EXISTS (
+            SELECT 1 FROM json_each(p.aliases) WHERE instr(mdc_casefold(value), :query)>0
+        )
+    """
+    params = {"query": query, "offset": offset, "limit": limit}
+    total = int(session.execute(text(
+        f"SELECT count(*) FROM mdc_people_cards p {where}"
+    ), params).scalar_one())
+    if offset >= total:
+        return [], total
+    order = "p.works DESC," if sort == "works" else ""
+    rows = session.execute(text(f"""
+        SELECT p.id,p.name,p.aliases,p.works,p.revision,p.portrait_url, EXISTS (
+            SELECT 1 FROM mdc_people_cards other WHERE other.name=p.name AND other.id<>p.id
+        ) FROM mdc_people_cards p {where}
+        ORDER BY {order} mdc_casefold(p.name), p.id LIMIT :limit OFFSET :offset
+    """), params)
+    return [
+        PersonCard(id=key, name=name, aliases=json.loads(aliases)[:2], work_count=works,
+                   revision=revision, same_name=bool(same_name), image_url=url)
+        for key, name, aliases, works, revision, url, same_name in rows
+    ], total

@@ -136,8 +136,12 @@ def test_remote_connection_error_keeps_receipt_unknown_and_blocks_later_items(tm
 
     checked = check_batch(manifest, receipt, lookup)
     assert checked["states"] == {"unknown": 1, "pending": 1}
-    assert checked["unknown"][0]["evidence"] == {"in_library": True}
-    assert checked["unknown"][0]["state"] == "unknown"
+    unknown = checked["unknown"]
+    assert isinstance(unknown, list) and len(unknown) == 1
+    item = unknown[0]
+    assert isinstance(item, dict)
+    assert item["evidence"] == {"in_library": True}
+    assert item["state"] == "unknown"
     assert receipt.read_bytes() == old
     assert run_batch(manifest, receipt, call, retry_failed=True, pace_seconds=0)["counts"] == result["counts"]
     assert calls == ["A-001"]

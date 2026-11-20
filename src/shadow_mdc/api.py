@@ -336,6 +336,7 @@ from .services.pan import (
     PanApiError,
     PanNotConfiguredError,
     PanService,
+    PanSettings,
     SourceChangedError,
     pan_status,
 )
@@ -1129,11 +1130,17 @@ async def pan_put_settings(payload: PanSettingsUpdatePayload, request: Request) 
         )
     elif layout_changed and saved.strm_output_root:
         # Template change (e.g. flat → {studio}/{code}): move managed folders.
-        _spawn(app_runtime.pan_poller.rematerialize(), "shadow-mdc-strm-rematerialize")
+        _spawn(_apply_strm_layout(app_runtime, before, rewrite=changed), "shadow-mdc-strm-rematerialize")
     elif changed and saved.strm_output_root:
         # Token / public URL / mode rotation: rewrite existing .strm in place (no re-export).
-        _spawn(app_runtime.pan_poller.rewrite(), "shadow-mdc-strm-rewrite")
+        _spawn(app_runtime.pan_poller.rewrite(before), "shadow-mdc-strm-rewrite")
     return _pan_settings_payload(app_runtime)
+
+
+async def _apply_strm_layout(app_runtime: Runtime, previous: PanSettings, *, rewrite: bool) -> None:
+    await app_runtime.pan_poller.rematerialize(previous)
+    if rewrite:
+        await app_runtime.pan_poller.rewrite(previous)
 
 
 def _strm_root_key(value: str | None) -> str | None:
@@ -1173,7 +1180,10 @@ async def pan_strm_rewrite(request: Request) -> dict[str, object]:
         result = await runtime(request).pan_poller.rewrite()
     except StrmConfigError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"scanned": result.scanned, "rewritten": len(result.rewritten), "skipped": result.skipped}
+    return {
+        "scanned": result.scanned, "rewritten": len(result.rewritten), "skipped": result.skipped,
+        "skipped_paths": [str(path) for path in result.skipped_paths[:50]],
+    }
 
 
 @app.post("/api/pan/strm/migrate", status_code=202)
@@ -3641,14 +3651,17 @@ async def _execute_identify(
             state.provider_failures = failures
             save_identify_progress()
     translation_slots = asyncio.Semaphore(app_runtime.settings.translation_concurrency)
+    if accepted_work_ids:
+        repo.commit()
 
     async def translate(work_id: str) -> None:
-        work = repo.get_work(work_id)
-        if work is None:
-            return
         async with translation_slots:
-            await app_runtime.translator.translate_work(repo, work)
-            await _ensure_artwork_cached(work, app_runtime, repo)
+            with app_runtime.database.session() as session:
+                work_repo = Repository(session)
+                work = work_repo.get_work(work_id)
+                if work is not None:
+                    await app_runtime.translator.translate_work(work_repo, work)
+                    await _ensure_artwork_cached(work, app_runtime, work_repo)
 
     await asyncio.gather(*(translate(work_id) for work_id in accepted_work_ids))
     remaining = max(0, len(groups) - (queried - queried_at_start))

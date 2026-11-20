@@ -111,6 +111,7 @@ def _apply_sqlite_pragmas(dbapi_connection: Any, _connection_record: Any) -> Non
     on defaults.
     """
 
+    dbapi_connection.create_function("mdc_casefold", 1, str.casefold, deterministic=True)
     dbapi_connection.create_function("mdc_canonical_tag", 1, canonicalize_tag, deterministic=True)
     dbapi_connection.create_function("mdc_tag_id", 1, tag_id, deterministic=True)
     dbapi_connection.create_function("mdc_tag_matches", 2, tag_matches, deterministic=True)
@@ -183,32 +184,16 @@ class Database:
                 )
         with self.engine.begin() as connection:
             init_people_index(connection)
-            connection.exec_driver_sql(
-                "CREATE TABLE IF NOT EXISTS catalog_source_revisions "
-                "(name TEXT PRIMARY KEY, revision INTEGER NOT NULL)"
-            )
-            connection.exec_driver_sql(
-                "INSERT OR IGNORE INTO catalog_source_revisions VALUES ('people', 0)"
-            )
-            connection.exec_driver_sql(
-                "INSERT OR IGNORE INTO catalog_source_revisions VALUES ('people_projection', 0)"
-            )
-            for table in ("catalog_people", "catalog_person_references", "catalog_person_credits"):
-                for operation in ("INSERT", "UPDATE", "DELETE"):
-                    connection.exec_driver_sql(
-                        f"CREATE TRIGGER IF NOT EXISTS catalog_projection_{table}_{operation.lower()} "
-                        f"AFTER {operation} ON {table} BEGIN "
-                        "UPDATE catalog_source_revisions SET revision = revision + 1 "
-                        "WHERE name = 'people_projection'; END"
-                    )
-            for table in ("actors", "works", "work_actors"):
-                for operation in ("INSERT", "UPDATE", "DELETE"):
-                    connection.exec_driver_sql(
-                        f"CREATE TRIGGER IF NOT EXISTS catalog_people_{table}_{operation.lower()} "
-                        f"AFTER {operation} ON {table} BEGIN "
-                        "UPDATE catalog_source_revisions SET revision = revision + 1 "
-                        "WHERE name = 'people'; END"
-                    )
+            for prefix, tables in (
+                ("catalog_projection", (
+                    "catalog_people", "catalog_person_references", "catalog_person_credits",
+                )),
+                ("catalog_people", ("actors", "works", "work_actors")),
+            ):
+                for table in tables:
+                    for operation in ("insert", "update", "delete"):
+                        connection.exec_driver_sql(f"DROP TRIGGER IF EXISTS {prefix}_{table}_{operation}")
+            connection.exec_driver_sql("DROP TABLE IF EXISTS catalog_source_revisions")
         with self.engine.begin() as connection:
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_works_mobile_created_at_id ON works (created_at, id)"

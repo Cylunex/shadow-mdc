@@ -531,3 +531,55 @@ def test_mobile_people_only_reprojects_affected_profiles_and_survives_restart(
         client.headers["Authorization"] = "Bearer REPLACE_MOBILE_TOKEN"
         assert client.get(endpoint, params={"q": "別 名"}).json()["items"][0]["name"] == "New name"
         assert calls == [{"a"}]
+
+
+def test_people_cards_clear_deleted_credits_from_a_remapped_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy import delete
+
+    from shadow_mdc.services.catalog_people import PersonDocument, import_people
+
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{tmp_path / 'cards.db'}")
+    with TestClient(app) as client:
+        database = app.state.runtime.database
+        with database.session() as session:
+            session.add_all([
+                Actor(id="old", name="Fixture actor", normalized_name="fixture actor"),
+                Work(id="work", title="Fixture work"),
+            ])
+            session.flush()
+            session.add(WorkActor(actor_id="old", work_id="work"))
+            import_people(session, [PersonDocument(id="person", ref="jav:old", name="Fixture actor")])
+        endpoint = "/api/catalog/people-cards"
+        first = client.get(endpoint).json()["items"][0]
+        assert (first["id"], first["work_count"]) == ("person", 1)
+        with database.session() as session:
+            session.execute(delete(WorkActor).where(WorkActor.actor_id == "old"))
+            session.execute(delete(Actor).where(Actor.id == "old"))
+        last = client.get(endpoint).json()["items"][0]
+        assert (last["id"], last["work_count"]) == ("person", 0)
+
+
+def test_people_page_and_revision_share_the_same_sqlite_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shadow_mdc.catalog_api import _card_snapshot
+    from shadow_mdc.services.people_index import page_cards
+
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{tmp_path / 'cards.db'}")
+    with TestClient(app):
+        runtime = app.state.runtime
+        database = runtime.database
+        with database.session() as initial:
+            initial.add(Actor(id="old", name="Initial", normalized_name="initial"))
+        with database.session() as reader:
+            revision = _card_snapshot(runtime, reader)
+            with database.session() as writer:
+                writer.add(Actor(id="new", name="New", normalized_name="new"))
+            with database.session() as fresh:
+                assert _card_snapshot(runtime, fresh) > revision
+                assert {card.id for card in page_cards(fresh, "", "name", 0, 10)} == {"old", "new"}
+            assert [card.id for card in page_cards(reader, "", "name", 0, 10)] == ["old"]

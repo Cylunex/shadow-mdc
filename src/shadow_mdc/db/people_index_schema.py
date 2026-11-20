@@ -10,7 +10,7 @@ def init_people_index(connection: Connection) -> None:
         "CREATE TABLE IF NOT EXISTS mdc_people_work_names (work_id TEXT, name TEXT, PRIMARY KEY(work_id,name)) WITHOUT ROWID",
         "CREATE INDEX IF NOT EXISTS mdc_people_name_lookup ON mdc_people_work_names(name,work_id)",
         "CREATE TABLE IF NOT EXISTS mdc_people_cards (id TEXT PRIMARY KEY, name TEXT, sort_name TEXT,"
-        " aliases TEXT, search TEXT, works INTEGER, revision INTEGER, portrait_revision TEXT)",
+        " aliases TEXT, search TEXT, works INTEGER, revision INTEGER, portrait_revision TEXT, portrait_url TEXT)",
         "CREATE INDEX IF NOT EXISTS mdc_people_card_sort ON mdc_people_cards(works DESC, sort_name,id)",
         "CREATE INDEX IF NOT EXISTS mdc_people_card_name ON mdc_people_cards(sort_name,id)",
         "CREATE INDEX IF NOT EXISTS mdc_people_card_same_name ON mdc_people_cards(name)",
@@ -19,6 +19,12 @@ def init_people_index(connection: Connection) -> None:
         "CREATE INDEX IF NOT EXISTS mdc_people_card_work ON mdc_people_card_works(work_id,person_id)",
     ):
         connection.exec_driver_sql(ddl)
+    columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(mdc_people_cards)")}
+    if "portrait_url" not in columns:
+        connection.exec_driver_sql("ALTER TABLE mdc_people_cards ADD COLUMN portrait_url TEXT")
+        connection.exec_driver_sql(
+            "INSERT OR IGNORE INTO mdc_people_state VALUES ('portrait_backfill', '1')"
+        )
     for table, kind, column in (
         ("actors", "actor", "id"), ("work_actors", "actor", "actor_id"),
         ("works", "work", "id"), ("catalog_people", "card", "id"),

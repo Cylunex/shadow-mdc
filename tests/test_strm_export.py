@@ -212,6 +212,36 @@ def test_rewrite_rotates_token_and_base_in_place(tmp_path: Path) -> None:
     assert (root / "Unknown Studio" / "AAA-1" / "AAA-1.strm").read_text().strip() == "https://media.example/api/strm/play/101"
 
 
+def test_legacy_rotation_only_adopts_verified_streams(tmp_path: Path) -> None:
+    old = _relay_settings(tmp_path)
+    verified = export_work(settings=old, code="A-1", videos=[_video("101", "a.mp4")])
+    edited = export_work(settings=old, code="A-2", videos=[_video("102", "b.mp4")])
+    for code, result in (("A-1", verified), ("A-2", edited)):
+        strm_export.write_sidecar(result.directory, code, read_sidecar(result.directory), work_id=None)
+    edited.strm_paths[0].write_text("https://example.com/manual.mp4\n")
+    new = old.model_copy(update={"strm_token": "fixture-rotated"})
+    result = rewrite_strm_tree(tmp_path, new, previous_settings=old)
+    assert result.rewritten == verified.strm_paths
+    assert result.skipped_paths == edited.strm_paths
+    assert "fixture-rotated" in verified.strm_paths[0].read_text()
+    assert edited.strm_paths[0].read_text() == "https://example.com/manual.mp4\n"
+    manifest = json.loads((verified.directory / strm_export.SIDECAR_NAME).read_text())
+    assert manifest["version"] == 2
+
+
+def test_export_refuses_to_take_over_another_works_directory(tmp_path: Path) -> None:
+    from shadow_mdc.db.models import Work
+
+    first = Work(id="first", title="First", studio="Shared studio", actors=[], directors=[], tags=[], artwork=[])
+    second = Work(id="second", title="Second", studio=first.studio, actors=[], directors=[], tags=[], artwork=[])
+    settings = _relay_settings(tmp_path, strm_layout_template="{studio}")
+    exported = export_work(settings=settings, work=first, code="A-1", videos=[_video("101", "a.mp4")])
+    before = {p.name: p.read_bytes() for p in exported.directory.iterdir()}
+    with pytest.raises(ValueError, match="已属于其他作品"):
+        export_work(settings=settings, work=second, code="A-2", videos=[_video("102", "b.mp4")])
+    assert {p.name: p.read_bytes() for p in exported.directory.iterdir()} == before
+
+
 def test_rewrite_openlist_to_relay_uses_sidecar(tmp_path: Path) -> None:
     settings = PanSettings(
         strm_enabled=True, strm_output_root=str(tmp_path), strm_url_prefix="http://ol/d/115"
@@ -538,6 +568,28 @@ def test_relay_falls_back_to_play_url_and_default_ua() -> None:
     assert fake.uas == ["MyUA/1", "MyUA/1"]
 
 
+def test_relay_retries_overflow_scan_as_soon_as_root_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from collections import deque
+
+    root = tmp_path.resolve() / "exports"
+    root.mkdir()
+    monkeypatch.setattr(strm_export, "_export_changes", deque(maxlen=2))
+    scope = strm_export.export_source_scope(_fake_source())
+    relay = StrmRelay(_fake_pan(_FakeRelayClient(download=None, play=None)))
+    try:
+        assert asyncio.run(relay._sidecar_pick("101", scope, str(root))) is None
+        export_work(settings=_relay_settings(root), code="A-1", videos=[_video("101", "a.mp4")], source_scope=scope)
+        strm_export._note_export_change(root / "another-export")
+        hidden = root.rename(root.with_name("offline"))
+        assert asyncio.run(relay._sidecar_pick("101", scope, str(root))) is None
+        hidden.rename(root)
+        assert asyncio.run(relay._sidecar_pick("101", scope, str(root))) == "pc101"
+    finally:
+        relay.close()
+
+
 def test_relay_errors() -> None:
     with pytest.raises(RelayError) as disconnected:
         asyncio.run(
@@ -642,6 +694,7 @@ def test_rematerialize_layout_moves_flat_to_studio_code(tmp_path: Path) -> None:
         title="t",
         primary_code="AAA-1",
         studio="Studio X",
+        series="Main series",
         category="Japan",
         actors=[],
         tags=[],
@@ -660,16 +713,19 @@ def test_rematerialize_layout_moves_flat_to_studio_code(tmp_path: Path) -> None:
         settings,
         resolve_work=lambda code, work_id: work,
         identities_for=lambda item: [],
+        series_for=lambda item: ("Main series", "Bonus series"),
     )
     assert len(result.moved) == 1
     assert (root / "Studio X" / "AAA-1" / "AAA-1.strm").is_file()
     assert (root / "Studio X" / "AAA-1" / "movie.nfo").is_file()
+    assert "<name>Bonus series</name>" in (root / "Studio X" / "AAA-1" / "movie.nfo").read_text()
     assert not old.exists()
     again = rematerialize_layout(
         root,
         settings,
         resolve_work=lambda code, work_id: work,
         identities_for=lambda item: [],
+        series_for=lambda item: ("Main series", "Bonus series"),
     )
     assert again.moved == []
     assert again.skipped == 1

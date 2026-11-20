@@ -201,8 +201,13 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                 malformed.append({"asset_id": asset_id, "work_id": work_id})
         return {
             "missing": counters,
-            "items": [{"work_id": row[0].id, "missing": [key.value for key, missed in zip(conditions, row[1:]) if missed]}
-                      for row in page],
+            "items": [
+                {
+                    "work_id": row[0].id,
+                    "missing": [key.value for key, missed in zip(conditions, row[1:], strict=True) if missed],
+                }
+                for row in page
+            ],
             "nfo_unreadable": malformed,
             "offline_without_export": tasks,
             "providers": app_runtime.providers.health_snapshot(),

@@ -142,6 +142,7 @@ class RewriteResult:
     scanned: int = 0
     rewritten: list[Path] = field(default_factory=list)
     skipped: int = 0
+    skipped_paths: list[Path] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -484,6 +485,13 @@ def _owned(directory: Path, payload: dict[str, object]) -> dict[str, str]:
             if _digest_file(directory / name) == value}
 
 
+def _legacy_stream_digest(settings: PanSettings, entry: StrmEntry) -> str | None:
+    try:
+        return hashlib.sha256(strm_payload(locator_for(settings, entry))).hexdigest()
+    except ValueError:
+        return None
+
+
 def _publish_sidecar(directory: Path, payload: dict[str, object]) -> bool:
     target = directory / SIDECAR_NAME
     if target.is_symlink():
@@ -683,6 +691,13 @@ def export_work(
         result = ExportResult(directory=directory, created=not directory.exists())
         directory.mkdir(parents=True, exist_ok=True)
         payload = _sidecar(directory)
+        if not payload and os.path.lexists(directory / SIDECAR_NAME):
+            raise ValueError("无法核对 STRM 导出目录的归属")
+        previous_owner = payload.get("work_id")
+        if previous_owner and (work is None or previous_owner != work.id):
+            raise ValueError("STRM 导出目录已属于其他作品")
+        if not previous_owner and payload.get("code") and payload["code"] != code:
+            raise ValueError("STRM 导出目录已用于其他作品编号")
         previous_scope = read_sidecar_scope(directory)
         if previous_scope and source_scope and previous_scope != source_scope:
             raise ValueError("目录属于其他网盘账号或目录")
@@ -694,11 +709,8 @@ def export_work(
         # An old manifest can be adopted only when the published locator is reproducible.
         if payload.get("version") == 1:
             for entry in previous:
-                try:
-                    digest = hashlib.sha256(strm_payload(locator_for(settings, entry))).hexdigest()
-                except ValueError:
-                    continue
-                if _digest_file(directory / entry.name) == digest:
+                digest = _legacy_stream_digest(settings, entry)
+                if digest and _digest_file(directory / entry.name) == digest:
                     owned[entry.name] = digest
         old_streams = {name: digest for name, digest in owned.items() if name.lower().endswith(".strm")}
         old_ids = {entry.name: entry.file_id for entry in previous}
@@ -746,11 +758,12 @@ def iter_export_dirs(root: Path) -> Iterable[Path]:
         yield sidecar.parent
 
 
-def rewrite_strm_tree(root: Path, settings: PanSettings) -> RewriteResult:
+def rewrite_strm_tree(
+    root: Path, settings: PanSettings, *, previous_settings: PanSettings | None = None,
+) -> RewriteResult:
     """Rewrite ``.strm`` bodies in place after token / public URL / mode changes.
 
-    File ids come from the sidecar or, for relay links, from the old body itself,
-    so no 115 calls and no re-export are needed.
+    Legacy entries must reproduce the current file with the previous locator settings.
     """
 
     require_strm_config(settings.model_copy(update={"strm_output_root": str(root)}))
@@ -762,40 +775,52 @@ def rewrite_strm_tree(root: Path, settings: PanSettings) -> RewriteResult:
             if not _is_within(directory, root):
                 continue
             payload = _sidecar(directory)
-            if payload.get("pending"):
-                continue
             managed = _digests(payload, "managed")
-            before = len(result.rewritten)
-            for entry in read_sidecar(directory):
+            pending = _digests(payload, "pending")
+            entries = read_sidecar(directory)
+            for entry in entries:
                 result.scanned += 1
                 strm = directory / entry.name
                 current = _digest_file(strm)
-                if current is None or managed.get(entry.name) != current:
+                legacy = (_legacy_stream_digest(previous_settings or settings, entry)
+                          if payload.get("version") == 1 else None)
+                expected = (managed.get(entry.name), pending.get(entry.name), legacy)
+                if current is None or current not in expected:
                     result.skipped += 1
+                    result.skipped_paths.append(strm)
                     continue
                 try:
                     locator = locator_for(settings, entry)
                 except ValueError:
                     result.skipped += 1
+                    result.skipped_paths.append(strm)
                     continue
                 digest = hashlib.sha256(strm_payload(locator)).hexdigest()
-                if digest == current:
-                    continue
-                _write_planned(directory, payload, entry.name, digest)
-                if _digest_file(strm) != current:
-                    result.skipped += 1
-                    continue
-                write_strm(strm, locator)
+                if digest != current:
+                    # Keep the verified old digest recoverable if a retry is interrupted.
+                    managed[entry.name] = current
+                    payload["managed"] = managed.copy()
+                    _write_planned(directory, payload, entry.name, digest)
+                    if _digest_file(strm) != current:
+                        result.skipped += 1
+                        result.skipped_paths.append(strm)
+                        continue
+                    write_strm(strm, locator)
+                    result.rewritten.append(strm)
                 managed[entry.name] = digest
-                result.rewritten.append(strm)
-            if len(result.rewritten) > before or "pending" in payload:
-                payload["managed"] = managed
-                payload.pop("pending", None)
+                pending.pop(entry.name, None)
+                if pending:
+                    payload["pending"] = pending.copy()
+                else:
+                    payload.pop("pending", None)
+                payload["managed"] = managed.copy()
+                if payload.get("version") == 1 and all(item.name in managed for item in entries):
+                    payload["version"] = 2
                 _publish_sidecar(directory, payload)
     return result
 
 
-def _move_export_dir(source: Path, target: Path) -> None:
+def _move_export_dir(source: Path, target: Path, settings: PanSettings) -> None:
     """Publish only verified generated files in the new layout."""
     import tempfile
 
@@ -803,6 +828,11 @@ def _move_export_dir(source: Path, target: Path) -> None:
         payload = _sidecar(source)
         owned = _owned(source, payload)
         entries = read_sidecar(source)
+        if payload.get("version") == 1:
+            for entry in entries:
+                digest = _legacy_stream_digest(settings, entry)
+                if digest and _digest_file(source / entry.name) == digest:
+                    owned[entry.name] = digest
         if not entries or not all(entry.name in owned for entry in entries) or payload.get("pending"):
             raise OSError("STRM 清单缺少迁移所需的文件归属")
         if target.exists():
@@ -816,6 +846,7 @@ def _move_export_dir(source: Path, target: Path) -> None:
                 if _digest_file(staged / name) != digest or _digest_file(source / name) != digest:
                     raise OSError("STRM 文件在迁移期间变化")
             payload["managed"] = owned
+            payload["version"] = 2
             if "movie.nfo" not in owned:
                 payload.pop("nfo_fields", None)
             _publish_sidecar(staged, payload)
@@ -842,7 +873,9 @@ def _prune_empty_parents(start: Path, root: Path) -> None:
         current = current.parent
 
 
-def migrate_strm_tree(old_root: Path, new_root: Path, settings: PanSettings) -> MigrateResult:
+def migrate_strm_tree(
+    old_root: Path, new_root: Path, settings: PanSettings, *, previous_settings: PanSettings | None = None,
+) -> MigrateResult:
     """Move every managed export folder (has a sidecar) from ``old_root`` to ``new_root``.
 
     Relative layout is kept. A folder whose target already holds an export is
@@ -880,14 +913,14 @@ def migrate_strm_tree(old_root: Path, new_root: Path, settings: PanSettings) -> 
                 result.conflicts.append(source)
                 continue
             try:
-                _move_export_dir(source, target)
+                _move_export_dir(source, target, previous_settings or settings)
             except OSError:
                 result.failed.append(source)
                 continue
             result.moved.append((source, target))
             with contextlib.suppress(OSError):
                 _prune_empty_parents(source.parent, old_root)
-    result.rewrite = rewrite_strm_tree(new_root, settings)
+    result.rewrite = rewrite_strm_tree(new_root, settings, previous_settings=previous_settings)
     return result
 
 
@@ -947,6 +980,8 @@ def rematerialize_layout(
     *,
     resolve_work: Callable[[str, str | None], Work | None] | None = None,
     identities_for: Callable[[Work], Sequence[ExternalIdentity]] | None = None,
+    series_for: Callable[[Work], tuple[str, ...]] | None = None,
+    previous_settings: PanSettings | None = None,
 ) -> RematerializeResult:
     """Move managed export folders so their relative path matches ``strm_layout_template``.
 
@@ -994,7 +1029,7 @@ def rematerialize_layout(
                 result.conflicts.append(directory)
                 continue
             try:
-                _move_export_dir(directory, target)
+                _move_export_dir(directory, target, previous_settings or settings)
             except OSError:
                 result.failed.append(directory)
                 continue
@@ -1011,7 +1046,8 @@ def rematerialize_layout(
                 owned = _owned(directory, payload)
                 updates = ExportResult(directory)
                 identities = list(identities_for(work)) if identities_for is not None else []
-                fields = _write_details(directory, payload, owned, work, identities, updates)
+                series_names = series_for(work) if series_for is not None else None
+                fields = _write_details(directory, payload, owned, work, identities, updates, series_names)
                 if updates.changed:
                     write_sidecar(directory, code, entries, work_id=work.id, managed=owned, nfo_fields=fields,
                                   source_scope=read_sidecar_scope(directory))

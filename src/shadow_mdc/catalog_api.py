@@ -55,6 +55,7 @@ from .db.models import (
     CatalogPersonCredit,
     CatalogPersonMerge,
     CatalogPersonRecord,
+    CatalogPersonReference,
     CatalogSeries,
     Collection,
     MediaAsset,
@@ -88,8 +89,17 @@ from .services.catalog_people import (
 from .services.javranking_client import JavRankingIndexCache
 from .services.library_prefs import LibraryPrefs
 from .services.people_index import (
-    PersonCard, file_signature, fold_name, page_cards, refresh_cards, set_state, state_value, take_dirty,
-    update_work_names, work_ids_for_names,
+    PersonCard,
+    file_signature,
+    fold_name,
+    page_cards,
+    refresh_cards,
+    set_state,
+    state_value,
+    take_dirty,
+    update_work_names,
+    web_cards,
+    work_ids_for_names,
 )
 from .tag_models import TagReference, fold_tag
 from .tags import current_registry, normalize_tags, resolve_tag, tag_refs
@@ -271,10 +281,13 @@ def _legacy_people(
         )
     if actor_ids is not None:
         for actor_id in actor_ids - result.keys():
-            old = session.get(CatalogPersonRecord, actor_id)
+            ref = f"jav:{actor_id}"
+            reference = session.get(CatalogPersonReference, ref)
+            old = session.get(CatalogPersonRecord, reference.person_id if reference else actor_id)
             if old is not None:
                 doc = PersonDocument.model_validate(old.document)
-                result[actor_id] = doc.model_copy(update={"work_ids": []})
+                if doc.ref == ref:
+                    result[actor_id] = doc.model_copy(update={"work_ids": []})
     return list(result.values())
 
 def _sync_people(runtime_state: Runtime, session: Session) -> None:
@@ -297,6 +310,16 @@ def _person_tags(person: CatalogPerson, prefs: LibraryPrefs) -> tuple[bool, bool
     keys = [person.id, *[ref.split(":", 1)[-1] for ref in person.refs]]
     states = [prefs.actor_tags[key] for key in keys if key in prefs.actor_tags]
     return any(state.favorite for state in states), any(state.blacklist for state in states)
+
+
+def _card_snapshot(runtime_state: Runtime, session: Session) -> int:
+    _sync_people(runtime_state, session)
+    refresh_cards(session)
+    session.commit()
+    # The sqlite3 driver does not open a transaction for a SELECT by default.
+    # Read the revision and the page from the same SQLite snapshot.
+    session.connection().exec_driver_sql("BEGIN")
+    return int(state_value(session, "cards") or "0")
 
 
 def _person_index(profiles: list[CatalogPerson]) -> dict[str, CatalogPerson]:
@@ -726,8 +749,7 @@ def build_catalog_router(
         ) -> MobilePeoplePage:
             query = fold_name(q)
             with runtime(request).database.session() as session:
-                _sync_people(runtime(request), session)
-                revision = refresh_cards(session)
+                revision = _card_snapshot(runtime(request), session)
                 scope = hashlib.sha256(json.dumps([query, sort, revision]).encode()).hexdigest()
                 offset = 0
                 if cursor:
@@ -736,8 +758,6 @@ def build_catalog_router(
                         if type(offset) is not int or not 0 <= offset <= 2**63 - 2 or fingerprint != scope:
                             raise ValueError("stale pagination")
                     except (ValueError, TypeError) as error:
-                        # Commit any journal drain, then report the obsolete cursor.
-                        session.commit()
                         raise HTTPException(400, "person catalog changed; restart pagination") from error
                 items = page_cards(session, query, sort, offset, limit + 1)
             next_cursor = (base64.urlsafe_b64encode(json.dumps([offset + limit, scope]).encode()).decode()
@@ -754,7 +774,18 @@ def build_catalog_router(
             ids: Annotated[list[str] | None, Query(alias="id", max_length=100)] = None,
         ) -> PeoplePage:
             runtime_state = runtime(request)
+            query = q.strip().casefold()
             with runtime_state.database.session() as session:
+                if not ids and not followed:
+                    _card_snapshot(runtime_state, session)
+                    cards, total = web_cards(session, query, sort, offset, limit)
+                    for card in cards:
+                        card.image_url = actor_images().display_url(card.image_url)
+                    return PeoplePage(
+                        items=cards,
+                        next_offset=offset + limit if offset + limit < total else None,
+                        total=total,
+                    )
                 _sync_people(runtime_state, session)
                 profiles = stored_people(session)
                 if ids:
@@ -764,12 +795,11 @@ def build_catalog_router(
                         labels={key: index[key].name for key in ids if key in index},
                     )
                 names = Counter(person.name for person in profiles)
-                query = q.strip().casefold()
-                prefs = runtime_state.library_prefs_store.load() if followed else None
+                prefs = runtime_state.library_prefs_store.load()
                 matches = [
                     person for person in profiles
                     if (not query or any(query in name.casefold() for name in [person.name, *person.aliases]))
-                    and (prefs is None or _person_tags(person, prefs)[0])
+                    and _person_tags(person, prefs)[0]
                 ]
                 matches.sort(key=lambda p: (
                     -len(p.work_ids) if sort == "works" else 0, p.name.casefold(), p.id,

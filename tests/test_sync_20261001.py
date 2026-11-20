@@ -150,7 +150,8 @@ def test_settings_api_triggers_migration_on_root_change(
         async def fake_migrate(old: str | None, before: PanSettings | None = None) -> None:
             calls.append((old, before.strm_output_root if before else None))
 
-        async def fake_rewrite() -> None:
+        async def fake_rewrite(before: PanSettings | None = None) -> None:
+            assert before is not None and before.strm_token is None
             calls.append(("rewrite", None))
 
         monkeypatch.setattr(poller, "migrate_root", fake_migrate)

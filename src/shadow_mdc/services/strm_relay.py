@@ -34,7 +34,12 @@ from .offline_recovery import stream_cache_expiry
 from .pan import DEFAULT_MEDIA_USER_AGENT, PanService, SourceChangedError
 from .pan_common import SingleFlight
 from .strm_export import (
-    SIDECAR_NAME, export_changes_since, export_source_scope, iter_export_dirs, read_sidecar, read_sidecar_scope,
+    SIDECAR_NAME,
+    export_changes_since,
+    export_source_scope,
+    iter_export_dirs,
+    read_sidecar,
+    read_sidecar_scope,
 )
 
 logger = logging.getLogger(__name__)
@@ -196,12 +201,17 @@ class StrmRelay:
         now = time.time()
         full_scan = (
             self._sidecar_built_at is None or changes is None or
-            audit and now - self._sidecar_built_at >= SIDECAR_INDEX_RECHECK
+            (audit and now - self._sidecar_built_at >= SIDECAR_INDEX_RECHECK)
         )
-        scanned = full_scan and Path(root).is_dir()
+        if (full_scan or changes) and not Path(root).is_dir():
+            self._sidecar_built_at = None
+            return None
         with database:
-            if scanned:
+            if full_scan:
                 rows = self._build_sidecar_index(root, scope)
+                if not Path(root).is_dir():
+                    self._sidecar_built_at = None
+                    return None
                 database.execute("DELETE FROM picks")
                 database.executemany("INSERT OR REPLACE INTO picks VALUES (?, ?, ?, ?)", rows)
                 database.execute("INSERT OR REPLACE INTO metadata VALUES ('scanned', ?)", [now])
@@ -215,7 +225,7 @@ class StrmRelay:
                     database.execute("DELETE FROM picks WHERE directory = ?", [relative])
                     database.executemany("INSERT OR REPLACE INTO picks VALUES (?, ?, ?, ?)",
                                          self._directory_picks(export_root, relative, scope))
-        if scanned:
+        if full_scan:
             self._sidecar_built_at = now
         self._sidecar_revision = current
         if file_id is None:

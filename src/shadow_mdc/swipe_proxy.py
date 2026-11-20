@@ -47,7 +47,7 @@ def create_swipe_proxy_router(settings: Settings) -> APIRouter:
     router = APIRouter(prefix="/api/swipe", tags=["swipe"], lifespan=lifespan)
 
     @router.get("/health")
-    async def swipe_health() -> JSONResponse:
+    async def swipe_health(request: Request) -> JSONResponse:
         upstream = (settings.swipe_upstream_url or "").rstrip("/")
         if not upstream:
             return JSONResponse(
@@ -55,9 +55,10 @@ def create_swipe_proxy_router(settings: Settings) -> APIRouter:
                 status_code=503,
             )
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                # Sidecar may not expose /health; probe a cheap JSON route.
-                resp = await client.get(f"{upstream}/api/sites")
+            client: httpx.AsyncClient = request.app.state.swipe_http
+            probe = httpx.Request("GET", f"{upstream}/api/sites",
+                                  extensions={"timeout": httpx.Timeout(5.0).as_dict()})
+            resp = await client.send(probe)
             return JSONResponse(
                 {
                     "ok": resp.status_code < 500,
@@ -66,7 +67,7 @@ def create_swipe_proxy_router(settings: Settings) -> APIRouter:
                 },
                 status_code=200 if resp.status_code < 500 else 503,
             )
-        except Exception as exc:  # noqa: BLE001 — surface probe failure
+        except httpx.RequestError as exc:
             return JSONResponse(
                 {"ok": False, "upstream": upstream, "error": str(exc)},
                 status_code=503,

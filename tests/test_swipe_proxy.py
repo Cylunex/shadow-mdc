@@ -13,7 +13,6 @@ from shadow_mdc.swipe_proxy import create_swipe_proxy_router
 
 
 def test_swipe_health_unset_upstream() -> None:
-    settings = Settings(swipe_upstream_url=None)
     # Settings may coerce empty; force blank via model if needed
     router = create_swipe_proxy_router(Settings.model_construct(swipe_upstream_url="", swipe_proxy_timeout_seconds=30.0))
     from fastapi import FastAPI
@@ -82,6 +81,8 @@ def test_swipe_proxy_maps_paths(monkeypatch: pytest.MonkeyPatch) -> None:
         resp = client.get("/api/swipe/api/hls?u=http://example.invalid/a.m3u8", headers={"Authorization": "Bearer secret", "Cookie": "user=secret"})
         assert resp.status_code == 200
         assert "/api/hls" in seen[0]
+        assert client.get("/api/swipe/health").json()["ok"] is True
+        assert seen[-1].endswith("/api/sites")
         assert len(clients) == 1
         assert "authorization" not in requests[-1].headers and "cookie" not in requests[-1].headers
 
