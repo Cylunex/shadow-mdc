@@ -14,14 +14,18 @@ from typing import TYPE_CHECKING, Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.orm import Session
 
 from .catalog_api import build_catalog_router, catalog_credit_names
-from .db.models import MediaEmbyBinding, Work
+from .db.models import Library, MediaAsset, MediaEmbyBinding, Work
 from .media.artwork import package_portrait
+from .media.parts import find_subtitles
+from .media.subtitle_validation import srt_to_webvtt
 from .services.playback import (
     PlaybackSettings,
     PlaySource,
@@ -29,6 +33,7 @@ from .services.playback import (
     matches_work_code,
     resolve_play,
 )
+from .services.scanner import MEDIA_EXTENSIONS
 from .tvbox_api import build_tvbox_router
 
 if TYPE_CHECKING:
@@ -56,9 +61,38 @@ class EmbyTarget(BaseModel):
 
 
 
+class WorkSubtitle(BaseModel):
+    url: str
+    label: str
+
+
+def _work_sidecars(session: Session, work_id: str) -> dict[str, Path]:
+    work = session.get(Work, work_id)
+    if work is None:
+        return {}
+    assets = session.execute(select(MediaAsset, Library.root_path)
+                             .join(Library, Library.id == MediaAsset.library_id)
+                             .where(MediaAsset.work_id == work_id)).all()
+    paths: dict[str, Path] = {}
+    for asset, root in assets:
+        try:
+            path = Path(asset.path).resolve()
+            if (path.suffix.casefold() not in MEDIA_EXTENSIONS
+                    or not path.is_relative_to(Path(root).resolve()) or not path.is_file()):
+                continue
+            for subtitle in find_subtitles(path, work.primary_code):
+                if subtitle.suffix.casefold() == ".srt":
+                    key = hashlib.sha256(f"{asset.id}\0{subtitle.name}".encode()).hexdigest()[:32]
+                    paths[key] = subtitle
+        except OSError:
+            continue
+    return paths
+
+
 class OnlinePlan(BaseModel):
     emby: EmbyTarget | None = None
     sources: list[PlaySource] = Field(default_factory=list)
+    subtitles: list[WorkSubtitle] = Field(default_factory=list)
 
 
 class BindingChoice(BaseModel):
@@ -114,7 +148,7 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
         return {"api_version": 1, "features": [
             "browse", "search", "detail", "emby", "binding", "catalog", "playback_plan",
             "people_v2", "people_cards_paged", "playlists", "organizations", "media_mime",
-            "tvbox_v1", "tvbox_groups", "tvbox_stream",
+            "tvbox_v1", "tvbox_groups", "tvbox_stream", "work_filters", "work_subtitles",
         ]}
 
     @router.get("/works", response_model=MediaPage)
@@ -187,10 +221,12 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
         if derived is not None:
             return FileResponse(derived, headers={"Cache-Control": "private, no-cache"})
         for item in artwork:
-            if item.get("kind") not in {"poster", "thumb"} or not isinstance(local := item.get("local_path"), str):
+            local = item.get("local_path")
+            if item.get("kind") not in {"poster", "thumb"} or not isinstance(local, str):
                 continue
             path = Path(local).resolve()
-            if path.is_relative_to(directory) and path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".webp"} and path.is_file():
+            if (path.is_relative_to(directory) and path.is_file()
+                    and path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".webp"}):
                 return FileResponse(path)
         for stem in ("thumb", "poster", "fanart"):
             for extension in (".jpg", ".jpeg", ".png", ".webp"):
@@ -303,6 +339,25 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
             ))
         return target
 
+    def subtitles(app: Runtime, work_id: str) -> list[WorkSubtitle]:
+        with app.database.session() as session:
+            return [WorkSubtitle(url=f"/api/media/v1/works/{work_id}/subtitles/{key}", label=path.name)
+                    for key, path in _work_sidecars(session, work_id).items()]
+
+    @router.get("/works/{work_id}/subtitles/{key}")
+    def subtitle(work_id: str, key: str, request: Request) -> Response:
+        with runtime(request).database.session() as session:
+            path = _work_sidecars(session, work_id).get(key)
+        if path is not None and not path.is_symlink():
+            try:
+                with path.open("rb") as stream:
+                    content = srt_to_webvtt(stream.read(8 * 1024 * 1024 + 1))
+                return Response(content, media_type="text/vtt",
+                                headers={"Cache-Control": "private, no-store"})
+            except (OSError, ValueError):
+                pass
+        raise HTTPException(404, "subtitle unavailable")
+
     @router.post("/works/{work_id}/plan", response_model=OnlinePlan)
     async def playback_plan(work_id: str, request: Request, online: bool = False) -> OnlinePlan:
         if not online:
@@ -325,8 +380,10 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
             sites=load_sites_from_settings(PlaybackSettings(), data_dir=app.settings.data_dir),
             client=app.http,
         )
-        return OnlinePlan(sources=[source for source in result.sources if source.playable_in_app
-                                  and source.probe_ok is not False])
+        sources = [source for source in result.sources
+                   if source.playable_in_app and source.probe_ok is not False]
+        tracks = await run_in_threadpool(subtitles, app, work_id) if sources else []
+        return OnlinePlan(sources=sources, subtitles=tracks)
 
     router.include_router(build_catalog_router(runtime, prefix="/catalog"))
     router.include_router(build_tvbox_router(runtime, management=False))

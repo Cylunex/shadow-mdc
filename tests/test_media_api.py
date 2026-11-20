@@ -1,14 +1,16 @@
 """Mobile paging and persistent playback links use isolated stores and fake Emby."""
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from shadow_mdc.api import app
-from shadow_mdc.db.models import Work
+from shadow_mdc.db.models import Collection, Library, MediaAsset, Work, WorkCollection
 from shadow_mdc.services.media_server import MediaServerSettings
+from shadow_mdc.services.playback import PlayResolveResult, PlaySource
 
 
 def test_mobile_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,3 +83,46 @@ def test_mobile_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         # Editing the existing Web settings must retain the file-only mobile secret.
         client.put("/api/settings/media-server", json={"enabled": False})
         assert runtime.media_server_store.load().media_client_token == "REPLACE_MOBILE_TOKEN"
+
+
+def test_mobile_work_filters_and_authenticated_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{tmp_path / 'mobile.db'}")
+    root = tmp_path / "library"
+    root.mkdir()
+    (root / "Movie.mkv").touch()
+    (root / "Movie.zh.srt").write_text("1\n00:00:00,000 --> 00:00:02,000\nHello\n")
+    (root / "Movie.en.srt").symlink_to(tmp_path / "private")
+    (tmp_path / "private").write_text("private")
+    source = PlaySource(kind="direct_video", label="Online", url="https://example.com/movie.mp4",
+                        playable_in_app=True)
+    monkeypatch.setattr("shadow_mdc.media_api.resolve_play", AsyncMock(return_value=PlayResolveResult(
+        work_id="a", sources=[source])))
+    with TestClient(app) as client:
+        runtime = app.state.runtime
+        runtime.media_server_store.save(MediaServerSettings(media_client_token="REPLACE_MOBILE_TOKEN"))
+        with runtime.database.session() as session:
+            session.add_all([Work(id="a", title="Movie"), Work(id="b", title="Other"),
+                             Library(id="lib", name="Library", root_path=str(root)),
+                             Collection(id="label", name="Label", normalized_name="label", kind="label")])
+            session.flush()
+            session.add(WorkCollection(work_id="a", collection_id="label"))
+            session.add(MediaAsset(library_id="lib", work_id="a", path=str(root / "Movie.mkv"),
+                                   size=0, hints={}))
+        headers = {"Authorization": "Bearer REPLACE_MOBILE_TOKEN"}
+        prefix = "/api/media/v1/works"
+        assert client.get("/api/media/v1/catalog/works/a/filters", headers=headers).json() == [
+            {"dimension": "label", "id": "label", "name": "Label"}]
+        plan = client.post(f"{prefix}/a/plan?online=true", headers=headers).json()
+        [track] = plan["subtitles"]
+        assert track["label"] == "Movie.zh.srt" and str(root) not in str(plan)
+        url = track["url"]
+        assert client.get(url).status_code == 401
+        assert client.get(url.replace("/works/a/", "/works/b/"), headers=headers).status_code == 404
+        response = client.get(url, headers=headers)
+        assert response.text.startswith("WEBVTT") and "Hello" in response.text
+        assert response.headers["content-type"].startswith("text/vtt")
+        (root / "Movie.zh.srt").unlink()
+        assert client.get(url, headers=headers).status_code == 404

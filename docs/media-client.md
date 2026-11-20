@@ -56,3 +56,7 @@ online=true 可显式只查询在线候选。候选先校验完整编号，再�
 ## TVBox
 
 MDC Web 中通过测试且启用的 type 0 和 type 1 站点由移动能力 `tvbox_v1` 提供。Media 在当前 MDC 连接内打开 TVBox，通过 tvbox_groups 选择仓库，浏览分类、搜索和选集，复用已有登录与原生播放器。播放请求使用稳定分集标识，客户端需要持有与该连接对应的会话。旧服务可继续使用片库入口。[TVBox 观看、订阅与迁移](tvbox-design.md)
+
+### 关联筛选与片库字幕
+
+支持 `work_filters` 的服务提供 `GET /api/media/v1/catalog/works/{id}/filters`。结果给出演员、系列、制作方和厂牌的目录 ID，客户端可直接按该 ID 检索。支持 `work_subtitles` 的在线播放计划附带同作品片库文件已匹配的 SRT 字幕。客户端用当前 MDC 身份请求各字幕的相对地址，响应采用 WebVTT。多版本的字幕由播放器列出供选择。

@@ -201,6 +201,12 @@ class MobilePeoplePage(BaseModel):
     next_cursor: str | None
 
 
+class WorkFilterLink(BaseModel):
+    dimension: Literal["actor", "series", "studio", "label"]
+    id: str
+    name: str
+
+
 class Facet(BaseModel):
     id: str
     name: str
@@ -303,7 +309,8 @@ def _sync_people(runtime_state: Runtime, session: Session) -> None:
         return
     affected = update_work_names(session, work_ids)
     if actor_ids or affected:
-        import_people(session, _legacy_people(runtime_state, session, actor_ids=actor_ids, affected_names=affected))
+        import_people(session, _legacy_people(runtime_state, session, actor_ids=actor_ids,
+                                              affected_names=affected))
 
 
 def _person_tags(person: CatalogPerson, prefs: LibraryPrefs) -> tuple[bool, bool]:
@@ -443,7 +450,9 @@ def build_catalog_router(
             if len(q) >= 3 and q.replace("-", "").isalnum() and session.scalar(text(
                 "SELECT 1 FROM sqlite_master WHERE name = 'mdc_works_fts'"
             )):
-                candidates = select(literal_column("rowid", Integer)).select_from(text("mdc_works_fts")).where(
+                candidates = select(literal_column("rowid", Integer)).select_from(
+                    text("mdc_works_fts"),
+                ).where(
                     text("mdc_works_fts MATCH :catalog_query").bindparams(catalog_query=f'"{q}"')
                 )
                 local_match = and_(literal_column("works.rowid").in_(candidates), local_match)
@@ -740,6 +749,33 @@ def build_catalog_router(
             )
 
     if prefix != "/api/catalog":
+        @router.get("/works/{work_id}/filters")
+        def work_filter_links(work_id: str, request: Request) -> list[WorkFilterLink]:
+            with runtime(request).database.session() as session:
+                if session.get(Work, work_id) is None:
+                    raise HTTPException(404, "work not found")
+                _card_snapshot(runtime(request), session)
+                people = session.execute(text("""
+                    SELECT p.id, p.name FROM mdc_people_card_works w
+                    JOIN mdc_people_cards p ON p.id=w.person_id
+                    WHERE w.work_id=:work_id ORDER BY p.sort_name,p.id
+                """), {"work_id": work_id})
+                links = [WorkFilterLink(dimension="actor", id=key, name=name) for key, name in people]
+                series = series_relationships()
+                links.extend(WorkFilterLink(dimension="series", id=key, name=name)
+                             for key, name in session.execute(select(CatalogSeries.id, CatalogSeries.name)
+                                 .join(series, series.c.series_id == CatalogSeries.id)
+                                 .where(series.c.work_id == work_id).distinct().order_by(CatalogSeries.name)))
+                orgs = organization_relationships()
+                for key, name, kind in session.execute(select(Collection.id, Collection.name, Collection.kind)
+                        .join(orgs, orgs.c.organization_id == Collection.id)
+                        .where(orgs.c.work_id == work_id,
+                               Collection.kind.in_(("organization", "studio", "label")))
+                        .distinct().order_by(Collection.name)):
+                    links.append(WorkFilterLink(dimension="label" if kind == "label" else "studio",
+                                                id=key, name=name))
+                return links
+
         @router.get("/people-cards")
         def mobile_person_cards(
             request: Request, q: str = Query(default="", max_length=200),
