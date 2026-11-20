@@ -90,6 +90,22 @@ class ReviewHighlight(BaseModel):
     score: float | None = Field(default=None, ge=0)
 
 
+class NfoActorCredit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1, max_length=300)
+    role: str | None = Field(default=None, max_length=500)
+    order: int | None = Field(default=None, ge=0, le=10000)
+    thumb: str | None = Field(default=None, max_length=2048)
+
+
+class NfoDetails(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    series: tuple[str, ...] = Field(default=(), max_length=100)
+    cast: tuple[NfoActorCredit, ...] = Field(default=(), max_length=500)
+
+
 class ProviderRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -117,6 +133,7 @@ class ProviderRecord(BaseModel):
     rating_max: float | None = Field(default=None, gt=0)
     rating_count: int | None = Field(default=None, ge=0)
     reviews: tuple[ReviewHighlight, ...] = ()
+    nfo_details: NfoDetails | None = None
 
     @field_validator("actors")
     @classmethod

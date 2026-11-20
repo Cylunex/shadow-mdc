@@ -1,11 +1,12 @@
 import hashlib
+import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
 from xml.etree.ElementTree import Element, ParseError, SubElement, TreeBuilder, XMLParser, fromstring, indent, tostring
 
 from ..db.models import ExternalIdentity, MediaAsset, Work
-from ..domain import MediaTechnicalInfo
-from .nfo_import import NFO_COUNTRIES, WORK_TO_EMBY_LOCK, read_movie_element
+from ..domain import MediaTechnicalInfo, NfoActorCredit, NfoDetails
+from .nfo_import import NFO_COUNTRIES, WORK_TO_EMBY_LOCK, read_movie_element, safe_actor_thumb
 
 
 def build_nfo(
@@ -14,6 +15,7 @@ def build_nfo(
     asset: MediaAsset | None = None,
     *,
     local_artwork: Mapping[str, str] | None = None,
+    series_names: tuple[str, ...] | None = None,
 ) -> str:
     """Build a Kodi/Emby movie.nfo.
 
@@ -50,11 +52,8 @@ def build_nfo(
         _element(rating, "votes", work.rating_count)
     if work.category and work.category != "Other":
         SubElement(movie, "country").text = NFO_COUNTRIES.get(work.category, work.category)
-    if work.series:
-        SubElement(movie, "set").text = work.series
-    for actor_name in work.actors:
-        actor = SubElement(movie, "actor")
-        SubElement(actor, "name").text = actor_name
+    details = NfoDetails.model_validate(getattr(work, "nfo_details", None) or {})
+    _append_series_and_cast(movie, work, details, series_names)
     for director in work.directors:
         SubElement(movie, "director").text = director
     for tag in _nfo_tags(work):
@@ -85,6 +84,42 @@ def build_nfo(
     indent(movie, space="  ")
     body = tostring(movie, encoding="unicode")
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n' + body + "\n"
+
+
+def _append_series_and_cast(
+    movie: Element, work: Work, details: NfoDetails, series_names: tuple[str, ...] | None,
+) -> None:
+    def fold(value: str) -> str:
+        return unicodedata.normalize("NFKC", value).casefold().strip()
+
+    imported = details.series
+    if series_names is None:
+        series_names = imported
+    canonical = {fold(name): name for name in series_names}
+    ordered: dict[str, str] = {}
+    if work.series:
+        ordered[fold(work.series)] = canonical.get(fold(work.series), work.series)
+    ordered.update((key, canonical[key]) for name in imported if (key := fold(name)) in canonical)
+    ordered.update(canonical)
+    if ordered:
+        main, *additional = ordered.values()
+        SubElement(movie, "set").text = main
+        if additional:
+            extension = SubElement(movie, "shadowmdc_series")
+            for name in additional:
+                SubElement(extension, "name").text = name
+
+    credited: dict[str, list[NfoActorCredit]] = {}
+    for recorded in details.cast:
+        credited.setdefault(fold(recorded.name), []).append(recorded)
+    for name in work.actors:
+        for credit in credited.get(fold(name)) or (None,):
+            actor = SubElement(movie, "actor")
+            SubElement(actor, "name").text = name
+            if credit is not None:
+                _element(actor, "role", credit.role)
+                _element(actor, "order", credit.order)
+                _element(actor, "thumb", safe_actor_thumb(credit.thumb))
 
 
 def _nfo_field_digest(nodes: list[Element]) -> str:
@@ -160,9 +195,10 @@ def _nfo_local_artwork_refs(
     """
 
     if local_artwork:
-        poster = local_artwork.get("poster") or local_artwork.get("fanart")
-        fanart = local_artwork.get("fanart") or local_artwork.get("poster")
-        return _nonempty(poster), _nonempty(fanart)
+        return (
+            _nonempty(local_artwork.get("poster") or local_artwork.get("fanart")),
+            _nonempty(local_artwork.get("fanart") or local_artwork.get("poster")),
+        )
 
     poster: str | None = None
     fanart: str | None = None

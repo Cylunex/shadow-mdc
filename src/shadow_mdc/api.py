@@ -691,11 +691,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     for task_id in recover:
         _start_library_worker(app_runtime, task_id)
     schedule_poller = asyncio.create_task(_poll_library_scans(app_runtime), name="mdc-library-schedules")
+    relay_index_stop = asyncio.Event()
+    relay_index_worker = asyncio.create_task(
+        app_runtime.strm_relay.maintain_index(relay_index_stop), name="mdc-strm-pick-index",
+    )
     try:
         yield
     finally:
         schedule_poller.cancel()
         await asyncio.gather(schedule_poller, return_exceptions=True)
+        relay_index_stop.set()
+        await asyncio.gather(relay_index_worker, return_exceptions=True)
+        app_runtime.strm_relay.close()
         app_runtime.library_workers_stopping.set()
         await asyncio.gather(*app_runtime.library_workers.values())
         await app.state.runtime.subtitle_backfill.shutdown()
@@ -4825,7 +4832,9 @@ def work_nfo(work_id: str, repo: Repo) -> Response:
     work = repo.get_work(work_id)
     if work is None:
         raise HTTPException(status_code=404, detail="work not found")
-    return PlainTextResponse(build_nfo(work, repo.identities_for_work(work.id)), media_type="application/xml")
+    return PlainTextResponse(build_nfo(
+        work, repo.identities_for_work(work.id), series_names=repo.series_names_for_work(work.id),
+    ), media_type="application/xml")
 
 
 @app.get("/api/subtitles/subtitlecat", response_model=SubtitleLookupOut)

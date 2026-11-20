@@ -36,6 +36,7 @@ import hashlib
 import json
 import os
 import re
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -52,6 +53,7 @@ from .pan import PanSettings, RemoteVideo, SourceFingerprint
 SIDECAR_NAME = ".shadow-strm.json"
 _EXPORT_LOCK = RLock()
 _export_revision = 0
+_export_changes: deque[tuple[int, Path]] = deque(maxlen=4096)
 _SAMPLE_RE = re.compile(r"(?i)(?:^|[ ._-])(?:sample|trailer|preview)(?:$|[ ._-])")
 RELAY_PATH = "/api/strm/play/"
 OPENLIST_RELAY_PATH = "/api/strm/openlist"
@@ -333,9 +335,11 @@ def detect_part_number(name: str) -> int | None:
     return volume.index if volume is not None else None
 
 
-def plan_strm_entries(code: str, videos: Sequence[RemoteVideo]) -> list[StrmEntry]:
+def plan_strm_entries(
+    code: str, videos: Sequence[RemoteVideo], *, folder_name: str | None = None,
+) -> list[StrmEntry]:
     """Group by explicit part markers and by the release name around each marker."""
-    stem = safe_stem(code)
+    stem = safe_stem(folder_name or code)
     items = sorted({item.file_id: item for item in videos}.values(),
                    key=lambda item: (item.name.casefold(), item.file_id))
     if any(not _SAMPLE_RE.search(Path(item.name).stem) for item in items):
@@ -353,24 +357,22 @@ def plan_strm_entries(code: str, videos: Sequence[RemoteVideo]) -> list[StrmEntr
             release = ""
         groups.setdefault(release, []).append((item, part))
     result = []
-    single_stack = len(groups) == 1
     for group in groups.values():
         numbers = sorted(part for _, part in group if part)
-        multipart = len(numbers) > 1 and len(group) == len(numbers) and numbers == list(range(1, len(group) + 1))
-        ordered = sorted(group, key=lambda entry: entry[1] or 0) if multipart else group
-        group_suffix = ""
-        if multipart and not single_stack:
-            key = "\0".join(sorted(item.file_id for item, _ in group))
-            group_suffix = "-version-" + hashlib.sha256(key.encode()).hexdigest()[:12]
+        continuous = 1 < len(numbers) == len(group) and numbers == list(range(1, len(group) + 1))
+        # Emby only recognizes a stack when the folder contains exactly that movie's parts.
+        stack = continuous and len(groups) == 1 and len(numbers) <= 9
+        ordered = sorted(group, key=lambda entry: entry[1] or 0) if continuous else group
         for item, part in ordered:
-            if multipart:
-                name = f"{stem}{group_suffix}-cd{part}.strm"
+            if stack:
+                name = f"{stem}-cd{part}.strm"
             elif len(items) == 1 and not _PART_RE.search(Path(item.name).stem):
                 name = f"{stem}.strm"
             else:
                 key = hashlib.sha256(item.file_id.encode()).hexdigest()[:12]
                 label = _PART_RE.sub("", Path(item.name).stem).strip(" ._-")
-                name = f"{stem} - {safe_stem(label)[:48]} [{key}].strm"
+                part_label = f" 第{part}段" if part is not None else ""
+                name = f"{stem} - {safe_stem(label)[:48]}{part_label} [{key}].strm"
             result.append(StrmEntry(name, item.file_id, item.pick_code, item.relative_path or item.name, item.sign))
     return result
 
@@ -483,7 +485,6 @@ def _owned(directory: Path, payload: dict[str, object]) -> dict[str, str]:
 
 
 def _publish_sidecar(directory: Path, payload: dict[str, object]) -> bool:
-    global _export_revision
     target = directory / SIDECAR_NAME
     if target.is_symlink():
         raise ValueError("STRM 清单路径是符号链接")
@@ -491,12 +492,26 @@ def _publish_sidecar(directory: Path, payload: dict[str, object]) -> bool:
     if _same_bytes(target, output.encode("utf-8")):
         return False
     _atomic_write_text(target, output)
-    _export_revision += 1
+    _note_export_change(directory)
     return True
 
 
 def export_revision() -> int:
     return _export_revision
+
+
+def _note_export_change(directory: Path) -> None:
+    global _export_revision
+    with _EXPORT_LOCK:
+        _export_revision += 1
+        _export_changes.append((_export_revision, directory.absolute()))
+
+
+def export_changes_since(revision: int) -> tuple[int, set[Path] | None]:
+    with _EXPORT_LOCK:
+        if _export_changes and revision < _export_changes[0][0] - 1:
+            return _export_revision, None
+        return _export_revision, {directory for sequence, directory in _export_changes if sequence > revision}
 
 
 def export_source_scope(source: SourceFingerprint) -> str:
@@ -580,6 +595,7 @@ def _select_output(directory: Path, name: str, allowed: dict[str, str], identity
 def _write_details(
     directory: Path, payload: dict[str, object], owned: dict[str, str],
     work: Work, identities: list[ExternalIdentity], result: ExportResult,
+    series_names: tuple[str, ...] | None = None,
 ) -> dict[str, str]:
     local_artwork: dict[str, str] = {}
     for kind, source in _artwork_sources(work).items():
@@ -607,7 +623,7 @@ def _write_details(
     baseline = _digests(payload, "nfo_fields")
     if nfo_path.is_symlink() or (nfo_path.exists() and not nfo_path.is_file()):
         return baseline
-    content = build_nfo(work, identities, local_artwork=local_artwork or None)
+    content = build_nfo(work, identities, local_artwork=local_artwork or None, series_names=series_names)
     existed = nfo_path.is_file()
     previous = nfo_path.read_bytes() if existed else None
     # An untracked or malformed document remains untouched.
@@ -640,6 +656,7 @@ def export_work(
     videos: Sequence[RemoteVideo],
     work: Work | None = None,
     identities: list[ExternalIdentity] | None = None,
+    series_names: tuple[str, ...] | None = None,
     source_scope: str | None = None,
     complete: bool = True,
 ) -> ExportResult:
@@ -653,12 +670,12 @@ def export_work(
     require_strm_config(settings)
     root = settings.strm_output_root
     assert root  # guaranteed by require_strm_config
-    entries = plan_strm_entries(code, videos)
+    relative = export_relative_dir(code, work, template=settings.strm_layout_template)
+    entries = plan_strm_entries(code, videos, folder_name=relative.name)
     if not entries:
         raise ValueError("no video files to export")
     # Resolve every locator before touching disk so a bad config writes nothing.
     locators = [(entry, locator_for(settings, entry)) for entry in entries]
-    relative = export_relative_dir(code, work, template=settings.strm_layout_template)
     directory = Path(root) / relative
     with _EXPORT_LOCK:
         if not _is_within(directory, Path(root)):
@@ -687,7 +704,7 @@ def export_work(
         old_ids = {entry.name: entry.file_id for entry in previous}
         nfo_fields = _digests(payload, "nfo_fields")
         if work is not None:
-            nfo_fields = _write_details(directory, payload, owned, work, identities or [], result)
+            nfo_fields = _write_details(directory, payload, owned, work, identities or [], result, series_names)
         published: list[StrmEntry] = []
         previous_names = {entry.file_id: entry.name for entry in previous}
         for entry, locator in locators:
@@ -805,10 +822,12 @@ def _move_export_dir(source: Path, target: Path) -> None:
             if target.exists():
                 raise FileExistsError(target)
             os.rename(staged, target)
+            _note_export_change(target)
         for name, digest in owned.items():
             if _digest_file(source / name) == digest:
                 (source / name).unlink()
         (source / SIDECAR_NAME).unlink()
+        _note_export_change(source)
         with contextlib.suppress(OSError):
             source.rmdir()
 
@@ -1081,7 +1100,6 @@ def is_generated_export_name(filename: str, code: str) -> bool:
 
 def cleanup_generated_export_files(directory: Path, code: str) -> list[Path]:
     """Remove files proven to be unchanged outputs of this export."""
-    global _export_revision
     deleted: list[Path] = []
     with _EXPORT_LOCK:
         payload = _sidecar(directory)
@@ -1098,7 +1116,7 @@ def cleanup_generated_export_files(directory: Path, code: str) -> list[Path]:
             target.unlink()
             deleted.append(target)
         if deleted:
-            _export_revision += 1
+            _note_export_change(directory)
     return deleted
 
 

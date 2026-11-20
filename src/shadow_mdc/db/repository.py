@@ -13,10 +13,10 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, load_only, sessionmaker
 
 from ..actress_aliases import merge_actor_names
-from ..catalog_series import migrate_series, sync_field_series
+from ..catalog_series import migrate_series, sync_field_series, sync_nfo_series, work_series_names
 from ..classification import category_for_family
 from ..collection_names import normalize_collection_name
-from ..domain import IdentityHints, MatchEvidence, MediaTechnicalInfo, ProviderRecord, ScoredCandidate
+from ..domain import IdentityHints, MatchEvidence, MediaTechnicalInfo, NfoDetails, ProviderRecord, ScoredCandidate
 from ..enums import (
     TERMINAL_TASK_STATUSES,
     AssetState,
@@ -85,6 +85,7 @@ _JAV_ACTOR_PROVIDER_PRIORITY = {
     "avsox": 8,
     "freejavbt": 100,
 }
+from .people_index_schema import init_people_index
 
 
 _SQLITE_CONNECTION_PRAGMAS: tuple[str, ...] = (
@@ -154,6 +155,7 @@ class Database:
                     "previous_revisions JSON NOT NULL DEFAULT '{}'"
                 )
         with self.engine.begin() as connection:
+            init_people_index(connection)
             connection.exec_driver_sql(
                 "CREATE TABLE IF NOT EXISTS catalog_source_revisions "
                 "(name TEXT PRIMARY KEY, revision INTEGER NOT NULL)"
@@ -246,6 +248,8 @@ class Database:
                 connection.exec_driver_sql(
                     "ALTER TABLE works ADD COLUMN field_locks JSON NOT NULL DEFAULT '[]'"
                 )
+            if "nfo_details" not in work_columns:
+                connection.exec_driver_sql("ALTER TABLE works ADD COLUMN nfo_details JSON NOT NULL DEFAULT '{}'")
             if "rating_value" not in work_columns:
                 connection.exec_driver_sql("ALTER TABLE works ADD COLUMN rating_value FLOAT")
             if "rating_max" not in work_columns:
@@ -2111,7 +2115,7 @@ class Repository:
                 SourceSnapshot.external_id == record.external_id,
             )
         )
-        payload = record.model_dump(mode="json")
+        payload = record.model_dump(mode="json", exclude={"nfo_details"} if record.nfo_details is None else None)
         if snapshot is None:
             self._session.add(
                 SourceSnapshot(
@@ -2123,6 +2127,17 @@ class Repository:
             )
         else:
             snapshot.payload = payload
+        if record.provider == "nfo-import" and record.nfo_details is not None:
+            self.apply_nfo_details(work, record.nfo_details)
+
+    def apply_nfo_details(self, work: Work, details: NfoDetails) -> None:
+        """Apply verified sidecar credits without altering edited canonical names or actor portraits."""
+        work.nfo_details = details.model_dump(mode="json")
+        if not _field_locked(work, "series"):
+            sync_nfo_series(self._session, work, details.series)
+
+    def series_names_for_work(self, work_id: str) -> tuple[str, ...]:
+        return work_series_names(self._session, work_id)
 
 
 

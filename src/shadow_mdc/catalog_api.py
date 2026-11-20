@@ -11,11 +11,9 @@ from collections.abc import Callable
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from threading import Lock
 from typing import TYPE_CHECKING, Annotated, Literal
 from typing import cast as type_cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
-from weakref import WeakKeyDictionary
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.params import Depends
@@ -31,7 +29,6 @@ from sqlalchemy import (
     case,
     cast,
     delete,
-    event,
     exists,
     func,
     literal_column,
@@ -42,7 +39,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.sqlite import insert
-from sqlalchemy.engine import CursorResult, Engine
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
@@ -90,16 +87,16 @@ from .services.catalog_people import (
 )
 from .services.javranking_client import JavRankingIndexCache
 from .services.library_prefs import LibraryPrefs
+from .services.people_index import (
+    PersonCard, file_signature, fold_name, page_cards, refresh_cards, set_state, state_value, take_dirty,
+    update_work_names, work_ids_for_names,
+)
 from .tag_models import TagReference, fold_tag
 from .tags import current_registry, normalize_tags, resolve_tag, tag_refs
 
 if TYPE_CHECKING:
     from .api import Runtime
 
-
-
-_imported_sources: WeakKeyDictionary[Engine, tuple[int, tuple[tuple[int, int], ...]]] = WeakKeyDictionary()
-_imported_sources_lock = Lock()
 
 
 class PersonWorkEdit(BaseModel):
@@ -182,16 +179,6 @@ class CatalogPage(BaseModel):
 CatalogPerson = PersonDocument
 
 
-class PersonCard(BaseModel):
-    id: str
-    name: str
-    aliases: list[str]
-    image_url: str | None
-    work_count: int
-    revision: int
-    same_name: bool
-
-
 class PeoplePage(BaseModel):
     items: list[PersonCard]
     next_offset: int | None
@@ -202,40 +189,6 @@ class PeoplePage(BaseModel):
 class MobilePeoplePage(BaseModel):
     items: list[PersonCard]
     next_cursor: str | None
-
-
-_people_projection: WeakKeyDictionary[Engine, tuple[tuple[int, int], tuple[PersonCard, ...]]] = WeakKeyDictionary()
-_people_projection_lock = Lock()
-
-
-def _mobile_person_cards(runtime_state: Runtime, session: Session) -> tuple[tuple[int, int], tuple[PersonCard, ...]]:
-    _sync_people(runtime_state, session)
-    current = dict(session.execute(text(
-        "SELECT name, revision FROM catalog_source_revisions WHERE name IN ('people', 'people_projection')"
-    )).tuples().all())
-    revision = (current.get("people", 0), current.get("people_projection", 0))
-    engine = runtime_state.database.engine
-    with _people_projection_lock:
-        cached = _people_projection.get(engine)
-    if cached is not None and cached[0] == revision and "catalog_signature" not in session.info:
-        return cached
-    profiles = stored_people(session)
-    names = Counter(person.name for person in profiles)
-    cards = tuple(PersonCard(
-        id=person.id, name=person.name, aliases=person.aliases,
-        image_url=f"/api/media/v1/catalog/people/{person.id}/image",
-        work_count=len(person.work_ids), revision=person.revision, same_name=names[person.name] > 1,
-    ) for person in sorted(profiles, key=lambda p: (-len(p.work_ids), p.name.casefold(), p.id)))
-    projection = (revision, cards)
-
-    def committed(_session: Session) -> None:
-        with _people_projection_lock:
-            stored = _people_projection.get(engine)
-            if stored is None or stored[0] <= revision:
-                _people_projection[engine] = projection
-
-    event.listen(session, "after_commit", committed, once=True)
-    return projection
 
 
 class Facet(BaseModel):
@@ -268,18 +221,28 @@ def _card(work: Work, prefix: str, *, detail: bool = False) -> CatalogCard:
     )
 
 
-def _legacy_people(runtime_state: Runtime, session: Session) -> list[CatalogPerson]:
+def _legacy_people(
+    runtime_state: Runtime, session: Session, *,
+    actor_ids: set[str] | None = None, affected_names: set[str] | None = None,
+) -> list[CatalogPerson]:
+    credits = select(WorkActor.actor_id, WorkActor.work_id)
+    actors = select(Actor)
+    if actor_ids is not None:
+        credits = credits.where(WorkActor.actor_id.in_(actor_ids))
+        actors = actors.where(Actor.id.in_(actor_ids))
     relations: dict[str, list[str]] = {}
-    for actor_id, work_id in session.execute(select(WorkActor.actor_id, WorkActor.work_id)):
+    for actor_id, work_id in session.execute(credits):
         relations.setdefault(actor_id, []).append(work_id)
     result = {
         actor.id: CatalogPerson(id=actor.id, ref=f"jav:{actor.id}", name=actor.name,
                                 aliases=actor.aliases, image_url=actor.image_url, x_handle=actor.x_handle,
                                 work_ids=relations.get(actor.id, []))
-        for actor in session.scalars(select(Actor))
+        for actor in session.scalars(actors)
     }
     for profile in runtime_state.actor_store.load():
         key = profile.id or str(uuid5(NAMESPACE_URL, f"mdc:actor:{profile.name}"))
+        if actor_ids is not None and key not in actor_ids:
+            continue
         if key in result:
             result[key].work_ids = sorted(set(result[key].work_ids) | {w.id for w in profile.works})
             result[key].aliases = sorted(set(result[key].aliases) | set(profile.aliases))
@@ -293,12 +256,10 @@ def _legacy_people(runtime_state: Runtime, session: Session) -> list[CatalogPers
         )
     # Keep curated names in their original namespace, including zero-work entries.
     # Reuse the existing matching rules rather than merging names across catalogs.
-    name_index: dict[str, set[str]] = {}
-    for work_id, names in session.execute(select(Work.id, Work.actors)):
-        for name in names:
-            normalized = unicodedata.normalize("NFKC", name).casefold().strip()
-            name_index.setdefault(normalized, set()).add(work_id)
     for curated in runtime_state.non_jav_actor_store.load().actors:
+        names = {fold_name(name) for name in (curated.name, *curated.aliases, *curated.match_names)}
+        if affected_names is not None and not (names & affected_names):
+            continue
         key = str(uuid5(NAMESPACE_URL, f"mdc:curated:{curated.name}"))
         result[key] = CatalogPerson(
             id=key, ref=f"nj:{curated.name}", name=curated.name,
@@ -306,33 +267,30 @@ def _legacy_people(runtime_state: Runtime, session: Session) -> list[CatalogPers
             notes=curated.notes or "", match_names=list(curated.match_names),
             groups=list(curated.groups),
             image_url=f"/api/non-jav-actor-images/{curated.image_file}" if curated.image_file else None,
-            work_ids=sorted(set().union(*(name_index.get(
-                unicodedata.normalize("NFKC", name).casefold().strip(), set(),
-            ) for name in [curated.name, *curated.aliases, *curated.match_names]))),
+            work_ids=sorted(work_ids_for_names(session, names)),
         )
+    if actor_ids is not None:
+        for actor_id in actor_ids - result.keys():
+            old = session.get(CatalogPersonRecord, actor_id)
+            if old is not None:
+                doc = PersonDocument.model_validate(old.document)
+                result[actor_id] = doc.model_copy(update={"work_ids": []})
     return list(result.values())
 
 def _sync_people(runtime_state: Runtime, session: Session) -> None:
-    engine = runtime_state.database.engine
-    revision = session.scalar(text(
-        "SELECT revision FROM catalog_source_revisions WHERE name = 'people'"
-    )) or 0
     data_dir = runtime_state.settings.data_dir
-    files = [data_dir / "actor-catalog.json", data_dir / "non-jav-actors.json"]
-    signatures = tuple((path.stat().st_mtime_ns, path.stat().st_size) if path.exists()
-                       else (0, 0) for path in files)
-    signature = (int(revision), signatures)
-    with _imported_sources_lock:
-        imported = _imported_sources.get(engine)
-    if imported != signature and session.info.get("catalog_signature") != signature:
+    signature = file_signature([data_dir / "actor-catalog.json", data_dir / "non-jav-actors.json"])
+    previous = state_value(session, "legacy_files")
+    actor_ids = take_dirty(session, "actor")
+    work_ids = take_dirty(session, "work")
+    if previous != signature:
+        update_work_names(session, None)
         import_people(session, _legacy_people(runtime_state, session))
-        session.info["catalog_signature"] = signature
-
-        def committed(_session: Session) -> None:
-            with _imported_sources_lock:
-                _imported_sources[engine] = signature
-
-        event.listen(session, "after_commit", committed, once=True)
+        set_state(session, "legacy_files", signature)
+        return
+    affected = update_work_names(session, work_ids)
+    if actor_ids or affected:
+        import_people(session, _legacy_people(runtime_state, session, actor_ids=actor_ids, affected_names=affected))
 
 
 def _person_tags(person: CatalogPerson, prefs: LibraryPrefs) -> tuple[bool, bool]:
@@ -766,25 +724,24 @@ def build_catalog_router(
             limit: int = Query(default=48, ge=1, le=100),
             cursor: str | None = Query(default=None, max_length=512),
         ) -> MobilePeoplePage:
-            def fold(value: str) -> str:
-                return unicodedata.normalize("NFKC", value).casefold().strip()
-            query = fold(q)
+            query = fold_name(q)
             with runtime(request).database.session() as session:
-                revision, projection = _mobile_person_cards(runtime(request), session)
-            scope = hashlib.sha256(json.dumps([query, sort, revision]).encode()).hexdigest()
-            offset = 0
-            if cursor:
-                try:
-                    offset, fingerprint = json.loads(base64.urlsafe_b64decode(cursor))
-                    if type(offset) is not int or offset < 0 or fingerprint != scope:
-                        raise ValueError("stale pagination")
-                except (ValueError, TypeError) as error:
-                    raise HTTPException(400, "person catalog changed; restart pagination") from error
-            candidates = projection if sort == "works" else sorted(projection, key=lambda p: (fold(p.name), p.id))
-            items = [person for person in candidates if not query or any(
-                query in fold(value) for value in (person.name, *person.aliases)
-            )][offset:offset + limit + 1]
-            next_cursor = base64.urlsafe_b64encode(json.dumps([offset + limit, scope]).encode()).decode() if len(items) > limit else None
+                _sync_people(runtime(request), session)
+                revision = refresh_cards(session)
+                scope = hashlib.sha256(json.dumps([query, sort, revision]).encode()).hexdigest()
+                offset = 0
+                if cursor:
+                    try:
+                        offset, fingerprint = json.loads(base64.urlsafe_b64decode(cursor))
+                        if type(offset) is not int or not 0 <= offset <= 2**63 - 2 or fingerprint != scope:
+                            raise ValueError("stale pagination")
+                    except (ValueError, TypeError) as error:
+                        # Commit any journal drain, then report the obsolete cursor.
+                        session.commit()
+                        raise HTTPException(400, "person catalog changed; restart pagination") from error
+                items = page_cards(session, query, sort, offset, limit + 1)
+            next_cursor = (base64.urlsafe_b64encode(json.dumps([offset + limit, scope]).encode()).decode()
+                           if len(items) > limit else None)
             return MobilePeoplePage(items=items[:limit], next_cursor=next_cursor)
 
     if prefix == "/api/catalog":

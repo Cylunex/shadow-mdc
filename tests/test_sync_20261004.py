@@ -315,6 +315,10 @@ def test_relay_uses_sidecar_pick_code_so_only_downurl_hits_api(tmp_path: Path) -
 
         patch.setattr(restarted, "_build_sidecar_index", no_walk)
         assert asyncio.run(restarted.resolve("77", "Preloader")).url.startswith("https://cdn.115/pc77")
+        export_work(settings=_relay(root), code="NEW-3", videos=[_video("83", "movie.mp4")],
+                    source_scope=strm_export.export_source_scope(source))
+        assert asyncio.run(restarted.resolve("83", "Emby")).url.startswith("https://cdn.115/pc83")
+        assert "info:83" not in calls
     # Unknown id (never exported) still falls back to the API lookup.
     asyncio.run(relay.resolve("88", "Emby"))
     assert calls[-2:] == ["info:88", "downurl:api-88"]

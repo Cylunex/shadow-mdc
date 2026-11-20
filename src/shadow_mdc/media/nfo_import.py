@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from hashlib import sha256
 from math import isfinite
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from stat import S_ISREG
 from typing import TypedDict
+from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..db.models import MediaAsset, Work
 from ..db.repository import Repository
-from ..domain import MatchEvidence, ProviderRecord, ScoredCandidate
+from ..domain import MatchEvidence, NfoActorCredit, NfoDetails, ProviderRecord, ScoredCandidate
 from ..enums import ContentFamily, MatchDecision, MediaCategory
 from ..identity import extract_code
 from ..normalize_code import is_format_equivalent
@@ -83,6 +85,7 @@ class ParsedNfo(BaseModel):
     premiered: str | None = None
     runtime_seconds: int | None = None
     actors: tuple[str, ...] = ()
+    details: NfoDetails = Field(default_factory=NfoDetails)
     directors: tuple[str, ...] = ()
     rating: float | None = None
     rating_max: float | None = None
@@ -234,7 +237,17 @@ def parse_movie_nfo(path: Path, *, allow_wrapper: bool = False) -> ParsedNfo:
         value for value in MediaCategory
         if country in (value.casefold(), NFO_COUNTRIES.get(value, value).casefold())
     ), None)
-    series = _text(root, "set/name") or _text(root, "set") or _text(root, "showtitle")
+    series_names = [
+        name for node in root.findall("set")
+        if (name := _text(node, "name") or (node.text or "").strip()) and len(name) <= 300
+    ]
+    if not series_names and (show := _text(root, "showtitle")) and len(show) <= 300:
+        series_names.append(show)
+    series_names.extend(
+        name for node in root.findall("shadowmdc_series/name")
+        if (name := (node.text or "").strip()) and len(name) <= 300
+    )
+    series = tuple(dict.fromkeys(series_names))[:100]
     premiered = _text(root, "premiered") or _text(root, "releasedate")
     code = _text(root, "num")
     legacy_id = _text(root, "id")
@@ -242,11 +255,8 @@ def parse_movie_nfo(path: Path, *, allow_wrapper: bool = False) -> ParsedNfo:
     legacy_kind = (legacy_node.get("type", "") if legacy_node is not None else "").strip().casefold()
     if not code and (not legacy_kind or _CODE_TAG.fullmatch(legacy_kind)):
         code = legacy_id
-    actors = tuple(
-        dict.fromkeys(
-            name for actor in root.findall("actor") if (name := (actor.findtext("name") or "").strip())
-        )
-    )
+    cast = tuple(credit for node in root.findall("actor")[:500] if (credit := _nfo_actor(node)) is not None)
+    actors = tuple(dict.fromkeys(credit.name for credit in cast))
     tags = tuple(
         dict.fromkeys(
             value
@@ -279,7 +289,7 @@ def parse_movie_nfo(path: Path, *, allow_wrapper: bool = False) -> ParsedNfo:
         "plot": plot,
         "actors": actors,
         "studio": studio,
-        "series": series,
+        "series": series[0] if series else None,
         "tags": tags,
         "release_date": premiered,
         "runtime_seconds": _runtime_seconds(_text(root, "runtime")),
@@ -293,16 +303,57 @@ def parse_movie_nfo(path: Path, *, allow_wrapper: bool = False) -> ParsedNfo:
         studio=studio,
         category=category,
         label=_text(root, "label"),
-        series=series,
+        series=series[0] if series else None,
         premiered=premiered,
         runtime_seconds=_runtime_seconds(_text(root, "runtime")),
         actors=actors,
+        details=NfoDetails(series=series, cast=cast),
         directors=tuple(dict.fromkeys(value for node in root.findall("director") if (value := (node.text or "").strip()))),
         tags=tags,
         unique_ids=unique_ids,
         locked_fields=locked,
         source_path=str(path.resolve()),
         **_rating_fields(root),
+    )
+
+
+def safe_actor_thumb(value: str | None) -> str | None:
+    """Keep a public URL or portable relative artwork reference without reading it."""
+    if not value or len(value) > 2048 or any(ord(char) < 32 for char in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme:
+            host = parsed.hostname
+            if parsed.scheme not in {"http", "https"} or not host or parsed.username or parsed.password:
+                return None
+            if host.casefold().rstrip(".") == "localhost" or host.casefold().rstrip(".").endswith(".local"):
+                return None
+            try:
+                if not ipaddress.ip_address(host).is_global:
+                    return None
+            except ValueError:
+                pass
+            return value
+    except ValueError:
+        return None
+    portable = value.replace("\\", "/")
+    path = PurePosixPath(unquote(portable))
+    if path.is_absolute() or ".." in path.parts or not path.name or parsed.netloc or parsed.query or parsed.fragment:
+        return None
+    return portable
+
+
+def _nfo_actor(node: ElementTree.Element) -> NfoActorCredit | None:
+    name = _text(node, "name")
+    if not name or len(name) > 300:
+        return None
+    raw_order = _text(node, "order") or ""
+    order = int(raw_order) if raw_order.isascii() and raw_order.isdecimal() and len(raw_order) < 6 else None
+    return NfoActorCredit(
+        name=name, role=(_text(node, "role") or "")[:500] or None,
+        order=order if order is not None and order <= 10000 else None,
+        thumb=safe_actor_thumb(_text(node, "thumb")),
     )
 
 
@@ -378,6 +429,7 @@ def nfo_provider_record(parsed: ParsedNfo) -> ProviderRecord:
         rating_max=parsed.rating_max,
         rating_count=parsed.rating_count,
         tags=parsed.tags,
+        nfo_details=parsed.details,
         source_url=None,
     )
 

@@ -85,6 +85,7 @@ class Work(Base):
     artwork: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     field_sources: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     field_locks: Mapped[list[str]] = mapped_column(JSON, default=list)
+    nfo_details: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     rating_value: Mapped[float | None] = mapped_column(Float)
     rating_max: Mapped[float | None] = mapped_column(Float)
     rating_count: Mapped[int | None] = mapped_column(Integer)

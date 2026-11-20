@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import cast
 from uuid import uuid4
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
@@ -82,7 +83,12 @@ class MergeRequest(BaseModel):
 
 def import_people(session: Session, documents: list[PersonDocument]) -> None:
     """Each old reference owns an immutable identity, including zero-work people."""
-    references = {row.ref: row.person_id for row in session.scalars(select(CatalogPersonReference))}
+    if not documents:
+        return
+    references = {ref: person_id for ref, person_id in session.execute(text("""
+        SELECT ref, person_id FROM catalog_person_references
+        WHERE ref IN (SELECT value FROM json_each(:refs))
+    """), {"refs": json.dumps([doc.ref for doc in documents])})}
     for document in documents:
         person_id = references.get(document.ref, document.id)
         values = document.model_copy(update={
@@ -111,19 +117,51 @@ def _root(person_id: str, get_record: Callable[[str], CatalogPersonRecord | None
     return person_id
 
 
-def people(session: Session, *, private: bool = False) -> list[PersonDocument]:
-    rows = {row.id: row for row in session.scalars(select(CatalogPersonRecord))}
-    known_works = set(session.scalars(select(Work.id)))
+def people(
+    session: Session, *, private: bool = False, root_ids: set[str] | None = None,
+) -> list[PersonDocument]:
+    records = select(CatalogPersonRecord)
+    if root_ids is not None:
+        if not root_ids:
+            return []
+        family = text("""
+            WITH RECURSIVE subtree(id) AS (
+                SELECT id FROM catalog_people WHERE merged_into IS NULL AND id IN (
+                    SELECT value FROM json_each(:roots)
+                )
+                UNION SELECT p.id FROM catalog_people p JOIN subtree s ON p.merged_into=s.id
+            ) SELECT id FROM subtree
+        """)
+        keys = set(session.execute(family, {"roots": json.dumps(sorted(root_ids))}).scalars())
+        if not keys:
+            return []
+        records = records.where(CatalogPersonRecord.id.in_(keys))
+    rows = {row.id: row for row in session.scalars(records)}
+    reference_query = select(CatalogPersonReference)
+    credit_query = select(CatalogPersonCredit)
+    if root_ids is not None:
+        reference_query = reference_query.where(CatalogPersonReference.person_id.in_(rows))
+        credit_query = credit_query.where(CatalogPersonCredit.person_id.in_(rows))
     references: dict[str, list[str]] = {}
-    for ref in session.scalars(select(CatalogPersonReference)):
+    for ref in session.scalars(reference_query):
         references.setdefault(_root(ref.person_id, rows.get), []).append(ref.ref)
     groups: dict[str, list[CatalogPersonRecord]] = {}
     for row in rows.values():
         groups.setdefault(_root(row.id, rows.get), []).append(row)
     credits: dict[str, dict[str, set[str]]] = {}
-    for credit in session.scalars(select(CatalogPersonCredit)):
+    known_candidates: set[str] = set()
+    for credit in session.scalars(credit_query):
         root = _root(credit.person_id, rows.get)
         credits.setdefault(root, {}).setdefault(credit.role, set()).add(credit.work_id)
+        known_candidates.add(credit.work_id)
+    work_query = select(Work.id)
+    if root_ids is not None:
+        for member in rows.values():
+            ids = member.edits.get("work_ids", member.document.get("work_ids"))
+            if isinstance(ids, list):
+                known_candidates.update(value for value in ids if isinstance(value, str))
+        work_query = work_query.where(Work.id.in_(known_candidates))
+    known_works = set(session.scalars(work_query))
     result: list[PersonDocument] = []
     for root_id, members in groups.items():
         primary = rows[root_id]

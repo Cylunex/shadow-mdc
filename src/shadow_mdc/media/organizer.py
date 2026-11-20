@@ -223,6 +223,7 @@ class Organizer:
                         identities,
                         asset,
                         local_artwork=names,
+                        series_names=self._repository.series_names_for_work(work.id),
                     ),
                 )
                 if journal is not None and not existed:

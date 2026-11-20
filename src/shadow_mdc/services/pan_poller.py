@@ -467,6 +467,7 @@ class PanOfflinePoller:
                             videos=videos,
                             work=work,
                             identities=identities,
+                            series_names=repo.series_names_for_work(work.id) if work is not None else None,
                             source_scope=export_source_scope(source),
                             complete=complete,
                         )
@@ -752,6 +753,7 @@ class PanOfflinePoller:
                             videos=videos,
                             work=work,
                             identities=identities,
+                            series_names=repo.series_names_for_work(work.id) if work is not None else None,
                             source_scope=export_source_scope(source),
                             complete=complete,
                         )

@@ -106,35 +106,52 @@ def link_series(session: Session, work_id: str, series_id: str, *, source: str =
 def sync_field_series(session: Session, work: Work) -> CatalogSeries | None:
     """Replace only field-derived membership; keep explicitly maintained memberships."""
     row = ensure_series(session, work.series) if work.series else None
+    _replace_memberships(session, work.id, {row.id} if row else set(), source="field")
+    return row
+
+
+def sync_nfo_series(session: Session, work: Work, names: tuple[str, ...]) -> None:
+    series_ids = {ensure_series(session, name).id for name in names if normalize_collection_name(name)}
+    _replace_memberships(session, work.id, series_ids, source="nfo")
+
+
+def _replace_memberships(session: Session, work_id: str, series_ids: set[str], *, source: str) -> None:
     old = list(
         session.scalars(
             select(CatalogWorkSeries).where(
-                CatalogWorkSeries.work_id == work.id,
-                CatalogWorkSeries.source == "field",
+                CatalogWorkSeries.work_id == work_id,
+                CatalogWorkSeries.source == source,
             )
         )
     )
     for link in old:
-        if row is not None and link.series_id == row.id:
+        if link.series_id in series_ids:
             continue
         session.delete(link)
         session.flush()
         other = session.scalar(
             select(CatalogWorkSeries).where(
-                CatalogWorkSeries.work_id == work.id,
+                CatalogWorkSeries.work_id == work_id,
                 CatalogWorkSeries.series_id == link.series_id,
             )
         )
         if other is None:
             session.execute(
                 delete(WorkCollection).where(
-                    WorkCollection.work_id == work.id,
+                    WorkCollection.work_id == work_id,
                     WorkCollection.collection_id == link.series_id,
                 )
             )
-    if row is not None:
-        link_series(session, work.id, row.id, source="field")
-    return row
+    for series_id in sorted(series_ids):
+        link_series(session, work_id, series_id, source=source)
+
+
+def work_series_names(session: Session, work_id: str) -> tuple[str, ...]:
+    links = series_relationships()
+    return tuple(session.scalars(
+        select(CatalogSeries.name).join(links, links.c.series_id == CatalogSeries.id)
+        .where(links.c.work_id == work_id).order_by(CatalogSeries.normalized_name, CatalogSeries.id)
+    ))
 
 
 def migrate_series(engine: Engine) -> None:

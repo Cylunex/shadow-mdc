@@ -23,8 +23,7 @@ import hashlib
 import hmac
 import json
 import logging
-import os
-import tempfile
+import sqlite3
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -34,17 +33,19 @@ from pathlib import Path
 from .offline_recovery import stream_cache_expiry
 from .pan import DEFAULT_MEDIA_USER_AGENT, PanService, SourceChangedError
 from .pan_common import SingleFlight
-from .strm_export import SIDECAR_NAME, export_revision, export_source_scope, iter_export_dirs, read_sidecar, read_sidecar_scope
+from .strm_export import (
+    SIDECAR_NAME, export_changes_since, export_source_scope, iter_export_dirs, read_sidecar, read_sidecar_scope,
+)
 
 logger = logging.getLogger(__name__)
 
 PICK_CACHE_SIZE = 4096
 URL_CACHE_SIZE = 256
-# Rebuild the sidecar pick-code index on a miss at most this often.
-SIDECAR_INDEX_MIN_AGE = 10.0
+# Background reconciliation discovers filesystem edits outside the exporter.
+SIDECAR_INDEX_RECHECK = 300.0
 RESOLVE_TIMEOUT_SECONDS = 45.0
 _ManifestStat = tuple[int, int, int, int, int]
-_IndexedPick = tuple[str, str, _ManifestStat]
+_PickRow = tuple[str, str, str, str]
 
 
 class RelayError(Exception):
@@ -77,8 +78,9 @@ class StrmRelay:
         # key → (monotonic_expires, target); only entries with known URL expiry.
         self._urls: OrderedDict[str, tuple[float, RelayTarget]] = OrderedDict()
         self._flight: SingleFlight[RelayTarget] = SingleFlight()
-        self._sidecar_picks: dict[str, _IndexedPick] = {}
-        self._sidecar_generation: tuple[str, str, int] | None = None
+        self._sidecar_database: sqlite3.Connection | None = None
+        self._sidecar_source: tuple[str, str] | None = None
+        self._sidecar_revision = 0
         self._sidecar_lock = asyncio.Lock()
         self._sidecar_built_at: float | None = None
         self.api_pick_lookups = 0
@@ -118,102 +120,162 @@ class StrmRelay:
         if self._index_dir is None:
             return None
         key = hashlib.sha256(json.dumps([root, scope]).encode()).hexdigest()
-        return self._index_dir / f"{key}.json"
+        return self._index_dir / f"{key}.sqlite3"
 
-    def _read_sidecar_index(self, root: str, scope: str) -> dict[str, _IndexedPick]:
+    def _open_sidecar_index(self, root: str, scope: str) -> sqlite3.Connection:
         path = self._index_path(root, scope)
-        if path is None:
-            return {}
-        try:
-            raw = json.loads(path.read_bytes())
-            if raw.get("version") != 1:
-                return {}
-            return {key: (pick, relative, tuple(revision)) for key, (pick, relative, revision) in raw["picks"].items()}
-        except (OSError, ValueError, TypeError, AttributeError, KeyError):
-            return {}
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if path.is_symlink():
+                raise OSError("STRM pick index path is a symbolic link")
+            path.touch(mode=0o600, exist_ok=True)
+        database = sqlite3.connect(path if path is not None else ":memory:", check_same_thread=False)
+        database.executescript("""
+            CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS picks (
+                file_id TEXT NOT NULL, directory TEXT NOT NULL, pick TEXT NOT NULL, revision TEXT NOT NULL,
+                PRIMARY KEY(file_id, directory)
+            ) WITHOUT ROWID;
+            CREATE INDEX IF NOT EXISTS picks_directory ON picks(directory);
+        """)
+        if path is not None and database.execute("SELECT 1 FROM metadata WHERE key='scanned'").fetchone() is None:
+            self._restore_previous_index(database, path.with_suffix(".json"))
+        return database
 
-    def _save_sidecar_index(self, root: str, scope: str, index: dict[str, _IndexedPick]) -> None:
-        path = self._index_path(root, scope)
-        if path is None:
+    @staticmethod
+    def _restore_previous_index(database: sqlite3.Connection, previous: Path) -> None:
+        if not previous.is_file() or previous.is_symlink():
             return
-        temporary = None
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(dir=path.parent, mode="w", encoding="utf-8", delete=False) as target:
-                temporary = Path(target.name)
-                json.dump({"version": 1, "picks": index}, target, ensure_ascii=False)
-            os.replace(temporary, path)
-        except OSError:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+            payload = json.loads(previous.read_bytes())
+            if payload.get("version") != 1:
+                return
+            rows = [
+                (file_id, directory, pick, json.dumps(revision))
+                for file_id, (pick, directory, revision) in payload["picks"].items()
+                if isinstance(pick, str) and isinstance(directory, str)
+                and isinstance(revision, list) and len(revision) == 5
+            ]
+            stamp = previous.stat().st_mtime
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return
+        with database:
+            database.executemany("INSERT OR IGNORE INTO picks VALUES (?, ?, ?, ?)", rows)
+            database.execute("INSERT OR IGNORE INTO metadata VALUES ('scanned', ?)", [stamp])
 
-    def _build_sidecar_index(self, root: str, scope: str) -> dict[str, _IndexedPick]:
-        export_root = Path(root)
-        index: dict[str, _IndexedPick] = {}
-        for directory in iter_export_dirs(export_root):
-            relative = directory.relative_to(export_root).as_posix()
-            revision = self._manifest_stat(export_root, relative)
-            if revision is None or read_sidecar_scope(directory) != scope:
-                continue
-            entries = read_sidecar(directory)
-            if self._manifest_stat(export_root, relative) != revision:
-                continue
-            for entry in entries:
-                if entry.pick_code and not entry.is_openlist:
-                    index[entry.file_id] = (entry.pick_code, relative, revision)
-        return index
+    def _directory_picks(self, root: Path, relative: str, scope: str) -> list[_PickRow]:
+        directory = root / relative
+        revision = self._manifest_stat(root, relative)
+        if revision is None or read_sidecar_scope(directory) != scope:
+            return []
+        entries = read_sidecar(directory)
+        if self._manifest_stat(root, relative) != revision:
+            return []
+        value = json.dumps(revision)
+        return [(entry.file_id, relative, entry.pick_code, value)
+                for entry in entries if entry.pick_code and not entry.is_openlist]
 
-    def _indexed_pick(self, file_id: str, root: str) -> str | None:
-        entry = self._sidecar_picks.get(file_id)
-        if entry is None:
+    def _build_sidecar_index(self, root: str, scope: str) -> list[_PickRow]:
+        directory = Path(root)
+        return [row for sidecar in iter_export_dirs(directory)
+                for row in self._directory_picks(directory, sidecar.relative_to(directory).as_posix(), scope)]
+
+    def _update_sidecar_index(
+        self, root: str, scope: str, file_id: str | None, *, audit: bool = False,
+    ) -> str | None:
+        if self._sidecar_source != (root, scope) or self._sidecar_database is None:
+            if self._sidecar_database is not None:
+                self._sidecar_database.close()
+            self._sidecar_database = self._open_sidecar_index(root, scope)
+            self._sidecar_source = (root, scope)
+            self._sidecar_revision = 0
+            row = self._sidecar_database.execute("SELECT value FROM metadata WHERE key='scanned'").fetchone()
+            self._sidecar_built_at = row[0] if row else None
+        database = self._sidecar_database
+        current, changes = export_changes_since(self._sidecar_revision)
+        now = time.time()
+        full_scan = (
+            self._sidecar_built_at is None or changes is None or
+            audit and now - self._sidecar_built_at >= SIDECAR_INDEX_RECHECK
+        )
+        scanned = full_scan and Path(root).is_dir()
+        with database:
+            if scanned:
+                rows = self._build_sidecar_index(root, scope)
+                database.execute("DELETE FROM picks")
+                database.executemany("INSERT OR REPLACE INTO picks VALUES (?, ?, ?, ?)", rows)
+                database.execute("INSERT OR REPLACE INTO metadata VALUES ('scanned', ?)", [now])
+            elif changes:
+                export_root = Path(root)
+                for directory in changes:
+                    try:
+                        relative = directory.resolve().relative_to(export_root).as_posix()
+                    except (OSError, ValueError):
+                        continue
+                    database.execute("DELETE FROM picks WHERE directory = ?", [relative])
+                    database.executemany("INSERT OR REPLACE INTO picks VALUES (?, ?, ?, ?)",
+                                         self._directory_picks(export_root, relative, scope))
+        if scanned:
+            self._sidecar_built_at = now
+        self._sidecar_revision = current
+        if file_id is None:
             return None
-        pick, relative, revision = entry
-        if revision == self._manifest_stat(Path(root), relative):
-            return pick
-        self._sidecar_picks.pop(file_id, None)
-        return None
+        picks: set[str] = set()
+        for relative, pick, revision in database.execute(
+            "SELECT directory, pick, revision FROM picks WHERE file_id = ? ORDER BY directory", [file_id],
+        ):
+            if (observed := self._manifest_stat(Path(root), relative)) and json.dumps(observed) == revision:
+                picks.add(pick)
+        return next(iter(picks)) if len(picks) == 1 else None
 
     async def _sidecar_pick(self, file_id: str, scope: str, root: str) -> str | None:
         if not root:
             return None
         root = str(Path(root).resolve())
         async with self._sidecar_lock:
-            generation = (root, scope, export_revision())
-            same = generation == self._sidecar_generation
-            if self._sidecar_generation is None or self._sidecar_generation[:2] != generation[:2]:
-                self._sidecar_picks = await asyncio.to_thread(self._read_sidecar_index, root, scope)
-                self._sidecar_generation = generation
-                self._sidecar_built_at = None
-                same = True
-            local = await asyncio.to_thread(self._indexed_pick, file_id, root)
-            if local:
-                return local
-            if same and self._sidecar_built_at is not None and time.monotonic() - self._sidecar_built_at < SIDECAR_INDEX_MIN_AGE:
-                return None
             try:
-                index = await asyncio.to_thread(self._build_sidecar_index, root, scope)
-            except OSError:
+                return await asyncio.to_thread(self._update_sidecar_index, root, scope, file_id)
+            except (OSError, sqlite3.Error):
                 return None
-            await asyncio.to_thread(self._save_sidecar_index, root, scope, index)
-            self._sidecar_picks = index
-            self._sidecar_generation = generation
-            self._sidecar_built_at = time.monotonic()
-            return await asyncio.to_thread(self._indexed_pick, file_id, root)
+
+    async def maintain_index(self, stop: asyncio.Event) -> None:
+        """Apply publication changes regularly and reconcile manual moves in the background."""
+        while not stop.is_set():
+            source = self._pan.source_fingerprint()
+            root = self._pan.config_store.load().strm_output_root
+            if source.backend == "115_open" and source.account_id and root:
+                async with self._sidecar_lock:
+                    try:
+                        await asyncio.to_thread(
+                            self._update_sidecar_index, str(Path(root).resolve()),
+                            export_source_scope(source), None, audit=True,
+                        )
+                    except (OSError, sqlite3.Error):
+                        logger.debug("STRM pick index is temporarily unavailable")
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=15)
+            except TimeoutError:
+                continue
+
+    def close(self) -> None:
+        if self._sidecar_database is not None:
+            self._sidecar_database.close()
+            self._sidecar_database = None
 
     async def _pick_code(self, file_id: str) -> str:
         source = self._pan.source_fingerprint()
         scope = export_source_scope(source)
         root = self._pan.config_store.load().strm_output_root or ""
         key = (scope, source.auth_version, root, file_id)
-        cached = self._picks.get(key)
-        if cached:
-            self._picks.move_to_end(key)
-            return cached
         local = await self._sidecar_pick(file_id, scope, root)
         if source != self._pan.source_fingerprint():
             raise SourceChangedError("pan source changed during STRM lookup")
         if local:
             return local
+        cached = self._picks.get(key)
+        if cached:
+            self._picks.move_to_end(key)
+            return cached
         self.api_pick_lookups += 1
         client = self._pan.get_client()
         info = await self._pan.read_after_check(lambda: client.get_folder_info(file_id))

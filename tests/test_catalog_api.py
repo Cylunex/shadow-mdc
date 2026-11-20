@@ -424,3 +424,110 @@ def test_web_catalog_uses_existing_artwork_and_legacy_filters(
             assert cursor is None
             if sort == "swipe":
                 assert ids[0] == "b"
+
+
+def test_nfo_structured_cast_and_series_round_trip_to_new_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from xml.etree import ElementTree as ET
+
+    source = tmp_path / "movie.nfo"
+    source.write_text(
+        "<movie><title>Fixture</title><id>ABC-555</id><set><name>Original set</name></set>"
+        "<set>Bonus set</set><actor><name>Actor One</name><role>Lead &amp; narrator</role>"
+        "<order>0</order><thumb>https://images.example/portrait.jpg</thumb></actor>"
+        "<actor><name>Actor Two</name><role>Guest</role><order>2</order>"
+        "<thumb>../private.jpg</thumb></actor></movie>", encoding="utf-8",
+    )
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{tmp_path / 'one.db'}")
+    with TestClient(app) as client:
+        imported = client.post("/api/nfo/import", json={"path": str(source)})
+        assert imported.status_code == 200, imported.text
+        work_id = imported.json()["work_id"]
+        series = client.get("/api/catalog/series").json()
+        assert {entry["name"] for entry in series if entry["work_count"] == 1} == {"Original set", "Bonus set"}
+        bonus = next(entry["id"] for entry in series if entry["name"] == "Bonus set")
+        assert client.put(f"/api/catalog/series/{bonus}/works", json={"work_id": work_id}).status_code == 200
+        source.write_text(source.read_text().replace("<set>Bonus set</set>", ""), encoding="utf-8")
+        assert client.post("/api/nfo/import", json={"path": str(source)}).status_code == 200
+        result = client.get(f"/api/works/{work_id}/nfo")
+        assert result.status_code == 200
+        xml = ET.fromstring(result.content)
+        assert xml.findtext("set") == "Original set"
+        assert xml.findtext("shadowmdc_series/name") == "Bonus set"
+        assert xml.findtext("actor/role") == "Lead & narrator"
+        assert xml.findtext("actor/order") == "0"
+        assert xml.findtext("actor/thumb") == "https://images.example/portrait.jpg"
+        assert xml.findall("actor")[1].find("thumb") is None
+        exported = tmp_path / "exported.nfo"
+        exported.write_bytes(result.content)
+
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{tmp_path / 'two.db'}")
+    with TestClient(app) as client:
+        imported = client.post("/api/nfo/import", json={"path": str(exported)})
+        assert imported.status_code == 200, imported.text
+        result = client.get(f"/api/works/{imported.json()['work_id']}/nfo")
+        copy = ET.fromstring(result.content)
+        assert [(node.findtext("name"), node.findtext("role"), node.findtext("thumb"))
+                for node in copy.findall("actor")] == [
+            ("Actor One", "Lead & narrator", "https://images.example/portrait.jpg"),
+            ("Actor Two", "Guest", None),
+        ]
+        assert copy.findtext("shadowmdc_series/name") == "Bonus set"
+
+
+def test_mobile_people_only_reprojects_affected_profiles_and_survives_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shadow_mdc.db.models import Actor, WorkActor
+    from shadow_mdc.services.catalog_people import PersonDocument, people
+    from shadow_mdc.services.media_server import MediaServerSettings
+    from shadow_mdc.services import people_index
+    from sqlalchemy.orm import Session
+
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{tmp_path / 'cards.db'}")
+    endpoint = "/api/media/v1/catalog/people-cards"
+    with TestClient(app) as client:
+        app.state.runtime.media_server_store.save(MediaServerSettings(media_client_token="REPLACE_MOBILE_TOKEN"))
+        client.headers["Authorization"] = "Bearer REPLACE_MOBILE_TOKEN"
+        with app.state.runtime.database.session() as session:
+            session.add_all([
+                Actor(id="a", name="First", normalized_name="first", image_url="https://example.com/old.jpg"),
+                Actor(id="b", name="Second", normalized_name="second"),
+                Work(id="w", title="Fixture work", actors=["First"]),
+            ])
+            session.flush()
+            session.add(WorkActor(actor_id="a", work_id="w"))
+        response = client.get(endpoint, params={"limit": 1})
+        assert response.status_code == 200, response.text
+        first = response.json()
+        original = first["items"][0]
+        assert original["id"] == "a" and original["work_count"] == 1
+
+        calls: list[set[str]] = []
+        def tracked(session: Session, *, root_ids: set[str] | None = None) -> list[PersonDocument]:
+            assert root_ids is not None
+            calls.append(root_ids)
+            return people(session, root_ids=root_ids)
+
+        monkeypatch.setattr(people_index, "build_profiles", tracked)
+        with app.state.runtime.database.session() as session:
+            work = session.get(Work, "w")
+            assert work is not None
+            work.plot = "Plot changes do not change person cards"
+        assert client.get(endpoint, params={"cursor": first["next_cursor"]}).status_code == 200
+        assert calls == []
+        with app.state.runtime.database.session() as session:
+            actor = session.get(Actor, "a")
+            assert actor is not None
+            actor.name = "New name"
+            actor.aliases = ["別 名"]
+            actor.image_url = "https://example.com/new.jpg"
+        assert client.get(endpoint, params={"cursor": first["next_cursor"]}).status_code == 400
+        edited = client.get(endpoint, params={"q": "別 名"}).json()["items"]
+        assert calls == [{"a"}]
+        assert [row["id"] for row in edited] == ["a"] and edited[0]["image_url"] != original["image_url"]
+    with TestClient(app) as client:
+        client.headers["Authorization"] = "Bearer REPLACE_MOBILE_TOKEN"
+        assert client.get(endpoint, params={"q": "別 名"}).json()["items"][0]["name"] == "New name"
+        assert calls == [{"a"}]

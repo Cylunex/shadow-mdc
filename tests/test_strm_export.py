@@ -285,6 +285,17 @@ def test_strm_quality_versions_and_short_explicit_parts(tmp_path: Path) -> None:
     assert len(versions.strm_paths) == 2 and all("-cd" not in path.name for path in versions.strm_paths)
     stacked = plan_strm_entries("ABC-456", [_video("p1", "movie-disc1.mp4", 100), _video("p2", "movie-disc2.mp4", 2)])
     assert [entry.name for entry in stacked] == ["ABC-456-cd1.strm", "ABC-456-cd2.strm"]
+    mixed = plan_strm_entries(
+        "ABC-456",
+        [_video("p1", "movie-4K-disc1.mp4", 100), _video("p2", "movie-4K-disc2.mp4", 2),
+         _video("f", "movie-1080p.mp4", 100)],
+        folder_name="Fixture collection",
+    )
+    assert {entry.file_id for entry in mixed} == {"p1", "p2", "f"}
+    assert all(entry.name.startswith("Fixture collection - ") for entry in mixed)
+    assert all("-cd" not in entry.name for entry in mixed)
+    assert next(entry.name for entry in mixed if entry.file_id == "p2").endswith(".strm")
+    assert "第2段" in next(entry.name for entry in mixed if entry.file_id == "p2")
 
 
 def test_export_nfo_keeps_external_fields_across_reexports(tmp_path: Path) -> None:
@@ -292,8 +303,9 @@ def test_export_nfo_keeps_external_fields_across_reexports(tmp_path: Path) -> No
 
     work = Work(id="work", primary_code="ABC-123", title="影片", plot="旧简介",
                 actors=[], tags=[], directors=["自动导演"], artwork=[])
-    options = dict(settings=_relay_settings(tmp_path), code="ABC-123", videos=[_video("id", "movie.mp4")], work=work)
-    first = export_work(**options)
+    settings = _relay_settings(tmp_path)
+    videos = [_video("id", "movie.mp4")]
+    first = export_work(settings=settings, code="ABC-123", videos=videos, work=work)
     assert first.nfo_path is not None
     nfo = first.nfo_path
     nfo.write_text(nfo.read_text().replace("自动导演", "手工导演").replace(
@@ -301,9 +313,9 @@ def test_export_nfo_keeps_external_fields_across_reexports(tmp_path: Path) -> No
     ))
     work.plot = "新简介"
     work.directors = ["另一自动导演"]
-    export_work(**options)
+    export_work(settings=settings, code="ABC-123", videos=videos, work=work)
     work.plot = "再更新简介"
-    export_work(**options)
+    export_work(settings=settings, code="ABC-123", videos=videos, work=work)
     assert "手工导演" in nfo.read_text()
     assert 'data="manual"' in nfo.read_text()
     assert "再更新简介" in nfo.read_text()

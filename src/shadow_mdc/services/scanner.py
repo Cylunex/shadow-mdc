@@ -519,6 +519,7 @@ def _adopt_nfo_manual_fields(repository: Repository, work_id: str, nfo_path: Pat
         return f"{nfo_path}: invalid NFO: {exc}"
     if work.primary_code and parsed.code and not is_format_equivalent(work.primary_code, parsed.code):
         return f"{nfo_path}: NFO code conflict: expected={work.primary_code}; received={parsed.code}"
+    repository.apply_nfo_details(work, parsed.details)
     if not parsed.locked_fields:
         return None
     try:
