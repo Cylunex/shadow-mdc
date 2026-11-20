@@ -113,7 +113,8 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
     def capabilities() -> dict[str, object]:
         return {"api_version": 1, "features": [
             "browse", "search", "detail", "emby", "binding", "catalog", "playback_plan",
-            "people_v2", "people_cards_paged", "playlists", "organizations", "media_mime", "tvbox_v1", "tvbox_groups",
+            "people_v2", "people_cards_paged", "playlists", "organizations", "media_mime",
+            "tvbox_v1", "tvbox_groups", "tvbox_stream",
         ]}
 
     @router.get("/works", response_model=MediaPage)

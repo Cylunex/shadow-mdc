@@ -30,7 +30,17 @@ def test_import_and_play_without_relay(tmp_path: Path, monkeypatch: pytest.Monke
         if path == "/offline":
             raise TvBoxError("上游连接失败或超时")
         if path == "/stream":
+            if "ep" in query:
+                return Download(url, "text/html", b"<html>browser player</html>")
+            if "backup" in query:
+                return Download(url, "", b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=80000\nbad.m3u8\n")
             return Download(url, "", b"#EXTM3U\n#EXTINF:10,\nvideo.ts\n")
+        if path == "/bad.m3u8":
+            return Download(url, "", b"#EXTM3U\n#EXTINF:10,\nbad.ts\n")
+        if path == "/bad.ts":
+            return Download(url, "text/html", b"<html>upstream error</html>")
+        if path == "/video.ts":
+            return Download(url, "video/mp2t", b"\x47" + bytes(187))
         if path == "/cms":
             rows: list[dict[str, object]] = [
                 {"vod_id": "00/演示", "vod_name": "示例剧", "type_id": 1},
@@ -104,6 +114,13 @@ def test_import_and_play_without_relay(tmp_path: Path, monkeypatch: pytest.Monke
             "headers": {"User-Agent": "TVBox"},
         }
         assert resolved.headers["Cache-Control"] == "private, no-store"
+        backup = detail["episodes"][-1]
+        assert backup["line"] == "线路二"
+        fallback = client.post(item_path + "/resolve", headers=headers, json={"episode_id": backup["id"]})
+        assert fallback.json() == resolved.json()
+        assert any(url.endswith("/bad.ts") for url in calls)
+        missing = client.post(item_path + "/resolve", headers=headers, json={"episode_id": detail["episodes"][1]["id"]})
+        assert missing.status_code == 502
         # A changed or temporarily broken upstream leaves the active directory available.
         categories[:] = []
         refreshed = client.post(f"/api/tvbox/sites/{site_id}/refresh").json()

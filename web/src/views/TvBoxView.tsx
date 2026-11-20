@@ -260,9 +260,9 @@ export function TvBoxView() {
 
   return <section className="tvbox-view">
     <header className="tvbox-header">
-      <div><p>TVBOX</p><h1>在线影视</h1></div>
-      <button type="button" className="ghost" aria-expanded={showManagement}
-        onClick={() => setManagement(!management)}>{showManagement && active.length ? "返回观看" : "管理来源"}</button>
+      <h1>影视仓</h1>
+      <button type="button" className="ghost" aria-expanded={management}
+        onClick={() => setManagement(!management)}>{management ? "返回观看" : "导入和管理片源"}</button>
     </header>
     {showManagement && <div className="tvbox-surface">
       <h2>导入片源</h2>

@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from shadow_mdc.api import app
 from shadow_mdc.db.models import TvBoxRevision, TvBoxSite
 from shadow_mdc.services import tvbox, tvbox_http, tvbox_stream
+from shadow_mdc.services.media_server import MediaServerSettings
 from shadow_mdc.services.tvbox_http import Download, TvBoxError
 from shadow_mdc.services.tvbox_publish import TvBoxFeedLogFilter
 from shadow_mdc.services.tvbox_xml import normalize_xml
@@ -119,6 +120,15 @@ def test_browser_hls_and_range_are_scoped_to_a_resolved_episode(
     assert "set-cookie" not in media.headers
     assert mdc.get(segment, headers={"Range": "bytes=0-2,5-9"}).status_code == 416
     assert mdc.get(root + "/made-up").status_code == 404
+    mdc.app.state.runtime.media_server_store.save(MediaServerSettings(media_client_token="REPLACE_MOBILE_TOKEN"))
+    auth = {"Authorization": "Bearer REPLACE_MOBILE_TOKEN"}
+    mobile = mdc.post(item.replace("/api/tvbox", "/api/media/v1/tvbox") + "/watch",
+                      headers=auth, json={"episode_id": episode}).raise_for_status().json()["url"]
+    assert mdc.get(mobile).status_code == 401
+    assert "#EXT-X-STREAM-INF" in mdc.get(mobile, headers=auth).raise_for_status().text
+    assert mdc.get(mobile.replace("/api/media/v1/tvbox", "/api/tvbox")).status_code == 404
+    crossed = issued["url"].replace("/api/tvbox", "/api/media/v1/tvbox")
+    assert mdc.get(crossed, headers=auth).status_code == 404
     mdc.patch("/api/tvbox/sites/example", json={"enabled": False})
     assert mdc.get(issued["url"]).status_code == 404
 

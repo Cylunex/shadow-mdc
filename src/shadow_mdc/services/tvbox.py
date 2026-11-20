@@ -782,15 +782,34 @@ class TvBoxService:
         catalog = self._catalog(site_id)
         async with self._requests:
             row = await catalog.detail(_item_id(item_id))
-            track = next((track for track in catalog.tracks(row) if track.entry.id == episode_id), None)
-            if track is None:
+            tracks = catalog.tracks(row)
+            selected = next((track for track in tracks if track.entry.id == episode_id), None)
+            if selected is None:
                 raise LookupError("分集或线路已变更")
-            mime = await playback_mime(track.url, allow_http=catalog.site.allow_http, headers=track.headers)
-        if not self._catalog(site_id).accepts(row):
-            raise LookupError("分类已变更")
-        return Playback(url=track.url, mime_type=mime, headers=track.headers)
+            matching = [track for track in tracks if track.entry.title == selected.entry.title]
+            line_counts = Counter(track.entry.line for track in matching)
+            backups = [
+                track for track in matching
+                if track.entry.line and track.entry.line != selected.entry.line
+                and line_counts[track.entry.line] == 1
+            ] if line_counts[selected.entry.line] == 1 else []
+            try:
+                async with asyncio.timeout(16):
+                    for track in [selected, *backups[:2]]:
+                        try:
+                            mime = await playback_mime(
+                                track.url, allow_http=catalog.site.allow_http, headers=track.headers,
+                            )
+                        except TvBoxError:
+                            continue
+                        if not self._catalog(site_id).accepts(row):
+                            raise LookupError("分类已变更")
+                        return Playback(url=track.url, mime_type=mime, headers=track.headers)
+            except TimeoutError as exc:
+                raise TvBoxError("分集线路读取超时") from exc
+        raise TvBoxError("这集暂时没有可播放的线路")
 
-    async def watch(self, site_id: str, item_id: str, episode_id: str) -> Playback:
+    async def watch(self, site_id: str, item_id: str, episode_id: str, *, stream_prefix: str) -> Playback:
         stream = await self.resolve(site_id, item_id, episode_id)
         site = self._catalog(site_id).site
         path = self.browser_streams.issue(
@@ -799,6 +818,7 @@ class TvBoxService:
             stream.mime_type,
             stream.headers,
             allow_http=site.allow_http,
+            prefix=stream_prefix,
         )
         return Playback(url=path, mime_type=stream.mime_type, headers={})
 

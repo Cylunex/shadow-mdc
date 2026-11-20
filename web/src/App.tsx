@@ -407,7 +407,7 @@ export function App() {
           setView(next);
           const labels: Partial<Record<AppView, string>> = {
             actors: "演员库", works: "作品库", categories: "分类浏览", rankings: "榜单",
-            swipe: "刷流", tvbox: "TVBox", subscriptions: "订阅", tasks: "任务", settings: "设置",
+            swipe: "刷流", tvbox: "影视仓", subscriptions: "订阅", tasks: "任务", settings: "设置",
           };
           if (labels[next]) setMessage(`已切换到${labels[next]}`);
           if (next !== "work-detail" && next !== "actor-detail") writeViewToUrl(next);

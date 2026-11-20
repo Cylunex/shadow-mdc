@@ -134,11 +134,49 @@ async def playback_mime(url: str, *, allow_http: bool, headers: dict[str, str]) 
         allow_http=allow_http,
         max_bytes=256 * 1024,
         prefix_only=True,
-        headers={**headers, "Range": "bytes=0-262143", "Accept-Encoding": "identity"},
+        headers=headers,
     )
-    text = response.body.decode("utf-8", errors="replace")
+    text = response.body.decode("utf-8-sig", errors="replace")
     if validate_m3u8_playlist_text(text) is None:
+        try:
+            async with asyncio.timeout(8):
+                await _check_hls_media(response.url, text, allow_http=allow_http, headers=headers)
+        except TimeoutError as exc:
+            raise TvBoxError("HLS 分片读取超时") from exc
         return "application/vnd.apple.mpegurl"
     if len(response.body) > 12 and response.body[4:8] == b"ftyp":
         return "video/mp4"
     raise TvBoxError("线路未返回可确认的 HLS 或 MP4")
+
+
+async def _check_hls_media(url: str, text: str, *, allow_http: bool, headers: dict[str, str]) -> None:
+    for _ in range(3):
+        lines = [line.strip() for line in text.splitlines()]
+        tag = ""
+        for line in lines:
+            if line.startswith(("#EXTINF:", "#EXT-X-STREAM-INF:")):
+                tag = line
+            elif tag and line and not line.startswith("#"):
+                resource = line
+                break
+        else:
+            raise TvBoxError("HLS 清单没有可读取的媒体")
+        resolved = urljoin(url, resource)
+        if tag.startswith("#EXTINF:"):
+            sample = await download(
+                resolved, allow_http=allow_http, max_bytes=1024, prefix_only=True, headers=headers,
+            )
+            head = sample.body[:64].lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+            if not sample.body or head.startswith((b"<!doctype", b"<html", b"#extm3u")) or sample.mime in {
+                "text/html", "application/json",
+            }:
+                raise TvBoxError("HLS 分片未返回媒体")
+            return
+        variant = await download(
+            resolved, allow_http=allow_http, max_bytes=256 * 1024, prefix_only=True, headers=headers,
+        )
+        text = variant.body.decode("utf-8-sig", errors="replace")
+        if validate_m3u8_playlist_text(text) is not None:
+            raise TvBoxError("HLS 子清单无效")
+        url = variant.url
+    raise TvBoxError("HLS 子清单层数超过限制")

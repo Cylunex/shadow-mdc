@@ -1,4 +1,4 @@
-"""Same-origin browser playback for resources issued by the TVBox resolver."""
+"""Same-origin playback for resources issued by the TVBox resolver."""
 
 import asyncio
 import re
@@ -37,6 +37,7 @@ class StreamTarget:
 @dataclass(slots=True)
 class PlaybackSession:
     site_id: str
+    prefix: str
     deadline: float
     allow_http: bool
     headers: dict[str, str]
@@ -76,20 +77,22 @@ class BrowserStreams:
         self.sessions: OrderedDict[str, PlaybackSession] = OrderedDict()
         self.connections = asyncio.Semaphore(24)
 
-    def issue(self, site_id: str, url: str, mime: str, headers: dict[str, str], *, allow_http: bool) -> str:
+    def issue(
+        self, site_id: str, url: str, mime: str, headers: dict[str, str], *, allow_http: bool, prefix: str,
+    ) -> str:
         now = monotonic()
         while self.sessions and (
             len(self.sessions) >= 32 or next(iter(self.sessions.values())).deadline < now
         ):
             self.sessions.popitem(last=False)
         key = secrets.token_urlsafe(24)
-        session = PlaybackSession(site_id, now + _LEASE_SECONDS, allow_http, headers)
+        session = PlaybackSession(site_id, prefix, now + _LEASE_SECONDS, allow_http, headers)
         self.sessions[key] = session
-        return f"/api/tvbox/stream/{key}/{session.register(url, mime)}"
+        return f"{prefix}/{key}/{session.register(url, mime)}"
 
-    def lookup(self, key: str) -> PlaybackSession:
+    def lookup(self, key: str, prefix: str) -> PlaybackSession:
         session = self.sessions.get(key)
-        if session is None or session.deadline < monotonic():
+        if session is None or session.prefix != prefix or session.deadline < monotonic():
             raise LookupError("播放地址已过期")
         return session
 

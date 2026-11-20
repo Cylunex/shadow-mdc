@@ -48,6 +48,7 @@ class Selection(BaseModel):
 
 def build_tvbox_router(runtime: Callable[[Request], "Runtime"], *, management: bool) -> APIRouter:
     router = APIRouter(prefix="/api/tvbox" if management else "/tvbox")
+    stream_prefix = "/api/tvbox/stream" if management else "/api/media/v1/tvbox/stream"
 
     @router.get("/groups")
     def groups(request: Request) -> dict[str, list[GroupView]]:
@@ -129,33 +130,35 @@ def build_tvbox_router(runtime: Callable[[Request], "Runtime"], *, management: b
         except TvBoxError as exc:
             raise HTTPException(502, str(exc)) from exc
 
+    @router.post("/sites/{site_id}/items/{item_id}/watch")
+    async def watch(
+        request: Request, response: Response, site_id: str, item_id: str, selection: Selection
+    ) -> Playback:
+        response.headers["Cache-Control"] = "private, no-store"
+        try:
+            return await runtime(request).tvbox.watch(
+                site_id, item_id, selection.episode_id, stream_prefix=stream_prefix,
+            )
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except TvBoxError as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+    @router.get("/stream/{key}/{resource}")
+    async def stream(request: Request, key: str, resource: str) -> Response:
+        service = runtime(request).tvbox
+        try:
+            session = service.browser_streams.lookup(key, stream_prefix)
+            service.check_stream_site(session.site_id)
+            return await service.browser_streams.response(session, resource, request.headers.get("range"))
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except TvBoxError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        except (TimeoutError, OSError, httpx.HTTPError) as exc:
+            raise HTTPException(502, "播放资源暂时无法读取") from exc
+
     if management:
-
-        @router.post("/sites/{site_id}/items/{item_id}/watch")
-        async def watch(
-            request: Request, response: Response, site_id: str, item_id: str, selection: Selection
-        ) -> Playback:
-            response.headers["Cache-Control"] = "private, no-store"
-            try:
-                return await runtime(request).tvbox.watch(site_id, item_id, selection.episode_id)
-            except LookupError as exc:
-                raise HTTPException(404, str(exc)) from exc
-            except TvBoxError as exc:
-                raise HTTPException(502, str(exc)) from exc
-
-        @router.get("/stream/{key}/{resource}")
-        async def stream(request: Request, key: str, resource: str) -> Response:
-            service = runtime(request).tvbox
-            try:
-                session = service.browser_streams.lookup(key)
-                service.check_stream_site(session.site_id)
-                return await service.browser_streams.response(session, resource, request.headers.get("range"))
-            except LookupError as exc:
-                raise HTTPException(404, str(exc)) from exc
-            except TvBoxError as exc:
-                raise HTTPException(502, str(exc)) from exc
-            except (TimeoutError, OSError, httpx.HTTPError) as exc:
-                raise HTTPException(502, "播放资源暂时无法读取") from exc
 
         @router.post("/groups")
         def create_group(request: Request, data: GroupInput) -> GroupView:
