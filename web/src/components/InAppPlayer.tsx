@@ -31,6 +31,8 @@ type Props = {
   autoPlay?: boolean;
   onClose?: () => void;
   onReport?: (message: string) => void;
+  onEnded?: () => void;
+  onPlaybackStarted?: () => void;
   onRefreshSource?: (source: PlayerSource) => Promise<PlayerSource | null>;
   className?: string;
   /** Compact mode for swipe cards (no chrome chrome bar). */
@@ -166,6 +168,8 @@ function PlayerSession({
   autoPlay = true,
   onClose,
   onReport,
+  onEnded,
+  onPlaybackStarted,
   onRefreshSource,
   className,
   embedded = false,
@@ -412,6 +416,8 @@ function PlayerSession({
             controls={!embedded}
             muted={muted}
             preload="metadata"
+            onEnded={onEnded}
+            onPlaying={onPlaybackStarted}
           >
             {current?.subtitle_url && current.kind === "local" && subtitlesShown ? (
               <track key={current.subtitle_url} kind="captions" src={appUrl(current.subtitle_url) ?? current.subtitle_url}

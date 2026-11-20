@@ -3,6 +3,8 @@
 import asyncio
 import ipaddress
 import socket
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
@@ -51,6 +53,49 @@ async def _public_address(url: httpx.URL) -> str:
     return str(addresses[0])
 
 
+@asynccontextmanager
+async def open_remote(
+    value: str,
+    *,
+    allow_http: bool,
+    headers: dict[str, str] | None = None,
+) -> AsyncIterator[tuple[httpx.URL, httpx.Response]]:
+    async with httpx.AsyncClient(
+        trust_env=False,
+        timeout=4,
+        limits=httpx.Limits(max_keepalive_connections=0),
+    ) as client:
+        url = http_url(value, allow_http=allow_http)
+        for _ in range(4):
+            async with asyncio.timeout(7):
+                ip = await _public_address(url)
+                request = client.build_request(
+                    "GET",
+                    url.copy_with(host=ip),
+                    headers={"Accept-Encoding": "identity", **(headers or {}), "Host": url.netloc.decode()},
+                    extensions={"sni_hostname": url.raw_host.decode()},
+                )
+                request.headers.pop("cookie", None)
+                response = await client.send(request, stream=True)
+            try:
+                if response.is_redirect:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise TvBoxError("上游重定向缺少目标")
+                    next_url = http_url(urljoin(str(url), location), allow_http=allow_http)
+                    if url.scheme == "https" and next_url.scheme != "https":
+                        raise TvBoxError("上游重定向降低了连接安全性")
+                    url = next_url
+                    continue
+                if response.headers.get("content-encoding", "identity").lower() != "identity":
+                    raise TvBoxError("上游返回不支持的压缩方式")
+                yield url, response
+                return
+            finally:
+                await response.aclose()
+    raise TvBoxError("上游重定向过多")
+
+
 async def download(
     value: str,
     *,
@@ -62,52 +107,25 @@ async def download(
     try:
         async with (
             asyncio.timeout(9),
-            httpx.AsyncClient(
-                trust_env=False, timeout=4, limits=httpx.Limits(max_keepalive_connections=0)
-            ) as client,
+            open_remote(value, allow_http=allow_http, headers=headers) as (url, response),
         ):
-            url = http_url(value, allow_http=allow_http)
-            for _ in range(4):
-                ip = await _public_address(url)
-                authority = url.netloc.decode()
-                server_name = url.raw_host.decode()
-                async with client.stream(
-                    "GET",
-                    url.copy_with(host=ip),
-                    headers={"Accept-Encoding": "identity", **(headers or {}), "Host": authority},
-                    extensions={"sni_hostname": server_name},
-                    follow_redirects=False,
-                ) as response:
-                    if response.is_redirect:
-                        location = response.headers.get("location")
-                        if not location:
-                            raise TvBoxError("上游重定向缺少目标")
-                        next_url = http_url(urljoin(str(url), location), allow_http=allow_http)
-                        if url.scheme == "https" and next_url.scheme != "https":
-                            raise TvBoxError("上游重定向降低了连接安全性")
-                        url = next_url
-                        continue
-                    response.raise_for_status()
-                    encoding = response.headers.get("content-encoding", "identity").lower()
-                    if encoding != "identity":
-                        raise TvBoxError("上游返回不支持的压缩方式")
-                    mime = response.headers.get("content-type", "").split(";", 1)[0].lower()
-                    body = bytearray()
-                    async for chunk in response.aiter_raw(chunk_size=16384):
-                        if prefix_only:
-                            body.extend(chunk[: max_bytes - len(body)])
-                            if len(body) >= max_bytes:
-                                break
-                        elif len(body) + len(chunk) > max_bytes:
-                            raise TvBoxError("上游响应超过大小限制")
-                        else:
-                            body.extend(chunk)
-                    return Download(str(url), mime, bytes(body))
+            response.raise_for_status()
+            mime = response.headers.get("content-type", "").split(";", 1)[0].lower()
+            body = bytearray()
+            async for chunk in response.aiter_raw(chunk_size=16384):
+                if prefix_only:
+                    body.extend(chunk[: max_bytes - len(body)])
+                    if len(body) >= max_bytes:
+                        break
+                elif len(body) + len(chunk) > max_bytes:
+                    raise TvBoxError("上游响应超过大小限制")
+                else:
+                    body.extend(chunk)
+            return Download(str(url), mime, bytes(body))
     except httpx.HTTPStatusError as exc:
         raise TvBoxError(f"上游返回 HTTP {exc.response.status_code}") from exc
     except (OSError, TimeoutError, httpx.HTTPError) as exc:
         raise TvBoxError("上游连接失败或超时") from exc
-    raise TvBoxError("上游重定向过多")
 
 
 async def playback_mime(url: str, *, allow_http: bool, headers: dict[str, str]) -> str:

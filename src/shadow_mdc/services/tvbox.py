@@ -6,8 +6,9 @@ import hashlib
 import json
 import logging
 import re
-from collections import Counter
+from collections import Counter, OrderedDict
 from datetime import UTC, datetime
+from time import monotonic
 from urllib.parse import parse_qsl, urljoin
 
 import httpx
@@ -19,6 +20,10 @@ from ..db.models import TvBoxPack, TvBoxRevision, TvBoxSite, utc_now
 from ..db.repository import Database
 from .playback import type_name_banned
 from .tvbox_http import TvBoxError, download, http_url, playback_mime
+from .tvbox_relay import FORMAT as RELAY_TRANSFER_FORMAT
+from .tvbox_relay import RelayTransfer, archive_transfer, prepare_transfer, relay_config
+from .tvbox_stream import BrowserStreams
+from .tvbox_xml import normalize_xml
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +66,22 @@ class Vod(BaseModel):
     type_id: str = ""
     type_name: str = ""
     vod_pic: str = ""
+    vod_year: str = ""
+    vod_remarks: str = ""
     vod_content: str = ""
     vod_play_from: str = ""
     vod_play_url: str = ""
 
     @field_validator(
-        "type_id", "type_name", "vod_pic", "vod_content", "vod_play_from", "vod_play_url", mode="before"
+        "type_id",
+        "type_name",
+        "vod_pic",
+        "vod_content",
+        "vod_play_from",
+        "vod_play_url",
+        "vod_year",
+        "vod_remarks",
+        mode="before",
     )
     @classmethod
     def empty_if_null(cls, value: object) -> object:
@@ -74,6 +89,7 @@ class Vod(BaseModel):
 
 
 class SiteInput(BaseModel):
+    protocol_type: int = 1
     name: str
     endpoint: str
     allow_http: bool
@@ -89,12 +105,31 @@ class SiteStatus(BaseModel):
     active_revision: str | None = None
     previous_revision: str | None = None
     priority: int = 0
+    hidden: bool = False
+    pinned: bool = False
+
+
+class PackView(BaseModel):
+    id: str
+    label: str
+    site_count: int
+    checked_at: datetime
+    sync_minutes: int
+    remote: bool
+
+
+class RevisionView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    created_at: datetime
+    categories: list[Category]
 
 
 class ImportResult(BaseModel):
     sites: list[SiteStatus] = Field(default_factory=list)
     skipped: int = 0
     warnings: list[str] = Field(default_factory=list)
+    migrated: dict[str, int] = Field(default_factory=dict)
 
 
 class ImportJob(BaseModel):
@@ -108,6 +143,8 @@ class Card(BaseModel):
     title: str
     overview: str = ""
     image: bool = False
+    year: str = ""
+    remarks: str = ""
 
 
 class Episode(BaseModel):
@@ -148,7 +185,11 @@ class SiteCatalog:
         url = httpx.URL(self.site.endpoint)
         for key in ("ac", "pg", "wd", "t", "ids"):
             url = url.copy_remove_param(key)
+        if self.site.protocol_type == 0 and params.get("ac") == "detail":
+            params["ac"] = "videolist"
         response = await download(str(url.copy_merge_params(params)), allow_http=self.site.allow_http)
+        if self.site.protocol_type == 0:
+            return normalize_xml(response.body)
         return config_json(response.body.decode("utf-8", errors="replace"))
 
     def accepts(self, row: Vod) -> bool:
@@ -219,7 +260,14 @@ def _records(payload: JsonRecord) -> list[Vod]:
 
 def _card(site_id: str, row: Vod) -> Card:
     key = base64.urlsafe_b64encode(row.vod_id.encode()).decode().rstrip("=")
-    return Card(id=key, site_id=site_id, title=row.vod_name, image=bool(row.vod_pic))
+    return Card(
+        id=key,
+        site_id=site_id,
+        title=row.vod_name,
+        image=bool(row.vod_pic),
+        year=row.vod_year[:20],
+        remarks=row.vod_remarks[:100],
+    )
 
 
 def _item_id(key: str) -> str:
@@ -263,6 +311,15 @@ async def _discover(
                 fetched = await download(source, allow_http=allow_http)
                 inline = fetched.body.decode("utf-8", errors="replace")
                 source = fetched.url
+            if source and inline.lstrip("\ufeff \r\n\t").startswith(("<rss", "<?xml")):
+                normalize_xml(inline.encode("utf-8"))
+                found[source] = SiteInput(
+                    name=httpx.URL(source).host,
+                    endpoint=source,
+                    allow_http=allow_http,
+                    protocol_type=0,
+                )
+                continue
             parsed = config_json(inline)
         except TvBoxError as exc:
             result.warnings.append(str(exc))
@@ -276,7 +333,7 @@ async def _discover(
             for row in sites:
                 if len(found) >= MAX_SITES:
                     break
-                if not isinstance(row, dict) or row.get("type") not in (1, "1"):
+                if not isinstance(row, dict) or str(row.get("type")) not in ("0", "1"):
                     result.skipped += 1
                     continue
                 try:
@@ -286,7 +343,13 @@ async def _discover(
                     continue
                 name = str(row.get("name") or row.get("key") or httpx.URL(endpoint).host)
                 found.setdefault(
-                    endpoint, SiteInput(name=name[:200], endpoint=endpoint, allow_http=allow_http)
+                    endpoint,
+                    SiteInput(
+                        name=name[:200],
+                        endpoint=endpoint,
+                        allow_http=allow_http,
+                        protocol_type=int(row["type"]),
+                    ),
                 )
         nested = parsed.get("urls")
         if depth < 3 and isinstance(nested, list):
@@ -302,13 +365,15 @@ async def _discover(
     if pending:
         result.warnings.append("多仓目录达到本次导入上限")
     if not found and not result.warnings:
-        result.warnings.append("配置里没有可测试的 type 1 JSON 站点")
+        result.warnings.append("配置里没有可测试的 CMS 站点")
     return list(found.values()), result
 
 
 class TvBoxService:
     def __init__(self, database: Database) -> None:
         self.database = database
+        self.browser_streams = BrowserStreams()
+        self._posters: OrderedDict[tuple[str, str], tuple[float, str, str]] = OrderedDict()
         self._updates = asyncio.Lock()
         self._requests = asyncio.Semaphore(8)
         self._imports: dict[str, asyncio.Task[ImportResult]] = {}
@@ -340,7 +405,20 @@ class TvBoxService:
         base_url: str | None,
     ) -> ImportResult:
         try:
+            if content:
+                parsed = config_json(content)
+                if parsed.get("format") in (RELAY_TRANSFER_FORMAT, "shadow-relay-data/v1"):
+                    transfer = RelayTransfer.model_validate(parsed)
+                    if transfer.format != RELAY_TRANSFER_FORMAT:
+                        transfer = prepare_transfer(transfer)
+                    result = await self.import_config(None, relay_config(transfer, allow_http), allow_http)
+                    result.migrated = await asyncio.to_thread(
+                        archive_transfer, self.database, transfer, allow_http
+                    )
+                    return result
             return await self.import_config(url, content, allow_http, base_url=base_url)
+        except TvBoxError as exc:
+            return ImportResult(warnings=[str(exc)])
         except Exception as exc:
             logger.warning("TVBox import failed: %s", type(exc).__name__)
             return ImportResult(warnings=["导入中断。请重试"])
@@ -360,7 +438,9 @@ class TvBoxService:
         with self.database.session() as session:
             query = select(TvBoxSite).order_by(TvBoxSite.priority.desc(), TvBoxSite.name, TvBoxSite.id)
             if not all_sites:
-                query = query.where(TvBoxSite.enabled, TvBoxSite.active_revision.is_not(None))
+                query = query.where(
+                    TvBoxSite.enabled, ~TvBoxSite.hidden, TvBoxSite.active_revision.is_not(None)
+                )
             return [SiteStatus.model_validate(site) for site in session.scalars(query)]
 
     def _site(self, site_id: str) -> TvBoxSite:
@@ -378,7 +458,12 @@ class TvBoxService:
             )
             if site is None or not site.enabled or revision is None:
                 raise LookupError("站点不可用")
-            source = SiteInput(name=site.name, endpoint=site.endpoint, allow_http=site.allow_http)
+            source = SiteInput(
+                name=site.name,
+                endpoint=site.endpoint,
+                allow_http=site.allow_http,
+                protocol_type=site.protocol_type,
+            )
             return SiteCatalog(source, [Category.model_validate(c) for c in revision.categories])
 
     async def _check(self, source: SiteInput) -> list[Category]:
@@ -434,21 +519,40 @@ class TvBoxService:
                     endpoint=source.endpoint,
                     allow_http=source.allow_http,
                     enabled=True,
+                    protocol_type=source.protocol_type,
                     priority=0,
                 )
                 session.add(site)
                 session.flush()
             site.checked_at = utc_now()
             site.failure = failure
-            if categories and site.active_revision == baseline:
+            if (
+                categories
+                and site.active_revision == baseline
+                and (not site.pinned or not site.active_revision)
+            ):
                 data = [category.model_dump() for category in categories]
-                revision = identity(site_id, json.dumps(data, sort_keys=True))
+                revision = identity(
+                    site_id,
+                    str(source.protocol_type),
+                    str(source.allow_http),
+                    json.dumps(data, sort_keys=True),
+                )
                 if session.get(TvBoxRevision, revision) is None:
-                    session.add(TvBoxRevision(id=revision, site_id=site_id, categories=data))
+                    session.add(
+                        TvBoxRevision(
+                            id=revision,
+                            site_id=site_id,
+                            categories=data,
+                            protocol_type=source.protocol_type,
+                            allow_http=source.allow_http,
+                        )
+                    )
                 if site.active_revision != revision:
                     site.previous_revision = site.active_revision
                     site.active_revision = revision
                 site.allow_http = source.allow_http
+                site.protocol_type = source.protocol_type
             return SiteStatus.model_validate(site)
 
     async def import_config(
@@ -492,6 +596,27 @@ class TvBoxService:
                         pack.checked_at = utc_now()
             return result
 
+    def packs(self) -> list[PackView]:
+        with self.database.session() as session:
+            return [
+                PackView(
+                    id=row.id,
+                    label=httpx.URL(row.url).host if row.url else "本地导入",
+                    site_count=len(row.site_ids),
+                    checked_at=row.checked_at,
+                    sync_minutes=row.sync_minutes,
+                    remote=row.url is not None,
+                )
+                for row in session.scalars(select(TvBoxPack).order_by(TvBoxPack.checked_at.desc()))
+            ]
+
+    def refresh_pack(self, pack_id: str) -> ImportJob:
+        with self.database.session() as session:
+            row = session.get(TvBoxPack, pack_id)
+            if row is None or not row.url:
+                raise LookupError("此配置没有可刷新的上游地址")
+            return self.submit_import(row.url, None, row.allow_http, None)
+
     async def schedule(self) -> None:
         while True:
             await asyncio.sleep(60)
@@ -499,7 +624,10 @@ class TvBoxService:
                 packs = [
                     (pack.url, pack.allow_http)
                     for pack in session.scalars(select(TvBoxPack))
-                    if pack.url and (utc_now() - pack.checked_at.replace(tzinfo=UTC)).total_seconds() >= 86400
+                    if pack.url
+                    and pack.sync_minutes > 0
+                    and (utc_now() - pack.checked_at.replace(tzinfo=UTC)).total_seconds()
+                    >= pack.sync_minutes * 60
                 ]
             for url, allow_http in packs:
                 await self._run_import(url, None, allow_http, None)
@@ -516,7 +644,12 @@ class TvBoxService:
                 }
                 now = utc_now()
                 sites = [
-                    SiteInput(name=site.name, endpoint=site.endpoint, allow_http=site.allow_http)
+                    SiteInput(
+                        name=site.name,
+                        endpoint=site.endpoint,
+                        allow_http=site.allow_http,
+                        protocol_type=site.protocol_type,
+                    )
                     for site in session.scalars(select(TvBoxSite).where(TvBoxSite.enabled))
                     if site.id in inline
                     and (
@@ -534,8 +667,26 @@ class TvBoxService:
         async with self._updates:
             site = self._site(site_id)
             return await self._refresh(
-                SiteInput(name=site.name, endpoint=site.endpoint, allow_http=site.allow_http)
+                SiteInput(
+                    name=site.name,
+                    endpoint=site.endpoint,
+                    allow_http=site.allow_http,
+                    protocol_type=site.protocol_type,
+                )
             )
+
+    def revisions(self, site_id: str) -> list[RevisionView]:
+        self._site(site_id)
+        with self.database.session() as session:
+            query = (
+                select(TvBoxRevision)
+                .where(TvBoxRevision.site_id == site_id)
+                .order_by(
+                    TvBoxRevision.created_at.desc(),
+                    TvBoxRevision.id,
+                )
+            )
+            return [RevisionView.model_validate(row) for row in session.scalars(query.limit(30))]
 
     def update(
         self,
@@ -545,15 +696,31 @@ class TvBoxService:
         name: str | None,
         priority: int | None,
         rollback: bool,
+        hidden: bool | None = None,
+        pinned: bool | None = None,
+        revision_id: str | None = None,
     ) -> SiteStatus:
         with self.database.session() as session:
             site = session.get(TvBoxSite, site_id)
             if site is None:
                 raise LookupError("站点不存在")
-            if rollback:
-                if not site.previous_revision:
-                    raise TvBoxError("没有上一可用修订")
-                site.active_revision, site.previous_revision = site.previous_revision, site.active_revision
+            desired = site.previous_revision if rollback else revision_id
+            if rollback and not desired:
+                raise TvBoxError("没有上一可用修订")
+            if desired and desired != site.active_revision:
+                revision = session.get(TvBoxRevision, desired)
+                if revision is None or revision.site_id != site_id:
+                    raise LookupError("修订不存在")
+                site.previous_revision, site.active_revision = site.active_revision, desired
+                if revision.protocol_type is not None:
+                    site.protocol_type = revision.protocol_type
+                if revision.allow_http is not None:
+                    site.allow_http = revision.allow_http
+                site.pinned = True
+            if hidden is not None:
+                site.hidden = hidden
+            if pinned is not None:
+                site.pinned = pinned
             if enabled is not None:
                 site.enabled = enabled
             if name is not None:
@@ -578,12 +745,12 @@ class TvBoxService:
             payload = await catalog.fetch(**params)
         current = self._catalog(site_id)
         return Page(
-            items=[_card(site_id, row) for row in _records(payload) if current.accepts(row)],
+            items=[self.card(site_id, row) for row in _records(payload) if current.accepts(row)],
             next_page=page + 1 if page < min(MAX_PAGE, _integer(payload.get("pagecount"))) else None,
         )
 
-    async def search(self, query: str, page: int) -> Page:
-        sites = self.sites()[:MAX_SITES]
+    async def search(self, query: str, page: int, *, site_ids: set[str] | None = None) -> Page:
+        sites = [site for site in self.sites() if site_ids is None or site.id in site_ids][:MAX_SITES]
 
         async def find(site: SiteStatus) -> Page:
             try:
@@ -607,7 +774,7 @@ class TvBoxService:
         if not current.accepts(row):
             raise LookupError("分类已变更")
         return Detail(
-            **_card(site_id, row).model_dump(),
+            **self.card(site_id, row).model_dump(),
             episodes=[track.entry for track in current.tracks(row)],
         ).model_copy(update={"overview": HTMLParser(row.vod_content).text(separator=" ", strip=True)[:4000]})
 
@@ -623,16 +790,45 @@ class TvBoxService:
             raise LookupError("分类已变更")
         return Playback(url=track.url, mime_type=mime, headers=track.headers)
 
+    async def watch(self, site_id: str, item_id: str, episode_id: str) -> Playback:
+        stream = await self.resolve(site_id, item_id, episode_id)
+        site = self._catalog(site_id).site
+        path = self.browser_streams.issue(
+            site_id,
+            stream.url,
+            stream.mime_type,
+            stream.headers,
+            allow_http=site.allow_http,
+        )
+        return Playback(url=path, mime_type=stream.mime_type, headers={})
+
+    def check_stream_site(self, site_id: str) -> None:
+        self._catalog(site_id)
+
+    def card(self, site_id: str, row: Vod) -> Card:
+        card = _card(site_id, row)
+        if row.vod_pic:
+            self._posters[(site_id, card.id)] = (monotonic() + 300, row.vod_pic, row.type_id)
+            if len(self._posters) > 3000:
+                self._posters.popitem(last=False)
+        return card
+
     async def image(self, site_id: str, item_id: str) -> tuple[bytes, str]:
         catalog = self._catalog(site_id)
         async with self._requests:
-            row = await catalog.detail(_item_id(item_id))
-            if not row.vod_pic:
+            cached = self._posters.get((site_id, item_id))
+            if cached and cached[0] > monotonic() and cached[2] in catalog.allowed:
+                _, poster, category = cached
+            else:
+                row = await catalog.detail(_item_id(item_id))
+                poster = row.vod_pic
+                category = row.type_id
+            if not poster:
                 raise LookupError("没有封面")
             response = await download(
-                urljoin(catalog.site.endpoint, row.vod_pic), allow_http=catalog.site.allow_http
+                urljoin(catalog.site.endpoint, poster), allow_http=catalog.site.allow_http
             )
-        if not self._catalog(site_id).accepts(row):
+        if category not in self._catalog(site_id).allowed:
             raise LookupError("分类已变更")
         if response.mime in ("image/jpeg", "image/png", "image/webp", "image/gif"):
             return response.body, response.mime

@@ -494,6 +494,9 @@ class TvBoxSite(Base):
     failure: Mapped[str | None] = mapped_column(String(120))
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     priority: Mapped[int] = mapped_column(Integer, default=0)
+    protocol_type: Mapped[int] = mapped_column(Integer, default=1)
+    hidden: Mapped[bool] = mapped_column(default=False)
+    pinned: Mapped[bool] = mapped_column(default=False)
     allow_http: Mapped[bool] = mapped_column(default=False)
 
 
@@ -503,6 +506,8 @@ class TvBoxRevision(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     site_id: Mapped[str] = mapped_column(ForeignKey("tvbox_sites.id"), index=True)
     categories: Mapped[list[dict[str, str]]] = mapped_column(JSON)
+    protocol_type: Mapped[int | None] = mapped_column(Integer)
+    allow_http: Mapped[bool | None] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -512,5 +517,45 @@ class TvBoxPack(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     url: Mapped[str | None] = mapped_column(Text)
     allow_http: Mapped[bool] = mapped_column(default=False)
+    sync_minutes: Mapped[int] = mapped_column(Integer, default=1440)
     site_ids: Mapped[list[str]] = mapped_column(JSON)
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class TvBoxGroup(Base):
+    __tablename__ = "tvbox_groups"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    site_ids: Mapped[list[str]] = mapped_column(JSON)
+    site_aliases: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class TvBoxBinding(Base):
+    __tablename__ = "tvbox_bindings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(120))
+    group_id: Mapped[str | None] = mapped_column(ForeignKey("tvbox_groups.id"))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    needs_rotation: Mapped[bool] = mapped_column(default=False)
+    revoked: Mapped[bool] = mapped_column(default=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TvBoxPublication(Base):
+    __tablename__ = "tvbox_publications"
+
+    binding_id: Mapped[str] = mapped_column(ForeignKey("tvbox_bindings.id"), primary_key=True)
+    revision: Mapped[str] = mapped_column(String(32), primary_key=True)
+    groups: Mapped[list[dict[str, object]]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class TvBoxRelayRecord(Base):
+    __tablename__ = "tvbox_relay_records"
+
+    kind: Mapped[str] = mapped_column(String(40), primary_key=True)
+    legacy_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    data: Mapped[dict[str, object]] = mapped_column(JSON)

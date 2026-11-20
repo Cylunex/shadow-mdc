@@ -140,6 +140,33 @@ class Database:
 
     def _migrate_sqlite(self) -> None:
         with self.engine.begin() as connection:
+            tvbox_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(tvbox_sites)")}
+            for name, sql_type in (
+                ("protocol_type", "INTEGER NOT NULL DEFAULT 1"),
+                ("hidden", "BOOLEAN NOT NULL DEFAULT 0"),
+                ("pinned", "BOOLEAN NOT NULL DEFAULT 0"),
+            ):
+                if name not in tvbox_columns:
+                    connection.exec_driver_sql(f"ALTER TABLE tvbox_sites ADD COLUMN {name} {sql_type}")
+            packs = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(tvbox_packs)")}
+            if "sync_minutes" not in packs:
+                connection.exec_driver_sql(
+                    "ALTER TABLE tvbox_packs ADD COLUMN sync_minutes INTEGER NOT NULL DEFAULT 1440"
+                )
+            revisions = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(tvbox_revisions)")}
+            for name, sql_type in (("protocol_type", "INTEGER"), ("allow_http", "BOOLEAN")):
+                if name not in revisions:
+                    connection.exec_driver_sql(f"ALTER TABLE tvbox_revisions ADD COLUMN {name} {sql_type}")
+            groups = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(tvbox_groups)")}
+            if "site_aliases" not in groups:
+                connection.exec_driver_sql(
+                    "ALTER TABLE tvbox_groups ADD COLUMN site_aliases JSON NOT NULL DEFAULT '{}'"
+                )
+            bindings = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(tvbox_bindings)")}
+            if "needs_rotation" not in bindings:
+                connection.exec_driver_sql(
+                    "ALTER TABLE tvbox_bindings ADD COLUMN needs_rotation BOOLEAN NOT NULL DEFAULT 0"
+                )
             columns = {row[1] for row in connection.exec_driver_sql(
                 "PRAGMA table_info(catalog_classification_terms)",
             )}

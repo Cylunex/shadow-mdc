@@ -5,7 +5,6 @@ import { api } from "./api";
 import { invalidateLibrary, queryClient, queryKeys } from "./query/client";
 import { resources } from "./query/resources";
 import { TaskCenter } from "./components/TaskCenter";
-import { TvBoxView } from "./views/TvBoxView";
 import { TopNav, type AppView } from "./components/TopNav";
 import type { Asset, Candidate, LibraryPrefs, TaskRun } from "./model";
 import { Inbox } from "./panels";
@@ -37,6 +36,8 @@ function readActorRefFromUrl(): string | null {
     return null;
   }
 }
+
+const TvBoxView = lazy(() => import("./views/TvBoxView").then((module) => ({ default: module.TvBoxView })));
 
 const APP_VIEWS: ReadonlySet<string> = new Set([
   "actors",
@@ -512,7 +513,11 @@ export function App() {
           />
         )}
 
-        {view === "tvbox" && <TvBoxView />}
+        {view === "tvbox" && (
+          <Suspense fallback={<p className="muted" aria-busy="true">正在打开在线影视…</p>}>
+            <TvBoxView />
+          </Suspense>
+        )}
 
         {view === "swipe" && catalogFeed && (
           <Suspense fallback={<p className="muted" aria-busy="true">正在打开播放器…</p>}>

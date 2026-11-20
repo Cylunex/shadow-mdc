@@ -9,6 +9,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, ValidationError
 
+from shadow_mdc.services.tvbox_relay import RelayTransfer, prepare_transfer
+
 MAX_MANIFEST = 32 * 1024 * 1024
 
 
@@ -111,14 +113,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("relay_export", type=Path, help="private v1 Relay archive or its manifest")
     parser.add_argument("output", type=Path, help="new private JSON file for MDC TVBox import")
+    parser.add_argument("--takeover", action="store_true", help="include TVBox management state and history")
     args = parser.parse_args()
     try:
-        data, counts = prepare(read_manifest(args.relay_export))
-        if not data["sites"]:
-            raise ValueError("no compatible sites")
+        manifest = read_manifest(args.relay_export)
+        output: object
+        if args.takeover:
+            transfer = prepare_transfer(RelayTransfer.model_validate(manifest.model_dump()))
+            output = transfer.model_dump()
+            counts = {name: len(rows) for name, rows in transfer.tables.items()}
+        else:
+            config, counts = prepare(manifest)
+            if not config["sites"]:
+                raise ValueError("no compatible sites")
+            output = config
         fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(data, stream, ensure_ascii=False, indent=2)
+            json.dump(output, stream, ensure_ascii=False, indent=2)
             stream.write("\n")
     except (OSError, tarfile.TarError, ValidationError, ValueError, KeyError) as exc:
         parser.exit(1, f"Relay TVBox preparation failed: {type(exc).__name__}\n")

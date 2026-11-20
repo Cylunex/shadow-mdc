@@ -396,6 +396,7 @@ from .services.translation import (
     build_translation_backends,
 )
 from .services.tvbox import TvBoxService
+from .services.tvbox_publish import TvBoxFeedLogFilter, TvBoxPublishing
 from .services.work_samples import enrich_work_samples, sample_urls_for_work
 from .services.x_handle import (
     XHandleError,
@@ -416,7 +417,7 @@ from .tags import (
     work_matches_tags,
 )
 
-from .tvbox_api import build_tvbox_router
+from .tvbox_api import build_tvbox_feed_router, build_tvbox_router
 
 
 @dataclass(frozen=True)
@@ -444,6 +445,7 @@ class Runtime:
     strm_relay: StrmRelay
     subtitle_backfill: SubtitleBackfillJob
     tvbox: TvBoxService
+    tvbox_publishing: TvBoxPublishing
     rescrape_quota: RescrapeQuota | None = None
     library_workers: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     library_workers_stopping: Event = field(default_factory=Event)
@@ -677,6 +679,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             fetcher_factory=settings.subtitlecat_fetcher,
         ),
         tvbox=TvBoxService(database),
+        tvbox_publishing=TvBoxPublishing(database),
         rescrape_quota=RescrapeQuota(
             settings.rescrape_daily_quota,
             path=settings.data_dir / "rescrape-quota.json",
@@ -701,9 +704,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     relay_index_worker = asyncio.create_task(
         app_runtime.strm_relay.maintain_index(relay_index_stop), name="mdc-strm-pick-index",
     )
+    access_log = logging.getLogger("uvicorn.access")
+    tvbox_log_filter = TvBoxFeedLogFilter()
+    access_log.addFilter(tvbox_log_filter)
     try:
         yield
     finally:
+        access_log.removeFilter(tvbox_log_filter)
         schedule_poller.cancel()
         tvbox_schedule.cancel()
         await asyncio.gather(schedule_poller, tvbox_schedule, return_exceptions=True)
@@ -6357,6 +6364,7 @@ app.include_router(build_catalog_router(runtime))
 app.include_router(build_tag_dictionary_router(runtime))
 app.include_router(build_media_router(runtime))
 app.include_router(build_tvbox_router(runtime, management=True))
+app.include_router(build_tvbox_feed_router(runtime))
 app.include_router(build_skill_router(runtime))
 app.include_router(build_operator_router(runtime))
 app.include_router(_intake_router)

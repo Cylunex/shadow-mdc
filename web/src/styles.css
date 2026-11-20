@@ -2709,11 +2709,47 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .category-tile { min-width: 0; }
 .category-tile .category-card { width: 100%; }
 .categories-view nav[aria-label="标签层级"] { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 12px; }
-
-.tvbox-view { display: grid; gap: 1rem; align-items: start; }
-.tvbox-form { display: flex; align-items: end; flex-wrap: wrap; gap: .75rem; }
-.tvbox-form label { display: grid; gap: .35rem; }
-.tvbox-form label:has(input[type="checkbox"]) { display: flex; align-items: center; }
-.tvbox-form input[type="url"] { width: min(28rem, 100%); }
-.tvbox-results { display: grid; gap: .5rem; list-style: none; padding: 0; margin: 0; }
-.tvbox-results li { display: flex; align-items: center; gap: .5rem; }
+.tvbox-view { --tvbox-accent: #74d9c9; display: grid; gap: 1rem; max-width: 1560px; margin: 0 auto; padding-bottom: 2rem; }
+.tvbox-view h1, .tvbox-view h2, .tvbox-view p { margin: 0; }
+.tvbox-header, .tvbox-toolbar, .tvbox-filters, .tvbox-actions, .tvbox-categories { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; }
+.tvbox-header, .tvbox-toolbar { justify-content: space-between; }
+.tvbox-header { min-height: 120px; padding: 1.3rem 1.6rem; border: 1px solid var(--line); border-radius: 1.15rem; background: linear-gradient(110deg, #173332, var(--panel) 76%); }
+.tvbox-header p { color: var(--tvbox-accent); font-weight: 700; letter-spacing: .15em; font-size: .75rem; }
+.tvbox-header h1, .tvbox-detail h1 { font-size: clamp(1.75rem, 4vw, 3.25rem); line-height: 1.18; }
+.tvbox-view button[aria-pressed="true"], .tvbox-view button[aria-current="true"] { border-color: var(--tvbox-accent); color: var(--tvbox-accent); background: #15302f; }
+.tvbox-search, .tvbox-form { display: flex; align-items: end; flex-wrap: wrap; gap: .6rem; }
+.tvbox-search input, .tvbox-form input[type="url"] { width: min(43vw, 24rem); min-width: 12rem; }
+.tvbox-form, .tvbox-surface, .tvbox-detail, .tvbox-watch-main { display: grid; gap: .8rem; align-content: start; }
+.tvbox-form { display: flex; }
+.tvbox-surface { padding: 1rem; border: 1px solid var(--line); border-radius: .9rem; background: var(--panel); }
+.tvbox-surface h2, .tvbox-feature h2 { font-size: 1.1rem; }
+.tvbox-form label, .tvbox-episodes label:has(select), .tvbox-subscription-link label { display: grid; gap: .35rem; }
+.tvbox-view label:has(input[type="checkbox"]) { display: inline-flex; align-items: center; gap: .4rem; }
+.tvbox-grid, .tvbox-manage-list { list-style: none; padding: 0; margin: 0; }
+.tvbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(145px, 100%), 1fr)); gap: .9rem; }
+.tvbox-film { display: grid; gap: .35rem; text-align: start; width: 100%; background: none; border-color: transparent; padding: .28rem; }
+.tvbox-film strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tvbox-film:hover, .tvbox-film:focus-visible { border-color: var(--tvbox-accent); }
+.tvbox-poster { position: relative; display: grid; place-items: center; aspect-ratio: 2/3; color: var(--tvbox-accent); background: linear-gradient(140deg, #1b3739, var(--panel)); border-radius: .65rem; overflow: hidden; font-size: 2rem; }
+.tvbox-poster img { width: 100%; height: 100%; position: absolute; inset: 0; object-fit: cover; }
+.tvbox-poster-note { position: absolute; bottom: 6px; right: 6px; max-width: calc(100% - 12px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .72rem; padding: .15rem .3rem; border-radius: .25rem; background: #101617ed; color: #edf4f3; }
+.tvbox-film > .muted { font-size: .8rem; }
+.tvbox-pages { justify-content: center; }
+.tvbox-watch-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(15rem, 1fr); gap: 1rem; align-items: start; }
+.tvbox-feature { display: grid; grid-template-columns: minmax(100px, 170px) 1fr; align-items: end; gap: 1rem; background: var(--panel); padding: 1rem; border-radius: 1rem; }
+.tvbox-feature button { margin-top: .65rem; }
+.tvbox-screen .in-app-player { position: relative; inset: auto; transform: none; z-index: auto; width: 100%; }
+.tvbox-screen .in-app-player-stage { aspect-ratio: 16/9; }
+.tvbox-screen .in-app-player-video { max-height: none; height: 100%; width: 100%; }
+.tvbox-overview { white-space: pre-line; line-height: 1.65; }
+.tvbox-episode-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(5rem, 1fr)); gap: .45rem; max-height: 20rem; overflow: auto; }
+.tvbox-error { color: #ffaaa3; }
+.tvbox-admin { display: grid; gap: .9rem; }
+.tvbox-manage-list li { display: flex; justify-content: space-between; gap: .65rem; align-items: center; padding: .65rem 0; border-top: 1px solid var(--line); }
+.tvbox-members { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: .65rem; border: 1px solid var(--line); }
+.tvbox-subscription-link { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: .5rem; }
+@media (max-width: 700px) {
+  .tvbox-watch-layout { grid-template-columns: 1fr; }
+  .tvbox-grid { grid-template-columns: repeat(auto-fill, minmax(min(106px, 100%), 1fr)); gap: .5rem; }
+  .tvbox-manage-list li { align-items: start; flex-direction: column; }
+}

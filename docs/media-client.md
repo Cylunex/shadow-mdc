@@ -55,4 +55,4 @@ online=true 可显式只查询在线候选。候选先校验完整编号，再�
 
 ## TVBox
 
-MDC Web 中通过测试且启用的 type 1 站点由移动能力 `tvbox_v1` 提供。Media 在当前 MDC 连接内打开 TVBox，浏览分类、搜索和选集，复用已有登录与原生播放器。播放请求使用稳定分集标识，客户端需要持有与该连接对应的会话。旧服务可继续使用片库入口。[TVBox 设计和首批范围](tvbox-design.md)
+MDC Web 中通过测试且启用的 type 0 和 type 1 站点由移动能力 `tvbox_v1` 提供。Media 在当前 MDC 连接内打开 TVBox，通过 tvbox_groups 选择仓库，浏览分类、搜索和选集，复用已有登录与原生播放器。播放请求使用稳定分集标识，客户端需要持有与该连接对应的会话。旧服务可继续使用片库入口。[TVBox 观看、订阅与迁移](tvbox-design.md)

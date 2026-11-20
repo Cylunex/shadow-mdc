@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { TvBoxView } from "./TvBoxView";
+import { memoryStorage } from "../test/storage";
 
 vi.mock("../api", () => ({ appUrl: (path: string) => path }));
 
@@ -21,6 +22,7 @@ it("shows a tested site in the directory after one import", async () => {
       available = true;
       return Response.json({ id: "test", result: { sites: [site], warnings: [], skipped: 0 } });
     }
+    if (path === "/api/tvbox/groups") return Response.json({ items: [] });
     if (path === "/api/tvbox/sites") return Response.json({ items: available ? [site] : [] });
     if (path.endsWith("/categories")) return Response.json({ items: [] });
     if (path.endsWith("/items?page=1")) {
@@ -30,8 +32,12 @@ it("shows a tested site in the directory after one import", async () => {
   });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("localStorage", memoryStorage());
   try {
     await act(async () => root.render(<QueryClientProvider client={cache}><TvBoxView /></QueryClientProvider>));
+    for (let tick = 0; tick < 20 && !container.querySelector('input[type="url"]'); tick++) {
+      await act(async () => new Promise<void>((resolve) => setTimeout(resolve, 8)));
+    }
     await act(async () => {
       const input = container.querySelector<HTMLInputElement>('input[type="url"]')!;
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "https://example.com/cms");
