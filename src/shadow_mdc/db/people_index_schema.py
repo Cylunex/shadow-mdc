@@ -19,6 +19,22 @@ def init_people_index(connection: Connection) -> None:
         "CREATE INDEX IF NOT EXISTS mdc_people_card_work ON mdc_people_card_works(work_id,person_id)",
     ):
         connection.exec_driver_sql(ddl)
+    if not connection.exec_driver_sql(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mdc_people_excluded_names'"
+    ).first():
+        connection.exec_driver_sql(
+            "CREATE TABLE mdc_people_excluded_names (person_id TEXT, work_id TEXT, name TEXT,"
+            " PRIMARY KEY(person_id,work_id,name)) WITHOUT ROWID"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX mdc_people_excluded_work_name ON mdc_people_excluded_names(work_id,name)"
+        )
+        # Older libraries may already have a warm card index and removed credits.
+        connection.exec_driver_sql("""
+            INSERT OR IGNORE INTO mdc_people_dirty
+            SELECT 'card', id FROM catalog_people WHERE json_array_length(edits,'$.excluded_work_ids') > 0
+                OR json_array_length(document,'$.excluded_work_ids') > 0
+        """)
     columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(mdc_people_cards)")}
     if "portrait_url" not in columns:
         connection.exec_driver_sql("ALTER TABLE mdc_people_cards ADD COLUMN portrait_url TEXT")

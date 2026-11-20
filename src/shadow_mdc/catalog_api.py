@@ -26,6 +26,7 @@ from sqlalchemy import (
     SQLColumnExpression,
     String,
     and_,
+    bindparam,
     case,
     cast,
     delete,
@@ -394,6 +395,67 @@ def catalog_credit_names(
     return names
 
 
+def _json_name_contains(names: SQLColumnExpression[list[str]], query: str) -> ColumnElement[bool]:
+    values = func.json_each(names).table_valued("value")
+    return exists(select(1).select_from(values).where(
+        func.instr(func.mdc_casefold(values.c.value), query.casefold()) > 0,
+    ))
+
+
+def _actor_text_match(query: str) -> ColumnElement[bool]:
+    # Detached credits can still exist in the original scraped cast. Only suppress
+    # that specific name on that work; another credited person can share its alias.
+    actor_works = text("""
+        SELECT cw.work_id FROM mdc_people_cards p JOIN mdc_people_card_works cw ON cw.person_id=p.id
+        WHERE instr(p.search,:name_query)>0
+        UNION ALL
+        SELECT n.work_id FROM mdc_people_work_names n WHERE instr(n.name,:name_query)>0 AND NOT EXISTS (
+            SELECT 1 FROM mdc_people_excluded_names x WHERE x.work_id=n.work_id AND x.name=n.name
+        )
+    """).bindparams(bindparam("name_query", fold_name(query), unique=True))
+    return Work.id.in_(actor_works)
+
+
+def catalog_text_match(
+    runtime_state: Runtime, session: Session, query: str, *, actor_name: str = "",
+) -> ColumnElement[bool]:
+    """Match public catalog names consistently for Web, mobile and aggregate search."""
+    _sync_people(runtime_state, session)
+    refresh_cards(session)
+    actor_filter = _actor_text_match(actor_name) if actor_name else true()
+    if not query:
+        return actor_filter
+
+    links = organization_relationships()
+    organizations = select(links.c.work_id).join(
+        Collection, Collection.id == links.c.organization_id,
+    ).where(or_(Collection.name.icontains(query, autoescape=True),
+                _json_name_contains(Collection.aliases, query)))
+    memberships = series_relationships()
+    series = select(memberships.c.work_id).join(
+        CatalogSeries, CatalogSeries.id == memberships.c.series_id,
+    ).where(or_(CatalogSeries.name.icontains(query, autoescape=True),
+                _json_name_contains(CatalogSeries.aliases, query)))
+    local_match = or_(
+        Work.title.icontains(query, autoescape=True), Work.primary_code.icontains(query, autoescape=True),
+        Work.studio.icontains(query, autoescape=True), Work.label.icontains(query, autoescape=True),
+        Work.series.icontains(query, autoescape=True),
+    )
+    if len(query) >= 3 and query.replace("-", "").isalnum() and session.scalar(text(
+        "SELECT 1 FROM sqlite_master WHERE name = 'mdc_works_fts'"
+    )):
+        candidates = select(literal_column("rowid", Integer)).select_from(text("mdc_works_fts")).where(
+            text("mdc_works_fts MATCH :catalog_query").bindparams(catalog_query=f'"{query}"')
+        )
+        local_match = and_(literal_column("works.rowid").in_(candidates), local_match)
+    # Original titles are outside the existing trigram index.
+    original_titles = select(Work.id).where(Work.original_title.icontains(query, autoescape=True))
+    return and_(actor_filter, or_(
+        local_match, Work.id.in_(original_titles), _actor_text_match(query),
+        Work.id.in_(organizations), Work.id.in_(series),
+    ))
+
+
 def build_catalog_router(
     runtime: Callable[[Request], Runtime], *, prefix: str = "/api/catalog",
     dependencies: list[Depends] | None = None,
@@ -406,7 +468,7 @@ def build_catalog_router(
 
     def filtered_statement(
         filters: CatalogFilter, request: Request, session: Session,
-        actor_profiles: dict[str, CatalogPerson] | None = None,
+        actor_profiles: dict[str, CatalogPerson] | None = None, text_match: ColumnElement[bool] | None = None,
     ) -> Select[tuple[Work]]:
         statement = select(Work)
         if filters.category != "all":
@@ -424,50 +486,11 @@ def build_catalog_router(
                     Collection, Collection.id == WorkCollection.collection_id,
                 ).where(Collection.kind.in_(("studio", "organization") if kind == "studio" else (kind,)),
                         Collection.name == name)))
-        if filters.q.strip():
-            q = filters.q.strip()
-            profiles_for_search = (list(actor_profiles.values()) if actor_profiles is not None
-                                   else people(request, session))
-            actor_work_ids = {work_id for person in profiles_for_search
-                              if q.casefold() in " ".join([person.name, *person.aliases]).casefold()
-                              for work_id in person.work_ids}
-            links_for_search = organization_relationships()
-            organization_matches = select(links_for_search.c.work_id).join(
-                Collection, Collection.id == links_for_search.c.organization_id,
-            ).where(or_(Collection.name.icontains(q, autoescape=True),
-                        cast(Collection.aliases, String).icontains(q, autoescape=True)))
-            memberships = series_relationships()
-            series_matches = select(memberships.c.work_id).join(
-                CatalogSeries, CatalogSeries.id == memberships.c.series_id,
-            ).where(or_(CatalogSeries.name.icontains(q, autoescape=True),
-                        cast(CatalogSeries.aliases, String).icontains(q, autoescape=True)))
-            local_match = or_(
-                Work.title.icontains(q, autoescape=True), Work.primary_code.icontains(q, autoescape=True),
-                cast(Work.actors, String).icontains(q, autoescape=True),
-                Work.studio.icontains(q, autoescape=True), Work.label.icontains(q, autoescape=True),
-                Work.series.icontains(q, autoescape=True),
-            )
-            if len(q) >= 3 and q.replace("-", "").isalnum() and session.scalar(text(
-                "SELECT 1 FROM sqlite_master WHERE name = 'mdc_works_fts'"
-            )):
-                candidates = select(literal_column("rowid", Integer)).select_from(
-                    text("mdc_works_fts"),
-                ).where(
-                    text("mdc_works_fts MATCH :catalog_query").bindparams(catalog_query=f'"{q}"')
-                )
-                local_match = and_(literal_column("works.rowid").in_(candidates), local_match)
-            statement = statement.where(or_(
-                local_match,
-                Work.id.in_(actor_work_ids), Work.id.in_(organization_matches), Work.id.in_(series_matches),
-                Work.id.in_(select(WorkActor.work_id).join(
-                    Actor, Actor.id == WorkActor.actor_id,
-                ).where(or_(Actor.name.icontains(q, autoescape=True),
-                            cast(Actor.aliases, String).icontains(q, autoescape=True)))),
-            ))
-        if filters.actor_name:
-            statement = statement.where(cast(Work.actors, String).icontains(
-                filters.actor_name, autoescape=True,
-            ))
+        if filters.q.strip() or filters.actor_name:
+            if text_match is None:
+                text_match = catalog_text_match(runtime(request), session, filters.q.strip(),
+                                                actor_name=filters.actor_name)
+            statement = statement.where(text_match)
         if filters.studio_name:
             statement = statement.where(Work.studio == filters.studio_name)
         if filters.series_name:
@@ -866,11 +889,18 @@ def build_catalog_router(
     @router.post("/facets")
     def facets(filters: CatalogFilter, request: Request) -> dict[str, list[Facet | TagFacet]]:
         with runtime(request).database.session() as session:
-            actor_profiles = _person_index(people(request, session)) if filters.actors or filters.q else None
+            actor_profiles = _person_index(people(request, session)) if filters.actors else None
+            q = filters.q.strip()
+            text_match = (catalog_text_match(runtime(request), session, q, actor_name=filters.actor_name)
+                          if q or filters.actor_name else None)
+
+            def matching(selected: CatalogFilter) -> Select[tuple[Work]]:
+                return filtered_statement(selected, request, session, actor_profiles, text_match)
+
             year_filters = filters.model_copy(update={
                 "year_from": None, "year_to": None, "unknown_year": False,
             })
-            rows = filtered_statement(year_filters, request, session, actor_profiles).subquery()
+            rows = matching(year_filters).subquery()
             year = func.coalesce(cast(
                 select(WorkTaxonomy.release_year).where(WorkTaxonomy.work_id == rows.c.id).scalar_subquery(),
                 String,
@@ -882,7 +912,7 @@ def build_catalog_router(
             for value, count in year_counts:
                 decades[str(int(value) // 10 * 10) if value != "unknown" else value] += count
             tag_filters = filters if filters.tags_all else filters.model_copy(update={"tags": []})
-            tag_base = filtered_statement(tag_filters, request, session, actor_profiles).subquery()
+            tag_base = matching(tag_filters).subquery()
             tag_rows = func.json_each(tag_base.c.tags).table_valued("value")
             ancestors = func.json_each(func.mdc_tag_tree_ids(tag_rows.c.value)).table_valued("value")
             identity = ancestors.c.value
@@ -918,9 +948,7 @@ def build_catalog_router(
                                 redirect_ids=current_registry().redirect_ids(node.id),
                             )
             organization_filters = filters.model_copy(update={"organizations": [], "organization_role": ""})
-            organization_rows = filtered_statement(
-                organization_filters, request, session, actor_profiles,
-            ).subquery()
+            organization_rows = matching(organization_filters).subquery()
             relationships = organization_relationships()
             organizations = list(session.execute(
                 select(Collection.id, Collection.name, Collection.kind,
@@ -931,8 +959,7 @@ def build_catalog_router(
             ))
             organization_facets: dict[str, list[Facet]] = {}
             for field, kind in (("labels", "label"), ("platforms", "platform")):
-                matching_rows = filtered_statement(filters.model_copy(update={field: []}), request,
-                                                   session, actor_profiles).subquery()
+                matching_rows = matching(filters.model_copy(update={field: []})).subquery()
                 credit_counts = session.execute(select(
                     Collection.id, Collection.name, func.count(func.distinct(relationships.c.work_id)),
                 ).join(relationships, relationships.c.organization_id == Collection.id)
@@ -941,8 +968,7 @@ def build_catalog_router(
                 organization_facets[field] = [Facet(id=k, name=n, role=kind, count=v)
                                               for k, n, v in credit_counts]
             memberships = series_relationships()
-            series_rows = filtered_statement(filters.model_copy(update={"series": []}), request,
-                                             session, actor_profiles).subquery()
+            series_rows = matching(filters.model_copy(update={"series": []})).subquery()
             series_facets = session.execute(select(
                 CatalogSeries.id, CatalogSeries.name, func.count(func.distinct(memberships.c.work_id)),
             ).join(memberships, memberships.c.series_id == CatalogSeries.id)
@@ -952,9 +978,7 @@ def build_catalog_router(
             terms = {term.id: term for term in session.scalars(select(CatalogClassificationTerm))}
             for dimension in classification_dimensions():
                 values = classification_rows(dimension.id)
-                dimension_rows = filtered_statement(
-                    filters.model_copy(update={dimension.id: []}), request, session, actor_profiles,
-                ).subquery()
+                dimension_rows = matching(filters.model_copy(update={dimension.id: []})).subquery()
                 counts: dict[str, int] = {identity: count for identity, count in session.execute(select(
                     values.c.term_id, func.count(func.distinct(values.c.work_id)),
                 ).join(dimension_rows, dimension_rows.c.id == values.c.work_id).group_by(values.c.term_id))}
@@ -964,16 +988,15 @@ def build_catalog_router(
                 taxonomy[dimension.id] = [TagFacet(
                     id=identity, name=terms[identity].name, count=count, aliases=terms[identity].aliases,
                 ) for identity, count in counts.items()]
-            collection_base = filtered_statement(filters.model_copy(update={"collection": ""}), request,
-                                                 session, actor_profiles).subquery()
+            collection_base = matching(filters.model_copy(update={"collection": ""})).subquery()
             collections = session.execute(select(Collection.kind, Collection.name, func.count()).join(
                 WorkCollection, WorkCollection.collection_id == Collection.id,
             ).join(collection_base, collection_base.c.id == WorkCollection.work_id).group_by(
                 Collection.kind, Collection.name,
             )).all()
-            duration_base = filtered_statement(filters.model_copy(update={
+            duration_base = matching(filters.model_copy(update={
                 "duration_min": None, "duration_max": None, "unknown_duration": False,
-            }), request, session, actor_profiles).subquery()
+            })).subquery()
             runtime_seconds = duration_base.c.runtime_seconds
             counts_by_band = session.execute(select(*(
                 func.count(case((duration_condition(runtime_seconds, band), 1))) for band in DURATION_BANDS

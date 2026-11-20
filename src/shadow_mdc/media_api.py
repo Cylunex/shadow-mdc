@@ -21,7 +21,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
-from .catalog_api import build_catalog_router, catalog_credit_names
+from .catalog_api import build_catalog_router, catalog_credit_names, catalog_text_match
 from .db.models import Library, MediaAsset, MediaEmbyBinding, Work
 from .media.artwork import package_portrait
 from .media.parts import find_subtitles
@@ -159,12 +159,6 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
     ) -> MediaPage:
         query = q.strip()[:200]
         statement = select(Work)
-        if query:
-            statement = statement.where(or_(
-                Work.primary_code.icontains(query, autoescape=True),
-                Work.title.icontains(query, autoescape=True),
-                Work.actors.cast(Work.title.type).icontains(query, autoescape=True),
-            ))
         query_hash = hashlib.sha256(query.encode()).hexdigest()
         if cursor:
             try:
@@ -180,6 +174,8 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                 raise HTTPException(400, "invalid cursor") from exc
         statement = statement.order_by(Work.created_at.desc(), Work.id.desc()).limit(limit + 1)
         with runtime(request).database.session() as session:
+            if query:
+                statement = statement.where(catalog_text_match(runtime(request), session, query))
             rows = list(session.scalars(statement))
             page = rows[:limit]
             names = catalog_credit_names(runtime(request), session, page)

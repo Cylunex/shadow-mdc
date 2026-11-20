@@ -3,6 +3,12 @@
 本审计基于本地参考仓库中的 JavSP、JavSP-Web、MDCX、MDC-NG、Amane 与 Peach。
 Shadow MDC 只吸收行为、边界和使用流程，所有代码、模型、接口与测试均独立实现。
 
+## 2026-11-20 跨端片库检索
+
+TMDB 的文本检索会考虑原名、译名和别名。Jellyfin 的条目接口支持按人物和片商的稳定 ID 筛选。MDC 将这两种做法用于同一条找片路径。输入原片名或公开别名可以找到作品，从演员详情进入仍按具体人物 ID 筛选。人物备注和私有目录提示留在管理端。[TMDB 检索说明](https://developer.themoviedb.org/docs/finding-data) · [Jellyfin 条目筛选参数](https://kotlin-sdk.jellyfin.org/dokka/jellyfin-model/org.jellyfin.sdk.model.api.request/-get-items-request/index.html)
+
+Web 片库、Media 片库和聚合搜索共用关键词匹配，在本地使用已有演员索引、历史署名和机构、系列关系。手工移除的署名随人物索引一起更新。合成库含 1 万部作品和 1000 名演员，查询关联 10 部作品的演员别名，预热后 5 次 Web 请求的中位耗时从 83 毫秒降至 17 毫秒。同一查询在聚合搜索从 0 部增至 10 部，新版中位耗时为 10 毫秒。测量使用本机临时 SQLite 库。
+
 ## 2026-11-13 混放目录的旁车归属与中文字幕补全
 
 | 参考项目或软件 | 核对的行为 | MDC 的实现 |

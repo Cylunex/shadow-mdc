@@ -107,6 +107,7 @@ def refresh_cards(session: Session) -> int:
     if version is None or backfill:
         session.execute(text("DELETE FROM mdc_people_cards"))
         session.execute(text("DELETE FROM mdc_people_card_works"))
+        session.execute(text("DELETE FROM mdc_people_excluded_names"))
         profiles = build_profiles(session)
     else:
         roots = session.execute(text("""
@@ -124,6 +125,9 @@ def refresh_cards(session: Session) -> int:
                         {"keys": json.dumps(sorted(affected))})
         session.execute(text("DELETE FROM mdc_people_card_works WHERE person_id IN (SELECT value FROM json_each(:keys))"),
                         {"keys": json.dumps(sorted(affected))})
+        session.execute(text("""
+            DELETE FROM mdc_people_excluded_names WHERE person_id IN (SELECT value FROM json_each(:keys))
+        """), {"keys": json.dumps(sorted(affected))})
         profiles = build_profiles(session, root_ids=affected)
     rows = [
         {"id": doc.id, "name": doc.name, "sort": fold_name(doc.name), "aliases": json.dumps(doc.aliases),
@@ -141,6 +145,13 @@ def refresh_cards(session: Session) -> int:
     credits = [{"person": doc.id, "work": work} for doc in profiles for work in doc.work_ids]
     if credits:
         session.execute(text("INSERT INTO mdc_people_card_works VALUES (:person,:work)"), credits)
+    excluded = [
+        {"person": doc.id, "work": work_id, "name": name}
+        for doc in profiles for work_id in doc.excluded_work_ids
+        for name in {fold_name(value) for value in (doc.name, *doc.aliases)}
+    ]
+    if excluded:
+        session.execute(text("INSERT INTO mdc_people_excluded_names VALUES (:person,:work,:name)"), excluded)
     result = int(version or "0") + 1
     set_state(session, "cards", str(result))
     return result

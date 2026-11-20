@@ -8,7 +8,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from shadow_mdc.api import app
-from shadow_mdc.db.models import Collection, Library, MediaAsset, Work, WorkCollection
+from shadow_mdc.db.models import (
+    Actor,
+    CatalogSeries,
+    CatalogWorkSeries,
+    Collection,
+    Library,
+    MediaAsset,
+    Work,
+    WorkActor,
+    WorkCollection,
+)
 from shadow_mdc.services.media_server import MediaServerSettings
 from shadow_mdc.services.playback import PlayResolveResult, PlaySource
 
@@ -126,3 +136,80 @@ def test_mobile_work_filters_and_authenticated_sidecar(
         assert response.headers["content-type"].startswith("text/vtt")
         (root / "Movie.zh.srt").unlink()
         assert client.get(url, headers=headers).status_code == 404
+
+
+def test_public_search_matches_the_catalog_on_all_clients(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{tmp_path / 'search.db'}")
+    mobile = "/api/media/v1"
+
+    def expect(client: TestClient, query: str, expected: list[str]) -> None:
+        responses = [
+            client.get(mobile + "/works", params={"q": query}),
+            client.post(mobile + "/catalog/works/query", json={"q": query}),
+            client.post("/api/catalog/works/query", json={"q": query}),
+        ]
+        for response in responses:
+            assert response.status_code == 200, response.text
+            assert [item["id"] for item in response.json()["items"]] == expected, query
+
+    with TestClient(app) as client:
+        runtime = app.state.runtime
+        runtime.media_server_store.save(MediaServerSettings(media_client_token="REPLACE_MOBILE_TOKEN"))
+        client.headers["Authorization"] = "Bearer REPLACE_MOBILE_TOKEN"
+        with runtime.database.session() as session:
+            session.add_all([
+                Work(id="film", title="Display title", original_title="原版片名",
+                     actors=["旧署名", "客串_甲%"]),
+                Work(id="second", title="Different", actors=["客串乙"]),
+                Actor(id="actor", name="旧署名", normalized_name="旧署名"),
+                Collection(id="company", name="Studio", normalized_name="studio", kind="studio",
+                           aliases=["制作旧称"]),
+                CatalogSeries(id="series", name="Series", normalized_name="series", aliases=["早期系列名"]),
+            ])
+            session.flush()
+            session.add_all([
+                WorkActor(work_id="film", actor_id="actor"),
+                WorkCollection(work_id="film", collection_id="company"),
+                CatalogWorkSeries(work_id="film", series_id="series"),
+            ])
+
+        changed = client.put("/api/catalog/people/actor", json={
+            "name": "新艺名", "aliases": ["\uff21\uff2b\uff29"],  # Fullwidth AKI.
+            "notes": "私有标记", "match_names": ["目录提示"], "revision": 1,
+        })
+        assert changed.status_code == 200, changed.text
+        for query in ("display", "原版片", "新艺名", "旧署名", "aki", "客串_", "甲%", "制作旧称", "早期系列"):
+            expect(client, query, ["film"])
+        for query in ("目录提示", "私有标记", "客串%"):
+            expect(client, query, [])
+        by_credit = client.post("/api/catalog/works/query", json={"q": "制作旧称", "actor_name": "新艺名"})
+        assert by_credit.json()["total"] == 1
+        mismatched = client.post("/api/catalog/works/query", json={"q": "客串乙", "actor_name": "新艺名"})
+        assert mismatched.json()["total"] == 0
+        facets = client.post("/api/catalog/facets", json={"q": "aki"}).json()
+        assert [(group["id"], group["count"]) for group in facets["organizations"]] == [("company", 1)]
+
+        detach = client.put("/api/catalog/people/actor/works", json={
+            "work_id": "film", "included": False, "revision": changed.json()["revision"],
+        })
+        assert detach.status_code == 200, detach.text
+        for query in ("新艺名", "旧署名", "aki"):
+            expect(client, query, [])
+        expect(client, "客串_", ["film"])
+
+        # Simulate upgrading a library with a warm actor index and an existing exclusion.
+        with runtime.database.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE mdc_people_excluded_names")
+
+    with TestClient(app) as client:
+        client.headers["Authorization"] = "Bearer REPLACE_MOBILE_TOKEN"
+        expect(client, "旧署名", [])
+        attach = client.put("/api/catalog/people/actor/works", json={
+            "work_id": "second", "revision": detach.json()["revision"],
+        })
+        assert attach.status_code == 200, attach.text
+        expect(client, "新艺名", ["second"])
+        expect(client, "旧署名", ["second"])
