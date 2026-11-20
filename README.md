@@ -44,6 +44,7 @@ just build
 - [性能预算与缓存边界](docs/dev/performance.md)
 - [播放连接器](docs/playback.md)
 - [Media 原生片库与 Emby 播放](docs/media-client.md)
+- [TVBox 点播模块与 Shadow Media 接入设计](docs/tvbox-design.md)
 - [统一作品、人物、机构与播放](docs/unified-library.md)
 - [标签标识、展示名称与兼容](docs/tags.md)
 - [多维分类与数据迁移](docs/classifications.md)
