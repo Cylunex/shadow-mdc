@@ -73,7 +73,7 @@ def test_browser_hls_and_range_are_scoped_to_a_resolved_episode(
 
     @asynccontextmanager
     async def open_stream(
-        url: str, *, allow_http: bool, headers: dict[str, str]
+        url: str, *, allow_http: bool, headers: dict[str, str], proxy: httpx.URL | None = None,
     ) -> AsyncIterator[tuple[httpx.URL, httpx.Response]]:
         assert headers.get("Referer") == "https://example.com/"
         path = urlsplit(url).path

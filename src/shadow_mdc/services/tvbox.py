@@ -8,7 +8,9 @@ import logging
 import re
 from collections import Counter, OrderedDict
 from datetime import UTC, datetime
+from pathlib import Path
 from time import monotonic
+from typing import Annotated
 from urllib.parse import parse_qsl, urljoin
 
 import httpx
@@ -176,10 +178,11 @@ class Page(BaseModel):
 
 
 class SiteCatalog:
-    def __init__(self, site: SiteInput, categories: list[Category]) -> None:
+    def __init__(self, site: SiteInput, categories: list[Category], proxy: httpx.URL | None = None) -> None:
         self.site = site
         self.categories = categories
         self.allowed = {c.id for c in categories}
+        self.proxy = proxy
 
     async def fetch(self, **params: str | int) -> JsonRecord:
         url = httpx.URL(self.site.endpoint)
@@ -187,7 +190,9 @@ class SiteCatalog:
             url = url.copy_remove_param(key)
         if self.site.protocol_type == 0 and params.get("ac") == "detail":
             params["ac"] = "videolist"
-        response = await download(str(url.copy_merge_params(params)), allow_http=self.site.allow_http)
+        response = await download(
+            str(url.copy_merge_params(params)), allow_http=self.site.allow_http, proxy=self.proxy,
+        )
         if self.site.protocol_type == 0:
             return normalize_xml(response.body)
         return config_json(response.body.decode("utf-8", errors="replace"))
@@ -369,9 +374,35 @@ async def _discover(
     return list(found.values()), result
 
 
+class ProxySelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    site_ids: set[Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")]] = Field(max_length=1000)
+
+
+def tvbox_proxy_routes(path: Path, proxy_url: str | None) -> dict[str, httpx.URL]:
+    try:
+        content = path.read_bytes()
+    except FileNotFoundError:
+        return {}
+    try:
+        selection = ProxySelection.model_validate_json(content)
+        if not selection.site_ids:
+            return {}
+        proxy = httpx.URL(proxy_url or "")
+        if (
+            proxy.scheme != "http" or not proxy.host or proxy.userinfo or proxy.path not in ("", "/")
+            or proxy.query or proxy.fragment
+        ):
+            raise ValueError("TVBox 需要可用的 HTTP CONNECT 代理")
+    except (httpx.InvalidURL, ValueError):
+        raise ValueError("TVBox 代理站点配置无效") from None
+    return dict.fromkeys(selection.site_ids, proxy)
+
+
 class TvBoxService:
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, *, proxy_routes: dict[str, httpx.URL] | None = None) -> None:
         self.database = database
+        self.proxy_routes = proxy_routes or {}
         self.browser_streams = BrowserStreams()
         self._posters: OrderedDict[tuple[str, str], tuple[float, str, str]] = OrderedDict()
         self._updates = asyncio.Lock()
@@ -464,11 +495,15 @@ class TvBoxService:
                 allow_http=site.allow_http,
                 protocol_type=site.protocol_type,
             )
-            return SiteCatalog(source, [Category.model_validate(c) for c in revision.categories])
+            return SiteCatalog(
+                source, [Category.model_validate(c) for c in revision.categories],
+                self.proxy_routes.get(site_id),
+            )
 
     async def _check(self, source: SiteInput) -> list[Category]:
+        proxy = self.proxy_routes.get(identity(source.endpoint))
         async with self._requests, asyncio.timeout(22):
-            payload = await SiteCatalog(source, []).fetch()
+            payload = await SiteCatalog(source, [], proxy).fetch()
             candidates = payload.get("class")
             categories: list[Category] = []
             if isinstance(candidates, list):
@@ -481,7 +516,7 @@ class TvBoxService:
                         categories.append(category)
             if not categories:
                 raise TvBoxError("上游未返回可用分类")
-            catalog = SiteCatalog(source, categories)
+            catalog = SiteCatalog(source, categories, proxy)
             rows = [row for row in _records(payload) if catalog.accepts(row)]
             if not rows:
                 rows = _records(await catalog.fetch(ac="detail", t=categories[0].id, pg=1))
@@ -492,7 +527,9 @@ class TvBoxService:
                     continue
                 for track in catalog.tracks(detail)[:2]:
                     try:
-                        await playback_mime(track.url, allow_http=source.allow_http, headers=track.headers)
+                        await playback_mime(
+                            track.url, allow_http=source.allow_http, headers=track.headers, proxy=proxy,
+                        )
                     except TvBoxError:
                         continue
                     return categories
@@ -799,6 +836,7 @@ class TvBoxService:
                         try:
                             mime = await playback_mime(
                                 track.url, allow_http=catalog.site.allow_http, headers=track.headers,
+                                proxy=catalog.proxy,
                             )
                         except TvBoxError:
                             continue
@@ -819,6 +857,7 @@ class TvBoxService:
             stream.headers,
             allow_http=site.allow_http,
             prefix=stream_prefix,
+            proxy=self.proxy_routes.get(site_id),
         )
         return Playback(url=path, mime_type=stream.mime_type, headers={})
 
@@ -846,7 +885,8 @@ class TvBoxService:
             if not poster:
                 raise LookupError("没有封面")
             response = await download(
-                urljoin(catalog.site.endpoint, poster), allow_http=catalog.site.allow_http
+                urljoin(catalog.site.endpoint, poster),
+                allow_http=catalog.site.allow_http, proxy=catalog.proxy,
             )
         if category not in self._catalog(site_id).allowed:
             raise LookupError("分类已变更")

@@ -18,6 +18,11 @@
 
 Losna 和命令行共用 mdc-operator 的 `tvbox.import`、`tvbox.status`、`tvbox.sources`、`tvbox.sync`，通过服务 API 操作。
 
+需要代理的站点可写入数据目录下的私有 `tvbox-proxy.local.json`，格式为
+`{"site_ids":["REPLACE_WITH_SITE_ID"]}`。重启后从既有 MDC 代理配置取得 HTTP CONNECT 出口。
+名单中的目录、探测、封面及播放分片走同一出口。导入配置地址和其他站点保持默认网络线路。
+目标地址在每一跳先进行公网校验，CONNECT 使用已校验的 IP，HTTPS 仍校验原始域名证书。
+
 ## Web 与 Media 播放
 
 浏览器对选定分集调用 `POST /api/tvbox/sites/{site_id}/items/{item_id}/watch`。MDC 向播放页提供同源的短时资源标识。服务端转发选中线路所需的播放头，按 HLS 的主清单、子清单、分片、密钥和初始化段逐级解析，将它们映射到本次播放会话内。MP4 通过 HTTP Range 边读边传。对每跳连接实施公网目的地址校验和连接、清单大小限制。站点停用后拒绝新资源请求。浏览器记录最近观看分集及播放位置，不持久化播放地址。

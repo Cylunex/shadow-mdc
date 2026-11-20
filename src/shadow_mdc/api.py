@@ -396,7 +396,7 @@ from .services.translation import (
     TranslationCache,
     build_translation_backends,
 )
-from .services.tvbox import TvBoxService
+from .services.tvbox import TvBoxService, tvbox_proxy_routes
 from .services.tvbox_publish import TvBoxFeedLogFilter, TvBoxPublishing
 from .services.work_samples import enrich_work_samples, sample_urls_for_work
 from .services.x_handle import (
@@ -679,7 +679,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             database=database,
             fetcher_factory=settings.subtitlecat_fetcher,
         ),
-        tvbox=TvBoxService(database),
+        tvbox=TvBoxService(
+            database, proxy_routes=tvbox_proxy_routes(settings.data_dir / "tvbox-proxy.local.json", settings.proxy_url),
+        ),
         tvbox_publishing=TvBoxPublishing(database),
         rescrape_quota=RescrapeQuota(
             settings.rescrape_daily_quota,

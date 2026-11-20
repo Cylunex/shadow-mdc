@@ -1020,6 +1020,7 @@ source = { editable = "." }
 dependencies = [
     { name = "curl-cffi" },
     { name = "fastapi" },
+    { name = "httpcore" },
     { name = "httpx" },
     { name = "pillow" },
     { name = "pydantic-settings" },
@@ -1043,6 +1044,7 @@ dev = [
 requires-dist = [
     { name = "curl-cffi", specifier = ">=0.7" },
     { name = "fastapi", specifier = ">=0.116,<1" },
+    { name = "httpcore", specifier = ">=1,<2" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.17,<2" },
     { name = "pillow", specifier = ">=12.3.0" },

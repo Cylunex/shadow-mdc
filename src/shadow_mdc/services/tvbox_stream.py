@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from time import monotonic
 from urllib.parse import urljoin
 
+import httpx
 from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 
@@ -41,6 +42,7 @@ class PlaybackSession:
     deadline: float
     allow_http: bool
     headers: dict[str, str]
+    proxy: httpx.URL | None = None
     resources: dict[str, StreamTarget] = field(default_factory=dict)
     by_url: dict[str, str] = field(default_factory=dict)
 
@@ -79,6 +81,7 @@ class BrowserStreams:
 
     def issue(
         self, site_id: str, url: str, mime: str, headers: dict[str, str], *, allow_http: bool, prefix: str,
+        proxy: httpx.URL | None = None,
     ) -> str:
         now = monotonic()
         while self.sessions and (
@@ -86,7 +89,7 @@ class BrowserStreams:
         ):
             self.sessions.popitem(last=False)
         key = secrets.token_urlsafe(24)
-        session = PlaybackSession(site_id, prefix, now + _LEASE_SECONDS, allow_http, headers)
+        session = PlaybackSession(site_id, prefix, now + _LEASE_SECONDS, allow_http, headers, proxy)
         self.sessions[key] = session
         return f"{prefix}/{key}/{session.register(url, mime)}"
 
@@ -110,7 +113,9 @@ class BrowserStreams:
             async with asyncio.timeout(12):
                 await stack.enter_async_context(self.connections)
                 url, upstream = await stack.enter_async_context(
-                    open_remote(target.url, allow_http=session.allow_http, headers=headers),
+                    open_remote(
+                        target.url, allow_http=session.allow_http, headers=headers, proxy=session.proxy,
+                    ),
                 )
                 if upstream.status_code == 416:
                     response_headers = _SAFE_RESPONSE_HEADERS.copy()

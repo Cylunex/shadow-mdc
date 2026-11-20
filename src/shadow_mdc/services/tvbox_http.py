@@ -4,13 +4,14 @@ import asyncio
 import ipaddress
 import socket
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
 import httpx
 
 from .playback import validate_m3u8_playlist_text
+from .tvbox_proxy import open_proxy
 
 
 class TvBoxError(ValueError):
@@ -59,6 +60,7 @@ async def open_remote(
     *,
     allow_http: bool,
     headers: dict[str, str] | None = None,
+    proxy: httpx.URL | None = None,
 ) -> AsyncIterator[tuple[httpx.URL, httpx.Response]]:
     async with httpx.AsyncClient(
         trust_env=False,
@@ -67,17 +69,24 @@ async def open_remote(
     ) as client:
         url = http_url(value, allow_http=allow_http)
         for _ in range(4):
-            async with asyncio.timeout(7):
-                ip = await _public_address(url)
-                request = client.build_request(
-                    "GET",
-                    url.copy_with(host=ip),
-                    headers={"Accept-Encoding": "identity", **(headers or {}), "Host": url.netloc.decode()},
-                    extensions={"sni_hostname": url.raw_host.decode()},
-                )
-                request.headers.pop("cookie", None)
-                response = await client.send(request, stream=True)
-            try:
+            async with AsyncExitStack() as stack:
+                async with asyncio.timeout(7):
+                    ip = await _public_address(url)
+                    request_headers = {
+                        "Accept-Encoding": "identity", **(headers or {}), "Host": url.netloc.decode(),
+                    }
+                    request = client.build_request(
+                        "GET",
+                        url.copy_with(host=ip),
+                        headers=request_headers,
+                        extensions={"sni_hostname": url.raw_host.decode()},
+                    )
+                    request.headers.pop("cookie", None)
+                    if proxy is None:
+                        response = await client.send(request, stream=True)
+                        stack.push_async_callback(response.aclose)
+                    else:
+                        response = await stack.enter_async_context(open_proxy(proxy, request))
                 if response.is_redirect:
                     location = response.headers.get("location")
                     if not location:
@@ -91,8 +100,6 @@ async def open_remote(
                     raise TvBoxError("上游返回不支持的压缩方式")
                 yield url, response
                 return
-            finally:
-                await response.aclose()
     raise TvBoxError("上游重定向过多")
 
 
@@ -103,11 +110,12 @@ async def download(
     max_bytes: int = 2 * 1024 * 1024,
     headers: dict[str, str] | None = None,
     prefix_only: bool = False,
+    proxy: httpx.URL | None = None,
 ) -> Download:
     try:
         async with (
             asyncio.timeout(9),
-            open_remote(value, allow_http=allow_http, headers=headers) as (url, response),
+            open_remote(value, allow_http=allow_http, headers=headers, proxy=proxy) as (url, response),
         ):
             response.raise_for_status()
             mime = response.headers.get("content-type", "").split(";", 1)[0].lower()
@@ -128,19 +136,24 @@ async def download(
         raise TvBoxError("上游连接失败或超时") from exc
 
 
-async def playback_mime(url: str, *, allow_http: bool, headers: dict[str, str]) -> str:
+async def playback_mime(
+    url: str, *, allow_http: bool, headers: dict[str, str], proxy: httpx.URL | None = None,
+) -> str:
     response = await download(
         url,
         allow_http=allow_http,
         max_bytes=256 * 1024,
         prefix_only=True,
         headers=headers,
+        proxy=proxy,
     )
     text = response.body.decode("utf-8-sig", errors="replace")
     if validate_m3u8_playlist_text(text) is None:
         try:
             async with asyncio.timeout(8):
-                await _check_hls_media(response.url, text, allow_http=allow_http, headers=headers)
+                await _check_hls_media(
+                    response.url, text, allow_http=allow_http, headers=headers, proxy=proxy,
+                )
         except TimeoutError as exc:
             raise TvBoxError("HLS 分片读取超时") from exc
         return "application/vnd.apple.mpegurl"
@@ -149,7 +162,9 @@ async def playback_mime(url: str, *, allow_http: bool, headers: dict[str, str]) 
     raise TvBoxError("线路未返回可确认的 HLS 或 MP4")
 
 
-async def _check_hls_media(url: str, text: str, *, allow_http: bool, headers: dict[str, str]) -> None:
+async def _check_hls_media(
+    url: str, text: str, *, allow_http: bool, headers: dict[str, str], proxy: httpx.URL | None,
+) -> None:
     for _ in range(3):
         lines = [line.strip() for line in text.splitlines()]
         tag = ""
@@ -164,7 +179,8 @@ async def _check_hls_media(url: str, text: str, *, allow_http: bool, headers: di
         resolved = urljoin(url, resource)
         if tag.startswith("#EXTINF:"):
             sample = await download(
-                resolved, allow_http=allow_http, max_bytes=1024, prefix_only=True, headers=headers,
+                resolved, allow_http=allow_http, max_bytes=1024, prefix_only=True,
+                headers=headers, proxy=proxy,
             )
             head = sample.body[:64].lstrip(b"\xef\xbb\xbf \t\r\n").lower()
             if not sample.body or head.startswith((b"<!doctype", b"<html", b"#extm3u")) or sample.mime in {
@@ -173,7 +189,8 @@ async def _check_hls_media(url: str, text: str, *, allow_http: bool, headers: di
                 raise TvBoxError("HLS 分片未返回媒体")
             return
         variant = await download(
-            resolved, allow_http=allow_http, max_bytes=256 * 1024, prefix_only=True, headers=headers,
+            resolved, allow_http=allow_http, max_bytes=256 * 1024, prefix_only=True,
+            headers=headers, proxy=proxy,
         )
         text = variant.body.decode("utf-8-sig", errors="replace")
         if validate_m3u8_playlist_text(text) is not None:
