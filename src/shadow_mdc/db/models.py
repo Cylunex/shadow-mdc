@@ -480,3 +480,37 @@ class CatalogPersonCredit(Base):
     person_id: Mapped[str] = mapped_column(ForeignKey("catalog_people.id"), primary_key=True)
     work_id: Mapped[str] = mapped_column(ForeignKey("works.id"), primary_key=True)
     role: Mapped[str] = mapped_column(String(30), primary_key=True, default="actor")
+
+
+class TvBoxSite(Base):
+    __tablename__ = "tvbox_sites"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    endpoint: Mapped[str] = mapped_column(Text, unique=True)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    active_revision: Mapped[str | None] = mapped_column(String(32))
+    previous_revision: Mapped[str | None] = mapped_column(String(32))
+    failure: Mapped[str | None] = mapped_column(String(120))
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    allow_http: Mapped[bool] = mapped_column(default=False)
+
+
+class TvBoxRevision(Base):
+    __tablename__ = "tvbox_revisions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    site_id: Mapped[str] = mapped_column(ForeignKey("tvbox_sites.id"), index=True)
+    categories: Mapped[list[dict[str, str]]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class TvBoxPack(Base):
+    __tablename__ = "tvbox_packs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    url: Mapped[str | None] = mapped_column(Text)
+    allow_http: Mapped[bool] = mapped_column(default=False)
+    site_ids: Mapped[list[str]] = mapped_column(JSON)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

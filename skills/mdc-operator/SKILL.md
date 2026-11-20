@@ -42,6 +42,9 @@ description: 通过 Shadow MDC CLI 管理个人片库：单条和批量入库、
   `owner` 固定来自私有配置，只隔离片单空间；想看仍为共同列表。
 - `subscriptions.add` 按番号或演员新增盯磁；`list/set/remove` 管理已有订阅，`status` 查看运行。
   `scan` 查新作，`run` 执行现有盯磁策略，可能自动提交下载，只有要求执行盯磁时使用。
+- `tvbox.sources` 查站点及测试状态。`tvbox.import` 导入用户给出的地址或配置文件，接收后用
+  `tvbox.status` 回读任务。通过的站点自动进入 MDC 和 Media 目录，失败项可用真实站点 ID 调
+  `tvbox.sync` 重测。以结果中的站点状态为准，源地址和配置正文留在私有文件中。
 - `metadata.lookup` 是只读元数据查询。`playback.code/work` 解析 Emby 和服务已配置的播放源，
   不新增外站、不代传媒体；链接可能有时效，不把解析成功当作已实际播放。
 - 通用扫描/识别进度用 `tasks.list/get`，按明确要求用 `retry/resume/cancel`。

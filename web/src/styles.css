@@ -2709,3 +2709,11 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .category-tile { min-width: 0; }
 .category-tile .category-card { width: 100%; }
 .categories-view nav[aria-label="标签层级"] { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 12px; }
+
+.tvbox-view { display: grid; gap: 1rem; align-items: start; }
+.tvbox-form { display: flex; align-items: end; flex-wrap: wrap; gap: .75rem; }
+.tvbox-form label { display: grid; gap: .35rem; }
+.tvbox-form label:has(input[type="checkbox"]) { display: flex; align-items: center; }
+.tvbox-form input[type="url"] { width: min(28rem, 100%); }
+.tvbox-results { display: grid; gap: .5rem; list-style: none; padding: 0; margin: 0; }
+.tvbox-results li { display: flex; align-items: center; gap: .5rem; }

@@ -4,6 +4,16 @@
 
 **日常使用只有一次提交。** 在 MDC 的「TVBox」粘贴源地址或导入文件，点「导入并测试」。通过的站点立即出现在当前页面和 Media；多站配置逐站生效。用户可以直接点影片播放。失败项在原处显示原因，修改地址后可单独重试。Media 下次打开目录或刷新即可看到新增站点。
 
+## 首批实现
+
+MDC 的「TVBox」已经支持 URL、JSON/JSONC 文件和多仓导入。后台测试逐站提交，Media 刷新即可看到通过的站点。支持 type 1 分类、翻页、检索、选集和 HLS/MP4 解析。站点启停、重新测试、优先级和分类快照回滚在 Web 源管理完成。URL 配置每天直接复查原始上游，文件导入的站点每天测试 CMS 端点。失败修订保留上一可用分类快照。播放地址在选集时重新获取。Losna 可通过 mdc-operator 的 tvbox.import、tvbox.status、tvbox.sources 和 tvbox.sync 使用同一套接口。
+
+Media 用既有 MDC 连接识别 `tvbox_v1`，沿用原生播放器。观看记录保存在 Media，通过站点、影片和分集线路 ID 重新解析。移动 API 仅开放浏览和解析。Web 直接播放取决于源站允许浏览器读取流，带特殊播放头的线路优先通过 Media 播放。
+
+Relay 数据的首批迁移使用 `uv run python scripts/prepare_relay_tvbox.py PRIVATE_EXPORT PRIVATE_OUTPUT`。工具接受 v1 导出归档或其 manifest，只取已启用源包的生效 type 1 站点，生成权限为 0600 的 JSON 文件。把文件交给同一「导入并测试」流程即可，运行时不需要 Relay。本机用临时数据库对从 Relay 提取的 29 条 type 1 站点做实网复测，3 条通过分类、详情和媒体响应检查。未启用项保留具体失败原因。
+
+下文还记录完整接管目标。历史修订、旧分组和绑定迁移、第三方订阅发布、type 0 和生产切换属于后续交付。
+
 ## 从哪批数据开始
 
 通过 Relay 只读 API 盘点了当前源库、生效修订、TVBox 聚合入口及其中由 Relay 托管的子配置。下表为当日快照。

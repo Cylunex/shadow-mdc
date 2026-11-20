@@ -1,0 +1,9 @@
+{
+  // URLs and quoted strings survive JSONC parsing.
+  "sites": [
+    {"key": "test", "name": "演示站", "type": 1, "api": "/cms"},
+    {"key": "offline", "name": "故障站", "type": 1, "api": "/offline"},
+    {"key": "plugin", "name": "脚本站", "type": 3, "api": "https://example.com/spider.jar"},
+  ],
+  "urls": [{"name": "循环目录", "url": "/tvbox.json"}],
+}

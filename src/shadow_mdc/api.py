@@ -395,6 +395,7 @@ from .services.translation import (
     TranslationCache,
     build_translation_backends,
 )
+from .services.tvbox import TvBoxService
 from .services.work_samples import enrich_work_samples, sample_urls_for_work
 from .services.x_handle import (
     XHandleError,
@@ -414,6 +415,8 @@ from .tags import (
     use_registry,
     work_matches_tags,
 )
+
+from .tvbox_api import build_tvbox_router
 
 
 @dataclass(frozen=True)
@@ -440,6 +443,7 @@ class Runtime:
     response_cache: ResponseCache
     strm_relay: StrmRelay
     subtitle_backfill: SubtitleBackfillJob
+    tvbox: TvBoxService
     rescrape_quota: RescrapeQuota | None = None
     library_workers: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     library_workers_stopping: Event = field(default_factory=Event)
@@ -672,6 +676,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             database=database,
             fetcher_factory=settings.subtitlecat_fetcher,
         ),
+        tvbox=TvBoxService(database),
         rescrape_quota=RescrapeQuota(
             settings.rescrape_daily_quota,
             path=settings.data_dir / "rescrape-quota.json",
@@ -691,6 +696,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     for task_id in recover:
         _start_library_worker(app_runtime, task_id)
     schedule_poller = asyncio.create_task(_poll_library_scans(app_runtime), name="mdc-library-schedules")
+    tvbox_schedule = asyncio.create_task(app_runtime.tvbox.schedule(), name="mdc-tvbox-schedule")
     relay_index_stop = asyncio.Event()
     relay_index_worker = asyncio.create_task(
         app_runtime.strm_relay.maintain_index(relay_index_stop), name="mdc-strm-pick-index",
@@ -699,7 +705,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         schedule_poller.cancel()
-        await asyncio.gather(schedule_poller, return_exceptions=True)
+        tvbox_schedule.cancel()
+        await asyncio.gather(schedule_poller, tvbox_schedule, return_exceptions=True)
+        await app_runtime.tvbox.close()
         relay_index_stop.set()
         await asyncio.gather(relay_index_worker, return_exceptions=True)
         app_runtime.strm_relay.close()
@@ -6348,6 +6356,7 @@ from .swipe_proxy import create_swipe_proxy_router  # noqa: E402
 app.include_router(build_catalog_router(runtime))
 app.include_router(build_tag_dictionary_router(runtime))
 app.include_router(build_media_router(runtime))
+app.include_router(build_tvbox_router(runtime, management=True))
 app.include_router(build_skill_router(runtime))
 app.include_router(build_operator_router(runtime))
 app.include_router(_intake_router)

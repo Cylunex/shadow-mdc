@@ -57,6 +57,7 @@ from .skill_operations import (
     TagsEdit,
 )
 from .tag_dictionary_api import RulesEdit, TagCreate, TagEdit, TagMerge
+from .tvbox_api import ImportRequest
 
 if TYPE_CHECKING:
     from .api import Runtime
@@ -345,6 +346,14 @@ class IntakeJobInput(EmptyInput):
         return safe_id(value)
 
 
+class TvBoxImportInput(ImportRequest, EmptyInput):
+    pass
+
+
+class TvBoxSiteInput(EmptyInput):
+    site_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
 class LookupInput(WorkLookupRequest, EmptyInput):
     @model_validator(mode="after")
     def one_identity(self) -> LookupInput:
@@ -406,6 +415,7 @@ RouteKey = Literal[
     "playlist_id",
     "code",
     "job_id",
+    "site_id",
     "library_id",
     "asset_id",
     "candidate_id",
@@ -879,6 +889,19 @@ CAPABILITIES += (
         "GET",
         "/api/intake/v1/metadata/{code}",
         "code",
+    ),
+    Capability("tvbox.sources", "读取 TVBox 站点与测试状态。", "read", EmptyInput, "GET", "/api/tvbox/sites"),
+    Capability(
+        "tvbox.import", "导入并测试 TVBox 配置。通过的站点自动进入目录。",
+        "write", TvBoxImportInput, "POST", "/api/tvbox/imports",
+    ),
+    Capability(
+        "tvbox.status", "回读 TVBox 导入任务。", "read", IntakeJobInput, "GET",
+        "/api/tvbox/imports/{job_id}", "job_id",
+    ),
+    Capability(
+        "tvbox.sync", "重新测试一个已登记的 TVBox 站点。", "write", TvBoxSiteInput, "POST",
+        "/api/tvbox/sites/{site_id}/refresh", "site_id",
     ),
     Capability(
         "playback.code",

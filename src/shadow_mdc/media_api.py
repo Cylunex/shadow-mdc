@@ -29,6 +29,7 @@ from .services.playback import (
     matches_work_code,
     resolve_play,
 )
+from .tvbox_api import build_tvbox_router
 
 if TYPE_CHECKING:
     from .api import Runtime
@@ -112,7 +113,7 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
     def capabilities() -> dict[str, object]:
         return {"api_version": 1, "features": [
             "browse", "search", "detail", "emby", "binding", "catalog", "playback_plan",
-            "people_v2", "people_cards_paged", "playlists", "organizations", "media_mime",
+            "people_v2", "people_cards_paged", "playlists", "organizations", "media_mime", "tvbox_v1",
         ]}
 
     @router.get("/works", response_model=MediaPage)
@@ -327,4 +328,5 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                                   and source.probe_ok is not False])
 
     router.include_router(build_catalog_router(runtime, prefix="/catalog"))
+    router.include_router(build_tvbox_router(runtime, management=False))
     return router

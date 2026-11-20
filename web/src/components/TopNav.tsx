@@ -1,6 +1,6 @@
 import { memo } from "react";
 
-export type AppView = "actors" | "actor-detail" | "works" | "work-detail" | "categories" | "rankings" | "swipe" | "subscriptions" | "tasks" | "settings";
+export type AppView = "actors" | "actor-detail" | "works" | "work-detail" | "categories" | "rankings" | "swipe" | "tvbox" | "subscriptions" | "tasks" | "settings";
 
 const ITEMS: ReadonlyArray<{ id: AppView; label: string; en: string; icon: string }> = [
   { id: "actors", label: "演员", en: "ACTORS", icon: "◇" },
@@ -8,6 +8,7 @@ const ITEMS: ReadonlyArray<{ id: AppView; label: string; en: string; icon: strin
   { id: "categories", label: "分类", en: "CATEGORIES", icon: "▤" },
   { id: "rankings", label: "榜单", en: "RANKINGS", icon: "◆" },
   { id: "swipe", label: "刷流", en: "SWIPE", icon: "▽" },
+  { id: "tvbox", label: "TVBox", en: "ONLINE", icon: "▷" },
   { id: "subscriptions", label: "订阅", en: "QUEUE", icon: "✦" },
   { id: "tasks", label: "任务", en: "OPS", icon: "▥" },
   { id: "settings", label: "设置", en: "SYSTEM", icon: "⚙" }
