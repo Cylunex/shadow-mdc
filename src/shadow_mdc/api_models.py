@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -1023,9 +1023,15 @@ class SubscriptionWatchStatusOut(BaseModel):
     drain_cutoff: str | None = None
 
 
+OfflineDirectory = Annotated[
+    str, Field(min_length=1, max_length=2048, description="OpenList absolute path or 115 folder ID")
+]
+
+
 class WorkOfflineRequest(BaseModel):
     magnet_id: str | None = None
     url: str | None = None
+    directory_id: OfflineDirectory | None = None
 
 
 class OfflineIntakeRequest(BaseModel):
@@ -1034,6 +1040,7 @@ class OfflineIntakeRequest(BaseModel):
     url: str = Field(min_length=3, max_length=4000)
     work_id: str | None = Field(default=None, max_length=64)
     code: str | None = Field(default=None, max_length=64)
+    directory_id: OfflineDirectory | None = None
 
     @field_validator("url")
     @classmethod

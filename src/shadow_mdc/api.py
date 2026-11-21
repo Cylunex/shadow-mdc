@@ -371,7 +371,7 @@ from .services.response_cache import (
 )
 from .services.resumable_jobs import is_resumable_kind, mark_interrupted_task_runs
 from .services.scanner import Scanner
-from .services.strm_export import StrmConfigError
+from .services.strm_export import StrmConfigError, read_sidecar
 from .services.strm_relay import RelayError, StrmRelay, token_ok
 from .services.studio_guard import reject_non_jav_studio_label
 from .services.subscription_watch import (
@@ -1323,14 +1323,14 @@ async def pan_openlist_files(
 async def strm_openlist_play(
     remote_path: str,
     request: Request,
+    repo: Repo,
     token: str | None = Query(None, max_length=256),
 ) -> Response:
     """Relay for OpenList-backed .strm files → 302 to the OpenList /d link (sign when enabled).
 
     Hardening (TgtoDrive 302 idea, OpenList /d implementation):
     * normalize path (collapse ``//``, reject ``..``)
-    * allow any path under the offline target *or* already recorded in a STRM sidecar
-      (so rematerialized / scraped trees outside the default offline folder still play)
+    * allow paths under the default target and exact files exported by other offline tasks
     * signed links: missing file → 404; other OpenList errors → 502
     * ``Cache-Control: no-store`` so players always re-resolve fresh CDN URLs
     """
@@ -1347,10 +1347,21 @@ async def strm_openlist_play(
     if not path:
         raise HTTPException(status_code=400, detail="invalid path")
     root = cfg.openlist_offline_path
-    # Keep the allow-list cheap on the play hot path: only the configured offline
-    # tree. Point openlist_offline_path at the library root if exports sit deeper.
     if not root or not path_within(path, root):
-        raise HTTPException(status_code=404, detail="path outside the OpenList offline target")
+        export_root = Path(cfg.strm_output_root).resolve() if cfg.strm_output_root else None
+        allowed = False
+        if export_root is not None:
+            candidates = repo.openlist_export_candidates(path)
+            repo._session.commit()
+            for candidate in candidates:
+                directory = Path(candidate).parent.resolve()
+                if directory.is_relative_to(export_root) and any(
+                    entry.file_id == path for entry in read_sidecar(directory)
+                ):
+                    allowed = True
+                    break
+        if not allowed:
+            raise HTTPException(status_code=404, detail="path outside the OpenList offline target")
     base = cfg.openlist_strm_base_url or cfg.openlist_base_url
     if not base:
         raise HTTPException(status_code=503, detail="OpenList not configured")
@@ -1436,7 +1447,7 @@ async def pan_offline_intake(
         raise HTTPException(status_code=400, detail="work_id or code required")
     try:
         result = await enqueue_work_offline(
-            repo, app_runtime.pan_service, work_id, url=payload.url
+            repo, app_runtime.pan_service, work_id, url=payload.url, directory_id=payload.directory_id
         )
     except OfflineEnqueueError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
@@ -1503,6 +1514,8 @@ async def submit_work_offline(
             work_id,
             magnet_id=payload.magnet_id,
             url=payload.url,
+            directory_id=payload.directory_id,
+            auto_select=True,
         )
     except OfflineEnqueueError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc

@@ -5,6 +5,7 @@ import { resources } from "../query/resources";
 import type { TaskRun } from "../model";
 import { api } from "../api";
 import { useTaskUpdates } from "../hooks/useTaskUpdates";
+import { offlineDirectoryLabel, offlineTaskLabel } from "./OfflineDownloadDialog";
 
 type Props = {
   tasks: TaskRun[];
@@ -20,36 +21,70 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
   const [replayLoading, setReplayLoading] = useState(false);
   const live = useTaskUpdates({ enabled: autoRefresh, onChanged, onTasksSnapshot });
   const [kindFilter, setKindFilter] = useState("all");
+  const [offlineFilter, setOfflineFilter] = useState("all");
+  const [offlineAction, setOfflineAction] = useState<string | null>(null);
   const offline = useQuery({ ...resources.offlineList(), refetchInterval: autoRefresh ? 5_000 : false }, queryClient);
   const offlineTasks = offline.data ?? [];
+  const visibleOffline = offlineTasks.filter((task) => offlineFilter === "all" ||
+    task.status === offlineFilter || (offlineFilter === "done" && task.status === "completed"));
 
   const kinds = useMemo(() => ["all", ...Array.from(new Set(tasks.map((task) => task.kind))).sort()], [tasks]);
   const visible = useMemo(() => kindFilter === "all" ? tasks : tasks.filter((task) => task.kind === kindFilter), [tasks, kindFilter]);
 
-  const offlinePanel = offlineTasks.length > 0 ? (
-    <section className="offline-task-panel" aria-label="115 离线任务">
+  async function controlOffline(id: string, action: "cancel" | "next") {
+    setOfflineAction(id);
+    try {
+      const task = await (action === "cancel" ? api.panOfflineCancel(id) : api.panOfflineNext(id));
+      report(`${offlineTaskLabel(task)} · ${offlineDirectoryLabel(task)}`);
+    } catch (error) {
+      report(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOfflineAction(null);
+    }
+  }
+
+  const offlinePanel = offlineTasks.length > 0 || offline.isError ? (
+    <section className="offline-task-panel" aria-label="离线任务">
       <div className="work-related-head">
-        <h2>115 离线 / STRM</h2>
-        <span className="muted">{offlineTasks.length}</span>
+        <h2>离线下载</h2>
+        <label>
+          <select aria-label="筛选离线任务状态" value={offlineFilter} onChange={(event) => setOfflineFilter(event.target.value)}>
+            <option value="all">最近全部</option>
+            <option value="running">进行中</option>
+            <option value="done">已完成</option>
+            <option value="failed">失败</option>
+            <option value="cancelled">已取消</option>
+          </select>
+        </label>
       </div>
+      {offline.isError && <div className="offline-directory-actions">
+        <small role="alert" className="danger-text">{offline.error.message}</small>
+        <button type="button" className="ghost" onClick={() => void offline.refetch()}>刷新</button>
+      </div>}
+      {!visibleOffline.length && !offline.isError && <p className="muted">最近任务中没有该状态的记录。</p>}
       <div className="magnet-list">
-        {offlineTasks.slice(0, 10).map((task) => (
-          <div className="magnet-row" key={task.id}>
-            <span>{task.remote_name || task.info_hash.slice(0, 16)}</span>
+        {visibleOffline.map((task) => (
+          <article className="offline-task-row" key={task.id}>
+            <strong>{task.remote_name || task.info_hash.slice(0, 16)}</strong>
             <small className="muted">
-              {task.status}
-              {task.download_state ? `/${task.download_state}` : ""}
-              {" · "}
-              {Math.round(task.progress || 0)}%
+              {offlineTaskLabel(task)}
               {task.attempt_count && task.attempt_count > 1 ? ` · 第${task.attempt_count}次` : ""}
-              {task.switch_reason ? ` · ${task.switch_reason}` : ""}
             </small>
-            {task.strm_path ? <small className="muted">STRM 已写</small> : null}
+            <small className="muted">{offlineDirectoryLabel(task)}</small>
             {task.error ? <small className="danger-text">{task.error}</small> : null}
-          </div>
+            {(task.can_cancel || task.can_switch) && (
+              <div className="offline-directory-actions">
+                {task.can_switch && <button type="button" className="ghost" disabled={offlineAction !== null}
+                  onClick={() => void controlOffline(task.id, "next")}>换磁力</button>}
+                {task.can_cancel && !["cancelling", "switching", "submitting"].includes(task.download_state ?? "") && (
+                  <button type="button" className="ghost" disabled={offlineAction !== null}
+                    onClick={() => void controlOffline(task.id, "cancel")}>取消下载</button>
+                )}
+              </div>
+            )}
+          </article>
         ))}
       </div>
-      <p className="muted">完整配置与刷新在「设置 → 115 / OpenList」。</p>
     </section>
   ) : null;
 

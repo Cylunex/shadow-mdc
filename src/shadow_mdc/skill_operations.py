@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, delete, exists, func, or_, select
 
+from .api_models import OfflineDirectory
 from .catalog_gaps import gap_conditions
 from .classifications import DURATION_FORM_IDS, ClassificationSelection
 from .db.models import (
@@ -114,6 +115,7 @@ class DiscardPlaceholderInput(WorkTarget, RecoverInput):
 
 class LinkInput(WorkTarget):
     url: str = Field(min_length=3, max_length=4000, pattern=r"^(magnet:\?|https?://|ed2k://)")
+    directory_id: OfflineDirectory | None = None
 
 
 class IntakeItem(OperationInput):
@@ -124,6 +126,7 @@ class IntakeItem(OperationInput):
     title: str | None = Field(default=None, min_length=1, max_length=2000)
     tags: list[str] = Field(default_factory=list, max_length=200)
     download: bool = False
+    directory_id: OfflineDirectory | None = None
 
     @model_validator(mode="after")
     def identity(self) -> IntakeItem:
@@ -134,6 +137,8 @@ class IntakeItem(OperationInput):
             raise ValueError("provide exactly one identity")
         if self.download and not (self.code or self.magnet):
             raise ValueError("download needs code or magnet; source URLs only create metadata")
+        if self.directory_id is not None and not self.download:
+            raise ValueError("directory_id requires download=true")
         return self
 
 
@@ -496,12 +501,13 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
             repo = Repository(session)
             try:
                 result = await enqueue_work_offline(
-                    repo, app_runtime.pan_service, payload.work_id, url=payload.url
+                    repo, app_runtime.pan_service, payload.work_id,
+                    url=payload.url, directory_id=payload.directory_id,
                 )
             except OfflineEnqueueError as exc:
                 raise HTTPException(exc.status_code, exc.message) from exc
             return {
-                "outcome": "running" if result.reused_running else "submitted",
+                "outcome": result.action,
                 "job": job_out(result.task, repo.get_work(payload.work_id)).model_dump(mode="json"),
             }
 
@@ -514,14 +520,18 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                 if payload.magnet:
                     result = await intake_offline_add_magnet(
                         OfflineMagnetAddRequest(
-                            magnet=payload.magnet, code=payload.code, title=payload.title, dry_run=False
+                            magnet=payload.magnet, code=payload.code, title=payload.title,
+                            dry_run=False, directory_id=payload.directory_id,
                         ),
                         request,
                         repo,
                     )
                 else:
                     result = await intake_offline_add(
-                        OfflineAddRequest(code=payload.code or "", dry_run=False), request, repo
+                        OfflineAddRequest(
+                            code=payload.code or "", dry_run=False, directory_id=payload.directory_id
+                        ),
+                        request, repo,
                     )
                 if result.work_id:
                     apply_tags(repo, result.work_id, payload.tags, [])

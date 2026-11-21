@@ -170,6 +170,40 @@ def test_code_less_magnet_uses_hash_identity_without_inventing_a_number(client: 
     assert isinstance(detail["tags"], list) and "magnet-ingest" in detail["tags"]
 
 
+def test_skill_directory_override_works_without_default_and_reports_conflicts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pan = app.state.runtime.pan_service
+    monkeypatch.setattr(pan, "offline_target", lambda: None)
+    arguments: dict[str, object] = {"code": "SSIS-123", "directory_id": "/Grid/Archive/"}
+    assert call(client, "intake.code.preview", arguments)["directory_id"] == "/Grid/Archive"
+    first = call(client, "intake.code.submit", arguments)
+    job = call(client, "intake.job", {"job_id": first["job_id"]})
+    assert job["directory_id"] == "/Grid/Archive" and job["backend"] == "openlist"
+    assert pan.submit_offline_url.await_args.kwargs["directory_id"] == "/Grid/Archive"
+    conflict = client.post("/api/skill/v1/call", json={
+        "name": "intake.magnet.submit", "arguments": {"magnet": MAGNET, "directory_id": "/Grid/Other"},
+    })
+    assert conflict.json()["status"] == 409
+    assert "/Grid/Archive" in conflict.text
+    pan.submit_offline_url.assert_awaited_once()
+
+
+def test_custom_directory_without_magnet_does_not_queue_default_watch(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = app.state.runtime
+    monkeypatch.setattr(runtime.discover, "list_magnets", AsyncMock(return_value=()))
+    response = client.post("/api/skill/v1/call", json={
+        "name": "intake.code.submit", "arguments": {"code": "SSIS-123", "directory_id": "/Grid/Archive"},
+    }).json()
+    assert response["ok"] is False
+    result = response["result"]
+    assert result["action"] == "error" and result["job_id"] is None
+    assert result["work_id"] not in runtime.library_prefs_store.load().want_list
+    runtime.pan_service.submit_offline_url.assert_not_called()
+
+
 def test_discard_only_unbound_magnet_placeholder(client: TestClient) -> None:
     result = call(client, "intake.magnet.submit", {"magnet": f"magnet:?xt=urn:btih:{'C' * 40}"})
     args = {"work_id": result["work_id"], "task_id": result["job_id"]}

@@ -582,9 +582,9 @@ export const api = {
     if (!response.ok) throw new Error(await response.text());
     await invalidateMutation(path);
   },
-  panFiles: (directoryId = "0", page = 1) => {
+  panFiles: (directoryId = "0", page = 1, signal?: AbortSignal) => {
     const query = new URLSearchParams({ directory_id: directoryId, page: String(page) });
-    return request(panFilesSchema, `/api/pan/files?${query}`);
+    return request(panFilesSchema, `/api/pan/files?${query}`, { signal });
   },
   panSetDirectory: (id: string) =>
     request(z.object({ id: z.string().nullable() }), "/api/pan/directory", {
@@ -642,9 +642,9 @@ export const api = {
     await invalidateMutation(path);
   },
   testOpenList: () => request(openListTestSchema, "/api/pan/openlist/test", { method: "POST" }),
-  openListFiles: (path = "/", page = 1) => {
+  openListFiles: (path = "/", page = 1, signal?: AbortSignal) => {
     const query = new URLSearchParams({ path, page: String(page) });
-    return request(openListFilesSchema, `/api/pan/openlist/files?${query}`);
+    return request(openListFilesSchema, `/api/pan/openlist/files?${query}`, { signal });
   },
   strmRewrite: () =>
     request(z.object({ scanned: z.number(), rewritten: z.number(), skipped: z.number() }),
@@ -657,7 +657,7 @@ export const api = {
   panOfflineNext: (taskId: string) =>
     request(panOfflineTaskSchema, `/api/pan/offline/tasks/${taskId}/next`, { method: "POST" }),
   panPipeline: (signal?: AbortSignal) => request(panPipelineSchema, "/api/pan/pipeline", { signal }),
-  panOfflineIntake: (payload: { url: string; work_id?: string; code?: string }) =>
+  panOfflineIntake: (payload: { url: string; work_id?: string; code?: string; directory_id?: string }) =>
     request(panOfflineTaskSchema, "/api/pan/offline/intake", {
       method: "POST", body: JSON.stringify(payload)
     }),
@@ -666,7 +666,7 @@ export const api = {
     request(subscriptionWatchStatusSchema, "/api/pan/subscription-watch/status"),
   runSubscriptionWatch: () =>
     request(subscriptionWatchStatusSchema, "/api/pan/subscription-watch/run", { method: "POST" }),
-  submitWorkOffline: (workId: string, payload: { magnet_id?: string; url?: string }) =>
+  submitWorkOffline: (workId: string, payload: { magnet_id?: string; url?: string; directory_id?: string }) =>
     request(panOfflineTaskSchema, `/api/works/${workId}/offline`, {
       method: "POST", body: JSON.stringify(payload)
     }),

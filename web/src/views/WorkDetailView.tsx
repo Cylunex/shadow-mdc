@@ -3,6 +3,7 @@ import { CatalogWorkCredits } from "./CatalogManagement";
 import { Lightbox } from "../components/Lightbox";
 import { CoverImage } from "../components/CoverImage";
 import { InAppPlayer, type PlayerSource } from "../components/InAppPlayer";
+import { OfflineDownloadDialog, offlineDirectoryLabel, offlineTaskLabel } from "../components/OfflineDownloadDialog";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api, appUrl } from "../api";
@@ -159,6 +160,7 @@ export function WorkDetailView(props: {
 }) {
   const { detail, related, offlineTasks, setOfflineTasks, loadError, loading, reload } = useWorkPage(props.workId);
   const [editOpen, setEditOpen] = useState(false);
+  const [offlineMagnet, setOfflineMagnet] = useState<{ workId: string; id: string; name: string } | null>(null);
   const [playerOpen, setPlayerOpen] = useState(false);
   const [playerSources, setPlayerSources] = useState<PlayerSource[]>([]);
   const [playerTitle, setPlayerTitle] = useState("");
@@ -664,7 +666,7 @@ export function WorkDetailView(props: {
               <button type="button" className="secondary" disabled={playerBusy}
                 onClick={startOnlinePlayback}>{playerBusy ? "解析中…" : "在线播放"}</button>
             </div>
-            <p className="muted">一对多保存在本地；可复制，或「推到 115 离线」（需在设置中完成 115 登录并选择目录）。可在「榜单 → 多源搜索」勾选后保存到作品。</p>
+            <p className="muted">可在「榜单 → 多源搜索」勾选磁力并保存到作品。</p>
             {(work.magnets ?? []).length === 0
               ? <p className="muted">暂无已保存磁力。可在「榜单 → 多源番号搜索」勾选后保存到作品。</p>
               : (
@@ -681,15 +683,7 @@ export function WorkDetailView(props: {
                       || (task.info_hash && magnet.info_hash
                         && task.info_hash.toLowerCase() === magnet.info_hash.toLowerCase())
                     );
-                    const offlineLabel = offline
-                      ? (offline.strm_path
-                        ? "STRM 已生成"
-                        : offline.status === "completed" || offline.status === "done"
-                          ? "离线完成"
-                          : offline.status === "failed" || offline.status === "error"
-                            ? `离线失败${offline.error ? `：${offline.error}` : ""}`
-                            : `离线中 ${Math.round(offline.progress || 0)}%`)
-                      : null;
+                    const submitted = offline && ["running", "done", "completed"].includes(offline.status);
                     return (
                     <div className="magnet-row" key={magnet.id}>
                       <span>
@@ -702,9 +696,9 @@ export function WorkDetailView(props: {
                           + (bestHash && magnet.info_hash === bestHash ? " · 推荐" : "")}
                       </span>
                       <small className="muted">{magnet.provider}</small>
-                      {offlineLabel && (
-                        <span className={`offline-chip status-${(offline?.status || "running").toLowerCase()}`} title={offline?.strm_path ?? offline?.error ?? undefined}>
-                          {offlineLabel}
+                      {offline && (
+                        <span className={`offline-chip status-${offline.status}`} title={offline.error ?? offlineDirectoryLabel(offline)}>
+                          {offlineTaskLabel(offline)}
                         </span>
                       )}
                       <button
@@ -715,22 +709,11 @@ export function WorkDetailView(props: {
                       <button
                         type="button"
                         className="secondary"
-                        disabled={props.busy === `offline-${magnet.id}` || Boolean(offline && !offline.error && offline.status !== "failed")}
-                        onClick={() => {
-                          void (async () => {
-                            try {
-                              const task = await api.submitWorkOffline(work.id, { magnet_id: magnet.id });
-                              setOfflineTasks((current) => {
-                                const without = current.filter((item) => item.id !== task.id && item.info_hash !== task.info_hash);
-                                return [task, ...without];
-                              });
-                              props.report?.(`已提交 115 离线：${task.info_hash.slice(0, 12)}… (${task.status})`);
-                            } catch (error) {
-                              props.report?.(error instanceof Error ? error.message : String(error));
-                            }
-                          })();
-                        }}
-                      >{offline && !offline.error && offline.status !== "failed" ? "已推送" : "推到 115 离线"}</button>
+                        disabled={Boolean(submitted)}
+                        onClick={() => setOfflineMagnet({
+                          workId: work.id, id: magnet.id, name: magnet.name || work.title,
+                        })}
+                      >{submitted ? "已提交" : "离线下载"}</button>
                       <button
                         type="button"
                         className="ghost"
@@ -749,17 +732,31 @@ export function WorkDetailView(props: {
               )}
           </section>
 
+          {offlineMagnet?.workId === work.id && (
+            <OfflineDownloadDialog
+              name={offlineMagnet.name}
+              onClose={() => setOfflineMagnet(null)}
+              submit={async (directory_id) => {
+                const task = await api.submitWorkOffline(work.id, { magnet_id: offlineMagnet.id, directory_id });
+                setOfflineTasks((current) => [
+                  task, ...current.filter((item) => item.id !== task.id && item.info_hash !== task.info_hash),
+                ]);
+                props.report?.(`${offlineTaskLabel(task)} · ${offlineDirectoryLabel(task)}`);
+              }}
+            />
+          )}
+
           {offlineTasks.length > 0 && (
             <section className="work-page-section work-offline-strip">
               <div className="work-related-head">
-                <h2>115 离线任务</h2>
+                <h2>离线任务</h2>
                 <span className="muted">{offlineTasks.length}</span>
               </div>
               <div className="magnet-list">
                 {offlineTasks.slice(0, 8).map((task) => (
                   <div className="magnet-row" key={task.id}>
                     <span>{task.remote_name || task.info_hash.slice(0, 16)}</span>
-                    <small className="muted">{task.status} · {Math.round(task.progress || 0)}%</small>
+                    <small className="muted">{offlineTaskLabel(task)} · {offlineDirectoryLabel(task)}</small>
                     {task.strm_path && <small className="muted">STRM: {task.strm_path}</small>}
                     {task.error && <small className="danger-text">{task.error}</small>}
                   </div>

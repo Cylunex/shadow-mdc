@@ -1484,6 +1484,19 @@ class Repository:
             )
         )
 
+    def openlist_export_candidates(self, path: str) -> list[str]:
+        """STRM locations for tasks whose confirmed remote result could contain a file."""
+
+        parts = path.strip("/").split("/")
+        parents = ["/" + "/".join(parts[:end]) for end in range(1, len(parts) + 1)]
+        stmt = select(PanOfflineTask.strm_path).where(
+            PanOfflineTask.backend == "openlist",
+            PanOfflineTask.status.in_(("done", "completed")),
+            PanOfflineTask.remote_path.in_(parents),
+            PanOfflineTask.strm_path.is_not(None),
+        ).distinct()
+        return [value for value in self._session.scalars(stmt) if value]
+
     def find_pan_offline_task_by_info_hash(self, info_hash: str) -> PanOfflineTask | None:
         """Any work's offline task for this btih (prefer running, then done/completed)."""
 

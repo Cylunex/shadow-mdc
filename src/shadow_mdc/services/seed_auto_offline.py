@@ -18,7 +18,7 @@ from pathlib import Path
 from sqlalchemy import select, text
 
 from ..config import Settings
-from ..db.models import SourceSnapshot, WorkMagnet
+from ..db.models import SourceSnapshot
 from ..db.repository import Database, Repository
 from .discover import DiscoverService
 from .library_prefs import LibraryPrefsStore
@@ -47,8 +47,16 @@ class SeedOfflineStats:
     # Per-work outcome rows: {"work_id", "code", "outcome", "reason"}.
     results: list[dict[str, object]] = field(default_factory=list)
 
-    def record(self, work_id: str, code: str | None, outcome: str, reason: str = "") -> None:
-        self.results.append({"work_id": work_id, "code": code, "outcome": outcome, "reason": reason})
+    def record(
+        self, work_id: str, code: str | None, outcome: str, reason: str = "",
+        *, task_id: str | None = None, status_code: int | None = None,
+    ) -> None:
+        row: dict[str, object] = {"work_id": work_id, "code": code, "outcome": outcome, "reason": reason}
+        if task_id is not None:
+            row["task_id"] = task_id
+        if status_code is not None:
+            row["status_code"] = status_code
+        self.results.append(row)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -82,13 +90,6 @@ def _javdb_lookup(repo: Repository, work_id: str) -> tuple[str, str | None] | No
         if isinstance(raw, str) and raw.strip():
             source_url = raw.strip()
     return snap.external_id, source_url
-
-
-def _work_needs_offline(repo: Repository, work_id: str, magnet: WorkMagnet) -> bool:
-    existing = repo.find_pan_offline_by_hash(work_id, magnet.info_hash)
-    if existing is None:
-        return True
-    return existing.status not in {"running", "done", "completed"}
 
 
 def _pan_ready(pan: PanService) -> bool:
@@ -233,6 +234,7 @@ async def enqueue_seeded_offline(
     pace_seconds: float = DEFAULT_PACE_SECONDS,
     library_prefs_store: LibraryPrefsStore | None = None,
     data_dir: Path | None = None,
+    directory_id: str | None = None,
 ) -> SeedOfflineStats:
     """Fetch magnets if needed, pick best (code-match preference), submit OpenList offline.
 
@@ -245,7 +247,7 @@ async def enqueue_seeded_offline(
     if not work_ids:
         return stats
 
-    pan_ready = _pan_ready(pan)
+    pan_ready = _pan_ready(pan) if directory_id is None else bool(pan.status().get("connected"))
     if not pan_ready:
         stats.skipped_pan = len(work_ids)
         stats.hunting = len(work_ids)
@@ -266,6 +268,7 @@ async def enqueue_seeded_offline(
                 discover=discover,
                 work_id=work_id,
                 stats=stats,
+                directory_id=directory_id,
             )
             pace_next = bool(touched)
         except Exception as exc:  # Continue processing the remaining works.
@@ -273,7 +276,8 @@ async def enqueue_seeded_offline(
             stats.errors.append(message)
             stats.record(work_id, None, "error", message)
             logger.warning("seed auto-offline failed: %s", message)
-    promote_hunting_to_want_list(prefs, stats)
+    if directory_id is None:
+        promote_hunting_to_want_list(prefs, stats)
     return stats
 
 
@@ -284,6 +288,7 @@ async def _process_one(
     discover: DiscoverService,
     work_id: str,
     stats: SeedOfflineStats,
+    directory_id: str | None,
 ) -> bool:
     """Returns True when the item hit the network (pace the next call)."""
 
@@ -357,29 +362,44 @@ async def _process_one(
             stats.hunting += 1
             stats.record(work_id, primary_code, "hunting", "no untried suitable magnet")
             return touched
-        if not _work_needs_offline(repo, work_id, best):
+        existing = repo.find_pan_offline_by_hash(work_id, best.info_hash)
+        if directory_id is None and existing is not None and existing.status in {
+            "running", "done", "completed",
+        }:
             stats.skipped_existing += 1
-            stats.record(work_id, primary_code, "skipped", "offline task already running/done")
+            stats.record(
+                work_id, primary_code, "skipped", "offline task already running/done", task_id=existing.id
+            )
             return touched
 
     touched = True
     with database.session() as session:
         repo = Repository(session)
         try:
-            result = await enqueue_work_offline(repo, pan, work_id, magnet_id=best.id)
+            result = await enqueue_work_offline(
+                repo, pan, work_id, magnet_id=best.id, directory_id=directory_id
+            )
         except OfflineEnqueueError as exc:
             stats.errors.append(f"{work_id}: {exc.message}")
             if exc.status_code == 400:
                 stats.skipped_pan += 1
             stats.hunting += 1
-            stats.record(work_id, primary_code, "error", exc.message)
+            stats.record(work_id, primary_code, "error", exc.message, status_code=exc.status_code)
             return touched
         if result.reused_running:
             stats.reused += 1
-            stats.record(work_id, primary_code, "reused", "matching offline task already running")
+            stats.record(
+                work_id, primary_code, "reused", "matching offline task already running",
+                task_id=result.task.id,
+            )
+        elif result.reused_completed:
+            stats.skipped_existing += 1
+            stats.record(
+                work_id, primary_code, "skipped", "offline task already done", task_id=result.task.id
+            )
         else:
             stats.submitted += 1
-            stats.record(work_id, primary_code, "submitted", best.info_hash[:12])
+            stats.record(work_id, primary_code, "submitted", best.info_hash[:12], task_id=result.task.id)
         logger.info(
             "seed auto-offline enqueued work=%s code=%s hash=%s created=%s",
             work_id,

@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
+from weakref import WeakValueDictionary
 
 import httpx
 from pydantic import BaseModel, ConfigDict
@@ -973,12 +974,12 @@ class Pan115Client:
         file_id = str(remote.get("file_id") or "") or None
         digest = str(remote.get("info_hash") or hint).upper()
 
+        if status in (0, 1, 2) and remote_dir and remote_dir != directory_id:
+            raise PanOfflineConflictError(
+                f"115 已有该磁力的离线任务，原目录 ID 为 {remote_dir}",  # noqa: RUF001
+                code=OFFLINE_EXISTS_CODE,
+            )
         if status in (0, 1):
-            if remote_dir and remote_dir != str(directory_id):
-                raise PanOfflineConflictError(
-                    "115 已有该磁力的下载任务，目标目录与当前离线目录不一致",  # noqa: RUF001
-                    code=OFFLINE_EXISTS_CODE,
-                )
             return {
                 "info_hash": digest,
                 "state": True,
@@ -1247,8 +1248,7 @@ class PanService:
         self.user_agent = user_agent
         self._logins: dict[str, _LoginSession] = {}
         self._client: Pan115Client | None = None
-        self._submit_locks: dict[str, asyncio.Lock] = {}
-        self._submit_locks_guard = asyncio.Lock()
+        self._submit_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         # Bumped on login / disconnect / mount / backend change; scopes derived reads.
         self._auth_version = 1
 
@@ -1452,7 +1452,7 @@ class PanService:
         elif not has_auth:
             reason = "OpenList mode: set an API token or username/password."
         elif not cfg.openlist_offline_path:
-            reason = "OpenList configured; set the offline target path before submitting tasks."
+            reason = "OpenList configured; set a default path for automatic downloads."
         else:
             reason = "OpenList configured (use Test connection to verify)."
         return {
@@ -1513,7 +1513,7 @@ class PanService:
             "reason": (
                 "Connected."
                 if directory_set
-                else "Connected; set offline directory id before submitting tasks."
+                else "Connected; set a default directory ID for automatic downloads."
             ),
             "client_id": self._effective_client_id(cfg),
             "offline_directory_id": cfg.offline_directory_id,
@@ -1778,14 +1778,16 @@ class PanService:
         for key in expired:
             self._logins.pop(key, None)
 
-    async def _hash_lock(self, info_hash: str) -> asyncio.Lock:
-        key = (info_hash or "").strip().upper() or "__empty__"
-        async with self._submit_locks_guard:
-            lock = self._submit_locks.get(key)
-            if lock is None:
-                lock = asyncio.Lock()
-                self._submit_locks[key] = lock
-            return lock
+    def _submission_lock(self, key: str) -> asyncio.Lock:
+        lock = self._submit_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._submit_locks[key] = lock
+        return lock
+
+    def offline_enqueue_lock(self, digest: str) -> asyncio.Lock:
+        """Serialize local tracking for a download identity across catalog works."""
+        return self._submission_lock(f"local:{digest}")
 
     async def submit_offline_url(
         self,
@@ -1794,15 +1796,19 @@ class PanService:
         directory_id: str,
         info_hash_hint: str | None = None,
         work_code: str | None = None,
+        expected_backend: str | None = None,
     ) -> dict[str, Any]:
         """Per-hash locked offline submit with duplicate reconcile (either backend)."""
 
         from ..media.magnets import info_hash_from_uri
 
         hint = (info_hash_hint or info_hash_from_uri(url) or "").upper()
-        lock = await self._hash_lock(hint or url)
+        lock = self._submission_lock(f"remote:{hint or url}")
         async with lock:
-            if self.backend() == "openlist":
+            backend = self.backend()
+            if expected_backend is not None and backend != expected_backend:
+                raise PanOfflineConflictError("离线后端已切换。请切回原后端或重新选择目录")
+            if backend == "openlist":
                 return await self.openlist.submit_offline(
                     url,
                     target_path=directory_id,

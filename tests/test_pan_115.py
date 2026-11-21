@@ -7,10 +7,13 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
 
+from shadow_mdc.db.repository import Database, Repository
+from shadow_mdc.domain import ProviderRecord
 from shadow_mdc.media.strm import read_strm_locator, write_strm
 from shadow_mdc.services.pan import (
     Pan115Client,
@@ -20,6 +23,7 @@ from shadow_mdc.services.pan import (
     map_remote_status,
     write_offline_strm,
 )
+from shadow_mdc.services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
 
 
 def test_generate_pkce_shapes() -> None:
@@ -59,6 +63,42 @@ def test_write_offline_strm_best_effort(tmp_path: Path) -> None:
     assert Path(path).read_text(encoding="utf-8").strip() == (
         "http://openlist:5244/d/115/JAV/SSIS-123/SSIS-123.mp4"
     )
+
+
+@pytest.mark.asyncio
+async def test_offline_enqueue_uses_explicit_115_folder_id(tmp_path: Path) -> None:
+    pan = PanService(data_dir=tmp_path)
+    pan.import_tokens("fixture-access", "fixture-refresh", expires_in=3600)
+    info_hash = "A" * 40
+    url = f"magnet:?xt=urn:btih:{info_hash}"
+    submits: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/open/offline/add_task_urls"
+        data = parse_qs(request.content.decode())
+        submits.append(data["wp_path_id"][0])
+        return httpx.Response(200, json={"state": True, "data": [{"state": True, "info_hash": info_hash}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        pan.get_client()._http = http
+        database = Database(f"sqlite:///{tmp_path / 'db.sqlite'}")
+        database.initialize()
+        with database.session() as session:
+            repo = Repository(session)
+            work = repo.upsert_provider_record(
+                ProviderRecord(provider="fixture", external_id="work", title="Fixture"),
+                overwrite=True,
+            )
+            with pytest.raises(OfflineEnqueueError, match="数字"):
+                await enqueue_work_offline(repo, pan, work.id, url=url, directory_id="/not-a-cid")
+            result = await enqueue_work_offline(repo, pan, work.id, url=url, directory_id="12345")
+            assert result.task.directory_id == "12345"
+            repeated = await enqueue_work_offline(repo, pan, work.id, url=url, directory_id="12345")
+            assert repeated.reused_running
+            with pytest.raises(OfflineEnqueueError, match="12345"):
+                await enqueue_work_offline(repo, pan, work.id, url=url, directory_id="67890")
+        assert submits == ["12345"]
+        assert pan.offline_target() is None
 
 
 @pytest.mark.asyncio

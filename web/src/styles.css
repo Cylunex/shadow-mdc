@@ -1719,7 +1719,58 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   background: var(--panel);
 }
 .danger-text { color: #ffb1b1; }
-.work-offline-strip .magnet-row { grid-template-columns: 1fr auto auto; }
+.work-offline-strip .magnet-row { grid-template-columns: minmax(0, 1fr) fit-content(45%); }
+.work-offline-strip .magnet-row small, .offline-task-target { overflow-wrap: anywhere; }
+.offline-task-panel .offline-task-row {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+.offline-download-dialog {
+  width: min(520px, calc(100% - 28px));
+  max-height: 90dvh;
+  padding: clamp(16px, 4vw, 24px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  color: inherit;
+  background: var(--panel);
+  box-shadow: var(--card-shadow);
+  overflow-wrap: anywhere;
+}
+.offline-download-dialog::backdrop { background: rgb(3 8 10 / 76%); }
+.offline-download-dialog form, .offline-directory-picker, .offline-directory-browser {
+  display: grid;
+  gap: 10px;
+}
+.offline-directory-picker { min-inline-size: 0; margin: 0; padding: 0; border: 0; }
+.offline-directory-picker label { display: grid; gap: 6px; }
+.offline-directory-picker input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: inherit;
+  background: var(--panel-2);
+}
+.offline-directory-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.offline-download-dialog form > .offline-directory-actions { justify-content: end; }
+.offline-directory-path { flex: 1 1 130px; overflow-wrap: anywhere; }
+.offline-directory-browser { padding: 10px; border: 1px solid var(--line); border-radius: 10px; }
+.offline-directory-browser ul {
+  display: grid;
+  gap: 4px;
+  max-height: 32dvh;
+  overflow: auto;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.offline-directory-browser li button { width: 100%; text-align: start; overflow-wrap: anywhere; }
 
 /* —— Unified cover frame (portrait/landscape/square aware) —— */
 .cover-frame { position: absolute; inset: 0; overflow: hidden; background: #0c1214; }

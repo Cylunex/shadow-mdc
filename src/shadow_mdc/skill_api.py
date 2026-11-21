@@ -27,6 +27,7 @@ from .api_models import (
     GfriendsFillRequest,
     IdentifyRequest,
     JavRankingSeedRequest,
+    OfflineDirectory,
     SaveMagnetsRequest,
     TaskResumeRequest,
     WorkLookupRequest,
@@ -308,6 +309,7 @@ class CodeInput(EmptyInput):
 
 class OfflineCodeInput(CodeInput):
     magnet: str | None = Field(default=None, min_length=3, max_length=4000)
+    directory_id: OfflineDirectory | None = None
 
 
 class CodePreviewInput(OfflineCodeInput):
@@ -324,11 +326,15 @@ class MagnetInput(EmptyInput):
     code: str | None = Field(default=None, max_length=100)
 
 
-class MagnetPreviewInput(MagnetInput):
+class OfflineMagnetInput(MagnetInput):
+    directory_id: OfflineDirectory | None = None
+
+
+class MagnetPreviewInput(OfflineMagnetInput):
     dry_run: Literal[True] = True
 
 
-class MagnetSubmitInput(MagnetInput):
+class MagnetSubmitInput(OfflineMagnetInput):
     dry_run: Literal[False] = False
 
 

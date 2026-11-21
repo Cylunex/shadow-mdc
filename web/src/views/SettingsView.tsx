@@ -4,6 +4,7 @@ import { queryClient } from "../query/client";
 import { resources } from "../query/resources";
 import { FieldPrioritySettings } from "../components/FieldPrioritySettings";
 import { IdentifyByUrlPanel } from "../components/IdentifyByUrlPanel";
+import { OfflineDirectoryPicker, offlineDestinationReady, offlineDirectoryLabel, offlineTaskLabel } from "../components/OfflineDownloadDialog";
 import type { Library, MediaServerSettings, OpenListTest, PanOfflineTask, PanPipeline, PanSettings, PanStatus } from "../model";
 import { AliasEditor, CatalogImportEditor, FilterWordsEditor, Libraries, ProviderDiagnostics } from "../panels";
 
@@ -42,6 +43,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
   const [pipeline, setPipeline] = useState<PanPipeline | null>(null);
   const [intakeUrl, setIntakeUrl] = useState("");
   const [intakeCode, setIntakeCode] = useState("");
+  const [intakeDirectory, setIntakeDirectory] = useState("");
   const panRead = useRef(0);
 
   const reloadPan = async () => {
@@ -701,7 +703,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
 
           <h3 style={{ marginTop: 16 }}>最近离线任务</h3>
           {offlineTasks.length === 0
-            ? <p className="muted">暂无本地记录的 115 离线任务。</p>
+            ? <p className="muted">暂无离线任务。</p>
             : (
               <div className="magnet-list">
                 {offlineTasks.slice(0, 12).map((task) => (
@@ -710,10 +712,9 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                       {task.backend === "openlist" ? "[OpenList] " : ""}
                       {task.remote_name || task.info_hash.slice(0, 12)}
                       {" · "}
-                      {task.status}
-                      {task.status === "running" ? ` ${Math.round(task.progress)}%` : ""}
+                      {offlineTaskLabel(task)}
                     </span>
-                    <small className="muted">{task.work_id.slice(0, 8)}</small>
+                    <small className="muted offline-task-target">{offlineDirectoryLabel(task)}</small>
                   </div>
                 ))}
               </div>
@@ -797,19 +798,21 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
           ) : (
             <p className="muted">管线状态尚未加载。</p>
           )}
-          <h3 style={{ marginTop: 16 }}>分享链 / 磁链摄入</h3>
-          <p className="muted">类似 TgtoDrive「粘贴分享链转存」：绑定番号后推 OpenList/115 离线，完成后自动 STRM。</p>
+          <h3 style={{ marginTop: 16 }}>链接离线下载</h3>
           <form
             className="settings-form"
             onSubmit={(event) => {
               event.preventDefault();
+              if (!offlineDestinationReady(pan, intakeDirectory)) return;
               void run("offline-intake", async () => {
                 const task = await api.panOfflineIntake({
                   url: intakeUrl.trim(),
                   code: intakeCode.trim() || undefined,
+                  directory_id: intakeDirectory.trim() || undefined,
                 });
                 setIntakeUrl("");
-                report(`已推送离线：${task.status} · ${task.remote_name || task.info_hash.slice(0, 12)}`);
+                setIntakeDirectory("");
+                report(`${offlineTaskLabel(task)} · ${offlineDirectoryLabel(task)}`);
                 await reloadPan();
               }, "none");
             }}
@@ -824,7 +827,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
               />
             </label>
             <label>
-              <span>磁链 / http(s) 分享链 / ed2k</span>
+              <span>磁力或下载链接</span>
               <input
                 value={intakeUrl}
                 onChange={(e) => setIntakeUrl(e.target.value)}
@@ -832,7 +835,16 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                 required
               />
             </label>
-            <button type="submit" disabled={busy === "offline-intake" || !intakeUrl.trim() || !intakeCode.trim()}>
+            {pan?.connected && (
+              <OfflineDirectoryPicker
+                key={pan.backend} pan={pan} value={intakeDirectory} onChange={setIntakeDirectory}
+                disabled={busy === "offline-intake"}
+              />
+            )}
+            <button type="submit" disabled={
+              busy === "offline-intake" || !intakeUrl.trim() || !intakeCode.trim() ||
+              !offlineDestinationReady(pan, intakeDirectory)
+            }>
               推送到离线
             </button>
           </form>

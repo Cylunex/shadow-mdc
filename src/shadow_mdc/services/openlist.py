@@ -908,15 +908,15 @@ class OpenListService:
             snapshot = OpenListTaskSnapshot()
         existing = snapshot.by_hash.get(digest)
         if existing is not None:
-            same_target = existing.dst is None or path_within(existing.dst, target_path)
+            same_target = existing.dst is None or existing.dst.rstrip("/") == target_path.rstrip("/")
+            if not same_target and existing.local_status in {"running", "done"}:
+                raise PanOfflineConflictError(
+                    f"OpenList 已有该磁力的离线任务，原位置为 {existing.dst}",  # noqa: RUF001
+                    code=409,
+                )
             if existing.local_status == "running":
-                if not same_target:
-                    raise PanOfflineConflictError(
-                        "OpenList 已有该磁力的离线任务，但目标目录与当前设置不一致",  # noqa: RUF001
-                        code=409,
-                    )
                 return self._result(digest, existing.id, adopted=True, message="adopted running task")
-            if existing.local_status == "done" and same_target:
+            if existing.local_status == "done":
                 return self._result(
                     digest, existing.id, adopted=True, message="adopted finished task",
                     already_exists=existing.already_exists,

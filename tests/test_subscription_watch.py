@@ -207,7 +207,7 @@ async def test_watch_run_once_enqueues_offline_for_want_work(
         )
 
         async def fake_submit(
-            url: str, *, directory_id: str, info_hash_hint: str | None = None
+            url: str, *, directory_id: str, info_hash_hint: str | None = None, **kwargs: object
         ):
             return {"info_hash": (info_hash_hint or "C" * 40).upper()}
 

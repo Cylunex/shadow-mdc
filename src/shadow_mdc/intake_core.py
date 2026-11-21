@@ -20,6 +20,7 @@ from sqlalchemy import select
 from .api_models import (
     ActorSubscriptionEdit,
     DiscoverSeedRequest,
+    OfflineDirectory,
     PlayProbeFailureOut,
     PlayResolveOut,
     PlaySourceOut,
@@ -40,7 +41,13 @@ from .media.magnets import (
 from .media.parts import find_subtitles
 from .services.offline_recovery import project_offline
 from .services.openlist import magnet_display_name
-from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
+from .services.pan import PanService
+from .services.pan_offline_enqueue import (
+    OfflineEnqueueError,
+    check_offline_directory,
+    enqueue_work_offline,
+    resolve_offline_directory,
+)
 from .services.post_ingest import translate_after_ingest
 from .services.seed_auto_offline import enqueue_seeded_offline
 
@@ -118,6 +125,8 @@ class JobOut(BaseModel):
     progress: float = 0.0
     download_state: str | None = None
     info_hash: str | None = None
+    directory_id: str
+    backend: str
     remote_name: str | None = None
     strm_path: str | None = None
     subtitle: bool = False
@@ -143,6 +152,7 @@ class OfflineAddRequest(BaseModel):
     code: str = Field(min_length=2, max_length=100)
     magnet: str | None = Field(default=None, max_length=4000, description="override: magnet/http URL")
     dry_run: bool = False
+    directory_id: OfflineDirectory | None = None
 
 
 class MagnetQualityHints(BaseModel):
@@ -193,6 +203,7 @@ class OfflineAddOut(BaseModel):
     work_id: str | None = None
     job_id: str | None = None
     job: JobOut | None = None
+    directory_id: str | None = None
     metadata: MetadataBrief | None = None
     magnet: MagnetBrief | None = None
     candidates: list[MagnetBrief] = Field(default_factory=list)
@@ -205,6 +216,7 @@ class OfflineMagnetAddRequest(BaseModel):
     title: str | None = Field(default=None, max_length=500, description="display title override")
     code: str | None = Field(default=None, max_length=100, description="optional 番号 override")
     dry_run: bool = True
+    directory_id: OfflineDirectory | None = None
 
 
 
@@ -590,6 +602,8 @@ def job_out(task: PanOfflineTask, work: Work | None) -> JobOut:
         progress=float(task.progress or 0.0),
         download_state=projection.download_state or None,
         info_hash=task.info_hash or None,
+        directory_id=task.directory_id,
+        backend=task.backend or "115_open",
         remote_name=task.remote_name,
         strm_path=task.strm_path,
         subtitle=_has_subtitle(task.strm_path),
@@ -807,21 +821,26 @@ async def intake_offline_add(payload: OfflineAddRequest, request: Request, repo:
     core = _core()
     app_runtime = core.runtime(request)
     code = normalize_code_or_422(payload.code)
+    backend, target = _intake_directory(app_runtime.pan_service, payload.directory_id)
     want = set(app_runtime.library_prefs_store.load().want_list)
     state = library_state(repo, code, want_list=want)
     if state.in_library:
+        completed = next((job for job in state.jobs if job.stage == "in_library"), None)
+        _check_existing_job_target(completed, backend, target if payload.directory_id is not None else None)
+        job = completed or (state.jobs[0] if state.jobs else None)
         return OfflineAddOut(
             code=code,
             action="exists",
             dry_run=payload.dry_run,
             work_id=state.work_id,
-            job_id=state.jobs[0].job_id if state.jobs else None,
-            job=state.jobs[0] if state.jobs else None,
+            job_id=job.job_id if job else None,
+            job=job,
             metadata=state.metadata,
             message="already in library",
         )
     running = next((job for job in state.jobs if job.status == "running"), None)
     if running is not None and not payload.magnet:
+        _check_existing_job_target(running, backend, target if payload.directory_id is not None else None)
         return OfflineAddOut(
             code=code,
             action="running",
@@ -835,7 +854,7 @@ async def intake_offline_add(payload: OfflineAddRequest, request: Request, repo:
 
     work = repo.find_work_by_code(code)
     pan_status = app_runtime.pan_service.status()
-    pan_ready = bool(pan_status.get("connected")) and bool(app_runtime.pan_service.offline_target())
+    pan_ready = bool(pan_status.get("connected")) and bool(target)
 
     if payload.dry_run:
         metadata = state.metadata
@@ -857,17 +876,23 @@ async def intake_offline_add(payload: OfflineAddRequest, request: Request, repo:
         steps = []
         if work is None:
             steps.append("seed catalog work" + (" (metadata found)" if metadata else " (NO metadata found)"))
-        steps.append("submit 115 offline" if chosen else "no magnet → add to want_list (盯磁 keeps hunting)")
+        if chosen:
+            steps.append("submit offline")
+        elif payload.directory_id is None:
+            steps.append("no magnet → add to want_list (盯磁 keeps hunting)")
+        else:
+            steps.append("no magnet available for the selected directory")
         steps.append("poller on completion: STRM + NFO + artwork + subtitle + Emby notify")
         if not pan_ready:
             steps.append("WARNING: pan/offline target not ready")
         return OfflineAddOut(
             code=code,
-            action="planned" if chosen else "hunting",
+            action="planned" if chosen else ("hunting" if payload.directory_id is None else "error"),
             dry_run=True,
             work_id=work.id if work is not None else None,
             metadata=metadata,
             magnet=chosen,
+            directory_id=target,
             candidates=ranked_briefs,
             message="; ".join(steps),
         )
@@ -894,7 +919,9 @@ async def intake_offline_add(payload: OfflineAddRequest, request: Request, repo:
 
     if payload.magnet:
         try:
-            result = await enqueue_work_offline(repo, app_runtime.pan_service, work_id, url=payload.magnet)
+            result = await enqueue_work_offline(
+                repo, app_runtime.pan_service, work_id, url=payload.magnet, directory_id=payload.directory_id
+            )
         except OfflineEnqueueError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
         repo._session.commit()
@@ -902,7 +929,7 @@ async def intake_offline_add(payload: OfflineAddRequest, request: Request, repo:
         job = job_out(result.task, work)
         return OfflineAddOut(
             code=code,
-            action="running" if result.reused_running else "submitted",
+            action=result.action,
             dry_run=False,
             work_id=work_id,
             job_id=job.job_id,
@@ -918,6 +945,7 @@ async def intake_offline_add(payload: OfflineAddRequest, request: Request, repo:
         work_ids=[work_id],
         pace_seconds=0,
         library_prefs_store=app_runtime.library_prefs_store,
+        directory_id=payload.directory_id,
     )
     app_runtime.task_events.notify()
     row = stats.results[0] if stats.results else {}
@@ -925,16 +953,23 @@ async def intake_offline_add(payload: OfflineAddRequest, request: Request, repo:
     reason = str(row.get("reason") or "")
     repo._session.expire_all()
     work = repo.get_work(work_id) or work
-    tasks = repo.list_pan_offline_tasks(work_id=work_id, limit=1)
-    job = job_out(tasks[0], work) if tasks else None
+    task_id = row.get("task_id")
+    task = repo.get_pan_offline_task(task_id) if isinstance(task_id, str) else None
+    job = job_out(task, work) if task is not None else None
+    status_code = row.get("status_code")
+    if payload.directory_id is not None and isinstance(status_code, int):
+        raise HTTPException(status_code=status_code, detail=reason)
     action: str = {
         "submitted": "submitted",
         "reused": "running",
-        "skipped": "running" if job is not None else "error",
+        "skipped": ("running" if job.status == "running" else "exists") if job is not None else "error",
         "hunting": "hunting",
     }.get(outcome, "error")
     if action == "hunting":
-        reason = (reason + "; added to want_list (盯磁)").strip("; ")
+        if payload.directory_id is None:
+            reason = (reason + "; added to want_list (盯磁)").strip("; ")
+        else:
+            action = "error"
     return OfflineAddOut(
         code=code,
         action=action,
@@ -943,8 +978,27 @@ async def intake_offline_add(payload: OfflineAddRequest, request: Request, repo:
         job_id=job.job_id if job and action != "hunting" else None,
         job=job if action != "hunting" else None,
         metadata=brief_from_work(work),
+        directory_id=target,
         message=reason,
     )
+
+
+def _intake_directory(pan: PanService, directory_id: str | None) -> tuple[str, str | None]:
+    backend = pan.backend()
+    try:
+        return backend, resolve_offline_directory(pan, directory_id, backend=backend)
+    except OfflineEnqueueError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+def _check_existing_job_target(job: JobOut | None, backend: str, target: str | None) -> None:
+    if job is not None and target is not None:
+        try:
+            check_offline_directory(
+                expected=target, backend=backend, actual=job.directory_id, actual_backend=job.backend
+            )
+        except OfflineEnqueueError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
 def analyze_magnet(
@@ -1119,6 +1173,7 @@ async def intake_offline_add_magnet(
         raise HTTPException(status_code=422, detail="magnet URI missing btih info_hash")
 
     dn = magnet_display_name(magnet)
+    backend, target = _intake_directory(app_runtime.pan_service, payload.directory_id)
     inspected = analyze_magnet(
         repo,
         magnet=magnet,
@@ -1128,6 +1183,7 @@ async def intake_offline_add_magnet(
     )
     dedup = _hash_dedup_out(repo, info_hash=info_hash, magnet=magnet, dry_run=payload.dry_run, dn=dn)
     if dedup is not None:
+        _check_existing_job_target(dedup.job, backend, target if payload.directory_id is not None else None)
         if payload.dry_run:
             dedup.inspect = inspected
         return dedup
@@ -1141,13 +1197,15 @@ async def intake_offline_add_magnet(
     if code is not None:
         # Reuse the existing code-based offline path with magnet override.
         return await intake_offline_add(
-            OfflineAddRequest(code=code, magnet=magnet, dry_run=payload.dry_run), request, repo
+            OfflineAddRequest(
+                code=code, magnet=magnet, dry_run=payload.dry_run, directory_id=payload.directory_id
+            ), request, repo
         )
 
     title = _magnet_title(title=payload.title, dn=dn, info_hash=info_hash)
     existing = repo.find_work_by_provider_identity(MAGNET_INGEST_PROVIDER, info_hash)
     pan_status = app_runtime.pan_service.status()
-    pan_ready = bool(pan_status.get("connected")) and bool(app_runtime.pan_service.offline_target())
+    pan_ready = bool(pan_status.get("connected")) and bool(target)
     magnet_brief = MagnetBrief(
         uri=magnet,
         info_hash=info_hash,
@@ -1187,6 +1245,7 @@ async def intake_offline_add_magnet(
                 )
             ),
             magnet=magnet_brief,
+            directory_id=target,
             inspect=inspected,
             message="; ".join(steps),
         )
@@ -1203,7 +1262,9 @@ async def intake_offline_add_magnet(
     repo._session.commit()
 
     try:
-        result = await enqueue_work_offline(repo, app_runtime.pan_service, work_id, url=magnet)
+        result = await enqueue_work_offline(
+            repo, app_runtime.pan_service, work_id, url=magnet, directory_id=payload.directory_id
+        )
     except OfflineEnqueueError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     repo._session.commit()
@@ -1217,7 +1278,7 @@ async def intake_offline_add_magnet(
     job = job_out(result.task, work)
     return OfflineAddOut(
         code=None,
-        action="running" if result.reused_running else "submitted",
+        action=result.action,
         dry_run=False,
         work_id=work_id,
         job_id=job.job_id,

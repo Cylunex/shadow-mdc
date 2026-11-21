@@ -398,6 +398,9 @@ def test_offline_submit_happens_outside_db_transaction(tmp_path: Path) -> None:
         def offline_target(self) -> str:
             return "cid"
 
+        def offline_enqueue_lock(self, digest: str) -> asyncio.Lock:
+            return asyncio.Lock()
+
         async def submit_offline_url(self, url: str, **_kwargs: Any) -> dict[str, object]:
             FakePan.in_tx = session_ref.in_transaction()
             return {"info_hash": "A" * 40}

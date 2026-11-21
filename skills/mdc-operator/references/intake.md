@@ -14,6 +14,15 @@
 同一作品已有媒体或正在执行时复用现有结果。没有可用磁力时，`action=hunting` 表示已建档并加入想看，
 既有盯磁流程会继续找资源；这不是下载成功。服务未连接或目标未配置时按实际错误报告。
 
+## 为本次下载指定目录
+
+`intake.code.preview/submit`、`intake.magnet.preview/submit`、`intake.link.submit` 和
+`intake.item`（`download=true`）支持可选的 `directory_id`。OpenList 使用挂载内的绝对路径，
+例如 `"/115/归档"`。直连 115 使用数字文件夹 ID，例如 `"123456"`。
+省略时使用设置里的默认值。已有同一下载时回读 `job.directory_id` 和 `job.backend`。
+显式选择的目录与已有下载冲突时，返回原目录，保留已有任务。
+指定目录的番号提交若暂时没有磁力，会返回未提交结果。找到磁力后可携带同一目录再次提交。
+
 ## 磁力入库
 
 `intake.magnet.inspect` 解析信息并核对已存在条目；`intake.magnet.preview` 预览后续处理；

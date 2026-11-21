@@ -569,7 +569,7 @@ class PanOfflinePoller:
                 task: OpenListTask | None = snapshot.by_id.get(remote_id) if remote_id else None
                 if task is None:
                     task = snapshot.by_hash.get(info_hash.upper())
-                if task is None:
+                if task is None or (task.dst is not None and task.dst.rstrip("/") != target.rstrip("/")):
                     # Unknown to OpenList right now: try the result folder below.
                     finished.append((task_id, target, url, None))
                     continue

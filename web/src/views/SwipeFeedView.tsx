@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, appUrl } from "../api";
 import { CoverImage } from "../components/CoverImage";
 import { InAppPlayer, type PlayerSource } from "../components/InAppPlayer";
+import { OfflineDownloadDialog, offlineDirectoryLabel, offlineTaskLabel } from "../components/OfflineDownloadDialog";
 import { mediaUrl } from "../lib/mediaUrl";
 import type { Work } from "../model";
 
@@ -96,15 +97,6 @@ function sourcesFromResolve(payload: Record<string, unknown>, pageUrl?: string):
   return out;
 }
 
-async function enqueueOffline(workId: string, report: (message: string) => void): Promise<void> {
-  try {
-    await api.submitWorkOffline(workId, {});
-    report("已提交离线入库任务");
-  } catch (err) {
-    report(err instanceof Error ? err.message : String(err));
-  }
-}
-
 export function SwipeFeedView({ works = EMPTY_WORKS, loading, pagedLibrary, initialLibrary, onOpenDetail, report }: Props) {
   const [mode, setMode] = useState<Mode>(initialLibrary ? "library" : "tube");
   const [orderKey, setOrderKey] = useState(() => initialLibrary?.seed ?? Math.floor(Math.random() * 1_000_000));
@@ -116,7 +108,7 @@ export function SwipeFeedView({ works = EMPTY_WORKS, loading, pagedLibrary, init
   const [activeLibId, setActiveLibId] = useState<string | null>(null);
   const [libSources, setLibSources] = useState<PlayerSource[]>([]);
   const [libResolving, setLibResolving] = useState(false);
-  const [offlineId, setOfflineId] = useState<string | null>(null);
+  const [offlineWork, setOfflineWork] = useState<LibraryCard | null>(null);
 
   const [tubeItems, setTubeItems] = useState<TubeItem[]>([]);
   const [tubeCursor, setTubeCursor] = useState<string | number | Record<string, unknown> | null>(null);
@@ -686,13 +678,9 @@ export function SwipeFeedView({ works = EMPTY_WORKS, loading, pagedLibrary, init
                           <button
                             type="button"
                             className="secondary"
-                            disabled={offlineId === work.id}
-                            onClick={() => {
-                              setOfflineId(work.id);
-                              void enqueueOffline(work.id, report).finally(() => setOfflineId(null));
-                            }}
+                            onClick={() => setOfflineWork(work)}
                           >
-                            {offlineId === work.id ? "提交中…" : "入库"}
+                            入库
                           </button>
                           <button type="button" className="secondary" onClick={() => onOpenDetail(
                             work.id, page ? { ...page, filter, seed: orderKey, activeId: work.id } : undefined,
@@ -707,6 +695,16 @@ export function SwipeFeedView({ works = EMPTY_WORKS, loading, pagedLibrary, init
               );
             })}
       </div>
+      {offlineWork && (
+        <OfflineDownloadDialog
+          name={offlineWork.title}
+          onClose={() => setOfflineWork(null)}
+          submit={async (directory_id) => {
+            const task = await api.submitWorkOffline(offlineWork.id, { directory_id });
+            report(`${offlineTaskLabel(task)} · ${offlineDirectoryLabel(task)}`);
+          }}
+        />
+      )}
     </section>
   );
 }

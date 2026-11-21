@@ -72,11 +72,11 @@ class FakeOpenList:
     def task_name(self, url: str, dst: str = TARGET) -> str:
         return f"download {url} to ({dst})"
 
-    def add_result(self, folder: str, files: list[tuple[str, int]]) -> None:
-        self.tree[TARGET].append(
+    def add_result(self, folder: str, files: list[tuple[str, int]], *, target: str = TARGET) -> None:
+        self.tree.setdefault(target, []).append(
             {"name": folder, "is_dir": True, "size": 0, "modified": "2026-10-01T10:00:00.123456789+08:00"}
         )
-        self.tree[f"{TARGET}/{folder}"] = [
+        self.tree[f"{target}/{folder}"] = [
             {"name": name, "is_dir": False, "size": size, "modified": "2026-10-01T10:05:00Z"}
             for name, size in files
         ]
@@ -391,6 +391,72 @@ def test_connection_treats_driver_tools_omitted_from_public_list_as_unknown(
 
 
 # ---------------------------------------------------------------- offline flow
+
+
+def test_custom_target_survives_completion_and_allows_only_exported_relay_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_pacing(monkeypatch)
+    fake = FakeOpenList()
+    target = "/115/Archive"
+    export = tmp_path / "strm"
+    with _boot(tmp_path, monkeypatch) as client:
+        runtime = app.state.runtime
+        monkeypatch.setattr(runtime.pan_poller, "_subtitles", None)
+        pan = runtime.pan_service
+        pan.openlist.set_transport(httpx.MockTransport(fake))
+        pan.save_settings({
+            "pan_backend": "openlist", "openlist_base_url": BASE, "openlist_offline_path": TARGET,
+            "strm_enabled": True, "strm_mode": "relay", "strm_token": "test-token",
+            "strm_public_base_url": "https://mdc.example.com", "strm_output_root": str(export),
+        })
+        pan.set_openlist_credentials(token=TOKEN)
+        with runtime.database.session() as session:
+            repo = Repository(session)
+            work = repo.upsert_provider_record(
+                ProviderRecord(provider="fixture", external_id="abc123", title="Fixture", code="ABC-123"),
+                overwrite=True,
+            )
+            repo.save_work_magnets(
+                work, [{"uri": MAGNET, "info_hash": HASH, "name": "ABC-123"}], provider="fixture"
+            )
+            work_id = work.id
+
+        route = f"/api/works/{work_id}/offline"
+        assert client.post(route, json={"directory_id": "/115/../Archive"}).status_code == 422
+        response = client.post(route, json={"directory_id": f"{target}/"})
+        assert response.status_code == 202, response.text
+        task = response.json()
+        assert task["directory_id"] == target
+        assert client.post(route, json={"directory_id": target}).json()["id"] == task["id"]
+        conflict = client.post("/api/pan/offline/intake", json={
+            "code": "ABC-123", "url": MAGNET, "directory_id": TARGET,
+        })
+        assert conflict.status_code == 409 and target in conflict.json()["detail"]
+        next_magnet = client.post(f"/api/pan/offline/tasks/{task['id']}/next")
+        assert next_magnet.status_code == 409
+        assert client.get(route).json()[0]["status"] == "running"
+        submits = [body for _, path, body, _ in fake.calls if path == "/api/fs/add_offline_download"]
+        assert len(submits) == 1
+        submission = submits[0]
+        assert submission is not None and submission["path"] == target
+        assert pan.offline_target() == TARGET
+
+        fake.add_result("ABC-123", [("ABC-123.mp4", 300_000_000), ("other.txt", 100)], target=target)
+        fake.finish(task["remote_task_id"])
+        assert client.portal is not None
+        client.portal.call(runtime.pan_poller.poll_openlist_once)
+        completed = client.get(route).json()[0]
+        assert completed["status"] == "done" and completed["directory_id"] == target
+        locator = Path(completed["strm_path"]).read_text().strip()
+        assert locator == "https://mdc.example.com/api/strm/openlist/115/Archive/ABC-123/ABC-123.mp4?token=test-token"
+        relay = client.get(locator, follow_redirects=False)
+        assert relay.status_code == 302
+        assert relay.headers["location"] == f"{BASE}/d{target}/ABC-123/ABC-123.mp4"
+        unknown = client.get(locator.replace("ABC-123.mp4", "other.txt"), follow_redirects=False)
+        assert unknown.status_code == 404
+        assert client.post(route, json={"directory_id": target}).json()["status"] == "done"
+        assert client.post(route, json={"directory_id": TARGET}).status_code == 409
 
 
 def test_enqueue_submits_with_tool_and_dedups(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

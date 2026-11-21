@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
+from weakref import WeakValueDictionary
 
 import httpx
 
@@ -53,6 +55,7 @@ class OfflineRecoveryController:
     def __init__(self, *, database: Database, pan: PanService) -> None:
         self._database = database
         self._pan = pan
+        self._action_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
     def auto_switch_enabled(self) -> bool:
         return bool(self._pan.config_store.load().auto_switch)
@@ -86,7 +89,10 @@ class OfflineRecoveryController:
                 raise OfflineControlError("offline task not found", status_code=404)
             if task.status not in {"running", "failed"}:
                 raise OfflineControlError("task cannot be cancelled", status_code=409)
-            state = begin_cancel(load_recovery(task), manual=True)
+            state = load_recovery(task)
+            if state.action and state.action != "cancel":
+                raise OfflineControlError("recovery action already in progress", status_code=409)
+            state = begin_cancel(state, manual=True) if not state.action else state
             repo.update_pan_offline_task(task, recovery_json=state.to_dict())
             task_id = task.id
         return await self.advance(task_id)
@@ -99,6 +105,8 @@ class OfflineRecoveryController:
                 raise OfflineControlError("offline task not found", status_code=404)
             if task.status not in {"running", "failed"}:
                 raise OfflineControlError("task cannot switch magnets", status_code=409)
+            if (task.backend or "115_open") != self._pan.backend():
+                raise OfflineControlError("请切回该任务使用的离线后端后再换磁力", status_code=409)
             state = load_recovery(task)
             if state.action:
                 raise OfflineControlError("recovery action already in progress", status_code=409)
@@ -110,17 +118,11 @@ class OfflineRecoveryController:
                 exclude_hashes=self._busy_hashes(repo, task.work_id, except_task_id=task.id),
                 expected_code=work.primary_code if work is not None else None,
             )
+            if candidate is None:
+                raise OfflineControlError("没有可切换的磁力", status_code=409)
             state = begin_switch(
                 state, reason=SWITCH_REASON_MANUAL, next_magnet=candidate, manual=True
             )
-            if state.exhausted:
-                repo.update_pan_offline_task(
-                    task,
-                    status="failed",
-                    error="no alternate magnets left to try",
-                    recovery_json=state.to_dict(),
-                )
-                return OfflineControlResult(task=task, changed=True)
             repo.update_pan_offline_task(task, recovery_json=state.to_dict())
             task_id = task.id
         return await self.advance(task_id)
@@ -212,6 +214,10 @@ class OfflineRecoveryController:
         return advanced
 
     async def advance(self, task_id: str) -> OfflineControlResult:
+        async with self._action_locks.setdefault(task_id, asyncio.Lock()):
+            return await self._advance(task_id)
+
+    async def _advance(self, task_id: str) -> OfflineControlResult:
         with self._database.session() as session:
             repo = Repository(session)
             task = repo.get_pan_offline_task(task_id)
@@ -268,7 +274,7 @@ class OfflineRecoveryController:
                     remote_task_id=None,
                     recovery_json=state.to_dict(),
                 )
-            return await self.advance(task_id)
+            return await self._advance(task_id)
 
         if action == "submit":
             if not next_url or not next_hash:
@@ -292,6 +298,7 @@ class OfflineRecoveryController:
                     directory_id=directory_id,
                     info_hash_hint=next_hash,
                     work_code=work_code,
+                    expected_backend=backend,
                 )
             except (
                 PanNotConfiguredError,
@@ -343,6 +350,10 @@ class OfflineRecoveryController:
                     url=next_url,
                 )
                 state.existing_result_pending = bool(submit_result.get("already_exists"))
+                task.file_id = None
+                task.remote_name = None
+                task.remote_path = None
+                task.strm_path = None
                 updates: dict[str, object] = {
                     "status": "done" if state.existing_result_pending else "running",
                     "progress": 100.0 if state.existing_result_pending else 0.0,
