@@ -96,6 +96,7 @@ class R18DumpProvider:
             name="R18.dev dump (offline)",
             query_modes=frozenset({QueryMode.CODE}),
             families=frozenset({ContentFamily.JAV}),
+            configured=self._store is not None or (self._db_path is not None and self._db_path.is_file()),
         )
 
     def _get_store(self) -> R18DumpStore | None:

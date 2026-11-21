@@ -31,6 +31,7 @@ from .api_models import (
     SaveMagnetsRequest,
     TaskResumeRequest,
     WorkLookupRequest,
+    WorkRefreshRequest,
     WorkUpdateRequest,
 )
 from .catalog_api import ClassificationTermCreate, ClassificationTermEdit, TaxonomyEdit
@@ -45,6 +46,7 @@ from .catalog_management import (
 )
 from .db.models import Work
 from .intake_core import SubscribeRequest
+from .providers.base import ProviderSelection
 from .services.catalog_people import MergeRequest, PersonEdit
 from .services.discover import DiscoverList
 from .skill_operations import (
@@ -261,7 +263,7 @@ class SearchInput(EmptyInput):
 
 class MetadataInput(EmptyInput):
     code: str = Field(min_length=2, max_length=100)
-    providers: bool | Annotated[str, Field(max_length=500)] | None = None
+    providers: ProviderSelection | None = None
 
     @field_validator("code")
     @classmethod
@@ -310,6 +312,7 @@ class CodeInput(EmptyInput):
 class OfflineCodeInput(CodeInput):
     magnet: str | None = Field(default=None, min_length=3, max_length=4000)
     directory_id: OfflineDirectory | None = None
+    providers: ProviderSelection | None = None
 
 
 class CodePreviewInput(OfflineCodeInput):
@@ -328,6 +331,7 @@ class MagnetInput(EmptyInput):
 
 class OfflineMagnetInput(MagnetInput):
     directory_id: OfflineDirectory | None = None
+    providers: ProviderSelection | None = None
 
 
 class MagnetPreviewInput(OfflineMagnetInput):
@@ -366,6 +370,10 @@ class LookupInput(WorkLookupRequest, EmptyInput):
         if sum(bool(item) for item in (self.code, self.source_url, self.external_ids)) != 1:
             raise ValueError("provide exactly one of code, source_url or external_ids")
         return self
+
+
+class RefreshInput(WorkRefreshRequest, WorkInput):
+    pass
 
 
 class LibraryInput(EmptyInput):
@@ -641,7 +649,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability(
         "works.lookup",
-        "按编号、来源 URL 或外部 ID 刮削并建档元数据、不提交下载。",
+        "按编号、来源 URL 或外部 ID 建档元数据。支持指定来源。",
         "write",
         LookupInput,
         "POST",
@@ -649,9 +657,9 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability(
         "works.refresh",
-        "重新刮削已有作品、沿用字段锁和服务配额。",
+        "用首选来源重新刮削已有作品。支持指定来源并遵循字段锁及配额。",
         "write",
-        WorkInput,
+        RefreshInput,
         "POST",
         "/api/works/{work_id}/refresh",
         "work_id",

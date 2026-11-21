@@ -31,6 +31,8 @@ from ..enums import (
 )
 from ..filename_tags import filename_tags
 from ..identity import normalize_identity_value
+from ..matching import candidate_sort_key
+from ..normalize_code import is_format_equivalent
 from ..tags import canonicalize_tag, tag_id, tag_matches, tag_tree_ids
 from .classification_migration import migrate_classifications
 from .models import (
@@ -739,12 +741,11 @@ class Repository:
         return saved
 
     def list_candidates(self, asset_id: str) -> list[MatchCandidateRow]:
-        statement = (
-            select(MatchCandidateRow)
-            .where(MatchCandidateRow.asset_id == asset_id)
-            .order_by(MatchCandidateRow.score.desc())
+        statement = select(MatchCandidateRow).where(MatchCandidateRow.asset_id == asset_id)
+        return sorted(
+            self._session.scalars(statement),
+            key=lambda row: candidate_sort_key(row.score, row.provider, row.external_id),
         )
-        return list(self._session.scalars(statement))
 
     def get_candidate(self, candidate_id: str) -> MatchCandidateRow | None:
         return self._session.get(MatchCandidateRow, candidate_id)
@@ -755,7 +756,7 @@ class Repository:
     def match_feedback(self) -> list[MatchFeedback]:
         return list(self._session.scalars(select(MatchFeedback)))
 
-    def accept_candidate(self, candidate_id: str) -> Work:
+    def accept_candidate(self, candidate_id: str, *, ranked_cast: bool = False) -> Work:
         candidate = self.get_candidate(candidate_id)
         if candidate is None:
             raise LookupError(f"candidate {candidate_id} not found")
@@ -767,7 +768,7 @@ class Repository:
         if work is None:
             work = self._create_work(record)
         else:
-            self._merge_provider_record(work, record)
+            self._merge_provider_record(work, record, ranked_cast=ranked_cast)
         self._add_record_identities(work, record)
         self._upsert_snapshot(work, record)
         self.attach_asset_to_work(asset, work)
@@ -786,7 +787,7 @@ class Repository:
         if work is None:
             raise LookupError(f"work {work_id} not found")
         record = ProviderRecord.model_validate(candidate.record)
-        self._merge_provider_record(work, record, overwrite=False)
+        self._merge_provider_record(work, record, overwrite=False, ranked_cast=True)
         self._add_record_identities(work, record)
         self._upsert_snapshot(work, record)
         candidate.state = CandidateState.ACCEPTED.value
@@ -882,12 +883,14 @@ class Repository:
         )
         return ProviderRecord.model_validate(candidate.record) if candidate is not None else None
 
-    def upsert_provider_record(self, record: ProviderRecord, *, overwrite: bool) -> Work:
+    def upsert_provider_record(
+        self, record: ProviderRecord, *, overwrite: bool, ranked_cast: bool = False,
+    ) -> Work:
         work = self._resolve_existing_work(record)
         if work is None:
             work = self._create_work(record)
         else:
-            self._merge_provider_record(work, record, overwrite=overwrite)
+            self._merge_provider_record(work, record, overwrite=overwrite, ranked_cast=ranked_cast)
         self._add_record_identities(work, record)
         self._upsert_snapshot(work, record)
         self.sync_work_collections(work)
@@ -900,15 +903,27 @@ class Repository:
         record: ProviderRecord,
         *,
         overwrite: bool = False,
+        ranked_cast: bool = False,
     ) -> Work:
         """Fill/merge provider fields into an existing work — never creates rows."""
 
-        self._merge_provider_record(work, record, overwrite=overwrite)
+        self._merge_provider_record(work, record, overwrite=overwrite, ranked_cast=ranked_cast)
         self._add_record_identities(work, record)
         self._upsert_snapshot(work, record)
         self.sync_work_collections(work)
         self._session.flush()
         return work
+
+    def can_merge_provider_record(self, work: Work, record: ProviderRecord) -> bool:
+        """Guard a fixed target against code conflicts and identities owned by another work."""
+
+        if work.primary_code and record.code and not is_format_equivalent(work.primary_code, record.code):
+            return False
+        provider_work = self.find_work_by_provider_identity(record.provider, record.external_id)
+        if provider_work is not None and provider_work.id != work.id:
+            return False
+        code_work = self.find_work_by_code(record.code) if record.code else None
+        return code_work is None or code_work.id == work.id
 
     def delete_work(self, work_id: str) -> bool:
         """Delete a work and rely on FK CASCADE for dependent rows."""
@@ -1156,14 +1171,9 @@ class Repository:
         return asset
 
     def top_pending_candidate(self, asset_id: str) -> MatchCandidateRow | None:
-        return self._session.scalar(
-            select(MatchCandidateRow)
-            .where(
-                MatchCandidateRow.asset_id == asset_id,
-                MatchCandidateRow.state == CandidateState.PENDING.value,
-            )
-            .order_by(MatchCandidateRow.score.desc(), MatchCandidateRow.created_at.desc())
-            .limit(1)
+        return next(
+            (item for item in self.list_candidates(asset_id) if item.state == CandidateState.PENDING.value),
+            None,
         )
 
     def update_work_fields(
@@ -1923,6 +1933,7 @@ class Repository:
         record: ProviderRecord,
         *,
         overwrite: bool = True,
+        ranked_cast: bool = False,
     ) -> None:
         sources = dict(work.field_sources or {})
         if not _field_locked(work, "title") and (overwrite or not work.title):
@@ -1984,7 +1995,11 @@ class Repository:
             incoming_named = _named_actor_list(record.actors)
             actor_source = str(sources.get("actors", ""))
             # Absent / blank cast is not evidence — never wipe named or manual credits.
-            if _reject_actor_wipe(current_named, incoming_named):
+            if ranked_cast:
+                if incoming_named and (overwrite or not current_named):
+                    work.actors = merge_actor_names([], incoming_named, replace=True)
+                    sources["actors"] = record.provider
+            elif _reject_actor_wipe(current_named, incoming_named):
                 pass
             elif incoming_named:
                 incoming_priority = _JAV_ACTOR_PROVIDER_PRIORITY.get(record.provider)

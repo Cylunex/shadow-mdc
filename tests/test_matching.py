@@ -81,6 +81,19 @@ def test_ranking_is_stable_for_equal_scores() -> None:
     assert [item.record.external_id for item in ranked] == ["a", "b"]
 
 
+def test_exact_number_ties_use_source_priority_but_stronger_evidence_wins() -> None:
+    hints = IdentityHints(term="SSIS-123", code="SSIS-123", mode=QueryMode.CODE)
+    by_provider = {
+        provider: record(code="SSIS-123", external_id=provider).model_copy(update={"provider": provider})
+        for provider in ("freejavbt", "javdb", "r18dev", "r18dump")
+    }
+    ranked = rank_candidates(hints, by_provider.values())
+    assert [item.record.provider for item in ranked] == ["r18dump", "r18dev", "javdb", "freejavbt"]
+    assert {item.score for item in ranked} == {0.92}
+    verified = hints.model_copy(update={"external_ids": {"freejavbt": "freejavbt"}})
+    assert rank_candidates(verified, by_provider.values())[0].record.provider == "freejavbt"
+
+
 def test_no_code_alias_fields_add_review_evidence_without_auto_accept() -> None:
     hints = IdentityHints(
         term="一段没有番号的标题",

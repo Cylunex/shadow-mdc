@@ -12,7 +12,7 @@ from .domain import (
 )
 from .enums import CollectionKind, LibraryPresence, MediaCategory, NfoPolicy, OutputMode, RecognitionScope
 from .media.organize_journal import JournalEntry
-from .providers.base import ProviderFailure
+from .providers.base import ProviderFailure, ProviderSelection
 from .tag_models import TagReference
 
 
@@ -251,6 +251,7 @@ class IdentifyOut(BaseModel):
     asset_id: str
     candidate_ids: tuple[str, ...]
     accepted_work_id: str | None
+    selected_provider: str | None = None
     failures: tuple[ProviderFailure, ...]
 
 
@@ -284,6 +285,11 @@ class WorkLookupRequest(BaseModel):
     code: str | None = Field(default=None, min_length=2, max_length=100)
     source_url: str | None = Field(default=None, max_length=2000)
     external_ids: dict[str, str] = Field(default_factory=dict)
+    providers: ProviderSelection | None = None
+
+
+class WorkRefreshRequest(BaseModel):
+    providers: ProviderSelection | None = None
 
 
 class WorkLookupOut(BaseModel):

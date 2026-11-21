@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Set
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -12,6 +12,7 @@ from sqlalchemy import and_, delete, exists, func, or_, select
 
 from .api_models import OfflineDirectory
 from .catalog_gaps import gap_conditions
+from .classification import category_for_family
 from .classifications import DURATION_FORM_IDS, ClassificationSelection
 from .db.models import (
     CatalogClassificationTerm,
@@ -43,15 +44,18 @@ from .intake_core import (
     job_out,
     normalize_code_or_422,
     require_service_token,
+    select_metadata_providers,
 )
 from .matching import rank_candidates
 from .media.artwork import ArtworkStore
 from .media.nfo_import import read_movie_element, resolve_sidecar_nfo
-from .services.work_samples import acquire_work_artwork
+from .normalize_code import is_format_equivalent
+from .providers.base import ProviderSelection
 from .services.catalog_classifications import validate_selection, work_classifications
 from .services.offline_recovery import load_recovery
 from .services.pan_offline_enqueue import OfflineEnqueueError, enqueue_work_offline
 from .services.translation import WorkTranslator
+from .services.work_samples import acquire_work_artwork
 from .tag_models import fold_tag
 from .tags import current_registry
 
@@ -82,6 +86,7 @@ class FillInput(WorkTarget):
     fields: list[Literal["title", "plot", "actors", "artwork", "translation", "runtime_seconds"]] = Field(
         default=["actors", "artwork", "translation"], min_length=1, max_length=6
     )
+    providers: ProviderSelection | None = None
 
 
 class ClassificationFill(ClassificationSelection, WorkTarget):
@@ -127,6 +132,7 @@ class IntakeItem(OperationInput):
     tags: list[str] = Field(default_factory=list, max_length=200)
     download: bool = False
     directory_id: OfflineDirectory | None = None
+    providers: ProviderSelection | None = None
 
     @model_validator(mode="after")
     def identity(self) -> IntakeItem:
@@ -140,6 +146,15 @@ class IntakeItem(OperationInput):
         if self.directory_id is not None and not self.download:
             raise ValueError("directory_id requires download=true")
         return self
+
+
+def _missing_metadata_fields(work: Work, fields: Set[str]) -> set[str]:
+    return {
+        key for key, value in {
+            "title": work.title, "plot": work.plot, "actors": work.actors,
+            "artwork": work.artwork, "runtime_seconds": work.runtime_seconds,
+        }.items() if key in fields and not value
+    }
 
 
 def apply_tags(repo: Repository, work_id: str, add: list[str], remove: list[str]) -> list[str]:
@@ -327,6 +342,7 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
     @router.post("/fill")
     async def fill(payload: FillInput, request: Request) -> dict[str, object]:
         app_runtime = runtime(request)
+        selected = select_metadata_providers(app_runtime.providers, payload.providers)
         changed: list[str] = []
         errors: list[str] = []
         with app_runtime.database.session() as session:
@@ -335,17 +351,7 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
             if work is None:
                 raise HTTPException(404, "work not found")
             fields = set(payload.fields) - set(work.field_locks or [])
-            missing = {
-                key
-                for key, value in {
-                    "title": work.title,
-                    "plot": work.plot,
-                    "actors": work.actors,
-                    "artwork": work.artwork,
-                    "runtime_seconds": work.runtime_seconds,
-                }.items()
-                if key in fields and not value
-            }
+            missing = _missing_metadata_fields(work, fields)
             if missing:
                 if not work.primary_code:
                     errors.append(
@@ -361,13 +367,22 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                             family=family,
                             category=MediaCategory(work.category),
                         )
-                        batch = await app_runtime.providers.search(hints)
-                        accepted = [
-                            item.record
-                            for item in rank_candidates(hints, list(batch.records))
-                            if item.decision is MatchDecision.ACCEPT
-                        ]
-                        for record in accepted:
+                        repo.commit()
+                        batch = await app_runtime.providers.search(hints, provider_ids=selected)
+                        session.expire_all()
+                        work = repo.get_work(payload.work_id)
+                        if work is None:
+                            raise HTTPException(404, "work not found")
+                        if not work.primary_code or not is_format_equivalent(code, work.primary_code):
+                            raise HTTPException(409, "work identity changed during lookup")
+                        fields = set(payload.fields) - set(work.field_locks or [])
+                        missing = _missing_metadata_fields(work, fields)
+                        for candidate in rank_candidates(hints, batch.records):
+                            if not missing or candidate.decision is not MatchDecision.ACCEPT:
+                                break
+                            record = candidate.record
+                            if not repo.can_merge_provider_record(work, record):
+                                continue
                             updates: dict[str, str] = {}
                             if "title" in missing and record.title:
                                 updates["title"] = record.title
@@ -521,7 +536,7 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                     result = await intake_offline_add_magnet(
                         OfflineMagnetAddRequest(
                             magnet=payload.magnet, code=payload.code, title=payload.title,
-                            dry_run=False, directory_id=payload.directory_id,
+                            dry_run=False, directory_id=payload.directory_id, providers=payload.providers,
                         ),
                         request,
                         repo,
@@ -529,7 +544,8 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                 else:
                     result = await intake_offline_add(
                         OfflineAddRequest(
-                            code=payload.code or "", dry_run=False, directory_id=payload.directory_id
+                            code=payload.code or "", dry_run=False,
+                            directory_id=payload.directory_id, providers=payload.providers,
                         ),
                         request, repo,
                     )
@@ -540,12 +556,14 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                         repo.update_work_fields(work, title=payload.title)
                 app_runtime.response_cache.clear()
                 return {"outcome": result.action, **result.model_dump(mode="json")}
+            selected = select_metadata_providers(app_runtime.providers, payload.providers)
             if payload.code:
                 code = normalize_code_or_422(payload.code)
                 _, family = extract_code(code)
                 work = repo.find_work_by_code(code)
                 hints = IdentityHints(
-                    term=code, code=code, mode=QueryMode.CODE, family=family, category=MediaCategory.JAPAN
+                    term=code, code=code, mode=QueryMode.CODE,
+                    family=family, category=category_for_family(family),
                 )
             elif payload.source_url:
                 work = None
@@ -567,21 +585,26 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                     mode=QueryMode.EXTERNAL_ID,
                 )
             created = False
+            source = None
             if work is None:
-                batch = await app_runtime.providers.search(hints)
-                accepted = [
-                    item.record
-                    for item in rank_candidates(hints, list(batch.records))
-                    if item.decision is MatchDecision.ACCEPT
-                ]
-                if not accepted:
-                    return {"outcome": "failed", "reason": "no accepted metadata"}
-                record = accepted[0]
+                repo.commit()
+                batch = await app_runtime.providers.search(hints, provider_ids=selected)
+                record = next(
+                    (item.record for item in rank_candidates(hints, batch.records)
+                     if item.decision is MatchDecision.ACCEPT),
+                    None,
+                )
+                if record is None:
+                    return {
+                        "outcome": "failed", "reason": "no accepted metadata",
+                        "failures": [item.model_dump(mode="json") for item in batch.failures],
+                    }
                 existing = repo.find_work_by_provider_identity(record.provider, record.external_id)
                 if existing is None and record.code:
                     existing = repo.find_work_by_code(record.code)
                 created = existing is None
-                work = repo.upsert_provider_record(record, overwrite=False)
+                work = repo.upsert_provider_record(record, overwrite=False, ranked_cast=True)
+                source = record.provider
             apply_tags(repo, work.id, payload.tags, [])
             if payload.title and payload.title != work.title:
                 repo.update_work_fields(work, title=payload.title)
@@ -591,6 +614,7 @@ def build_operator_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                 "work_id": work.id,
                 "code": work.primary_code,
                 "title": work.title,
+                "selected_provider": source,
             }
 
     return router

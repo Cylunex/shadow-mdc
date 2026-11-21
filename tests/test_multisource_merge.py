@@ -70,7 +70,7 @@ async def test_exact_code_sources_merge_fields_and_keep_provenance(
         hints=hints,
     )
     primary = ProviderRecord(
-        provider="a-primary",
+        provider="r18dump",
         external_id="one",
         code="SONE-118",
         title="Primary title",
@@ -79,7 +79,7 @@ async def test_exact_code_sources_merge_fields_and_keep_provenance(
         actors=("Alice",),
     )
     supplemental = ProviderRecord(
-        provider="b-supplemental",
+        provider="freejavbt",
         external_id="two",
         code="sone-118",
         title="Secondary title",
@@ -91,7 +91,7 @@ async def test_exact_code_sources_merge_fields_and_keep_provenance(
     )
     result = await IdentifyService(
         repository,
-        ProviderRegistry([RecordProvider(primary), RecordProvider(supplemental)]),
+        ProviderRegistry([RecordProvider(supplemental), RecordProvider(primary)]),
     ).identify(asset.id)
 
     assert result.accepted_work_id is not None
@@ -99,13 +99,14 @@ async def test_exact_code_sources_merge_fields_and_keep_provenance(
     assert work is not None
     assert work.title == "Primary title"
     assert work.plot == "A complete plot"
-    assert work.actors == ["Alice", "Bob"]
+    assert work.actors == ["Alice"]
     assert work.tags == ["Drama"]
-    assert work.field_sources["title"] == "a-primary"
-    assert work.field_sources["plot"] == "b-supplemental"
+    assert work.field_sources["title"] == work.field_sources["actors"] == "r18dump"
+    assert work.field_sources["plot"] == "freejavbt"
+    assert [item.provider for item in repository.list_candidates(asset.id)] == ["r18dump", "freejavbt"]
     assert {item.provider for item in repository.identities_for_work(work.id)} >= {
-        "a-primary",
-        "b-supplemental",
+        "r18dump",
+        "freejavbt",
     }
 
 

@@ -6,14 +6,28 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from math import isfinite
-from typing import Protocol
+from typing import Annotated, Protocol
 
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..domain import IdentityHints, ProviderDescriptor, ProviderRecord
 from .challenge import challenge_kind
 from .impersonate import FALLBACK_STATUSES, ImpersonateError, impersonated_get
+
+ProviderSelection = bool | Annotated[str, Field(max_length=500)]
+LOCAL_METADATA_PROVIDER_IDS = ("r18dump",)
+_PROVIDER_SELECTION_FLAGS = dict.fromkeys(("true", "1", "yes", "on"), True) | dict.fromkeys(
+    ("false", "0", "no", "off"), False,
+)
+
+
+def normalize_provider_selection(selection: ProviderSelection | None) -> ProviderSelection | None:
+    if isinstance(selection, str):
+        key = selection.strip().casefold()
+        if key in _PROVIDER_SELECTION_FLAGS:
+            return _PROVIDER_SELECTION_FLAGS[key]
+    return selection
 
 
 class ProviderError(RuntimeError):
@@ -280,6 +294,21 @@ class ProviderRegistry:
         return tuple(
             sorted((provider.descriptor for provider in self._providers.values()), key=lambda item: item.id)
         )
+
+    def select_ids(self, selection: ProviderSelection | None) -> tuple[str, ...] | None:
+        """Translate the API selector to a registry allowlist."""
+
+        selection = normalize_provider_selection(selection)
+        if selection is None or selection is True:
+            return None
+        if selection is False:
+            return LOCAL_METADATA_PROVIDER_IDS
+        selected = tuple(dict.fromkeys(
+            part.strip().casefold() for part in selection.split(",") if part.strip()
+        ))
+        if not selected or set(selected) - self._providers.keys():
+            raise ValueError("unknown metadata provider")
+        return selected
 
     async def search(
         self,

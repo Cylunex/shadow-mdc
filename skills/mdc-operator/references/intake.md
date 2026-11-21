@@ -46,7 +46,13 @@
 
 也可用 `{"source_url":"https://example.com/detail"}` 或 `{"external_ids":{"REPLACE_PROVIDER":"REPLACE_ID"}}`。
 核对 `result.work`；为空说明没有可接受结果，不能报告已建档。`works.refresh {"work_id":"REPLACE_WORK_ID"}`
-重刮已有作品，沿用字段锁和服务配额；核对 `accepted_work_id`，没有命中时说明未更新。
+重刮已有作品，沿用字段锁和服务配额。核对 `accepted_work_id`、`selected_provider` 和作品详情的 `field_sources`。
+
+`intake.item`、`works.lookup`、`works.refresh` 和 `works.fill` 都接受可选的 `providers`。
+`true` 或省略时查询已配置、匹配该身份的来源。`false` 仅查询本地 R18 转储。
+传入 `"r18dump,javdb"` 等逗号分隔的来源 ID 可以限制查询范围，未知 ID 会返回错误。
+匹配分数相同的记录优先用 `r18dump`、`r18dev`、`javdb`，`freejavbt` 靠后。
+重刮只应用胜出的记录并保留人工锁。指定来源没有可接受记录时，已有资料保持原值。
 
 ## 本地媒体扫描和识别
 

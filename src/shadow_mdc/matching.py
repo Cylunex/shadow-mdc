@@ -1,5 +1,6 @@
 import re
 import unicodedata
+from collections.abc import Iterable
 from difflib import SequenceMatcher
 
 from .domain import IdentityHints, MatchEvidence, ProviderRecord, ScoredCandidate
@@ -9,6 +10,16 @@ from .normalize_code import is_format_equivalent
 
 AUTO_ACCEPT_SCORE = 0.86
 REVIEW_SCORE = 0.48
+
+_PROVIDER_PRIORITY = {
+    "r18dump": 0,
+    "r18dev": 1,
+    "javdb": 2,
+    "fanza": 3,
+    "mgstage": 3,
+    "javlibrary": 3,
+    "freejavbt": 100,
+}
 
 _TITLE_NOISE = re.compile(r"(?i)\b(?:4k|8k|1080p|2160p|uncensored|subtitle|中字|字幕)\b")
 _TITLE_PUNCT = re.compile(r"[^\w\u3040-\u30ff\u3400-\u9fff]+")
@@ -159,6 +170,14 @@ def score_candidate(hints: IdentityHints, record: ProviderRecord) -> ScoredCandi
     return ScoredCandidate(record=record, score=score, decision=decision, evidence=tuple(evidence))
 
 
-def rank_candidates(hints: IdentityHints, records: list[ProviderRecord]) -> list[ScoredCandidate]:
-    scored = [score_candidate(hints, record) for record in records]
-    return sorted(scored, key=lambda item: (-item.score, item.record.provider, item.record.external_id))
+def candidate_sort_key(score: float, provider: str, external_id: str) -> tuple[float, int, str, str]:
+    """Break score ties by source priority, then by stable provider and record IDs."""
+
+    return -score, _PROVIDER_PRIORITY.get(provider, 50), provider, external_id
+
+
+def rank_candidates(hints: IdentityHints, records: Iterable[ProviderRecord]) -> list[ScoredCandidate]:
+    return sorted(
+        (score_candidate(hints, record) for record in records),
+        key=lambda item: candidate_sort_key(item.score, item.record.provider, item.record.external_id),
+    )

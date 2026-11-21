@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import gzip
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
+from fastapi.testclient import TestClient
 
+from shadow_mdc import api
 from shadow_mdc.db.repository import Database, Repository
 from shadow_mdc.providers.base import ProviderRegistry
 from shadow_mdc.services.discover import DiscoverService, javdb_list_url, parse_javdb_list
@@ -84,6 +87,28 @@ def test_sibling_prefix_inference_finds_null_dvd_id_rows(tmp_path: Path) -> None
         assert record.actors == ("吉高寧々",)
         assert record.studio == "プレステージ"
         assert store.build_record("ABF-999") is None
+
+
+def test_metadata_writes_can_use_local_dump_without_remote_quota(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dump = _build_dump(tmp_path)
+    monkeypatch.setenv("SHADOW_MDC_R18_DUMP_DB", str(dump))
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{tmp_path / 'catalog.db'}")
+    monkeypatch.setenv("SHADOW_MDC_RESCRAPE_DAILY_QUOTA", "0")
+    monkeypatch.setenv("SHADOW_MDC_TRANSLATION_ENABLED", "false")
+    monkeypatch.setattr(api, "_ensure_artwork_cached", AsyncMock())
+
+    with TestClient(api.app) as client:
+        lookup = client.post("/api/works/lookup", json={"code": "ABF-387", "providers": False})
+        assert lookup.status_code == 200, lookup.text
+        work = lookup.json()["work"]
+        assert work["release_date"] == "2026-10-02"
+        assert len(work["actors"]) == 1 and work["field_sources"]["actors"] == "r18dump"
+        refresh = client.post(f"/api/works/{work['id']}/refresh")
+        assert refresh.status_code == 200, refresh.text
+        assert refresh.json()["selected_provider"] == "r18dump"
 
 
 def _database(tmp_path: Path) -> Database:

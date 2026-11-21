@@ -24,12 +24,15 @@ from .api_models import (
     PlayProbeFailureOut,
     PlayResolveOut,
     PlaySourceOut,
+    WorkLookupRequest,
+    WorkRefreshRequest,
 )
 from .db.models import PanOfflineTask, Work
 from .db.repository import Repository
 from .domain import IdentityHints, ProviderRecord
-from .enums import ContentFamily, LibraryPresence, MediaCategory, OfflineStatus, QueryMode
+from .enums import ContentFamily, LibraryPresence, MatchDecision, MediaCategory, OfflineStatus, QueryMode
 from .identity import extract_code
+from .matching import rank_candidates
 from .media.magnets import (
     MagnetLink,
     format_size_bytes,
@@ -39,6 +42,7 @@ from .media.magnets import (
     rank_magnets,
 )
 from .media.parts import find_subtitles
+from .providers.base import ProviderRegistry, ProviderSelection, normalize_provider_selection
 from .services.offline_recovery import project_offline
 from .services.openlist import magnet_display_name
 from .services.pan import PanService
@@ -153,6 +157,7 @@ class OfflineAddRequest(BaseModel):
     magnet: str | None = Field(default=None, max_length=4000, description="override: magnet/http URL")
     dry_run: bool = False
     directory_id: OfflineDirectory | None = None
+    providers: ProviderSelection | None = None
 
 
 class MagnetQualityHints(BaseModel):
@@ -217,6 +222,7 @@ class OfflineMagnetAddRequest(BaseModel):
     code: str | None = Field(default=None, max_length=100, description="optional 番号 override")
     dry_run: bool = True
     directory_id: OfflineDirectory | None = None
+    providers: ProviderSelection | None = None
 
 
 
@@ -486,6 +492,7 @@ class SubscribeOut(BaseModel):
 
 class RescrapeRequest(BaseModel):
     code: str = Field(min_length=2, max_length=100)
+    providers: ProviderSelection | None = None
 
 
 class RescrapeOut(BaseModel):
@@ -498,6 +505,15 @@ class RescrapeOut(BaseModel):
 
 
 # ---------------------------------------------------------------- helpers
+
+
+def select_metadata_providers(
+    registry: ProviderRegistry, providers: ProviderSelection | None,
+) -> tuple[str, ...] | None:
+    try:
+        return registry.select_ids(providers)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def normalize_code_or_422(raw: str) -> str:
@@ -774,26 +790,16 @@ async def intake_metadata(
     code: str,
     request: Request,
     repo: IntakeRepo,
-    providers: str | None = Query(None, description="true/false or comma-separated provider IDs"),
+    providers: str | None = Query(
+        None, max_length=500, description="true/false or comma-separated provider IDs"
+    ),
 ) -> MetadataOut:
     """Metadata by 番号 without adding anything: catalog + r18 dump (+ providers)."""
 
     normalized = normalize_code_or_422(code)
     app_runtime = _core().runtime(request)
-    selected: tuple[str, ...] | None = None
-    remote: bool | None = None
-    if providers is not None:
-        value = providers.strip().casefold()
-        if value in {"true", "1", "yes", "on"}:
-            remote = True
-        elif value in {"false", "0", "no", "off"}:
-            remote = False
-        else:
-            selected = tuple(dict.fromkeys(part.strip() for part in providers.split(",") if part.strip()))
-            known = {descriptor.id for descriptor in app_runtime.providers.descriptors()}
-            if not selected or set(selected) - known:
-                raise HTTPException(422, "unknown metadata provider")
-            remote = True
+    selection = normalize_provider_selection(providers)
+    selected = select_metadata_providers(app_runtime.providers, selection)
     work = repo.find_work_by_code(normalized)
     record = app_runtime.discover.r18_record(normalized)
     out = MetadataOut(
@@ -802,9 +808,12 @@ async def intake_metadata(
         work_id=work.id if work is not None else None,
         r18dump=brief_from_record(record) if record is not None else None,
     )
-    if remote is True or (remote is None and record is None and work is None):
-        batch = await app_runtime.providers.search(_jav_hints(normalized), provider_ids=selected)
-        out.providers = [brief_from_record(item) for item in batch.records[:5]]
+    if selection is not False and (selection is not None or (record is None and work is None)):
+        hints = _jav_hints(normalized)
+        batch = await app_runtime.providers.search(hints, provider_ids=selected)
+        out.providers = [
+            brief_from_record(item.record) for item in rank_candidates(hints, batch.records)[:5]
+        ]
         out.failures = [f"{item.provider}: {item.reason}" for item in batch.failures]
     if work is not None:
         out.providers.insert(0, brief_from_work(work))
@@ -821,6 +830,7 @@ async def intake_offline_add(payload: OfflineAddRequest, request: Request, repo:
     core = _core()
     app_runtime = core.runtime(request)
     code = normalize_code_or_422(payload.code)
+    selected = select_metadata_providers(app_runtime.providers, payload.providers)
     backend, target = _intake_directory(app_runtime.pan_service, payload.directory_id)
     want = set(app_runtime.library_prefs_store.load().want_list)
     state = library_state(repo, code, want_list=want)
@@ -859,10 +869,15 @@ async def intake_offline_add(payload: OfflineAddRequest, request: Request, repo:
     if payload.dry_run:
         metadata = state.metadata
         if metadata is None:
-            record = app_runtime.discover.r18_record(code)
+            record = app_runtime.discover.r18_record(code) if payload.providers is None else None
             if record is None:
-                batch = await app_runtime.providers.search(_jav_hints(code))
-                record = batch.records[0] if batch.records else None
+                hints = _jav_hints(code)
+                batch = await app_runtime.providers.search(hints, provider_ids=selected)
+                record = next(
+                    (item.record for item in rank_candidates(hints, batch.records)
+                     if item.decision is MatchDecision.ACCEPT),
+                    None,
+                )
             metadata = brief_from_record(record) if record is not None else None
         if payload.magnet:
             chosen = MagnetBrief(
@@ -903,14 +918,11 @@ async def intake_offline_add(payload: OfflineAddRequest, request: Request, repo:
         )
 
     if work is None:
-        try:
-            await core.discover_seed(
-                DiscoverSeedRequest(provider="javdb", code=code, auto_offline=False), request, repo
-            )
-        except HTTPException as exc:
-            if exc.status_code != 404:
-                raise
-            raise HTTPException(status_code=404, detail=f"no metadata for {code}; cannot seed") from exc
+        result = await core.lookup_work_by_code(
+            WorkLookupRequest(code=code, providers=payload.providers), request, repo,
+        )
+        if result.work is None:
+            raise HTTPException(status_code=404, detail=f"no accepted metadata for {code}")
         work = repo.find_work_by_code(code)
         if work is None:
             raise HTTPException(status_code=500, detail="seed did not create a work")
@@ -1173,6 +1185,7 @@ async def intake_offline_add_magnet(
         raise HTTPException(status_code=422, detail="magnet URI missing btih info_hash")
 
     dn = magnet_display_name(magnet)
+    select_metadata_providers(app_runtime.providers, payload.providers)
     backend, target = _intake_directory(app_runtime.pan_service, payload.directory_id)
     inspected = analyze_magnet(
         repo,
@@ -1198,9 +1211,12 @@ async def intake_offline_add_magnet(
         # Reuse the existing code-based offline path with magnet override.
         return await intake_offline_add(
             OfflineAddRequest(
-                code=code, magnet=magnet, dry_run=payload.dry_run, directory_id=payload.directory_id
+                code=code, magnet=magnet, dry_run=payload.dry_run,
+                directory_id=payload.directory_id, providers=payload.providers,
             ), request, repo
         )
+    if normalize_provider_selection(payload.providers) not in (None, True):
+        raise HTTPException(status_code=422, detail="metadata provider selection requires a recognized code")
 
     title = _magnet_title(title=payload.title, dn=dn, info_hash=info_hash)
     existing = repo.find_work_by_provider_identity(MAGNET_INGEST_PROVIDER, info_hash)
@@ -1380,7 +1396,9 @@ async def intake_rescrape(payload: RescrapeRequest, request: Request, repo: Inta
     work = repo.find_work_by_code(code)
     if work is None:
         raise HTTPException(status_code=404, detail=f"{code} not in catalog")
-    result = await _core().refresh_work_metadata(work.id, request, repo)
+    result = await _core().refresh_work_metadata(
+        work.id, request, repo, WorkRefreshRequest(providers=payload.providers),
+    )
     refreshed = repo.get_work(work.id) or work
     return RescrapeOut(
         code=code,

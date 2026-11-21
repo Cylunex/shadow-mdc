@@ -147,6 +147,7 @@ from .api_models import (
     WorkOut,
     WorkPosterPreferRequest,
     WorkRelatedOut,
+    WorkRefreshRequest,
     WorkSampleGenerateOut,
     WorkSearchOut,
     WorkTagFacetOut,
@@ -189,6 +190,7 @@ from .enums import (
     RecognitionScope,
 )
 from .identity import IdentityAliasRules, build_identity_hints, extract_code, normalize_identity_value
+from .intake_core import select_metadata_providers
 from .matching import normalize_title, rank_candidates, score_candidate
 from .media.artwork import (
     ArtworkDownloadResult,
@@ -206,6 +208,7 @@ from .media.parts import find_subtitles, part_group_key
 from .media.subtitle_validation import srt_to_webvtt
 from .media.screenshots import capture_screenshot
 from .media_api import build_media_router
+from .normalize_code import is_format_equivalent
 from .providers import (
     AirAvProvider,
     AvSoxProvider,
@@ -226,6 +229,7 @@ from .providers import (
     R18DumpProvider,
     ThePornDBProvider,
 )
+from .providers.base import LOCAL_METADATA_PROVIDER_IDS, SearchBatch
 from .providers.impersonate import set_default_proxy
 from .providers.javdb_api import build_javdb_app_api
 from .providers.sukebei import SukebeiClient
@@ -454,7 +458,7 @@ class Runtime:
 
 
 # Local/offline providers cost nothing upstream; never charge them.
-_RESCRAPE_QUOTA_EXEMPT = frozenset({"r18dump"})
+_RESCRAPE_QUOTA_EXEMPT = frozenset(LOCAL_METADATA_PROVIDER_IDS)
 
 
 @dataclass
@@ -508,7 +512,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _migrate_cached_artwork(database, settings)
     with database.session() as session:
         repo = Repository(session)
-        repo.repair_jav_actor_sources()
+        # Rebuild links from the currently selected cast.
         repo.sync_all_work_actors()
         if settings.auto_seed_non_jav_works:
             # Catalog data belongs to the selected library, never to the source checkout.
@@ -529,13 +533,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     providers = ProviderRegistry(
         [
             R18DevProvider(next(source_clients), settings.r18dev_base_url, settings.request_retries),
-            *(
-                [
-                    R18DumpProvider(settings.resolved_r18_dump_db())
-                ]
-                if settings.resolved_r18_dump_db().is_file()
-                else []
-            ),
+            R18DumpProvider(settings.resolved_r18_dump_db()),
             FanzaProvider(next(source_clients), settings.fanza_base_url, settings.request_retries),
             JavLibraryProvider(next(source_clients), settings.javlibrary_base_url, settings.request_retries),
             MgstageProvider(next(source_clients), settings.mgstage_base_url, settings.request_retries),
@@ -4515,6 +4513,8 @@ async def lookup_work_by_code(
     request: Request,
     repo: Repo,
 ) -> WorkLookupOut:
+    app_runtime = runtime(request)
+    selected = select_metadata_providers(app_runtime.providers, payload.providers)
     if payload.source_url:
         hints = IdentityHints(
             term=payload.source_url,
@@ -4558,9 +4558,12 @@ async def lookup_work_by_code(
     # Provider requests can take minutes; never hold SQLite's writer during I/O.
     repo.commit()
 
-    batch = await runtime(request).providers.search(hints)
-    ranked = rank_candidates(hints, list(batch.records))
+    batch = await app_runtime.providers.search(hints, provider_ids=selected)
+    ranked = rank_candidates(hints, batch.records)
     accepted = [item for item in ranked if item.decision is MatchDecision.ACCEPT]
+    existing = repo.find_work_by_code(hints.code) if hints.code else None
+    if existing is not None:
+        accepted = [item for item in accepted if repo.can_merge_provider_record(existing, item.record)]
     if not accepted:
         repo.finish_task_run(
             task,
@@ -4573,16 +4576,19 @@ async def lookup_work_by_code(
         )
         return WorkLookupOut(work=None, matched_records=len(batch.records), failures=batch.failures)
     primary = accepted[0].record
-    work = repo.upsert_provider_record(primary, overwrite=True)
+    work = (
+        repo.merge_provider_into_work(existing, primary, overwrite=True, ranked_cast=True)
+        if existing is not None else repo.upsert_provider_record(primary, overwrite=True, ranked_cast=True)
+    )
     for candidate in accepted[1:]:
         record = candidate.record
         if (
             record.code
             and primary.code
-            and normalize_identity_value(record.code) == normalize_identity_value(primary.code)
+            and is_format_equivalent(record.code, primary.code)
+            and repo.can_merge_provider_record(work, record)
         ):
-            work = repo.upsert_provider_record(record, overwrite=False)
-    app_runtime = runtime(request)
+            repo.merge_provider_into_work(work, record, ranked_cast=True)
     repo.commit()
     await app_runtime.translator.translate_work(repo, work)
     await _ensure_artwork_cached(work, app_runtime, repo)
@@ -4767,18 +4773,19 @@ def _fallback_rescrape_quota(settings: Settings) -> RescrapeQuota:
 
 
 @app.post("/api/works/{work_id}/refresh", response_model=IdentifyOut)
-async def refresh_work_metadata(work_id: str, request: Request, repo: Repo) -> IdentifyOut:
+async def refresh_work_metadata(
+    work_id: str, request: Request, repo: Repo, payload: WorkRefreshRequest | None = None,
+) -> IdentifyOut:
     work = repo.get_work(work_id)
     if work is None:
         raise HTTPException(status_code=404, detail="work not found")
     asset = repo.first_asset_for_work(work.id)
+    asset_id = asset.id if asset is not None else work.id
+    original_code = work.primary_code
     app_runtime = runtime(request)
-    if asset is not None:
-        hints = IdentityHints.model_validate(asset.hints)
-    elif work.primary_code:
-        code, family = extract_code(work.primary_code, MediaCategory(work.category))
-        if code is None:
-            raise HTTPException(status_code=409, detail="work has no refreshable identity")
+    selected = select_metadata_providers(app_runtime.providers, payload.providers if payload else None)
+    code, family = extract_code(original_code or "", MediaCategory(work.category))
+    if code:
         hints = IdentityHints(
             term=code,
             mode=QueryMode.CODE,
@@ -4786,40 +4793,53 @@ async def refresh_work_metadata(work_id: str, request: Request, repo: Repo) -> I
             category=MediaCategory(work.category),
             code=code,
         )
+    elif asset is not None:
+        hints = IdentityHints.model_validate(asset.hints)
     else:
-        raise HTTPException(status_code=409, detail="work has no media asset or code")
+        raise HTTPException(status_code=409, detail="work has no refreshable identity")
     locks = set(work.field_locks or [])
-    if LOCKABLE_WORK_FIELDS <= locks:
+    if locks >= LOCKABLE_WORK_FIELDS:
         # Nothing a rescrape could change; do not spend provider budget.
         raise HTTPException(status_code=409, detail="all metadata fields are locked")
     quota = app_runtime.rescrape_quota or _fallback_rescrape_quota(app_runtime.settings)
-    eligible = app_runtime.providers.eligible_ids(hints)
+    eligible = app_runtime.providers.eligible_ids(hints, selected)
     exempt = [item for item in eligible if item in _RESCRAPE_QUOTA_EXEMPT]
     allowed, exhausted = quota.consume(item for item in eligible if item not in _RESCRAPE_QUOTA_EXEMPT)
-    if exhausted and not allowed:
+    repo.commit()
+    batch = (
+        await app_runtime.providers.search(hints, provider_ids=tuple(allowed + exempt))
+        if allowed or exempt else SearchBatch(records=(), failures=())
+    )
+    repo._session.expire_all()
+    current = repo.get_work(work_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="work not found")
+    if current.primary_code != original_code:
+        raise HTTPException(status_code=409, detail="work identity changed during lookup")
+    winner = next(
+        (item.record for item in rank_candidates(hints, batch.records)
+         if item.decision is MatchDecision.ACCEPT and repo.can_merge_provider_record(current, item.record)),
+        None,
+    )
+    if winner is None and exhausted and not allowed:
         raise HTTPException(
             status_code=429,
             detail=f"forced rescrape daily quota exceeded: {', '.join(sorted(exhausted))}",
             headers={"Retry-After": str(quota.seconds_until_reset())},
         )
-    batch = await app_runtime.providers.search(hints, provider_ids=tuple(allowed + exempt))
-    ranked = rank_candidates(hints, list(batch.records))
-    accepted_ids: list[str] = []
-    accepted_work: Work | None = None
-    for candidate in ranked:
-        if candidate.decision is not MatchDecision.ACCEPT:
-            continue
-        # overwrite=True refreshes unlocked fields; field_locks stay protected in repository merge.
-        accepted_work = repo.upsert_provider_record(candidate.record, overwrite=True)
-        accepted_ids.append(candidate.record.external_id)
-    if accepted_work is not None:
-        await app_runtime.translator.translate_work(repo, accepted_work)
-        await _ensure_artwork_cached(accepted_work, app_runtime, repo)
+    if winner is not None:
+        if set(current.field_locks or []) >= LOCKABLE_WORK_FIELDS:
+            raise HTTPException(status_code=409, detail="all metadata fields are locked")
+        repo.merge_provider_into_work(current, winner, overwrite=True, ranked_cast=True)
+        repo.commit()
+        await app_runtime.translator.translate_work(repo, current)
+        await _ensure_artwork_cached(current, app_runtime, repo)
         _invalidate_library_caches(app_runtime.response_cache)
     return IdentifyOut(
-        asset_id=asset.id if asset is not None else work.id,
-        candidate_ids=tuple(accepted_ids),
-        accepted_work_id=accepted_work.id if accepted_work is not None else None,
+        asset_id=asset_id,
+        candidate_ids=(winner.external_id,) if winner is not None else (),
+        accepted_work_id=work_id if winner is not None else None,
+        selected_provider=winner.provider if winner is not None else None,
         failures=batch.failures,
     )
 

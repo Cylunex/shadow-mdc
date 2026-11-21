@@ -2,6 +2,8 @@
 
 import time
 from collections.abc import Iterator
+from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -15,9 +17,10 @@ from shadow_mdc.domain import Artwork, ProviderRecord
 from shadow_mdc.enums import ContentFamily, MediaCategory
 from shadow_mdc.media.artwork import ArtworkDownloadResult, ArtworkStore
 from shadow_mdc.media.magnets import MagnetLink, info_hash_from_uri
-from shadow_mdc.providers.base import SearchBatch
+from shadow_mdc.providers.base import ProviderRegistry, SearchBatch
 from shadow_mdc.services.discover import DiscoverSeedResult
 from shadow_mdc.services.translation import TranslationResult
+from tests.test_api import LookupProvider
 
 HASH = "B" * 40
 MAGNET = f"magnet:?xt=urn:btih:{HASH}&dn=SSIS-123"
@@ -33,6 +36,21 @@ def record() -> ProviderRecord:
         category=MediaCategory.JAPAN,
         actors=("Fixture actor",),
     )
+
+
+def _conflicting_records() -> tuple[ProviderRecord, ProviderRecord, ProviderRecord]:
+    noisy = record().model_copy(update={
+        "provider": "freejavbt", "external_id": "weak", "release_date": date(2025, 12, 11),
+        "actors": ("Actor from fixture", "Unverified credit"),
+    })
+    javdb = record().model_copy(update={
+        "release_date": date(2019, 3, 14), "actors": ("JavDB actor",), "plot": "Supplemental synopsis",
+    })
+    dump = record().model_copy(update={
+        "provider": "r18dump", "external_id": "local-dump", "release_date": date(2019, 3, 13),
+        "actors": ("Actor from fixture",),
+    })
+    return noisy, javdb, dump
 
 
 @pytest.fixture
@@ -256,6 +274,90 @@ def test_metadata_only_lookup_does_not_submit_a_download(client: TestClient) -> 
     ):
         response = client.post("/api/skill/v1/call", json={"name": "works.lookup", "arguments": arguments})
         assert response.status_code == 422
+
+
+@pytest.mark.parametrize("capability", ["works.lookup", "intake.item"])
+@pytest.mark.parametrize(
+    ("selection", "expected"), [(None, "r18dump"), (False, "r18dump"), ("jAvDb", "javdb")],
+)
+def test_metadata_creation_respects_provider_selection(
+    client: TestClient, capability: str, selection: bool | str | None, expected: str,
+) -> None:
+    registry = ProviderRegistry([LookupProvider(item) for item in _conflicting_records()])
+    app.state.runtime = replace(app.state.runtime, providers=registry)
+    arguments: dict[str, object] = {"code": "SSIS-123"}
+    if selection is not None:
+        arguments["providers"] = selection
+    result = call(client, capability, arguments)
+    detail = result["work"] if capability == "works.lookup" else call(
+        client, "works.detail", {"work_id": result["work_id"]},
+    )
+    assert isinstance(detail, dict)
+    assert detail["field_sources"]["release_date"] == expected
+    assert detail["field_sources"]["actors"] == expected
+    assert len(detail["actors"]) == 1
+    unknown = client.post("/api/skill/v1/call", json={
+        "name": capability, "arguments": {**arguments, "providers": "unknown-provider"},
+    })
+    assert unknown.json()["status"] == 422
+
+
+def test_refresh_overwrites_once_then_respects_explicit_source_and_manual_lock(client: TestClient) -> None:
+    weak, javdb, dump = _conflicting_records()
+    registry = ProviderRegistry([LookupProvider(item) for item in (weak, javdb, dump)])
+    runtime = replace(app.state.runtime, providers=registry)
+    app.state.runtime = runtime
+    with runtime.database.session() as session:
+        repo = Repository(session)
+        work_id = repo.upsert_provider_record(weak, overwrite=True).id
+
+    result = call(client, "works.refresh", {"work_id": work_id})
+    assert result["accepted_work_id"] == work_id and result["selected_provider"] == "r18dump"
+    assert result["candidate_ids"] == [dump.external_id]
+    detail = call(client, "works.detail", {"work_id": work_id})
+    assert detail["release_date"] == "2019-03-13" and detail["actors"] == list(dump.actors)
+
+    result = call(client, "works.refresh", {"work_id": work_id, "providers": "javdb"})
+    assert result["selected_provider"] == "javdb"
+    assert call(client, "works.detail", {"work_id": work_id})["actors"] == list(javdb.actors)
+
+    call(client, "works.update", {"work_id": work_id, "actors": ["Manual credit"]})
+    call(client, "works.refresh", {"work_id": work_id, "providers": False})
+    detail = call(client, "works.detail", {"work_id": work_id})
+    assert detail["release_date"] == "2019-03-13" and detail["actors"] == ["Manual credit"]
+    locks = detail["field_locks"]
+    assert isinstance(locks, list) and "actors" in locks
+
+
+def test_fill_uses_ranked_provenance_per_missing_field(client: TestClient) -> None:
+    weak, javdb, dump = _conflicting_records()
+    registry = ProviderRegistry([LookupProvider(item) for item in (weak, javdb, dump)])
+    runtime = replace(app.state.runtime, providers=registry)
+    app.state.runtime = runtime
+    with runtime.database.session() as session:
+        repo = Repository(session)
+        local = record().model_copy(update={"provider": "local-path", "actors": ()})
+        work_id = repo.upsert_provider_record(local, overwrite=False).id
+
+    result = call(client, "works.fill", {"work_id": work_id, "fields": ["actors", "plot"]})
+    assert result["changed"] == ["actors", "plot"]
+    detail = call(client, "works.detail", {"work_id": work_id})
+    assert detail["actors"] == list(dump.actors) and detail["plot"] == javdb.plot
+    sources = detail["field_sources"]
+    assert isinstance(sources, dict)
+    assert sources["actors"] == "r18dump"
+    assert sources["plot"] == "javdb"
+
+
+def test_intake_with_download_keeps_selected_metadata_provider(client: TestClient) -> None:
+    registry = ProviderRegistry([LookupProvider(item) for item in _conflicting_records()])
+    app.state.runtime = replace(app.state.runtime, providers=registry)
+    item = call(client, "intake.item", {
+        "code": "SSIS-123", "magnet": MAGNET, "download": True, "providers": "r18dump",
+    })
+    assert item["action"] == "submitted"
+    detail = call(client, "works.detail", {"work_id": item["work_id"]})
+    assert detail["release_date"] == "2019-03-13" and detail["actors"] == ["Actor from fixture"]
 
 
 def test_domain_intake_failure_is_not_reported_as_success(

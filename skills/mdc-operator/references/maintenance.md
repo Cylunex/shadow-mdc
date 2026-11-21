@@ -63,6 +63,8 @@
 人工清空或指定的头像仍受保护，来源记录写入数可能大于可显示档案数。
 这与作品缺演员名单是两种操作。批量使用 `prepare works.fill`，见 [批量工作](batches.md)。
 确实需要替换已有未锁元数据时才用 `works.refresh`，沿用重刮配额。
+已核实来源时可传 `{"work_id":"REPLACE_WORK_ID","providers":"r18dump"}`。
+回读 `selected_provider`、发布日期、演员和对应的 `field_sources`。
 
 ## 演员档案维护
 

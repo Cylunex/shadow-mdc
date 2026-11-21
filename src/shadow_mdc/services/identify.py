@@ -3,9 +3,9 @@ from pydantic import BaseModel, ConfigDict
 from ..db.models import MatchCandidateRow, Work
 from ..db.repository import Repository
 from ..domain import IdentityHints
-from ..enums import MatchDecision
-from ..identity import normalize_identity_value
+from ..enums import MatchDecision, QueryMode
 from ..matching import rank_candidates
+from ..normalize_code import is_format_equivalent
 from ..providers.base import ProviderFailure, ProviderRegistry, SearchBatch
 
 
@@ -28,7 +28,7 @@ class IdentifyService:
         if asset is None:
             raise LookupError(f"asset {asset_id} not found")
         hints = IdentityHints.model_validate(asset.hints)
-        if hints.code:
+        if hints.code and hints.mode is QueryMode.CODE:
             existing = self._repository.find_work_by_code(hints.code)
             if existing is not None:
                 self._repository.attach_asset_to_work(asset, existing)
@@ -46,21 +46,23 @@ class IdentifyService:
         if asset is None:
             raise LookupError(f"asset {asset_id} not found")
         hints = IdentityHints.model_validate(asset.hints)
-        ranked = rank_candidates(hints, list(batch.records))
+        ranked = rank_candidates(hints, batch.records)
         rows = self._repository.save_candidates(asset, ranked)
         accepted: Work | None = None
         if ranked and ranked[0].decision is MatchDecision.ACCEPT:
             first_row = _find_row(rows, ranked[0].record.provider, ranked[0].record.external_id)
             if first_row is not None:
-                accepted = self._repository.accept_candidate(first_row.id)
+                accepted = self._repository.accept_candidate(first_row.id, ranked_cast=True)
                 primary_code = ranked[0].record.code
                 if primary_code:
                     for candidate in ranked[1:]:
                         if candidate.decision is not MatchDecision.ACCEPT:
                             continue
-                        if not candidate.record.code or normalize_identity_value(
-                            candidate.record.code
-                        ) != normalize_identity_value(primary_code):
+                        if not candidate.record.code or not is_format_equivalent(
+                            candidate.record.code, primary_code,
+                        ):
+                            continue
+                        if not self._repository.can_merge_provider_record(accepted, candidate.record):
                             continue
                         row = _find_row(
                             rows,
