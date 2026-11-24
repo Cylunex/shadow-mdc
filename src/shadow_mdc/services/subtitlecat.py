@@ -1,7 +1,7 @@
 """Chinese subtitles from SubtitleCat (subtitlecat.com), searched by 番号.
 
-No API key. Flow: ``index.php?search=CODE`` → result rows whose name contains the
-compact code → detail page → ``download_zh-CN`` / ``download_zh-TW`` link → ``.srt``.
+Search by catalogue number and check the subtitle's edition before reading its
+detail page and downloading its Chinese SRT.
 
 Best-effort only: every failure is logged and returned as a result, never raised,
 so a scrape / STRM export never fails because of subtitles. Misses are cached on
@@ -17,21 +17,27 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 from urllib.parse import urljoin
 
 import httpx
 
+from ..identity import extract_code
+from ..media.nfo_import import parse_movie_nfo, resolve_sidecar_nfo
 from ..media.parts import (
     SUBTITLE_EXTENSIONS,
     media_stem_is_ambiguous,
     subtitle_matches_stem,
     subtitle_satisfies_chinese_backfill,
 )
-from ..media.subtitle_validation import validate_srt
+from ..media.subtitle_validation import SrtTiming, inspect_srt
+from ..normalize_code import is_format_equivalent
+from ..remaster import parse_remaster_identity, strip_remaster_marker
+from .strm_export import read_sidecar
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +50,68 @@ _ROW = re.compile(
 _DOWNLOADS = re.compile(r"metric-value\">\s*([\d,]+)<span[^>]*>\s*downloads", re.I)
 _LANG_LINK = re.compile(r'id="download_(?P<lang>zh-(?:CN|TW))"[^>]*?href="(?P<href>[^"]+\.srt)"')
 _NON_ALNUM = re.compile(r"[^0-9a-z]+")
+_CODE_TOKENS = re.compile(r"[a-z]+|[0-9]+")
+_UNCENSORED_CUT = re.compile(
+    r"(?i)(?<![a-z0-9])(?:uncensored|u|uc)(?![a-z0-9])|无码|無碼|去码|去碼"
+)
+_LEAKED_CUT = re.compile(r"(?i)(?<![a-z0-9])leaked(?![a-z0-9])|流出")
+_EXTENDED_CUT = re.compile(r"(?i)(?<![a-z0-9])extended(?![a-z0-9])|加长版|加長版")
+_REMASTERED_CUT = re.compile(r"(?i)(?<![a-z0-9])remaster(?:ed)?(?![a-z0-9])|重制版|重製版")
+_GLUED_REMASTER = re.compile(r"(?i)\d[ez]?(?:hd|ai|h)$")
 
 
 def _compact(value: str) -> str:
     return _NON_ALNUM.sub("", value.casefold())
+
+
+def _code_in_name(name: str, code: str) -> bool:
+    found, _ = extract_code(name)
+    if found is not None:
+        return is_format_equivalent(found, code)
+    # Some short serials are outside the general filename parser's range.
+    tokens = _CODE_TOKENS.findall(code.casefold())
+    if not tokens:
+        return False
+    pattern = r"[-_. ]*".join(f"0*{int(token)}" if token.isdigit() else token for token in tokens)
+    return bool(re.search(rf"(?<![a-z0-9]){pattern}(?![a-z0-9])", name, re.I))
+
+
+def _edition(name: str) -> frozenset[str]:
+    normalized = unicodedata.normalize("NFKC", name)
+    labels = frozenset(
+        label for label, pattern in (
+            ("uncensored", _UNCENSORED_CUT), ("leaked", _LEAKED_CUT),
+            ("extended", _EXTENDED_CUT), ("remastered", _REMASTERED_CUT),
+        ) if pattern.search(normalized)
+    )
+    if _GLUED_REMASTER.search(normalized) and parse_remaster_identity(normalized):
+        return labels | {"remastered"}
+    return labels
+
+
+def _release_edition(directory: Path, stem: str) -> frozenset[str]:
+    for entry in read_sidecar(directory):
+        if Path(entry.name).stem == stem and entry.remote_path:
+            return _edition(PurePosixPath(entry.remote_path).stem) or _edition(stem)
+    return _edition(stem)
+
+
+def _timing_warning(directory: Path, stem: str, timing: SrtTiming) -> str | None:
+    try:
+        # A full-work NFO duration cannot be compared with individual parts.
+        streams = [p for p in directory.iterdir() if p.suffix.casefold() == ".strm" and p.is_file()]
+        if len(streams) != 1 or streams[0].stem != stem:
+            return None
+        nfo = resolve_sidecar_nfo(streams[0])
+        runtime = parse_movie_nfo(nfo).runtime_seconds if nfo is not None else None
+    except (OSError, ValueError):
+        return None
+    if runtime and (
+        timing.end_seconds > runtime + 120
+        or timing.end_seconds < runtime - max(180, runtime * 0.25)
+    ):
+        return f"subtitle ends at {timing.end_seconds:g}s, NFO runtime {runtime}s ({timing.cues} cues)"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,19 +140,17 @@ class SubtitleFetchResult:
     detail: str | None = None
 
 
-def parse_search(page: str, code: str, base_url: str) -> list[SubtitleCatHit]:
-    """Rows whose subtitle name contains the compact code, best first."""
-
-    want = _compact(code)
+def parse_search(
+    page: str, code: str, base_url: str, *, edition: frozenset[str] = frozenset(),
+) -> list[SubtitleCatHit]:
+    """Rows with a matching catalogue number and edition, best first."""
     hits: list[SubtitleCatHit] = []
     for match in _ROW.finditer(page):
         name = html.unescape(match.group("name")).strip()
-        compact = _compact(name)
-        if not want or want not in compact:
-            continue
-        # Reject longer codes sharing a prefix (SSIS-0010 vs SSIS-001).
-        tail = compact.split(want, 1)[1]
-        if tail[:1].isdigit():
+        normalized = unicodedata.normalize("NFKC", name)
+        suffix = Path(normalized).suffix
+        stem = normalized.removesuffix(suffix) if suffix.casefold() in SUBTITLE_EXTENSIONS else normalized
+        if not _code_in_name(stem, code) or _edition(stem) != edition:
             continue
         downloads_match = _DOWNLOADS.search(match.group("rest"))
         downloads = int(downloads_match.group(1).replace(",", "")) if downloads_match else 0
@@ -170,17 +232,17 @@ class SubtitleCatFetcher:
             return {}
         return {str(k): float(v) for k, v in payload.items()} if isinstance(payload, dict) else {}
 
-    def _miss_cached(self, code: str) -> bool:
-        stamp = self._load_cache().get(_compact(code))
+    def _miss_cached(self, key: str) -> bool:
+        stamp = self._load_cache().get(key)
         return stamp is not None and time.time() - stamp < self.miss_ttl_hours * 3600
 
-    def _remember_miss(self, code: str) -> None:
+    def _remember_miss(self, key: str) -> None:
         if self.cache_path is None:
             return
         cache = self._load_cache()
         cutoff = time.time() - self.miss_ttl_hours * 3600
         cache = {k: v for k, v in cache.items() if v >= cutoff}
-        cache[_compact(code)] = time.time()
+        cache[key] = time.time()
         try:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.cache_path.with_suffix(".tmp")
@@ -209,11 +271,14 @@ class SubtitleCatFetcher:
         response.raise_for_status()
         return response
 
-    def lookup(self, code: str) -> SubtitleCatPick | None:
+    def lookup(self, code: str, *, edition: frozenset[str] | None = None) -> SubtitleCatPick | None:
         """Best zh-CN (else zh-TW) subtitle for ``code``; None when not found."""
 
-        page = self._get(f"{self.base_url.rstrip('/')}/index.php", params={"search": code}).text
-        hits = parse_search(page, code, self.base_url)
+        base_code = strip_remaster_marker(code)
+        if edition is None:
+            edition = frozenset({"remastered"}) if base_code != code.strip() else frozenset()
+        page = self._get(f"{self.base_url.rstrip('/')}/index.php", params={"search": base_code}).text
+        hits = parse_search(page, base_code, self.base_url, edition=edition)
         fallback: SubtitleCatPick | None = None
         for hit in hits[: self.max_detail_pages]:
             links = parse_detail_zh_links(self._get(hit.detail_url).text, self.base_url)
@@ -235,19 +300,26 @@ class SubtitleCatFetcher:
             local_state = chinese_subtitle_state(directory, stem)
             if local_state:
                 return SubtitleFetchResult(code=code, status=local_state, path=target)
-            if not dry_run and self._miss_cached(code):
+            edition = _release_edition(directory, stem)
+            if parse_remaster_identity(code):
+                edition = edition | {"remastered"}
+            cache_key = f"v2:{_compact(code)}:{','.join(sorted(edition))}"
+            if not dry_run and self._miss_cached(cache_key):
                 return SubtitleFetchResult(code=code, status="cached-miss")
-            pick = self.lookup(code)
+            pick = self.lookup(code, edition=edition)
             if pick is None:
                 if not dry_run:
-                    self._remember_miss(code)
+                    self._remember_miss(cache_key)
                 return SubtitleFetchResult(code=code, status="miss")
             if dry_run:
                 return SubtitleFetchResult(code=code, status="dry-run", path=target, pick=pick)
             body = self._get(pick.url).content
-            invalid = validate_srt(body)
-            if invalid is not None:
-                return SubtitleFetchResult(code=code, status="error", pick=pick, detail=invalid)
+            timing = inspect_srt(body)
+            if isinstance(timing, str):
+                return SubtitleFetchResult(code=code, status="error", pick=pick, detail=timing)
+            warning = _timing_warning(directory, stem, timing)
+            if warning:
+                logger.warning("subtitlecat %s: %s", code, warning)
             directory.mkdir(parents=True, exist_ok=True)
             # Publish a complete file without replacing a concurrent/user subtitle.
             temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
@@ -263,7 +335,7 @@ class SubtitleCatFetcher:
                     return SubtitleFetchResult(code=code, status="exists", path=target, pick=pick)
             finally:
                 temporary.unlink(missing_ok=True)
-            return SubtitleFetchResult(code=code, status="written", path=target, pick=pick)
+            return SubtitleFetchResult(code=code, status="written", path=target, pick=pick, detail=warning)
         except (httpx.HTTPError, OSError, ValueError) as exc:
             logger.warning("subtitlecat %s failed: %s: %s", code, type(exc).__name__, exc)
             return SubtitleFetchResult(code=code, status="error", detail=f"{type(exc).__name__}: {exc}"[:300])

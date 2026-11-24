@@ -94,6 +94,12 @@ class ArtworkStore:
     async def acquire(self, work: Work) -> tuple[ArtworkDownloadResult, dict[str, str]]:
         work_root = self._root / work.id
         work_root.mkdir(parents=True, exist_ok=True)
+        jacket_url = _dmm_jacket_url(work)
+        jacket_path = next(
+            (Path(raw) for item in work.artwork if jacket_url and item.get("url") == jacket_url
+             and isinstance(raw := item.get("local_path"), str)),
+            None,
+        )
         local_paths = self.adopt_cached(work)
         downloaded = 0
         cached = len(local_paths)
@@ -114,6 +120,8 @@ class ArtworkStore:
                     existing=existing,
                 )
                 local_paths[url] = str(path)
+                if url == jacket_url and not was_cached:
+                    jacket_path = path
                 if kind != "sample":
                     ensure_list_thumbnail(work_root, path)
                 cached += int(was_cached)
@@ -123,7 +131,7 @@ class ArtworkStore:
                 if len(errors) < 20:
                     errors.append(f"{url}: {type(exc).__name__}: {exc}")
         if directory_index.file_with_stem(work_root, "fanart") is not None:
-            await asyncio.to_thread(_derive_package_portrait, work, work_root)
+            await asyncio.to_thread(_derive_package_portrait, work, work_root, jacket_url, jacket_path)
         return (
             ArtworkDownloadResult(
                 work_id=work.id,
@@ -430,6 +438,24 @@ def _original_revision(path: Path) -> list[int]:
     return [stat.st_ino, stat.st_dev, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
 
 
+def _dmm_jacket_url(work: Work) -> str | None:
+    # ArtworkStore binds the first fanart to the cache's fanart stem.
+    for item in work.artwork:
+        url = item.get("url")
+        if str(item.get("kind", "")).casefold() not in _FANART_KINDS or not isinstance(url, str):
+            continue
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return None
+        match = _DMM_PICS_PATH.fullmatch(parts.path)
+        if parts.hostname != "pics.dmm.co.jp" or match is None:
+            return None
+        _, content_id, filename = match.groups()
+        return url if filename == f"{content_id}pl.jpg" else None
+    return None
+
+
 def package_portrait(work: Work, root: Path) -> Path | None:
     image = root / f"{_PACKAGE_PORTRAIT}.jpg"
     if not _path_is_file(image) or _manual_poster(work):
@@ -437,6 +463,10 @@ def package_portrait(work: Work, root: Path) -> Path | None:
     try:
         data = json.loads((root / f"{_PACKAGE_PORTRAIT}.json").read_bytes())
         if data["rule"] != _PACKAGE_RULE or image.is_symlink() or _original_revision(image) != data["output"]:
+            return None
+        if data.get("fallback_url") and (
+            data["fallback_url"] != _dmm_jacket_url(work) or directory_index.file_with_stem(root, "poster")
+        ):
             return None
         for name, expected in data["inputs"].items():
             if Path(name).name != name or _original_revision(root / name) != expected:
@@ -446,51 +476,44 @@ def package_portrait(work: Work, root: Path) -> Path | None:
     return image
 
 
-def _derive_package_portrait(work: Work, root: Path) -> None:
+def _derive_package_portrait(
+    work: Work, root: Path, jacket_url: str | None, jacket_path: Path | None,
+) -> None:
     if _manual_poster(work) or package_portrait(work, root):
         return
     reference = directory_index.file_with_stem(root, "poster")
     package = directory_index.file_with_stem(root, "fanart")
-    if reference is None or package is None or reference.is_symlink() or package.is_symlink():
+    if package is None or package.is_symlink() or (reference is not None and reference.is_symlink()):
         return
+    fallback_url = jacket_url if reference is None else None
+    if reference is None and (fallback_url is None or jacket_path != package):
+        return
+    inputs = (reference, package) if reference is not None else (package,)
     image_path = root / f"{_PACKAGE_PORTRAIT}.jpg"
     temporary = None
     try:
-        revisions = {path.name: _original_revision(path) for path in (reference, package)}
-        with Image.open(reference) as thumb, Image.open(package) as wide:
-            front, artwork = (ImageOps.exif_transpose(image).convert("RGB") for image in (thumb, wide))
-        if not (0.5 <= front.width / front.height <= 0.85 and 100 <= front.width < 360
-                and artwork.width / artwork.height >= 1.25 and artwork.height >= front.height * 1.5):
-            return
-        width = round(artwork.height * front.width / front.height)
-        sample_size = (32, 48)
-        standard = front.resize(sample_size, Image.Resampling.LANCZOS)
-        if max(ImageStat.Stat(standard).stddev) < 12:
-            return
-        ranked = []
-        for left in (0, artwork.width - width):
-            box = (left, 0, left + width, artwork.height)
-            sample = artwork.crop(box).resize(sample_size, Image.Resampling.LANCZOS)
-            error = sum(ImageStat.Stat(ImageChops.difference(standard, sample)).mean) / 3
-            ranked.append((error, box))
-        ranked.sort()
-        (error, box), (other, _) = ranked
-        if error > 18 or other - error < 12:
+        revisions = {path.name: _original_revision(path) for path in inputs}
+        with Image.open(package) as wide:
+            artwork = ImageOps.exif_transpose(wide).convert("RGB")
+        box = _reference_crop(reference, artwork) if reference is not None else _dmm_front_crop(artwork)
+        if box is None:
             return
         with tempfile.NamedTemporaryFile(dir=root, suffix=".tmp", delete=False) as stream:
             temporary = Path(stream.name)
             artwork.crop(box).save(stream, format="JPEG", quality=92, optimize=True)
         with package.open("rb") as stream:
             signature = hashlib.file_digest(stream, "sha256").hexdigest()
-        if revisions != {path.name: _original_revision(path) for path in (reference, package)}:
+        if revisions != {path.name: _original_revision(path) for path in inputs}:
             return
         os.replace(temporary, image_path)
         temporary = None
         metadata = {
             "rule": _PACKAGE_RULE, "inputs": revisions, "source_sha256": signature,
-            "box": box, "output": _original_revision(image_path),
+            "box": box, "output": _original_revision(image_path), "fallback_url": fallback_url,
         }
-        with tempfile.NamedTemporaryFile(dir=root, suffix=".tmp", mode="w", encoding="utf-8", delete=False) as stream:
+        with tempfile.NamedTemporaryFile(
+            dir=root, suffix=".tmp", mode="w", encoding="utf-8", delete=False,
+        ) as stream:
             temporary = Path(stream.name)
             json.dump(metadata, stream)
         os.replace(temporary, root / f"{_PACKAGE_PORTRAIT}.json")
@@ -500,6 +523,35 @@ def _derive_package_portrait(work: Work, root: Path) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def _reference_crop(reference: Path, artwork: Image.Image) -> tuple[int, int, int, int] | None:
+    with Image.open(reference) as thumb:
+        front = ImageOps.exif_transpose(thumb).convert("RGB")
+    if not (0.5 <= front.width / front.height <= 0.85 and 100 <= front.width < 360
+            and artwork.width / artwork.height >= 1.25 and artwork.height >= front.height * 1.5):
+        return None
+    width = round(artwork.height * front.width / front.height)
+    sample_size = (32, 48)
+    standard = front.resize(sample_size, Image.Resampling.LANCZOS)
+    if max(ImageStat.Stat(standard).stddev) < 12:
+        return None
+    ranked = []
+    for left in (0, artwork.width - width):
+        box = (left, 0, left + width, artwork.height)
+        sample = artwork.crop(box).resize(sample_size, Image.Resampling.LANCZOS)
+        error = sum(ImageStat.Stat(ImageChops.difference(standard, sample)).mean) / 3
+        ranked.append((error, box))
+    ranked.sort()
+    (error, box), (other, _) = ranked
+    return box if error <= 18 and other - error >= 12 else None
+
+
+def _dmm_front_crop(artwork: Image.Image) -> tuple[int, int, int, int] | None:
+    width, height = artwork.size
+    if height < 450 or not 4 / 3 <= width / height <= 1.85:
+        return None
+    return (width - round(height * 2 / 3), 0, width, height)
 
 
 def artwork_dir_for_work(work: Work, data_dir: Path | None = None) -> Path | None:

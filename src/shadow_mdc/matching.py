@@ -12,6 +12,7 @@ AUTO_ACCEPT_SCORE = 0.86
 REVIEW_SCORE = 0.48
 
 _PROVIDER_PRIORITY = {
+    "onepondo": 0,
     "r18dump": 0,
     "r18dev": 1,
     "javdb": 2,

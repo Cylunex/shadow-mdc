@@ -75,6 +75,7 @@ LOCKABLE_WORK_FIELDS = frozenset(
 )
 
 _JAV_ACTOR_PROVIDER_PRIORITY = {
+    "onepondo": -1,
     "fanza": 0,
     "jav321": 1,
     "mgstage": 2,

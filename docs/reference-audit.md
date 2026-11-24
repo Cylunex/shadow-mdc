@@ -3,6 +3,12 @@
 本审计基于本地参考仓库中的 JavSP、JavSP-Web、MDCX、MDC-NG、Amane 与 Peach。
 Shadow MDC 只吸收行为、边界和使用流程，所有代码、模型、接口与测试均独立实现。
 
+## 2026-11-24 Miyabi 的字幕、片商元数据与海报
+
+- SubtitleCat 按番号及剪辑标记筛选。MDC 优先从 STRM 旁车读取原视频文件名，按版本分别缓存查无结果。单个 STRM 有 NFO 片长时记录明显的时间轴差异，继续保存结构合法的字幕。 [Miyabi 字幕候选](https://github.com/ppxb/miyabi/blob/79400db461bac3618ff0ab3ab4a04596130e26d2/internal/subtitle/candidate.go) · [字幕预览](https://github.com/ppxb/miyabi/blob/79400db461bac3618ff0ab3ab4a04596130e26d2/internal/subtitle/preview.go)
+- 1PONDO 来源接受带片商前缀的番号，同时验证响应的影片 ID 和站点 ID，并将片长按秒保存到候选。 [Miyabi 片商元数据](https://github.com/ppxb/miyabi/blob/79400db461bac3618ff0ab3ab4a04596130e26d2/internal/metadata/providers/tenmusume.go)
+- 缺少竖版参考图时，MDC 可将已缓存的 DMM 横版包装正面裁为 2:3 海报。原图、手选封面及现有小图比对规则继续适用。 [Miyabi 海报裁切](https://github.com/ppxb/miyabi/blob/79400db461bac3618ff0ab3ab4a04596130e26d2/internal/image/poster.go)
+
 ## 2026-11-20 跨端片库检索
 
 TMDB 的文本检索会考虑原名、译名和别名。Jellyfin 的条目接口支持按人物和片商的稳定 ID 筛选。MDC 将这两种做法用于同一条找片路径。输入原片名或公开别名可以找到作品，从演员详情进入仍按具体人物 ID 筛选。人物备注和私有目录提示留在管理端。[TMDB 检索说明](https://developer.themoviedb.org/docs/finding-data) · [Jellyfin 条目筛选参数](https://kotlin-sdk.jellyfin.org/dokka/jellyfin-model/org.jellyfin.sdk.model.api.request/-get-items-request/index.html)

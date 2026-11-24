@@ -223,6 +223,7 @@ from .providers import (
     JavLibraryProvider,
     JsonLdProvider,
     MgstageProvider,
+    OnePondoProvider,
     PaipanconProvider,
     ProviderRegistry,
     R18DevProvider,
@@ -527,7 +528,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
     client = _http_client(settings, max_connections=settings.translation_concurrency + 4)
     provider_clients = tuple(
-        _http_client(settings, max_connections=settings.identify_concurrency + 2) for _ in range(16)
+        _http_client(settings, max_connections=settings.identify_concurrency + 2) for _ in range(17)
     )
     source_clients = iter(provider_clients)
     providers = ProviderRegistry(
@@ -544,6 +545,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 settings.fc2contents_base_url,
                 settings.request_retries,
             ),
+            OnePondoProvider(next(source_clients), settings.onepondo_base_url, settings.request_retries),
             PaipanconProvider(
                 next(source_clients),
                 settings.paipancon_base_url,

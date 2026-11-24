@@ -56,7 +56,7 @@ def _fetcher(
         detail_url="https://example.com/detail",
         name="ABC-123",
     )
-    monkeypatch.setattr(SubtitleCatFetcher, "lookup", lambda self, code: pick)
+    monkeypatch.setattr(SubtitleCatFetcher, "lookup", lambda self, code, *, edition: pick)
     return SubtitleCatFetcher(
         min_interval_seconds=0, client=httpx.Client(transport=httpx.MockTransport(handler))
     )

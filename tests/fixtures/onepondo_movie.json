@@ -1,0 +1,13 @@
+{
+  "MovieID": "012326_123",
+  "SiteID": 2470,
+  "Title": "テスト作品",
+  "Desc": "テスト用の紹介文",
+  "Release": "2026-01-23",
+  "Duration": 3689,
+  "ActressesJa": ["俳優名"],
+  "Series": "テストシリーズ",
+  "UCNAME": ["テストタグ"],
+  "ThumbUltra": "https://images.example.com/poster.jpg",
+  "HasGallery": false
+}

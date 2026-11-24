@@ -12,9 +12,10 @@ from .javdb import JavDBProvider
 from .javlibrary import JavLibraryProvider
 from .jsonld import JsonLdProvider
 from .mgstage import MgstageProvider
+from .onepondo import OnePondoProvider
 from .paipancon import PaipanconProvider
-from .r18dev import R18DevProvider
 from .r18_dump import R18DumpProvider
+from .r18dev import R18DevProvider
 from .theporndb import ThePornDBProvider
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "JavLibraryProvider",
     "JsonLdProvider",
     "MgstageProvider",
+    "OnePondoProvider",
     "PaipanconProvider",
     "Provider",
     "ProviderError",

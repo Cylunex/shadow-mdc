@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
 
+from shadow_mdc.services.strm_export import SIDECAR_NAME
 from shadow_mdc.services.subtitlecat import (
     SubtitleCatFetcher,
     parse_detail_zh_links,
@@ -42,7 +45,7 @@ def test_parse_detail_zh_links() -> None:
     assert parse_detail_zh_links("<a href='x'>no</a>", BASE) == {}
 
 
-def _fetcher(tmp_path: Path, handler) -> SubtitleCatFetcher:
+def _fetcher(tmp_path: Path, handler: Callable[[httpx.Request], httpx.Response]) -> SubtitleCatFetcher:
     return SubtitleCatFetcher(
         base_url=BASE,
         min_interval_seconds=0,
@@ -96,3 +99,68 @@ def test_errors_never_raise(tmp_path: Path) -> None:
         return httpx.Response(200, text=_detail())
 
     assert _fetcher(tmp_path, html_instead).fetch("SSIS-001", tmp_path / "x", "SSIS-001").status == "error"
+
+
+def test_subtitle_cut_uses_original_strm_filename_and_separate_miss_cache(tmp_path: Path) -> None:
+    page = (
+        '<tr><td><a href="/wrong-code">XSSIS-001-UC.srt</a></td></tr>'
+        '<tr><td><a href="/wrong-serial">SSIS-010-UC.srt</a></td></tr>'
+        '<tr><td><a href="/leaked">SSIS-001-leaked.srt</a></td></tr>'
+        '<tr><td><a href="/extended">SSIS-001-extended.srt</a></td></tr>'
+        '<tr><td><a href="/match">SSIS-1-UC.srt</a></td></tr>'
+    )
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/index.php":
+            return httpx.Response(200, text=page)
+        if request.url.path.endswith(".srt"):
+            return httpx.Response(200, content=SRT)
+        assert request.url.path == "/match"
+        return httpx.Response(200, text=_detail())
+
+    fetcher = _fetcher(tmp_path, handler)
+    assert fetcher.fetch("SSIS-001", tmp_path, "SSIS-001").status == "miss"
+    (tmp_path / SIDECAR_NAME).write_text(json.dumps({"entries": [{
+        "name": "SSIS-001.strm", "file_id": "test", "remote_path": "/remote/SSIS-001-UC.mp4",
+    }]}))
+    (tmp_path / "SSIS-001.strm").touch()
+    result = fetcher.fetch("SSIS-001", tmp_path, "SSIS-001")
+    assert result.status == "written"
+    assert result.pick is not None and result.pick.name == "SSIS-1-UC.srt"
+    assert calls == ["/index.php", "/index.php", "/match", "/subs/253/SSIS-001-zh-CN.srt"]
+
+
+def test_remaster_code_searches_base_but_only_selects_remaster_subtitle(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/index.php":
+            assert request.url.params["search"] == "SSIS-001"
+            return httpx.Response(200, text=(
+                '<tr><td><a href="/standard">SSIS-001.srt</a></td></tr>'
+                '<tr><td><a href="/remaster">SSIS-001HD.srt</a></td></tr>'
+            ))
+        assert request.url.path == "/remaster"
+        return httpx.Response(200, text=_detail())
+
+    result = _fetcher(tmp_path, handler).fetch("SSIS-001H", tmp_path, "SSIS-001H", dry_run=True)
+    assert result.pick is not None and result.pick.name == "SSIS-001HD.srt"
+
+
+def test_subtitle_timing_warning_preserves_subtitle_and_skips_shared_runtime(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/index.php":
+            return httpx.Response(200, text=_search())
+        if request.url.path.endswith(".srt"):
+            return httpx.Response(200, content=SRT)
+        return httpx.Response(200, text=_detail())
+
+    (tmp_path / "SSIS-001.strm").touch()
+    (tmp_path / "movie.nfo").write_text("<movie><title>Fixture</title><runtime>90</runtime></movie>")
+    result = _fetcher(tmp_path, handler).fetch("SSIS-001", tmp_path, "SSIS-001")
+    assert result.status == "written" and result.detail == "subtitle ends at 2s, NFO runtime 5400s (1 cues)"
+    assert result.path is not None and result.path.read_bytes() == SRT
+    result.path.unlink()
+    (tmp_path / "SSIS-001-cd2.strm").touch()
+    second = _fetcher(tmp_path, handler).fetch("SSIS-001", tmp_path, "SSIS-001")
+    assert second.status == "written" and second.detail is None

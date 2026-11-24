@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     fc2club_base_url: str = "https://fc2club.top"
     fc2hub_base_url: str = "https://javten.com"
     fc2contents_base_url: str = "https://adult.contents.fc2.com"
+    onepondo_base_url: str = "https://www.1pondo.tv"
     paipancon_base_url: str = "https://paipancon.com"
     airav_base_url: str = "https://cn.airav.wiki"
     avsox_base_url: str = "https://avsox.click"

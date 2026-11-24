@@ -89,3 +89,44 @@ async def test_derive_portrait_only_with_matching_reference_and_keep_manual_cove
     package.save(root / "fanart.jpg")
     await store.acquire(work)
     assert package_portrait(work, root) is None
+
+
+@pytest.mark.parametrize("is_jacket", [True, False])
+async def test_wide_cover_fallback_uses_dmm_front_only(tmp_path: Path, is_jacket: bool) -> None:
+    root = tmp_path / "cover"
+    root.mkdir()
+    package = Image.new("RGB", (900, 600), "lime")
+    ImageDraw.Draw(package).rectangle((500, 0, 899, 599), fill="navy")
+    package.save(root / "fanart.png")
+    url = (
+        "https://pics.dmm.co.jp/digital/video/sample00001/sample00001pl.jpg"
+        if is_jacket else "https://images.example.com/fanart.png"
+    )
+    work = Work(
+        id="cover", title="Fixture",
+        artwork=[{"url": url, "kind": "fanart", "local_path": str(root / "fanart.png")}],
+    )
+
+    await ArtworkStore(tmp_path, None, max_bytes=1_000_000).acquire(work)
+    portrait = package_portrait(work, root)
+    if not is_jacket:
+        assert portrait is None
+        return
+    assert portrait is not None
+    with Image.open(portrait) as image:
+        assert image.size == (400, 600)
+        assert image.getpixel((0, 300)) == pytest.approx((0, 0, 128), abs=2)
+    with Image.open(root / "fanart.png") as image:
+        assert image.size == (900, 600)
+
+    work.field_locks = ["artwork"]
+    assert package_portrait(work, root) is None
+    work.field_locks = []
+    poster = tmp_path / "new-poster.jpg"
+    Image.new("RGB", (400, 600), "red").save(poster)
+    work.artwork = [*work.artwork, {
+        "url": "https://images.example.com/poster.jpg", "kind": "poster", "local_path": str(poster),
+    }]
+    await ArtworkStore(tmp_path, None, max_bytes=1_000_000).acquire(work)
+    assert (root / "poster.jpg").is_file()
+    assert package_portrait(work, root) is None

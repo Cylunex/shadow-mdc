@@ -2,6 +2,7 @@
 
 import html
 import re
+from dataclasses import dataclass
 
 _MAX_BYTES = 8 * 1024 * 1024
 _TIME = r"([0-9]{1,3}):([0-5][0-9]):([0-5][0-9])[,.]([0-9]{3})"
@@ -9,13 +10,19 @@ _TIMING = re.compile(rf"^{_TIME}\s+-->\s+{_TIME}(?:\s+.*)?$")
 _HTML = re.compile(r"<!doctype\s+html|<html\b|<body\b|<script\b", re.IGNORECASE)
 
 
-def validate_srt(payload: bytes) -> str | None:
-    """Return a diagnostic for invalid structure, or None for usable cues.
+@dataclass(frozen=True, slots=True)
+class SrtTiming:
+    cues: int
+    end_seconds: float
 
-    This does not prove language, edition, synchronization, or media duration.
-    UTF-8, BOM-marked UTF-16 and common Chinese legacy encodings are accepted;
-    original bytes are preserved by the caller.
-    """
+
+def validate_srt(payload: bytes) -> str | None:
+    result = inspect_srt(payload)
+    return result if isinstance(result, str) else None
+
+
+def inspect_srt(payload: bytes) -> SrtTiming | str:
+    """Read cue timing or return a diagnostic for structurally invalid SRT."""
     if len(payload) > _MAX_BYTES:
         return "srt payload exceeds 8 MiB"
     text = _decode_srt(payload)
@@ -24,6 +31,7 @@ def validate_srt(payload: bytes) -> str | None:
     if _HTML.search(text):
         return "srt payload contains an HTML page"
     previous_start = -1
+    last_end = 0
     cues = 0
     for block in re.split(r"\n\s*\n", text.replace("\r\n", "\n").replace("\r", "\n").strip()):
         lines = block.strip().splitlines()
@@ -40,8 +48,9 @@ def validate_srt(payload: bytes) -> str | None:
         if end <= start or start < previous_start:
             return "srt cue has reversed or unordered timing"
         previous_start = start
+        last_end = max(last_end, end)
         cues += 1
-    return None if cues else "srt payload has no cues"
+    return SrtTiming(cues, last_end / 1000) if cues else "srt payload has no cues"
 
 
 def _decode_srt(payload: bytes) -> str | None:
@@ -71,5 +80,6 @@ def srt_to_webvtt(payload: bytes) -> str:
         assert match is not None
         h1, m1, s1, ms1, h2, m2, s2, ms2 = match.groups()
         timing = f"{h1.zfill(2)}:{m1}:{s1}.{ms1} --> {h2.zfill(2)}:{m2}:{s2}.{ms2}"
-        rendered.append(timing + "\n" + "\n".join(html.escape(line, quote=False) for line in lines[index + 1:]))
+        text_lines = (html.escape(line, quote=False) for line in lines[index + 1:])
+        rendered.append(timing + "\n" + "\n".join(text_lines))
     return "WEBVTT\n\n" + "\n\n".join(rendered) + "\n"
