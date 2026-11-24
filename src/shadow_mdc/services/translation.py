@@ -204,9 +204,10 @@ class WorkTranslator:
         results = await self.translate_fields(
             repository, work, fields=fields, retry_failed_only=retry_failed_only
         )
-        for result in results:
-            if result.status == "translated":
-                return result
+        for status in ("translated", "failed"):
+            for result in results:
+                if result.status == status:
+                    return result
         return results[0]
 
     def work_needs_translation(self, work: Work) -> bool:
@@ -217,6 +218,8 @@ class WorkTranslator:
         sources = work.field_sources or {}
         fields: tuple[str, ...] = ("title", "plot") if self._translate_plot else ("title",)
         for field_name in fields:
+            if field_name in (work.field_locks or []):
+                continue
             provider = str(sources.get(field_name, ""))
             if provider in {"local-manual", "local-path"} or provider.startswith("translation:"):
                 continue
@@ -251,6 +254,10 @@ class WorkTranslator:
         if not self._enabled:
             return TranslationResult(
                 work_id=work.id, status="skipped", source=source, field_name=field_name, detail="disabled"
+            )
+        if field_name in (work.field_locks or []):
+            return TranslationResult(
+                work_id=work.id, status="skipped", source=source, field_name=field_name, detail="field locked"
             )
         sources = work.field_sources or {}
         if sources.get(field_name) in {"local-manual", "local-path"}:

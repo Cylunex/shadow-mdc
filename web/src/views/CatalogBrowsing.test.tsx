@@ -50,6 +50,40 @@ afterEach(async () => {
   vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 
+it("commits a Chinese actor search when composition ends in StrictMode", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ items: [], total: 0, next_offset: null }))));
+  await act(async () => root.render(<StrictMode><UnifiedCatalogView mode="actors"
+    onOpenWork={vi.fn()} onOpenActor={vi.fn()} /></StrictMode>));
+  const input = container.querySelector<HTMLInputElement>('input[aria-label="搜索演员与别名"]')!;
+  await act(async () => input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+  await change("搜索演员与别名", "演员");
+  await act(async () => input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "演员" })));
+  expect(input.value).toBe("演员");
+  expect(JSON.parse(sessionStorage.getItem("mdc:actor-browsing")!).search).toBe("演员");
+});
+
+it("does not save old cards or use their cursor with a new filter", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith("/facets")) return new Response("{}");
+    const search = JSON.parse(String(init?.body)).q;
+    const work = { id: search ? "new" : "old", title: search ? "新结果" : "旧结果", actors: [], tags: [] };
+    return new Response(JSON.stringify({ items: [work], total: search ? 1 : 2, next_cursor: search ? null : "old-cursor" }));
+  }));
+  const open = vi.fn();
+  const render = () => root.render(<UnifiedCatalogView mode="works" onOpenWork={open}
+    onOpenActor={vi.fn()} onStartFeed={vi.fn()} />);
+  await act(async () => render());
+  await change("检索作品", "新条件");
+  expect(button("按当前筛选刷片").disabled).toBe(true);
+  expect(button("正在加载…").disabled).toBe(true);
+  await act(async () => container.querySelector<HTMLElement>(".work-grid .work")!.click());
+  expect(open).toHaveBeenCalledWith("old");
+  expect(sessionStorage.getItem("mdc:catalog-return")).toBeNull();
+  await act(async () => root.render(null));
+  await act(async () => render());
+  expect(container.querySelector(".work-grid")?.textContent).toContain("新结果");
+});
+
 it("bounds category cards, remembers the page, and resets it when changing page size", async () => {
   await act(async () => root.render(<CategoriesView onOpenTag={vi.fn()} />));
   expect(container.querySelectorAll(".category-card")).toHaveLength(24);

@@ -1,6 +1,6 @@
 import { notifyManager } from "@tanstack/react-query";
 import { queryClient } from "./query/client";
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -15,7 +15,13 @@ vi.mock("./api", () => ({ appUrl: (path: string) => path, api: {
   swipeFeed: vi.fn(async () => ({ items: [], hasMore: false })), swipeSites: vi.fn(async () => []),
 } }));
 vi.mock("./panels", () => ({ Inbox: () => null }));
-vi.mock("./views/WorkDetailView", () => ({ WorkDetailView: () => <div>detail-ready</div> }));
+vi.mock("./views/WorkDetailView", () => ({ WorkDetailView: (
+  { workId, onOpenWork }: { workId: string; onOpenWork: (id: string) => void }
+) => {
+  const [draft] = useState(workId);
+  return <div>detail-ready <input aria-label="draft" value={draft} readOnly />
+    <button onClick={() => onOpenWork("another-work")}>related-work</button></div>;
+} }));
 vi.mock("./components/DiscoverPanel", () => ({ DiscoverPanel: ({ onToggleWant }: { onToggleWant: (id: string, wanted: boolean) => void }) => (
   <button onClick={() => onToggleWant("fixture", true)}>want-from-ranking</button>
 ) }));
@@ -127,6 +133,16 @@ describe("page load request budget", () => {
     await act(async () => root.render(<App />));
     expect(container.textContent).toContain("detail-ready");
     expect(api.works).not.toHaveBeenCalled();
+  });
+
+  it("mounts a fresh detail editor when opening a related work", async () => {
+    window.history.replaceState({}, "", "/?work=fixture");
+    await act(async () => root.render(<App />));
+    const draft = () => container.querySelector<HTMLInputElement>('input[aria-label="draft"]')?.value;
+    expect(draft()).toBe("fixture");
+    const related = [...container.querySelectorAll("button")].find(button => button.textContent === "related-work")!;
+    await act(async () => related.click());
+    expect(draft()).toBe("another-work");
   });
 
   it("shows paginated works without waiting for facets or downloading the legacy library", async () => {

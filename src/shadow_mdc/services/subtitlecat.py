@@ -57,7 +57,10 @@ _UNCENSORED_CUT = re.compile(
 _LEAKED_CUT = re.compile(r"(?i)(?<![a-z0-9])leaked(?![a-z0-9])|流出")
 _EXTENDED_CUT = re.compile(r"(?i)(?<![a-z0-9])extended(?![a-z0-9])|加长版|加長版")
 _REMASTERED_CUT = re.compile(r"(?i)(?<![a-z0-9])remaster(?:ed)?(?![a-z0-9])|重制版|重製版")
-_GLUED_REMASTER = re.compile(r"(?i)\d[ez]?(?:hd|ai|h)$")
+_REMASTER_CODE = re.compile(
+    r"(?i)(?<![a-z0-9])(?:[0-9]+[a-z]+|t28|[a-z]{1,10})[-_. ]*[0-9]{1,6}"
+    r"(?:[-_. ]*[ez])?[-_. ]*(?:hd|ai|h)(?![a-z0-9])"
+)
 
 
 def _compact(value: str) -> str:
@@ -65,6 +68,10 @@ def _compact(value: str) -> str:
 
 
 def _code_in_name(name: str, code: str) -> bool:
+    def base_code(match: re.Match[str]) -> str:
+        return strip_remaster_marker(match.group())
+
+    name = _REMASTER_CODE.sub(base_code, name)
     found, _ = extract_code(name)
     if found is not None:
         return is_format_equivalent(found, code)
@@ -84,7 +91,7 @@ def _edition(name: str) -> frozenset[str]:
             ("extended", _EXTENDED_CUT), ("remastered", _REMASTERED_CUT),
         ) if pattern.search(normalized)
     )
-    if _GLUED_REMASTER.search(normalized) and parse_remaster_identity(normalized):
+    if any(parse_remaster_identity(match.group()) for match in _REMASTER_CODE.finditer(normalized)):
         return labels | {"remastered"}
     return labels
 

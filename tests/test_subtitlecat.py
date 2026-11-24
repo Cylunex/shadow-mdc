@@ -147,6 +147,16 @@ def test_remaster_code_searches_base_but_only_selects_remaster_subtitle(tmp_path
     assert result.pick is not None and result.pick.name == "SSIS-001HD.srt"
 
 
+def test_remaster_subtitle_spellings_do_not_match_standard_release() -> None:
+    editions = ["SSIS-001-HD", "SSIS-001_H", "SSIS-001HD.zh-CN", "SSIS-001.AI.1080p"]
+    names = ["SSIS-001", "SSIS-010-HD", *editions]
+    page = "".join(f'<tr><td><a href="/fixture">{name}.srt</a></td></tr>' for name in names)
+
+    assert [hit.name for hit in parse_search(page, "SSIS-001", BASE)] == ["SSIS-001.srt"]
+    remasters = parse_search(page, "SSIS-001", BASE, edition=frozenset({"remastered"}))
+    assert {hit.name for hit in remasters} == {f"{name}.srt" for name in editions}
+
+
 def test_subtitle_timing_warning_preserves_subtitle_and_skips_shared_runtime(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/index.php":

@@ -1,5 +1,6 @@
 import re
 import shutil
+import tempfile
 import unicodedata
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -1292,7 +1293,7 @@ class Repository:
         self._session.flush()
         return work
 
-    def prefer_work_poster(self, work: Work, *, artwork_index: int) -> Work:
+    def prefer_work_poster(self, work: Work, *, artwork_index: int, artwork_root: Path) -> Work:
         if artwork_index < 0 or artwork_index >= len(work.artwork):
             raise ValueError("artwork index out of range")
         selected = dict(work.artwork[artwork_index])
@@ -1300,19 +1301,27 @@ class Repository:
         source = Path(str(local_path)) if isinstance(local_path, str) else None
         if source is None or not source.is_file():
             raise ValueError("selected artwork has no cached local file")
-        # Promote into the canonical per-work poster.* slot used by the artwork API.
-        work_root = source.parent
+        # Samples and older cached artwork may live outside the canonical directory.
+        work_root = artwork_root / work.id
         suffix = source.suffix if source.suffix else ".jpg"
         target = work_root / f"poster{suffix}"
+        if target.is_symlink():
+            raise ValueError("preferred poster target cannot be a symlink")
         if source.resolve() != target.resolve():
-            for stale in work_root.glob("poster.*"):
-                if stale.resolve() != source.resolve():
-                    stale.unlink(missing_ok=True)
-            shutil.copy2(source, target)
-            selected["local_path"] = str(target)
+            work_root.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=work_root, prefix=".poster-", delete=False) as stream:
+                temporary = Path(stream.name)
+            try:
+                shutil.copy2(source, temporary)
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+        selected["local_path"] = str(target)
+        for stale in work_root.glob("poster.*"):
+            if stale != target:
+                stale.unlink(missing_ok=True)
         for stale_thumb in work_root.glob("thumb.*"):
-            if stale_thumb.resolve() != target.resolve():
-                stale_thumb.unlink(missing_ok=True)
+            stale_thumb.unlink(missing_ok=True)
         selected["kind"] = "poster"
         selected["preferred"] = True
         updated: list[dict[str, object]] = [selected]

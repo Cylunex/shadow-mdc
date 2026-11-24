@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from shadow_mdc.db.models import (
     ExternalIdentity,
     MediaAsset,
     SourceSnapshot,
+    Work,
     WorkActor,
     WorkMagnet,
 )
@@ -34,9 +36,11 @@ def _jpeg_bytes(color: tuple[int, int, int]) -> bytes:
     return buf.getvalue()
 
 
+@pytest.mark.parametrize("source_kind", ["poster", "sample"])
 def test_prefer_work_poster_regenerates_thumb_and_sets_no_cache_headers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    source_kind: str,
 ) -> None:
     data_dir = tmp_path / "data"
     monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(data_dir))
@@ -60,14 +64,15 @@ def test_prefer_work_poster_regenerates_thumb_and_sets_no_cache_headers(
             art_dir = data_dir / "artwork" / work_id
             art_dir.mkdir(parents=True, exist_ok=True)
             old_poster = art_dir / "poster.jpg"
-            alt_poster = art_dir / "alt.jpg"
+            alt_poster = (art_dir / "samples" if source_kind == "sample" else art_dir) / "alt.jpg"
+            alt_poster.parent.mkdir(exist_ok=True)
             old_thumb = art_dir / "thumb.jpg"
             old_poster.write_bytes(_jpeg_bytes((220, 20, 20)))
             old_thumb.write_bytes(_jpeg_bytes((220, 20, 20)))
             alt_poster.write_bytes(_jpeg_bytes((20, 40, 220)))
             work.artwork = [
                 {"kind": "poster", "local_path": str(old_poster), "url": "https://img.example/1.jpg"},
-                {"kind": "poster", "local_path": str(alt_poster), "url": "https://img.example/2.jpg"},
+                {"kind": source_kind, "local_path": str(alt_poster), "url": "https://img.example/2.jpg"},
             ]
             session.flush()
 
@@ -81,6 +86,26 @@ def test_prefer_work_poster_regenerates_thumb_and_sets_no_cache_headers(
         new_thumb = data_dir / "artwork" / work_id / "thumb.jpg"
         assert new_thumb.is_file()
         assert new_thumb.read_bytes() != old_thumb_bytes
+        assert client.get(f"/api/works/{work_id}/artwork/poster").content == alt_poster.read_bytes()
+
+
+def test_work_edits_and_field_locks_are_saved_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{tmp_path / 'edit.db'}")
+    with TestClient(app) as client:
+        with app.state.runtime.database.session() as session:
+            session.add(Work(id="edited", title="Before", actors=["Performer"], field_locks=["actors"]))
+        path = "/api/works/edited"
+        invalid = client.patch(path, json={"title": "Attempt", "actors": [], "field_locks": []})
+        assert invalid.status_code == 422
+        detail = client.get(path).json()
+        assert (detail["title"], detail["field_locks"]) == ("Before", ["actors"])
+        valid = client.patch(path, json={"title": "After", "field_locks": ["plot"]})
+        assert valid.status_code == 200
+        detail = client.get(path).json()
+        assert (detail["title"], detail["field_locks"]) == ("After", ["plot"])
 
 
 def test_merge_actors_persists_aliases_and_prevents_startup_resurrection(tmp_path: Path) -> None:
@@ -192,7 +217,7 @@ def test_delete_work_cleans_child_rows_and_unlinks_assets(tmp_path: Path) -> Non
         assert session.scalars(select(SourceSnapshot).where(SourceSnapshot.work_id == work_id)).all() == []
 
 
-def test_bulk_translate_advances_past_already_translated_works(
+def test_bulk_translate_advances_past_completed_and_locked_works(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -207,9 +232,10 @@ def test_bulk_translate_advances_past_already_translated_works(
     with TestClient(app) as client, httpx.Client() as _:
         async_client = httpx.AsyncClient(transport=transport)
         try:
+            cache = TranslationCache(data_dir / "tr_cache.db")
             translator = GoogleTitleTranslator(
                 async_client,
-                TranslationCache(data_dir / "tr_cache.db"),
+                cache,
                 enabled=True,
                 endpoint="https://translate.example/translate",
                 target_language="zh-CN",
@@ -242,11 +268,19 @@ def test_bulk_translate_advances_past_already_translated_works(
                     overwrite=True,
                 )
                 pending_id = pending_work.id
+                locked_work = Work(
+                    id="locked", title="タイトル", family=ContentFamily.JAV.value, field_locks=["title"],
+                    created_at=datetime.now(UTC) + timedelta(seconds=1),
+                )
+                session.add(locked_work)
+                cache.put("タイトル", "zh-CN", "title", "缓存译文")
 
             res = client.post("/api/works/translate", json={"limit": 1})
             assert res.status_code == 200
             body = res.json()
             assert body["translated"] == 1
+            assert body["remaining"] == 0
+            assert client.get("/api/works/locked").json()["title"] == "タイトル"
             detail = client.get(f"/api/works/{pending_id}").json()
             assert detail["title"] == "新翻译标题"
         finally:

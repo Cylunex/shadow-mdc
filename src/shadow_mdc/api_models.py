@@ -489,6 +489,7 @@ class WorkUpdateRequest(BaseModel):
     runtime_seconds: int | None = Field(default=None, strict=True, gt=0, le=2147483647)
     only_missing: bool = False
     lock_edited: bool = True
+    field_locks: tuple[str, ...] | None = Field(default=None, max_length=50)
 
 
 class WorkLocksRequest(BaseModel):

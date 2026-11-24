@@ -4,9 +4,9 @@ import { Lightbox } from "../components/Lightbox";
 import { CoverImage } from "../components/CoverImage";
 import { InAppPlayer, type PlayerSource } from "../components/InAppPlayer";
 import { OfflineDownloadDialog, offlineDirectoryLabel, offlineTaskLabel } from "../components/OfflineDownloadDialog";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { api, appUrl } from "../api";
+import { api, appUrl, type WorkUpdate } from "../api";
 import { copyToClipboard } from "../lib/clipboard";
 import { hideBrokenImage, mediaUrl } from "../lib/mediaUrl";
 import { StatusBadges } from "../components/StatusBadges";
@@ -14,6 +14,10 @@ import { useWorkPage } from "../hooks/useWorkPage";
 import type { Work, WorkDetail } from "../model";
 
 const EDITABLE_LOCK_FIELDS = ["title", "actors", "studio", "series", "tags", "plot"] as const;
+
+function sameLocks(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((field) => right.includes(field));
+}
 
 type LangMode = "translated" | "original";
 
@@ -136,14 +140,7 @@ export function WorkDetailView(props: {
   onBack: () => void;
   onOpenWork: (workId: string) => void;
   onToggleWant?: (workId: string, wanted: boolean) => void | Promise<void>;
-  onSave: (workId: string, payload: {
-    title?: string;
-    actors?: string[];
-    studio?: string | null;
-    series?: string | null;
-    tags?: string[];
-    plot?: string | null;
-  }) => Promise<void>;
+  onSave: (workId: string, payload: WorkUpdate) => Promise<void>;
   onLocks: (workId: string, locks: string[]) => Promise<void>;
   onPreferPoster: (workId: string, index: number) => Promise<void>;
   onDeleteMagnet: (workId: string, magnetId: string) => Promise<void>;
@@ -192,13 +189,17 @@ export function WorkDetailView(props: {
   const [tags, setTags] = useState("");
   const [plot, setPlot] = useState("");
   const [locks, setLocks] = useState<string[]>([]);
+  const persistedLocks = useRef<string[]>([]);
 
   // Seed edit drafts from the loaded work. While the editor is open, keep
   // unsaved actress/title drafts across metadata refresh so a late reload
   // cannot wipe in-progress credits (javinizer-go idea; original UI).
   useEffect(() => {
     if (!work) return;
-    setLocks(work.field_locks ?? []);
+    const previousLocks = persistedLocks.current;
+    const currentLocks = work.field_locks ?? [];
+    persistedLocks.current = currentLocks;
+    setLocks(draft => !editOpen || sameLocks(draft, previousLocks) ? currentLocks : draft);
     if (editOpen) {
       return;
     }
@@ -862,27 +863,23 @@ export function WorkDetailView(props: {
                   disabled={props.busy === `edit-${work.id}` || props.busy === `locks-${work.id}`}
                   onClick={() => {
                     void (async () => {
+                      const locksChanged = !sameLocks(locks, work.field_locks ?? []);
                       await props.onSave(work.id, {
                         title,
                         actors: actors.split(/[,，]/).map((item) => item.trim()).filter(Boolean),
                         studio: studio.trim() || null,
                         series: series.trim() || null,
                         tags: tags.split(/[,，]/).map((item) => item.trim()).filter(Boolean),
-                        plot: plot.trim() || null
+                        plot: plot.trim() || null,
+                        field_locks: locksChanged ? locks : undefined,
                       });
-                      const currentLocks = [...(work.field_locks ?? [])].sort().join(",");
-                      const draftLocks = [...locks].sort().join(",");
-                      if (currentLocks !== draftLocks) {
-                        await props.onLocks(work.id, locks);
-                      }
-                      await reload(work.id);
                     })();
                   }}
                 >保存到 Work</button>
                 <button
                   type="button"
                   className="secondary"
-                  disabled={props.busy === `locks-${work.id}`}
+                  disabled={props.busy === `locks-${work.id}` || props.busy === `edit-${work.id}`}
                   onClick={() => {
                     void (async () => {
                       await props.onLocks(work.id, locks);

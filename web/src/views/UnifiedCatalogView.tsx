@@ -199,9 +199,10 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     return () => { clearTimeout(timer); controller.abort(); };
   }, [facetRetry, filters, revision, refresh, showingWorks, waitingForPerson]);
   const loadingMore = useRef(false);
+  const hasCurrentRows = loadedFilters.current === filters;
   async function more() {
     const signal = workRequest.current?.signal;
-    if (!cursor || loading || loadingMore.current || !signal || signal.aborted) return;
+    if (!hasCurrentRows || !cursor || loading || loadingMore.current || !signal || signal.aborted) return;
     loadingMore.current = true;
     setLoading(true); setWorkError(""); setAppendFailed(true);
     try {
@@ -213,11 +214,13 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     finally { loadingMore.current = false; if (!signal.aborted) setLoading(false); }
   }
   function openWork(id: string) {
-    try {
-      sessionStorage.setItem("mdc:catalog-return", JSON.stringify({
-        filters, rows, cursor, total, scroll: window.scrollY, at: Date.now()
-      }));
-    } catch { /* Navigation remains available without storage. */ }
+    if (hasCurrentRows) {
+      try {
+        sessionStorage.setItem("mdc:catalog-return", JSON.stringify({
+          filters, rows, cursor, total, scroll: window.scrollY, at: Date.now()
+        }));
+      } catch { /* Navigation remains available without storage. */ }
+    }
     onOpenWork(id);
   }
   function save() {
@@ -229,7 +232,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     <div className="catalog-heading">
     <div><h1>{mode === "actors" ? selectedPerson?.name ?? "演员库" : "作品库"}</h1>
     <p className="muted">{showingWorks ? `${total} 部作品` : people ? `${people.total} 位演员 · 查看档案与参演作品` : "演员档案与参演作品"}</p></div>
-    {showingWorks && onStartFeed && <button type="button" disabled={rows.length === 0 || loading} onClick={() => {
+    {showingWorks && onStartFeed && <button type="button" disabled={!hasCurrentRows || rows.length === 0 || loading} onClick={() => {
       try { sessionStorage.setItem("mdc:catalog-return", JSON.stringify({
         filters, rows, cursor, total, scroll: window.scrollY, at: Date.now()
       })); } catch { /* Storage is optional. */ }
@@ -254,7 +257,11 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
         <input id="shadow-mdc-search" aria-label="搜索演员与别名" placeholder="演员、别名"
           value={actorComposing ? actorQDraft : actorBrowsing.search} maxLength={300}
           onCompositionStart={() => { setActorQDraft(actorBrowsing.search); setActorComposing(true); }}
-          onCompositionEnd={e => { setActorComposing(false); setActorBrowsing(previous => ({ ...previous, search: e.currentTarget.value, page: 1 })); }}
+          onCompositionEnd={e => {
+            const search = e.currentTarget.value;
+            setActorComposing(false);
+            setActorBrowsing(previous => ({ ...previous, search, page: 1 }));
+          }}
           onChange={e => {
             const nextValue = e.target.value;
             if (actorComposing) setActorQDraft(nextValue);
@@ -424,7 +431,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     {!loading && !workError && rows.length === 0 && <p>没有符合条件的作品，可移除部分条件后再试。</p>}
     <div className="catalog-load-more">
       <span className="muted" role="status">已显示 {rows.length} / {total} 部作品</span>
-      {cursor ? <button type="button" disabled={loading} onClick={() => void more()}>{loading ? "正在加载…" : "加载下一页"}</button>
+      {cursor ? <button type="button" disabled={!hasCurrentRows || loading} onClick={() => void more()}>{loading ? "正在加载…" : "加载下一页"}</button>
         : !loading && rows.length > 0 && !workError && <span className="muted">已显示全部作品</span>}
     </div>
     </>}

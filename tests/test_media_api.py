@@ -1,6 +1,9 @@
 """Mobile paging and persistent playback links use isolated stores and fake Emby."""
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from unittest.mock import AsyncMock
 
 import httpx
@@ -15,12 +18,60 @@ from shadow_mdc.db.models import (
     Collection,
     Library,
     MediaAsset,
+    MediaEmbyBinding,
     Work,
     WorkActor,
     WorkCollection,
 )
 from shadow_mdc.services.media_server import MediaServerSettings
 from shadow_mdc.services.playback import PlayResolveResult, PlaySource
+
+
+def test_automatic_emby_resolve_keeps_concurrent_manual_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHADOW_MDC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SHADOW_MDC_DATABASE_URL", f"sqlite:///{tmp_path / 'binding.db'}")
+    searching, release_search = Event(), Event()
+
+    async def get(
+        url: str, *, headers: dict[str, str], params: dict[str, str], timeout: int,
+    ) -> httpx.Response:
+        payload: dict[str, object]
+        if url.endswith("System/Info/Public"):
+            payload = {"Id": "fixture-server"}
+        else:
+            item_id = params.get("Ids", "auto")
+            if "SearchTerm" in params:
+                searching.set()
+                assert await asyncio.to_thread(release_search.wait, 5)
+            payload = {
+                "Items": [{"Id": item_id, "Name": "ABC-123", "Type": "Movie"}],
+                "TotalRecordCount": 1,
+            }
+        return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+
+    with TestClient(app) as client, ThreadPoolExecutor() as executor:
+        runtime = app.state.runtime
+        runtime.media_server_store.save(MediaServerSettings(
+            enabled=True, base_url="https://example.com", api_key="fixture", media_client_token="fixture",
+        ))
+        monkeypatch.setattr(runtime.http, "get", get)
+        with runtime.database.session() as session:
+            session.add(Work(id="work", title="Fixture", primary_code="ABC-123"))
+        headers = {"Authorization": "Bearer fixture"}
+        path = "/api/media/v1/works/work"
+        automatic = executor.submit(client.post, f"{path}/resolve", headers=headers)
+        try:
+            assert searching.wait(5)
+            manual = client.put(f"{path}/binding", json={"item_id": "manual"}, headers=headers)
+            assert manual.status_code == 200
+        finally:
+            release_search.set()
+        assert automatic.result(timeout=5).json()["item_id"] == "manual"
+        with runtime.database.session() as session:
+            binding = session.get(MediaEmbyBinding, "work")
+            assert binding is not None and binding.item_id == "manual"
 
 
 def test_mobile_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

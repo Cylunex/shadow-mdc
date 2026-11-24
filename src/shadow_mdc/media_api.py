@@ -274,12 +274,9 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                 raise HTTPException(404, "work not found")
             primary_code = work.primary_code
             binding = session.get(MediaEmbyBinding, work_id)
-            bound_item_id = (
-                binding.item_id
-                if binding is not None and binding.server_id == instance
-                else None
-            )
-        if bound_item_id is not None:
+            original_binding = (binding.server_id, binding.item_id) if binding is not None else None
+        if original_binding is not None and original_binding[0] == instance:
+            bound_item_id = original_binding[1]
             try:
                 item = await emby_item(request, bound_item_id)
                 if item.type not in ("Movie", "Video", "Episode"):
@@ -298,16 +295,24 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
         matches = [item for item in page.items
                    if item.type in ("Movie", "Video", "Episode")
                    and matches_work_code(item.name, primary_code)]
-        if len(matches) != 1 or page.total > 100:
-            raise HTTPException(409, "Emby 匹配不唯一, 请选择一次对应条目")
-        target = EmbyTarget(server_id=instance, item_id=matches[0].id)
         with runtime(request).database.session() as session:
-            if session.get(Work, work_id) is None:
+            # Take the writer lock only after remote I/O, then check for a newer binding.
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            work = session.get(Work, work_id)
+            if work is None:
                 raise HTTPException(404, "work not found")
-            statement = insert(MediaEmbyBinding).values(work_id=work_id, **target.model_dump())
-            session.execute(statement.on_conflict_do_update(
-                index_elements=["work_id"], set_=target.model_dump(),
-            ))
+            binding = session.get(MediaEmbyBinding, work_id)
+            current_binding = (binding.server_id, binding.item_id) if binding is not None else None
+            if current_binding != original_binding:
+                if current_binding is not None and current_binding[0] == instance:
+                    return EmbyTarget(server_id=instance, item_id=current_binding[1])
+                raise HTTPException(409, "Emby 关联已变更。请重新打开作品")
+            if work.primary_code != primary_code:
+                raise HTTPException(409, "作品番号已变更。请重新打开作品")
+            if len(matches) != 1 or page.total > 100:
+                raise HTTPException(409, "Emby 匹配不唯一, 请选择一次对应条目")
+            target = EmbyTarget(server_id=instance, item_id=matches[0].id)
+            session.merge(MediaEmbyBinding(work_id=work_id, **target.model_dump()))
         return target
 
     @router.get("/works/{work_id}/emby-candidates")

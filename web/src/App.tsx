@@ -510,6 +510,7 @@ export function App() {
 
         {view === "work-detail" && selectedWorkId && (
           <WorkDetailView
+            key={selectedWorkId}
             workId={selectedWorkId}
             busy={busy}
             backLabel={RETURN_LABELS[detailReturnView]}

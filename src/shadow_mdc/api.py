@@ -4719,6 +4719,7 @@ def update_work(work_id: str, payload: WorkUpdateRequest, request: Request, repo
         and payload.tags is None
         and payload.plot is None
         and payload.runtime_seconds is None
+        and payload.field_locks is None
     ):
         raise HTTPException(status_code=422, detail="no editable fields provided")
     try:
@@ -4734,6 +4735,8 @@ def update_work(work_id: str, payload: WorkUpdateRequest, request: Request, repo
             only_missing=payload.only_missing,
             lock_edited=payload.lock_edited,
         )
+        if payload.field_locks is not None:
+            repo.set_field_locks(work, list(payload.field_locks))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     app_runtime = runtime(request)
@@ -4763,8 +4766,11 @@ def prefer_work_poster(
     work = repo.get_work(work_id)
     if work is None:
         raise HTTPException(status_code=404, detail="work not found")
+    app_runtime = runtime(request)
     try:
-        repo.prefer_work_poster(work, artwork_index=payload.artwork_index)
+        repo.prefer_work_poster(
+            work, artwork_index=payload.artwork_index, artwork_root=app_runtime.settings.data_dir / "artwork",
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     preferred_local = work.artwork[0].get("local_path") if work.artwork else None
@@ -4772,7 +4778,6 @@ def prefer_work_poster(
         poster_path = Path(preferred_local)
         directory_index.invalidate(poster_path.parent)
         ensure_list_thumbnail(poster_path.parent, poster_path)
-    app_runtime = runtime(request)
     _invalidate_library_caches(app_runtime.response_cache)
     return _work_detail_out(repo, work, data_dir=app_runtime.settings.data_dir)
 

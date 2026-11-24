@@ -152,6 +152,17 @@ async function request<T>(schema: z.ZodType<T>, path: string, init?: RequestInit
   return result;
 }
 
+export type WorkUpdate = {
+  title?: string;
+  actors?: string[];
+  studio?: string | null;
+  series?: string | null;
+  tags?: string[];
+  plot?: string | null;
+  lock_edited?: boolean;
+  field_locks?: string[];
+};
+
 export const api = {
   libraries: (signal?: AbortSignal) => request(librariesSchema, "/api/libraries", { signal }),
   createLibrary: (payload: {
@@ -394,18 +405,7 @@ export const api = {
   workDetail: (workId: string, signal?: AbortSignal) => request(workDetailSchema, `/api/works/${workId}`, { signal }),
   workRelated: (workId: string, limit = 18, signal?: AbortSignal) =>
     request(workRelatedSchema, `/api/works/${workId}/related?limit=${limit}`, { signal }),
-  updateWork: (
-    workId: string,
-    payload: {
-      title?: string;
-      actors?: string[];
-      studio?: string | null;
-      series?: string | null;
-      tags?: string[];
-      plot?: string | null;
-      lock_edited?: boolean;
-    }
-  ) =>
+  updateWork: (workId: string, payload: WorkUpdate) =>
     request(workDetailSchema, `/api/works/${workId}`, {
       method: "PATCH",
       body: JSON.stringify(payload)
