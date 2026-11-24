@@ -272,34 +272,43 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
             work = session.get(Work, work_id)
             if work is None:
                 raise HTTPException(404, "work not found")
+            primary_code = work.primary_code
             binding = session.get(MediaEmbyBinding, work_id)
-            if binding is not None and binding.server_id == instance:
-                try:
-                    item = await emby_item(request, binding.item_id)
-                    if item.type not in ("Movie", "Video", "Episode"):
-                        raise HTTPException(409, "已关联的 Emby 条目不可播放, 请重新关联")
-                    return EmbyTarget(server_id=instance, item_id=binding.item_id)
-                except HTTPException as exc:
-                    if exc.status_code != 404:
-                        raise
-            if not work.primary_code:
-                raise HTTPException(409, "请选择一次 Emby 条目以建立关联")
-            payload = await emby_get(request, "Items", {
-                "SearchTerm": work.primary_code, "Recursive": "true",
-                "IncludeItemTypes": "Movie,Video,Episode", "Fields": "Path", "Limit": "100",
-            })
-            page = _emby_page(payload)
-            matches = [item for item in page.items
-                       if item.type in ("Movie", "Video", "Episode")
-                       and matches_work_code(item.name, work.primary_code)]
-            if len(matches) != 1 or page.total > 100:
-                raise HTTPException(409, "Emby 匹配不唯一, 请选择一次对应条目")
-            target = EmbyTarget(server_id=instance, item_id=matches[0].id)
+            bound_item_id = (
+                binding.item_id
+                if binding is not None and binding.server_id == instance
+                else None
+            )
+        if bound_item_id is not None:
+            try:
+                item = await emby_item(request, bound_item_id)
+                if item.type not in ("Movie", "Video", "Episode"):
+                    raise HTTPException(409, "已关联的 Emby 条目不可播放, 请重新关联")
+                return EmbyTarget(server_id=instance, item_id=bound_item_id)
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+        if not primary_code:
+            raise HTTPException(409, "请选择一次 Emby 条目以建立关联")
+        payload = await emby_get(request, "Items", {
+            "SearchTerm": primary_code, "Recursive": "true",
+            "IncludeItemTypes": "Movie,Video,Episode", "Fields": "Path", "Limit": "100",
+        })
+        page = _emby_page(payload)
+        matches = [item for item in page.items
+                   if item.type in ("Movie", "Video", "Episode")
+                   and matches_work_code(item.name, primary_code)]
+        if len(matches) != 1 or page.total > 100:
+            raise HTTPException(409, "Emby 匹配不唯一, 请选择一次对应条目")
+        target = EmbyTarget(server_id=instance, item_id=matches[0].id)
+        with runtime(request).database.session() as session:
+            if session.get(Work, work_id) is None:
+                raise HTTPException(404, "work not found")
             statement = insert(MediaEmbyBinding).values(work_id=work_id, **target.model_dump())
             session.execute(statement.on_conflict_do_update(
                 index_elements=["work_id"], set_=target.model_dump(),
             ))
-            return target
+        return target
 
     @router.get("/works/{work_id}/emby-candidates")
     async def candidates(
@@ -371,9 +380,13 @@ def build_media_router(runtime: Callable[[Request], Runtime]) -> APIRouter:
                 raise HTTPException(404, "work not found")
             code, title = work.primary_code, work.title
         media = app.media_server_store.load().model_copy(update={"enabled": False})
+        sites_path = app.settings.playback_sites_path
         result = await resolve_play(
             work_id=work_id, code=code, title=title, media=media,
-            sites=load_sites_from_settings(PlaybackSettings(), data_dir=app.settings.data_dir),
+            sites=load_sites_from_settings(
+                PlaybackSettings(sites_path=str(sites_path) if sites_path else None),
+                data_dir=app.settings.data_dir,
+            ),
             client=app.http,
         )
         sources = [source for source in result.sources

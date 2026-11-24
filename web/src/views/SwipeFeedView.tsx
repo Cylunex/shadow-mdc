@@ -123,6 +123,7 @@ export function SwipeFeedView({ works = EMPTY_WORKS, loading, pagedLibrary, init
   const [selectedSiteIds, setSelectedSiteIds] = useState<string[]>([]);
   const resolveCache = useRef<Map<string, { sources: PlayerSource[]; expiresAt: number }>>(new Map());
   const libraryRequest = useRef<{ workId: string; controller: AbortController } | null>(null);
+  const tubeRequest = useRef<AbortController | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const loadingMoreRef = useRef(false);
 
@@ -216,13 +217,25 @@ export function SwipeFeedView({ works = EMPTY_WORKS, loading, pagedLibrary, init
 
   const loadTube = useCallback(
     async (opts: { reset?: boolean } = {}) => {
-      if (loadingMoreRef.current) return;
+      if (opts.reset) {
+        tubeRequest.current?.abort();
+        tubeRequest.current = null;
+        loadingMoreRef.current = false;
+      } else if (loadingMoreRef.current) {
+        return;
+      }
+      const controller = new AbortController();
+      tubeRequest.current = controller;
       loadingMoreRef.current = true;
       setTubeLoading(true);
       setTubeError(null);
       try {
         const cursor = opts.reset ? null : tubeCursor;
-        const res = await api.swipeFeed({ cursor, limit: 12, mode: "random", sites: selectedSiteIds.length ? selectedSiteIds : undefined });
+        const res = await api.swipeFeed(
+          { cursor, limit: 12, mode: "random", sites: selectedSiteIds.length ? selectedSiteIds : undefined },
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
         const rawItems = Array.isArray(res.items) ? res.items : [];
         const mapped: TubeItem[] = rawItems
           .map((row) => {
@@ -256,19 +269,27 @@ export function SwipeFeedView({ works = EMPTY_WORKS, loading, pagedLibrary, init
         if (res.error) setTubeError(String(res.error));
         setTubeReady(true);
       } catch (err) {
+        if (controller.signal.aborted) return;
         const msg = err instanceof Error ? err.message : String(err);
         setTubeError(msg);
         setTubeReady(true);
-        report(`刷流 feed：${msg}`);
+        report(`刷流 feed 失败：${msg}`);
       } finally {
-        setTubeLoading(false);
-        loadingMoreRef.current = false;
+        if (tubeRequest.current === controller) {
+          tubeRequest.current = null;
+          setTubeLoading(false);
+          loadingMoreRef.current = false;
+        }
       }
     },
     [report, tubeCursor, selectedSiteIds],
   );
 
   useEffect(() => {
+    tubeRequest.current?.abort();
+    tubeRequest.current = null;
+    loadingMoreRef.current = false;
+    setTubeLoading(false);
     if (mode !== "tube") return;
     setTubeReady(false);
     setTubeItems([]);
@@ -277,6 +298,10 @@ export function SwipeFeedView({ works = EMPTY_WORKS, loading, pagedLibrary, init
     setActiveTubeKey(null);
     setTubePlayback(null);
     resolveCache.current.clear();
+    return () => {
+      tubeRequest.current?.abort();
+      tubeRequest.current = null;
+    };
   }, [selectedSiteIds, mode]);
 
 

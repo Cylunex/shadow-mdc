@@ -15,6 +15,30 @@ type Props = {
   onTasksSnapshot?: (tasks: TaskRun[]) => void;
 };
 
+const SUMMARY_LABELS: Record<string, string> = {
+  scanned: "扫描",
+  discovered: "新发现",
+  unchanged: "未变化",
+  identified: "已识别",
+  candidates: "候选",
+  failed: "失败",
+  skipped: "跳过",
+  translated: "已翻译",
+  downloaded: "已下载",
+  cached: "已缓存",
+};
+
+function formatSummaryPills(summary: Record<string, unknown>): Array<{ key: string; label: string }> {
+  const pills: Array<{ key: string; label: string }> = [];
+  for (const [key, value] of Object.entries(summary)) {
+    if (key === "progress_current" || key === "progress_total" || value == null || value === "") continue;
+    if (typeof value === "number" || typeof value === "string" || typeof value === "boolean") {
+      pills.push({ key, label: `${SUMMARY_LABELS[key] ?? key}: ${String(value)}` });
+    }
+  }
+  return pills;
+}
+
 export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: Props) {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [replay, setReplay] = useState<Awaited<ReturnType<typeof api.matchingReplay>>>();
@@ -23,6 +47,7 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
   const [kindFilter, setKindFilter] = useState("all");
   const [offlineFilter, setOfflineFilter] = useState("all");
   const [offlineAction, setOfflineAction] = useState<string | null>(null);
+  const [taskAction, setTaskAction] = useState<string | null>(null);
   const offline = useQuery({ ...resources.offlineList(), refetchInterval: autoRefresh ? 5_000 : false }, queryClient);
   const offlineTasks = offline.data ?? [];
   const visibleOffline = offlineTasks.filter((task) => offlineFilter === "all" ||
@@ -134,12 +159,16 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
           const current = Number(summary.progress_current ?? 0);
           const total = Number(summary.progress_total ?? 0);
           const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : null;
+          const pills = formatSummaryPills(summary);
+          const cancelKey = `cancel-${task.id}`;
+          const retryKey = `retry-${task.id}`;
           return (
             <article key={task.id}>
               <div>
                 <span className={`task-state ${task.status}`}>{task.status}</span>
                 <h2>{task.kind}</h2>
                 <p>{task.scope}</p>
+                {task.error && <p className="task-error-banner" role="alert">{task.error}</p>}
                 {pct !== null && (
                   <div className="task-progress" aria-label="progress">
                     <div style={{ width: `${pct}%` }} />
@@ -149,48 +178,62 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
                   </div>
                 )}
               </div>
-              <code>{JSON.stringify(summary)}</code>
+              <div>
+                {pills.length > 0 ? (
+                  <div className="task-summary-pills">
+                    {pills.map((pill) => <span key={pill.key}>{pill.label}</span>)}
+                  </div>
+                ) : (
+                  <code>{JSON.stringify(summary)}</code>
+                )}
+              </div>
               <div className="task-actions">
                 {!task.finished_at && (
                   <button
                     type="button"
-                    disabled={busy === `cancel-${task.id}`}
+                    disabled={busy === cancelKey || taskAction === cancelKey}
                     onClick={() => {
                       void (async () => {
+                        setTaskAction(cancelKey);
                         try {
                           await api.cancelTask(task.id);
                           report(`已请求取消 ${task.kind}`);
                           await onChanged();
                         } catch (error) {
                           report(error instanceof Error ? error.message : String(error));
+                        } finally {
+                          setTaskAction((prev) => prev === cancelKey ? null : prev);
                         }
                       })();
                     }}
                   >
-                    取消
+                    {taskAction === cancelKey ? "取消中…" : "取消"}
                   </button>
                 )}
                 {task.finished_at && ["scan", "identify:library"].includes(task.kind) &&
                   ["failed", "partial", "cancelled", "interrupted"].includes(task.status) && (
                   <button
                     type="button"
-                    disabled={busy === `retry-${task.id}`}
+                    disabled={busy === retryKey || taskAction === retryKey}
                     onClick={() => {
                       void (async () => {
+                        setTaskAction(retryKey);
                         try {
                           await api.retryTask(task.id);
                           report(`已提交重试 ${task.kind}`);
                           await onChanged();
                         } catch (error) {
                           report(error instanceof Error ? error.message : String(error));
+                        } finally {
+                          setTaskAction((prev) => prev === retryKey ? null : prev);
                         }
                       })();
                     }}
                   >
-                    重试
+                    {taskAction === retryKey ? "重试中…" : "重试"}
                   </button>
                 )}
-                <time>{new Date(task.created_at).toLocaleString()}</time>
+                <time>{task.created_at ? new Date(task.created_at).toLocaleString() : ""}</time>
               </div>
             </article>
           );

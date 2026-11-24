@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import unicodedata
 from collections import Counter
 from collections.abc import Callable
 from datetime import datetime
@@ -339,10 +338,14 @@ def _person_index(profiles: list[CatalogPerson]) -> dict[str, CatalogPerson]:
 
 
 def read_catalog_people(
-    runtime_state: Runtime, session: Session, *, private: bool = False,
+    runtime_state: Runtime,
+    session: Session,
+    *,
+    private: bool = False,
+    root_ids: set[str] | None = None,
 ) -> list[CatalogPerson]:
     _sync_people(runtime_state, session)
-    items = stored_people(session, private=private)
+    items = stored_people(session, private=private, root_ids=root_ids)
     if private:
         prefs = runtime_state.library_prefs_store.load()
         for item in items:
@@ -355,42 +358,99 @@ def read_catalog_people(
     return items
 
 
+def read_single_catalog_person(
+    runtime_state: Runtime,
+    session: Session,
+    key: str,
+    *,
+    private: bool = False,
+) -> CatalogPerson:
+    _sync_people(runtime_state, session)
+    item = stored_person(session, key, private=private)
+    if private:
+        prefs = runtime_state.library_prefs_store.load()
+        item.image_url = actor_images().display_url(item.image_url)
+        item.favorite, item.blacklist = _person_tags(item, prefs)
+        return item
+    return item.model_copy(update={
+        "image_url": f"/api/media/v1/catalog/people/{item.id}/image",
+    })
+
+
 def catalog_credit_names(
     runtime_state: Runtime, session: Session, works: list[Work],
 ) -> dict[str, list[str]]:
-    work_ids = {work.id for work in works}
-    overrides = session.scalar(select(exists().where(CatalogPersonRecord.edits != {})))
+    work_ids = [work.id for work in works]
+    if not work_ids:
+        return {}
+    overrides = session.scalar(select(exists().where(or_(
+        CatalogPersonRecord.edits != {},
+        CatalogPersonRecord.merged_into.is_not(None),
+    ))))
     explicit = session.scalar(select(exists().where(CatalogPersonCredit.work_id.in_(work_ids))))
     if not overrides and not explicit:
         return {}
-    profiles = read_catalog_people(runtime_state, session)
-    claims: dict[str, set[str]] = {}
+    _sync_people(runtime_state, session)
+    refresh_cards(session)
+    encoded_work_ids = json.dumps(work_ids)
+    touching_ids = set(session.execute(text("""
+        SELECT person_id FROM mdc_people_card_works WHERE work_id IN (SELECT value FROM json_each(:works))
+        UNION
+        SELECT person_id FROM mdc_people_excluded_names WHERE work_id IN (SELECT value FROM json_each(:works))
+        UNION
+        SELECT person_id FROM catalog_person_credits WHERE work_id IN (SELECT value FROM json_each(:works))
+    """), {"works": encoded_work_ids}).scalars())
+    if not touching_ids:
+        return {}
+    has_page_override = explicit or bool(session.scalar(select(exists().where(or_(
+        and_(CatalogPersonRecord.id.in_(touching_ids), CatalogPersonRecord.edits != {}),
+        CatalogPersonRecord.merged_into.in_(touching_ids),
+    )))))
+    if not has_page_override:
+        return {}
+    profiles = read_catalog_people(runtime_state, session, root_ids=touching_ids)
+    claim_counts: Counter[str] = Counter()
+    for (search_blob,) in session.execute(text("SELECT search FROM mdc_people_cards")):
+        if search_blob:
+            for line in set(str(search_blob).split("\n")):
+                if line:
+                    claim_counts[line] += 1
+    work_id_set = set(work_ids)
+    by_work: dict[str, list[tuple[CatalogPerson, set[str], set[str], bool]]] = {}
     for profile in profiles:
-        for alias in [profile.name, *profile.aliases]:
-            claims.setdefault(unicodedata.normalize("NFKC", alias).casefold(), set()).add(profile.id)
+        aliases = {profile.name, *profile.aliases}
+        folded = {
+            fold_name(alias)
+            for alias in aliases
+            if claim_counts[fold_name(alias)] <= 1
+        }
+        included_set = set(profile.work_ids) & work_id_set
+        excluded_set = set(profile.excluded_work_ids) & work_id_set
+        for wid in included_set:
+            by_work.setdefault(wid, []).append((profile, aliases, folded, True))
+        for wid in excluded_set - included_set:
+            by_work.setdefault(wid, []).append((profile, aliases, folded, False))
     names: dict[str, list[str]] = {}
     for work in works:
+        matched_profiles = by_work.get(work.id)
+        if not matched_profiles:
+            continue
         original = {name: position for position, name in enumerate(work.actors)}
         entries: list[tuple[int, str]] = []
         known_aliases: set[str] = set()
         known_folded: set[str] = set()
-        for profile in profiles:
-            if work.id not in profile.work_ids and work.id not in profile.excluded_work_ids:
-                continue
-            aliases = {profile.name, *profile.aliases}
+        for profile, aliases, folded, is_included in matched_profiles:
             known_aliases.update(aliases)
-            folded = {unicodedata.normalize("NFKC", alias).casefold() for alias in aliases
-                      if len(claims[unicodedata.normalize("NFKC", alias).casefold()]) == 1}
             known_folded.update(folded)
-            if work.id in profile.work_ids:
+            if is_included:
                 position = min((position for alias, position in original.items() if alias in aliases
-                                or unicodedata.normalize("NFKC", alias).casefold() in folded),
+                                or fold_name(alias) in folded),
                                default=1000000)
                 entries.append((position, profile.name))
         # Preserve legacy text credits that have not yet acquired an entity relationship.
         entries.extend((position, name) for name, position in original.items()
                        if name not in known_aliases
-                       and unicodedata.normalize("NFKC", name).casefold() not in known_folded)
+                       and fold_name(name) not in known_folded)
         names[work.id] = [name for _, name in sorted(entries)]
     return names
 
@@ -833,7 +893,7 @@ def build_catalog_router(
             ids: Annotated[list[str] | None, Query(alias="id", max_length=100)] = None,
         ) -> PeoplePage:
             runtime_state = runtime(request)
-            query = q.strip().casefold()
+            query = fold_name(q)
             with runtime_state.database.session() as session:
                 if not ids and not followed:
                     _card_snapshot(runtime_state, session)
@@ -845,14 +905,46 @@ def build_catalog_router(
                         next_offset=offset + limit if offset + limit < total else None,
                         total=total,
                     )
-                _sync_people(runtime_state, session)
-                profiles = stored_people(session)
                 if ids:
-                    index = _person_index(profiles)
+                    _card_snapshot(runtime_state, session)
+                    resolved_targets: dict[str, str] = {}
+                    for raw_key in ids:
+                        ref = session.get(CatalogPersonReference, raw_key)
+                        if ref is None and ":" not in raw_key:
+                            ref = (
+                                session.get(CatalogPersonReference, f"jav:{raw_key}")
+                                or session.get(CatalogPersonReference, f"nj:{raw_key}")
+                            )
+                        target_id = ref.person_id if ref is not None else raw_key
+                        seen_chain: set[str] = set()
+                        while target_id not in seen_chain:
+                            seen_chain.add(target_id)
+                            rec = session.get(CatalogPersonRecord, target_id)
+                            if rec is None or not rec.merged_into:
+                                break
+                            target_id = rec.merged_into
+                        resolved_targets[raw_key] = target_id
+                    unique_ids = sorted(set(resolved_targets.values()))
+                    card_names = {
+                        str(cid): str(cname)
+                        for cid, cname in session.execute(
+                            text(
+                                "SELECT id, name FROM mdc_people_cards "
+                                "WHERE id IN (SELECT value FROM json_each(:ids))"
+                            ),
+                            {"ids": json.dumps(unique_ids)},
+                        )
+                    }
                     return PeoplePage(
                         items=[], next_offset=None,
-                        labels={key: index[key].name for key in ids if key in index},
+                        labels={
+                            raw_key: card_names[target_id]
+                            for raw_key, target_id in resolved_targets.items()
+                            if target_id in card_names
+                        },
                     )
+                _sync_people(runtime_state, session)
+                profiles = stored_people(session)
                 names = Counter(person.name for person in profiles)
                 prefs = runtime_state.library_prefs_store.load()
                 matches = [
@@ -1055,19 +1147,34 @@ def build_catalog_router(
     @router.get("/people/{person_id}")
     def person_detail(person_id: str, request: Request) -> CatalogPerson:
         with runtime(request).database.session() as session:
-            catalog = people(request, session)
-            result = stored_person(session, person_id, profiles=catalog)
+            runtime_state = runtime(request)
+            _sync_people(runtime_state, session)
+            refresh_cards(session)
+            result = read_single_catalog_person(
+                runtime_state, session, person_id, private=prefix == "/api/catalog",
+            )
             ids = set(result.work_ids)
-            collaborators = []
-            for other in catalog:
-                count = len(ids.intersection(other.work_ids))
-                if other.id != result.id and count:
-                    collaborators.append(Collaboration(id=other.id, name=other.name, count=count))
-            result.collaborators = sorted(collaborators, key=lambda item: (-item.count, item.name))[:20]
+            collab_rows = session.execute(text("""
+                SELECT c.id, c.name, count(*) AS shared
+                FROM mdc_people_card_works self_w
+                JOIN mdc_people_card_works other_w ON other_w.work_id = self_w.work_id
+                JOIN mdc_people_cards c ON c.id = other_w.person_id
+                WHERE self_w.person_id = :person_id AND other_w.person_id <> :person_id
+                GROUP BY c.id, c.name
+                ORDER BY shared DESC, c.name ASC
+                LIMIT 20
+            """), {"person_id": result.id})
+            result.collaborators = [
+                Collaboration(id=str(cid), name=str(cname), count=int(shared))
+                for cid, cname, shared in collab_rows
+            ]
             result.years = sorted({
-                work.release_date.year for work in session.scalars(select(Work).where(Work.id.in_(ids)))
-                if work.release_date
-            }, reverse=True)
+                release_date.year
+                for release_date in session.scalars(
+                    select(Work.release_date).where(Work.id.in_(ids), Work.release_date.is_not(None))
+                )
+                if release_date is not None
+            }, reverse=True) if ids else []
             relationships = organization_relationships()
             linked = session.execute(select(
                 Collection.id, Collection.name, func.count(func.distinct(relationships.c.work_id)),

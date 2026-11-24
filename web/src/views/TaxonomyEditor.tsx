@@ -14,13 +14,23 @@ export function TaxonomyEditor({ work, onClose, onSaved }: {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => { if (document.data) setValue(taxonomyEditSchema.parse(document.data)); }, [document.data]);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !saving) {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, saving]);
   async function save() {
     setSaving(true); setError("");
     try { await api.saveWorkTaxonomy(work.id, value); onSaved(); }
     catch (error) { setError(error instanceof Error ? error.message : "分类保存失败"); }
     finally { setSaving(false); }
   }
-  return <div className="genre-sheet-backdrop"><form className="genre-sheet taxonomy-editor" role="dialog" aria-modal="true" aria-label="编辑作品分类"
+  return <div className="genre-sheet-backdrop" onClick={event => { if (event.target === event.currentTarget && !saving) onClose(); }}><form className="genre-sheet taxonomy-editor" role="dialog" aria-modal="true" aria-label="编辑作品分类"
     onSubmit={event => { event.preventDefault(); void save(); }}>
     <h2>{work.title}</h2><p>同一维度可多选；题材统一在作品标签中维护。</p>
     {document.error || schema.error ? <p role="alert">分类读取失败 <button type="button" onClick={() => { void document.refetch(); void schema.refetch(); }}>重试</button></p>

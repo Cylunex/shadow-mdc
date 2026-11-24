@@ -1,5 +1,6 @@
 import { CoverImage } from "./CoverImage";
-import { memo, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { copyToClipboard } from "../lib/clipboard";
 import { mediaUrl } from "../lib/mediaUrl";
 import type { Work } from "../model";
 import { StatusBadges } from "./StatusBadges";
@@ -40,6 +41,20 @@ export const WorkCard = memo(function WorkCard({
 }: Props) {
   const thumb = mediaUrl(work.image_url);
   const showRank = matchScore != null && matchScore > 0;
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+  }, []);
+  function handleCopyCode() {
+    if (!work.primary_code) return;
+    void copyToClipboard(work.primary_code).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(false), 1400);
+    });
+  }
   return (
     <article
       className={selected ? "work selected" : "work"}
@@ -88,22 +103,22 @@ export const WorkCard = memo(function WorkCard({
         <div className="work-code-row">
             {work.primary_code && (
               <span
-                className="work-code code-chip-copyable"
+                className={copied ? "work-code code-chip-copyable is-copied" : "work-code code-chip-copyable"}
                 title="点击复制番号"
                 role="button"
                 tabIndex={0}
                 onClick={(event) => {
                   event.stopPropagation();
-                  void navigator.clipboard.writeText(work.primary_code!).catch(() => undefined);
+                  handleCopyCode();
                 }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
                     event.stopPropagation();
-                    void navigator.clipboard.writeText(work.primary_code!).catch(() => undefined);
+                    handleCopyCode();
                   }
                 }}
-              >{work.primary_code}</span>
+              >{copied ? `${work.primary_code} ✓` : work.primary_code}</span>
             )}
             {work.rating_value != null && (
               <span className="work-score" title={work.rating_source ?? undefined}>

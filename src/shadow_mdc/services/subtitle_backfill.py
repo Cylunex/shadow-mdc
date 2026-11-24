@@ -265,6 +265,10 @@ class SubtitleBackfillJob:
         except Exception as exc:  # job must record failure, never crash the app
             log.exception("subtitle backfill failed")
             final_status, reason = "failed", str(exc)
+        finally:
+            close_fn = getattr(fetcher, "close", None)
+            if callable(close_fn):
+                close_fn()
         self._reason = reason
         self._finish(task_id, final_status, cursor, stats, reason)
         return final_status

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { LibraryPrefs, SubscriptionWatchStatus } from "../model";
 import { queryClient } from "../query/client";
@@ -10,20 +10,28 @@ type Props = {
   busy: string | null;
   report: (message: string) => void;
   onChanged: (prefs: LibraryPrefs) => void;
+  onOpenWork?: (workId: string) => void;
 };
 
-export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
+export function SubscriptionsView({ prefs, busy, report, onChanged, onOpenWork }: Props) {
   useQuery(resources.prefs(), queryClient);
   const [tab, setTab] = useState<"subs" | "queue">("subs");
   const [actorKey, setActorKey] = useState("");
   const [actorName, setActorName] = useState("");
+  const [keyTouched, setKeyTouched] = useState(false);
   const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
   const [maxCast, setMaxCast] = useState(3);
   const [localBusy, setLocalBusy] = useState<string | null>(null);
   const [watchStatus, setWatchStatus] = useState<SubscriptionWatchStatus | null>(null);
   const [fadingIds, setFadingIds] = useState<Record<string, true>>({});
   const [localQueue, setLocalQueue] = useState(prefs.queue);
+  const fadeTimers = useRef<number[]>([]);
   const blocked = Boolean(busy || localBusy);
+
+  useEffect(() => () => {
+    fadeTimers.current.forEach((timer) => window.clearTimeout(timer));
+    fadeTimers.current = [];
+  }, []);
 
   useEffect(() => {
     void api.subscriptionWatchStatus().then(setWatchStatus).catch(() => setWatchStatus(null));
@@ -62,23 +70,24 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
   );
 
   async function dismissQueueItem(itemId: string, status: "accepted" | "dismissed") {
-    const scrollY = window.scrollY;
     setFadingIds((current) => ({ ...current, [itemId]: true }));
     // Optimistic remove after a short fade; refill keeps remaining rows in place.
-    window.setTimeout(() => {
+    const timer = window.setTimeout(() => {
+      fadeTimers.current = fadeTimers.current.filter((entry) => entry !== timer);
       setLocalQueue((current) => current.filter((item) => item.id !== itemId));
       setFadingIds((current) => {
         const next = { ...current };
         delete next[itemId];
         return next;
       });
-      window.requestAnimationFrame(() => window.scrollTo({ top: scrollY }));
     }, 180);
+    fadeTimers.current.push(timer);
     try {
       const next = await api.patchQueueItem(itemId, status);
       onChanged(next);
-      window.requestAnimationFrame(() => window.scrollTo({ top: scrollY }));
     } catch (error) {
+      fadeTimers.current.forEach((entry) => window.clearTimeout(entry));
+      fadeTimers.current = [];
       setFadingIds({});
       setLocalQueue(prefs.queue);
       report(error instanceof Error ? error.message : String(error));
@@ -87,19 +96,22 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!actorKey.trim() || !actorName.trim()) return;
+    const resolvedName = actorName.trim();
+    const resolvedKey = (actorKey.trim() || resolvedName);
+    if (!resolvedKey || !resolvedName) return;
     await runLocal("add-sub", async () => {
       const next = await api.upsertSubscription({
-        actor_key: actorKey.trim(),
-        actor_name: actorName.trim(),
+        actor_key: resolvedKey,
+        actor_name: resolvedName,
         start_date: startDate,
         max_cast: maxCast,
         enabled: true
       });
       onChanged(next);
-      report(`已订阅 ${actorName.trim()}（起始 ${startDate}，人数 ≤${maxCast}）`);
+      report(`已订阅 ${resolvedName}（起始 ${startDate}，人数 ≤${maxCast}）`);
       setActorKey("");
       setActorName("");
+      setKeyTouched(false);
     });
   }
 
@@ -166,8 +178,25 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
       {tab === "subs" && (
         <>
           <form className="subscription-form" onSubmit={(event) => void submit(event)}>
-            <input value={actorName} onChange={(e) => { setActorName(e.target.value); if (!actorKey) setActorKey(e.target.value); }} placeholder="演员姓名" required />
-            <input value={actorKey} onChange={(e) => setActorKey(e.target.value)} placeholder="稳定键（可同姓名）" required />
+            <input
+              value={actorName}
+              onChange={(e) => {
+                const nextName = e.target.value;
+                setActorName(nextName);
+                if (!keyTouched) setActorKey(nextName);
+              }}
+              placeholder="演员姓名"
+              required
+            />
+            <input
+              value={actorKey}
+              onChange={(e) => {
+                const nextKey = e.target.value;
+                setActorKey(nextKey);
+                setKeyTouched(Boolean(nextKey.trim()) && nextKey !== actorName);
+              }}
+              placeholder="稳定键（留空默认同姓名）"
+            />
             <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} required />
             <label className="inline-field">
               <span>人数 ≤</span>
@@ -236,19 +265,40 @@ export function SubscriptionsView({ prefs, busy, report, onChanged }: Props) {
                 key={item.id}
                 className={fadingIds[item.id] ? "queue-card queue-card--fading" : "queue-card"}
               >
-                <div>
-                  <span className="pill">{item.status}</span>
-                  <h2>{item.title}</h2>
-                  <p>{[item.code, item.actor_name, item.release_date, `人数 ${item.cast_count}`].filter(Boolean).join(" · ")}</p>
-                </div>
-                <div className="subscription-actions">
-                  {item.status === "pending" && (
+                {(() => {
+                  const queuedWorkId = item.work_id;
+                  return (
                     <>
-                      <button type="button" className="secondary" disabled={blocked || Boolean(fadingIds[item.id])} onClick={() => void dismissQueueItem(item.id, "accepted")}>接受</button>
-                      <button type="button" className="ghost" disabled={blocked || Boolean(fadingIds[item.id])} onClick={() => void dismissQueueItem(item.id, "dismissed")}>忽略</button>
+                      <div>
+                        <span className="pill">{item.status}</span>
+                        {queuedWorkId && onOpenWork ? (
+                          <button
+                            type="button"
+                            className="queue-card-title-btn"
+                            onClick={() => onOpenWork(queuedWorkId)}
+                            title="打开作品详情"
+                          >
+                            <h2>{item.title}</h2>
+                          </button>
+                        ) : (
+                          <h2>{item.title}</h2>
+                        )}
+                        <p>{[item.code, item.actor_name, item.release_date, `人数 ${item.cast_count}`].filter(Boolean).join(" · ")}</p>
+                      </div>
+                      <div className="subscription-actions">
+                        {queuedWorkId && onOpenWork && (
+                          <button type="button" className="ghost" onClick={() => onOpenWork(queuedWorkId)}>详情</button>
+                        )}
+                        {item.status === "pending" && (
+                          <>
+                            <button type="button" className="secondary" disabled={blocked || Boolean(fadingIds[item.id])} onClick={() => void dismissQueueItem(item.id, "accepted")}>接受</button>
+                            <button type="button" className="ghost" disabled={blocked || Boolean(fadingIds[item.id])} onClick={() => void dismissQueueItem(item.id, "dismissed")}>忽略</button>
+                          </>
+                        )}
+                      </div>
                     </>
-                  )}
-                </div>
+                  );
+                })()}
               </article>
             ))}
           </div>

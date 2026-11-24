@@ -17,11 +17,16 @@ type Props = {
   report: (message: string) => void;
 };
 
+type SettingsSection = "all" | "pan" | "library" | "scraping";
+
 export function SettingsView({ libraries, busy, run, report }: Props) {
+  const [section, setSection] = useState<SettingsSection>("all");
   const [pan, setPan] = useState<PanStatus | null>(null);
+  const [panError, setPanError] = useState<string | null>(null);
   const [panSettings, setPanSettings] = useState<PanSettings | null>(null);
   const [offlineTasks, setOfflineTasks] = useState<PanOfflineTask[]>([]);
   const [media, setMedia] = useState<MediaServerSettings | null>(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
   const [qr, setQr] = useState<{ id: string; qr_code: string } | null>(null);
   const [loginState, setLoginState] = useState<string | null>(null);
   const [dirDraft, setDirDraft] = useState("");
@@ -50,10 +55,14 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
     const generation = ++panRead.current;
     await Promise.all([
       queryClient.fetchQuery(resources.panStatus()).then((value) => {
-        if (generation === panRead.current) setPan(value);
+        if (generation === panRead.current) {
+          setPan(value);
+          setPanError(null);
+        }
       }).catch((error: unknown) => {
         if (generation !== panRead.current) return;
         setPan(null);
+        setPanError(error instanceof Error ? error.message : String(error));
         throw error;
       }),
       api.panSettings().then((settings) => {
@@ -74,10 +83,35 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
     ]);
   };
 
+  const reloadMedia = () => {
+    setMediaError(null);
+    void api.mediaServer()
+      .then((value) => {
+        setMedia(value);
+        setMediaError(null);
+      })
+      .catch((error: unknown) => {
+        setMedia(null);
+        setMediaError(error instanceof Error ? error.message : String(error));
+      });
+  };
+
   useEffect(() => {
     let active = true;
     void reloadPan().catch(() => undefined);
-    void api.mediaServer().then((value) => { if (active) setMedia(value); }).catch(() => { if (active) setMedia(null); });
+    void api.mediaServer()
+      .then((value) => {
+        if (active) {
+          setMedia(value);
+          setMediaError(null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setMedia(null);
+          setMediaError(error instanceof Error ? error.message : String(error));
+        }
+      });
     return () => { active = false; ++panRead.current; };
   }, []);
 
@@ -112,7 +146,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
 
   return (
     <section className="panel-section settings-view">
-      <div className="section-hero">
+      <div className="section-hero compact">
         <div>
           <p className="eyebrow">SYSTEM</p>
           <h1>设置</h1>
@@ -120,8 +154,28 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
         </div>
       </div>
 
-      <div className="settings-grid">
-        <article className="settings-card">
+      <div className="settings-section-tabs" role="tablist" aria-label="设置分区">
+        {([
+          ["all", "全部"],
+          ["pan", "网盘与管线"],
+          ["library", "媒体库与 Emby"],
+          ["scraping", "刮削与词典"],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={section === key}
+            className={section === key ? "active" : "ghost"}
+            onClick={() => setSection(key)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="settings-grid" style={{ display: section === "scraping" ? "none" : undefined }}>
+        <article className="settings-card" style={{ display: section === "library" ? "none" : undefined }}>
           <h2>115 网盘</h2>
           {panSettings && (
             <label>
@@ -148,8 +202,15 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
           <p className="muted">
             {pan
               ? `${pan.provider} · ${pan.available ? "可用" : "不可用"} — ${pan.reason}`
-              : "正在读取 /api/pan/status…"}
+              : panError
+                ? `状态读取失败：${panError}`
+                : "正在读取 /api/pan/status…"}
           </p>
+          {panError && (
+            <button type="button" className="ghost" onClick={() => void reloadPan().catch(() => undefined)}>
+              重试读取网盘状态
+            </button>
+          )}
           {pan?.needs_relogin && (
             <p className="danger-text" role="alert">
               需要重新登录：{pan.backend === "openlist" ? "OpenList 拒绝了已保存的令牌 / 密码，已清除，请重新填写凭据。" : "115 拒绝了已保存的登录，已清除，请重新扫码登录。"}
@@ -721,7 +782,7 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
             )}
         </article>
 
-        <article className="settings-card">
+        <article className="settings-card" style={{ display: section === "library" ? "none" : undefined }}>
           <h2>管线状态 · offline → STRM → NFO → Emby</h2>
           <p className="muted">
             借鉴 TgtoDrive 看板思路：OpenList 离线完成后自动导出 STRM/NFO，再进入 Emby 通知队列（媒体服务器仍可关闭）。
@@ -850,8 +911,14 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
           </form>
         </article>
 
-        <article className="settings-card">
+        <article className="settings-card" style={{ display: section === "pan" ? "none" : undefined }}>
           <h2>Emby / Jellyfin 深链</h2>
+          {!media && mediaError && (
+            <div className="offline-directory-actions">
+              <small className="muted">读取失败：{mediaError}</small>
+              <button type="button" className="ghost" onClick={reloadMedia}>重试读取</button>
+            </div>
+          )}
           {media && (
             <form
               className="settings-form"
@@ -919,77 +986,83 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
         </article>
       </div>
 
-      <Libraries libraries={libraries} busy={busy} run={run} report={report} />
-      <IdentifyByUrlPanel busy={busy} run={run} report={report} />
-      <FieldPrioritySettings busy={busy} run={run} report={report} />
-      <ProviderDiagnostics />
-      <FilterWordsEditor />
-      <AliasEditor />
-      <article className="settings-card">
-        <h2>GFriends 女优头像</h2>
-        <p className="muted">
-          用社区女优头像库补全空的演员写真（只写入真实匹配图，不生成占位图）。支持罗马音/英文名→日文名别名匹配。图片缓存到本机 data/actor-images；可将仍指向 CDN 的地址本地化。
-        </p>
-        <div className="command-bar-row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
-          <button
-            type="button"
-            className="secondary"
-            disabled={busy === "fill-gfriends-dry"}
-            onClick={() =>
-              void run(
-                "fill-gfriends-dry",
-                async () => {
-                  const result = await api.fillGfriendsActorImages({ dry_run: true, download: false, limit: 500 });
-                  report(
-                    `预览：扫描 ${result.scanned} · 可匹配 ${result.matched} · 无匹配 ${result.skipped_no_match}（Filetree ${result.filetree_entries}）`
-                  );
-                },
-                "none"
-              )
-            }
-          >
-            预览可补全
-          </button>
-          <button
-            type="button"
-            disabled={busy === "fill-gfriends"}
-            onClick={() =>
-              void run(
-                "fill-gfriends",
-                async () => {
-                  const result = await api.fillGfriendsActorImages({ download: true, force_refresh: false });
-                  report(
-                    `新增可显示头像 ${result.visible_profiles} 个档案（来源写入 ${result.filled} · 下载 ${result.downloaded} · 失败 ${result.failed} · 无匹配 ${result.skipped_no_match}）`
-                  );
-                },
-                "actors"
-              )
-            }
-          >
-            补全缺失头像
-          </button>
-          <button
-            type="button"
-            className="secondary"
-            disabled={busy === "localize-gfriends"}
-            onClick={() =>
-              void run(
-                "localize-gfriends",
-                async () => {
-                  const result = await api.fillGfriendsActorImages({ localize: true, download: true });
-                  report(
-                    `CDN→本地 ${result.filled}/${result.scanned}（下载 ${result.downloaded} · 失败 ${result.failed}）`
-                  );
-                },
-                "actors"
-              )
-            }
-          >
-            CDN 头像本地化
-          </button>
-        </div>
-      </article>
-      <CatalogImportEditor busy={busy} run={run} report={report} />
+      {(section === "all" || section === "library") && (
+        <Libraries libraries={libraries} busy={busy} run={run} report={report} />
+      )}
+      {(section === "all" || section === "scraping") && (
+        <>
+          <IdentifyByUrlPanel busy={busy} run={run} report={report} />
+          <FieldPrioritySettings busy={busy} run={run} report={report} />
+          <ProviderDiagnostics />
+          <FilterWordsEditor />
+          <AliasEditor />
+          <article className="settings-card">
+            <h2>GFriends 女优头像</h2>
+            <p className="muted">
+              用社区女优头像库补全空的演员写真（只写入真实匹配图，不生成占位图）。支持罗马音/英文名→日文名别名匹配。图片缓存到本机 data/actor-images；可将仍指向 CDN 的地址本地化。
+            </p>
+            <div className="command-bar-row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy === "fill-gfriends-dry"}
+                onClick={() =>
+                  void run(
+                    "fill-gfriends-dry",
+                    async () => {
+                      const result = await api.fillGfriendsActorImages({ dry_run: true, download: false, limit: 500 });
+                      report(
+                        `预览：扫描 ${result.scanned} · 可匹配 ${result.matched} · 无匹配 ${result.skipped_no_match}（Filetree ${result.filetree_entries}）`
+                      );
+                    },
+                    "none"
+                  )
+                }
+              >
+                预览可补全
+              </button>
+              <button
+                type="button"
+                disabled={busy === "fill-gfriends"}
+                onClick={() =>
+                  void run(
+                    "fill-gfriends",
+                    async () => {
+                      const result = await api.fillGfriendsActorImages({ download: true, force_refresh: false });
+                      report(
+                        `新增可显示头像 ${result.visible_profiles} 个档案（来源写入 ${result.filled} · 下载 ${result.downloaded} · 失败 ${result.failed} · 无匹配 ${result.skipped_no_match}）`
+                      );
+                    },
+                    "actors"
+                  )
+                }
+              >
+                补全缺失头像
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy === "localize-gfriends"}
+                onClick={() =>
+                  void run(
+                    "localize-gfriends",
+                    async () => {
+                      const result = await api.fillGfriendsActorImages({ localize: true, download: true });
+                      report(
+                        `CDN→本地 ${result.filled}/${result.scanned}（下载 ${result.downloaded} · 失败 ${result.failed}）`
+                      );
+                    },
+                    "actors"
+                  )
+                }
+              >
+                CDN 头像本地化
+              </button>
+            </div>
+          </article>
+          <CatalogImportEditor busy={busy} run={run} report={report} />
+        </>
+      )}
     </section>
   );
 }

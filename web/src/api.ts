@@ -105,6 +105,23 @@ export function appUrl(path: string | null): string | null {
   return `${appBaseUrl}${path}`;
 }
 
+function formatHttpError(raw: string, status: number): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return `HTTP ${status}`;
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && "detail" in parsed) {
+        const detail = (parsed as { detail: unknown }).detail;
+        if (typeof detail === "string" && detail.trim()) return detail.trim();
+      }
+    } catch {
+      // Fall back to raw text when not valid JSON.
+    }
+  }
+  return trimmed;
+}
+
 async function request<T>(schema: z.ZodType<T>, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(appUrl(path) ?? path, {
     ...init,
@@ -115,7 +132,7 @@ async function request<T>(schema: z.ZodType<T>, path: string, init?: RequestInit
   });
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(detail || `HTTP ${response.status}`);
+    throw new Error(formatHttpError(detail, response.status));
   }
   let result: T;
   try {
@@ -195,33 +212,33 @@ export const api = {
     }),
   tasks: (signal?: AbortSignal) => request(taskRunsSchema, "/api/tasks", { signal }),
   cancelTask: (taskId: string) => request(taskRunSchema, `/api/tasks/${taskId}/cancel`, { method: "POST" }),
-  discoverBrowse: (params: { provider?: string; list?: string; page?: number } = {}) => {
+  discoverBrowse: (params: { provider?: string; list?: string; page?: number } = {}, signal?: AbortSignal) => {
     const query = new URLSearchParams();
     if (params.provider) query.set("provider", params.provider);
     if (params.list) query.set("list", params.list);
     if (params.page) query.set("page", String(params.page));
     const suffix = query.toString() ? `?${query}` : "";
-    return request(discoverPageSchema, `/api/discover/browse${suffix}`);
+    return request(discoverPageSchema, `/api/discover/browse${suffix}`, { signal });
   },
-  discoverSearch: (q: string, params: { provider?: string; page?: number } = {}) => {
+  discoverSearch: (q: string, params: { provider?: string; page?: number } = {}, signal?: AbortSignal) => {
     const query = new URLSearchParams({ q });
     if (params.provider) query.set("provider", params.provider);
     if (params.page) query.set("page", String(params.page));
-    return request(discoverPageSchema, `/api/discover/search?${query}`);
+    return request(discoverPageSchema, `/api/discover/search?${query}`, { signal });
   },
-  discoverMultiSearch: (q: string, includeMagnets = true) => {
+  discoverMultiSearch: (q: string, includeMagnets = true, signal?: AbortSignal) => {
     const query = new URLSearchParams({ q, include_magnets: includeMagnets ? "true" : "false" });
-    return request(multiSiteSearchSchema, `/api/discover/multi-search?${query}`);
+    return request(multiSiteSearchSchema, `/api/discover/multi-search?${query}`, { signal });
   },
   discoverSeed: (payload: { provider: string; external_id?: string; source_url?: string; code?: string }) =>
     request(discoverSeedSchema, "/api/discover/seed", { method: "POST", body: JSON.stringify(payload) }),
-  javrankingSections: (forceRefresh = false) => {
+  javrankingSections: (forceRefresh = false, signal?: AbortSignal) => {
     const query = forceRefresh ? "?force_refresh=true" : "";
-    return request(javRankingSectionsSchema, `/api/javranking/sections${query}`);
+    return request(javRankingSectionsSchema, `/api/javranking/sections${query}`, { signal });
   },
-  javrankingList: (slug: string, forceRefresh = false) => {
+  javrankingList: (slug: string, forceRefresh = false, signal?: AbortSignal) => {
     const query = forceRefresh ? "?force_refresh=true" : "";
-    return request(javRankingListSchema, `/api/javranking/lists/${encodeURIComponent(slug)}${query}`);
+    return request(javRankingListSchema, `/api/javranking/lists/${encodeURIComponent(slug)}${query}`, { signal });
   },
   javrankingSeed: (payload: {
     list_slug?: string;
@@ -767,7 +784,7 @@ export const api = {
     category?: string;
     mode?: string;
     sites?: string[];
-  } = {}) => {
+  } = {}, signal?: AbortSignal) => {
     const q = new URLSearchParams();
     q.set("mode", params.mode ?? "random");
     // Sidecar cursors are JSON objects (e.g. {page:1}) or strings; mirror swipefeed-web.
@@ -789,6 +806,7 @@ export const api = {
         error: z.string().optional(),
       }).passthrough(),
       `/api/swipe/feed${qs ? `?${qs}` : ""}`,
+      { signal },
     );
   },
   swipeResolve: (payload: { site: string; id: string; pageUrl?: string }, signal?: AbortSignal) =>

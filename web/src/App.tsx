@@ -61,16 +61,23 @@ function readViewFromUrl(): AppView | null {
   }
 }
 
-function writeViewToUrl(view: AppView): void {
+function writeViewToUrl(view: AppView, mode: "replace" | "push" = "replace"): void {
   const url = new URL(window.location.href);
+  url.searchParams.delete("work");
+  url.searchParams.delete("actor");
   if (APP_VIEWS.has(view) && view !== "works") url.searchParams.set("view", view);
   else url.searchParams.delete("view");
   const next = `${url.pathname}${url.search}${url.hash}`;
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  if (next !== current) window.history.replaceState({ view }, "", next);
+  if (next === current) return;
+  if (mode === "push") window.history.pushState({ view }, "", next);
+  else window.history.replaceState({ view }, "", next);
 }
 
-function writeDetailToUrl(opts: { workId?: string | null; actorRef?: string | null }): void {
+function writeDetailToUrl(
+  opts: { workId?: string | null; actorRef?: string | null },
+  mode: "push" | "replace" = "push"
+): void {
   const url = new URL(window.location.href);
   const workId = opts.workId ?? null;
   const actorRef = opts.actorRef ?? null;
@@ -86,7 +93,9 @@ function writeDetailToUrl(opts: { workId?: string | null; actorRef?: string | nu
   }
   const next = `${url.pathname}${url.search}${url.hash}`;
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  if (next !== current) window.history.pushState({ workId, actorRef }, "", next);
+  if (next === current) return;
+  if (mode === "replace") window.history.replaceState({ workId, actorRef }, "", next);
+  else window.history.pushState({ workId, actorRef }, "", next);
 }
 
 function applyWorksFilterPatch(
@@ -110,6 +119,22 @@ const EMPTY_ROWS: never[] = [];
 const EMPTY_PREFS: LibraryPrefs = { want_list: [], actor_tags: {}, subscriptions: [], queue: [] };
 
 
+type DetailReturnView = "works" | "actors" | "actor-detail" | "swipe" | "rankings" | "categories" | "subscriptions";
+
+const RETURN_LABELS: Record<DetailReturnView, string> = {
+  works: "← 返回影片列表",
+  actors: "← 返回演员库",
+  "actor-detail": "← 返回演员详情",
+  swipe: "← 返回刷流",
+  rankings: "← 返回榜单",
+  categories: "← 返回分类",
+  subscriptions: "← 返回订阅",
+};
+
+function looksLikeErrorMessage(text: string): boolean {
+  return /(失败|错误|异常|超时|无法|不可用|拒绝|HTTP \d{3}|Error:)/i.test(text);
+}
+
 export function App() {
   const initialWorkId = typeof window !== "undefined" ? readWorkIdFromUrl() : null;
   const initialActorRef = typeof window !== "undefined" ? readActorRefFromUrl() : null;
@@ -121,7 +146,7 @@ export function App() {
   const [selectedActorRef, setSelectedActorRef] = useState<string | null>(initialActorRef);
   const [worksListScroll, setWorksListScroll] = useState(0);
   const [actorsListScroll, setActorsListScroll] = useState(0);
-  const [detailReturnView, setDetailReturnView] = useState<"works" | "actors" | "actor-detail" | "swipe">(
+  const [detailReturnView, setDetailReturnView] = useState<DetailReturnView>(
     initialActorRef && !initialWorkId ? "actors" : "works"
   );
   const [taskTab, setTaskTab] = useState<"inbox" | "runs">("runs");
@@ -160,14 +185,36 @@ export function App() {
     const finished = new Map(previous?.map((task) => [task.id, task.finished_at]));
     if (previous && next?.some((task) => task.finished_at
       && task.finished_at !== finished.get(task.id))) {
+      refreshCatalog();
       void invalidateLibrary();
       void queryClient.invalidateQueries({ queryKey: queryKeys.prefs });
     }
     lastTasks.current = next;
-  }, [tasksQuery.data]);
+  }, [tasksQuery.data, refreshCatalog]);
   const [candidates, setCandidates] = useState<Record<string, Candidate[]>>({});
   const [busy, setBusy] = useState<string | null>(null);
-  const [message, setMessage] = useState("正在连接 Shadow MDC…");
+  const [message, setMessageState] = useState("正在连接 Shadow MDC…");
+  const [messageError, setMessageError] = useState(false);
+  const [toast, setToast] = useState<{ text: string; isError: boolean } | null>(null);
+  const toastTimer = useRef<number | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  useEffect(() => () => {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+  }, []);
+  const setMessage = useCallback((nextText: string, explicitError?: boolean) => {
+    const isErr = explicitError ?? looksLikeErrorMessage(nextText);
+    setMessageState(nextText);
+    setMessageError(isErr);
+    const shouldToast = isErr
+      || viewRef.current === "swipe"
+      || (typeof window !== "undefined" && window.scrollY > 100);
+    if (shouldToast) {
+      setToast({ text: nextText, isError: isErr });
+      if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+      toastTimer.current = window.setTimeout(() => setToast(null), 3600);
+    }
+  }, []);
   const loaded = {
     actors: actorsQuery.data !== undefined || nonJavQuery.data !== undefined,
     tasks: inboxQuery.data !== undefined,
@@ -201,26 +248,30 @@ export function App() {
   useEffect(() => {
     const error = [prefsQuery.error, libraryQuery.error, actorsQuery.error,
       nonJavQuery.error, inboxQuery.error, tasksQuery.error].find(Boolean);
-    if (error) setMessage(errorMessage(error));
-    else if (prefsQuery.data) setMessage("数据已同步");
+    if (error) setMessage(errorMessage(error), true);
+    else if (prefsQuery.data) {
+      setMessageState("数据已同步");
+      setMessageError(false);
+    }
   }, [prefsQuery.error, prefsQuery.data, libraryQuery.error, actorsQuery.error,
-    nonJavQuery.error, inboxQuery.error, tasksQuery.error]);
+    nonJavQuery.error, inboxQuery.error, tasksQuery.error, setMessage]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "k") return;
-      const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-        // allow re-focus even from other inputs
-      }
       event.preventDefault();
-      const lookup = document.getElementById("shadow-mdc-lookup") as HTMLInputElement | null;
-      const search = document.getElementById("shadow-mdc-search") as HTMLInputElement | null;
-      const el = lookup ?? search;
-      if (el) {
-        el.focus();
-        el.select();
+      const currentSearch = (
+        document.getElementById("shadow-mdc-lookup")
+        ?? document.getElementById("shadow-mdc-search")
+        ?? document.querySelector<HTMLInputElement>(".discover-search input, .tvbox-search input")
+      ) as HTMLInputElement | null;
+      if (currentSearch) {
+        currentSearch.focus();
+        currentSearch.select();
       } else {
+        setSelectedWorkId(null);
+        setSelectedActorRef(null);
+        writeViewToUrl("works", "push");
         setView("works");
         window.setTimeout(() => {
           const next = (document.getElementById("shadow-mdc-lookup")
@@ -248,7 +299,7 @@ export function App() {
         ...(refresh === "core" || refresh === "all" ? [refreshCore()] : []),
       ]);
     } catch (error) {
-      setMessage(errorMessage(error));
+      setMessage(errorMessage(error), true);
     } finally {
       setBusy(null);
     }
@@ -295,11 +346,16 @@ export function App() {
   const openWorkDetail = useCallback((workId: string, swipeState?: SwipeLibrarySnapshot) => {
     if (view === "works") setWorksListScroll(window.scrollY);
     if (view === "actor-detail") setDetailReturnView("actor-detail");
-    else if (view === "actors" || view === "works" || view === "swipe") setDetailReturnView(view);
+    else if (
+      view === "actors" || view === "works" || view === "swipe"
+      || view === "rankings" || view === "categories" || view === "subscriptions"
+    ) {
+      setDetailReturnView(view);
+    }
     if (view === "swipe") setSwipeLibrary(swipeState);
     setSelectedWorkId(workId);
     setView("work-detail");
-    writeDetailToUrl({ workId });
+    writeDetailToUrl({ workId }, "push");
   }, [view]);
 
   const openActorDetail = useCallback((actorRef: string) => {
@@ -309,7 +365,7 @@ export function App() {
     setSelectedActorRef(actorRef);
     setSelectedWorkId(null);
     setView("actor-detail");
-    writeDetailToUrl({ actorRef });
+    writeDetailToUrl({ actorRef }, "push");
   }, [view]);
 
   const navigateToFilteredWorks = useCallback((
@@ -323,20 +379,21 @@ export function App() {
     applyWorksFilterPatch(patch, { replaceAll });
     writeViewToUrl("works");
     setView("works");
-    setMessage(message);
+    setMessage(message, false);
     requestAnimationFrame(() => window.scrollTo(0, 0));
-  }, [view]);
+  }, [view, setMessage]);
 
   const closeWorkDetail = useCallback(() => {
     setSelectedWorkId(null);
     if (detailReturnView === "actor-detail" && selectedActorRef) {
       setView("actor-detail");
-      writeDetailToUrl({ actorRef: selectedActorRef });
+      writeDetailToUrl({ actorRef: selectedActorRef }, "replace");
       return;
     }
     const next = detailReturnView === "actor-detail" ? "actors" : detailReturnView;
     setView(next);
-    writeDetailToUrl({});
+    writeDetailToUrl({}, "replace");
+    writeViewToUrl(next, "replace");
     if (next === "works") {
       requestAnimationFrame(() => window.scrollTo(0, worksListScroll));
     } else if (next === "actors") {
@@ -348,12 +405,14 @@ export function App() {
     setSelectedActorRef(null);
     if (detailReturnView === "works") {
       setView("works");
-      writeDetailToUrl({});
+      writeDetailToUrl({}, "replace");
+      writeViewToUrl("works", "replace");
       requestAnimationFrame(() => window.scrollTo(0, worksListScroll));
       return;
     }
     setView("actors");
-    writeDetailToUrl({});
+    writeDetailToUrl({}, "replace");
+    writeViewToUrl("actors", "replace");
     requestAnimationFrame(() => window.scrollTo(0, actorsListScroll));
   }, [actorsListScroll, worksListScroll, detailReturnView]);
 
@@ -371,14 +430,21 @@ export function App() {
       } else {
         setSelectedWorkId(null);
         setSelectedActorRef(null);
+        setCatalogFeed(null);
         const fallback = view === "work-detail" || view === "actor-detail"
           ? detailReturnView === "actor-detail" ? "actors" : detailReturnView : "works";
-        setView(readViewFromUrl() ?? fallback);
+        const resolved = readViewFromUrl() ?? fallback;
+        setView(resolved);
+        if (resolved === "works") {
+          requestAnimationFrame(() => window.scrollTo(0, worksListScroll));
+        } else if (resolved === "actors") {
+          requestAnimationFrame(() => window.scrollTo(0, actorsListScroll));
+        }
       }
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [view, detailReturnView]);
+  }, [view, detailReturnView, worksListScroll, actorsListScroll]);
 
   const badges = {
     tasks: inbox.length || undefined,
@@ -390,33 +456,25 @@ export function App() {
       <TopNav
         view={view}
         onChange={(next) => {
-          if (next === "works") {
-            setSelectedWorkId(null);
-            setSelectedActorRef(null);
-            writeDetailToUrl({});
-            // Keep URL filter params so list↔detail round trips survive.
-          } else if (next === "actors") {
-            setSelectedWorkId(null);
-            setSelectedActorRef(null);
-            writeDetailToUrl({});
-          } else if (next !== "work-detail" && next !== "actor-detail") {
-            setSelectedWorkId(null);
-            setSelectedActorRef(null);
-            writeDetailToUrl({});
-          }
+          setSelectedWorkId(null);
+          setSelectedActorRef(null);
+          setCatalogFeed(null);
           setView(next);
           const labels: Partial<Record<AppView, string>> = {
             actors: "演员库", works: "作品库", categories: "分类浏览", rankings: "榜单",
             swipe: "刷流", tvbox: "影视仓", subscriptions: "订阅", tasks: "任务", settings: "设置",
           };
-          if (labels[next]) setMessage(`已切换到${labels[next]}`);
-          if (next !== "work-detail" && next !== "actor-detail") writeViewToUrl(next);
+          if (labels[next]) {
+            setMessageState(`已切换到${labels[next]}`);
+            setMessageError(false);
+          }
+          if (next !== "work-detail" && next !== "actor-detail") writeViewToUrl(next, "push");
           if (next === "tasks" && inbox.length > 0) setTaskTab("inbox");
         }}
         badges={badges}
       />
       <main className="app-main">
-        <div className="status-bar">
+        <div className={messageError ? "status-bar is-error" : "status-bar"} role="status" aria-live="polite">
           <span>{message}</span>
           <button
             type="button"
@@ -427,9 +485,9 @@ export function App() {
                   refreshCatalog();
                   await queryClient.cancelQueries({ queryKey: queryKeys.all });
                   await queryClient.invalidateQueries({ queryKey: queryKeys.all }, { throwOnError: true });
-                  setMessage("已强制刷新");
+                  setMessage("已强制刷新", false);
                 } catch (error) {
-                  setMessage(errorMessage(error));
+                  setMessage(errorMessage(error), true);
                 }
               })();
             }}
@@ -444,7 +502,7 @@ export function App() {
         {view === "categories" && <CategoriesView report={setMessage}
           onOpenTag={(id, name) => navigateToFilteredWorks({ tags: [id] }, `正在查看分类：${name ?? id}`)} />}
         {view === "actor-detail" && selectedActorRef && <>
-          <button className="ghost" onClick={closeActorDetail}>返回演员库</button>
+          <button type="button" className="ghost" onClick={closeActorDetail}>返回演员库</button>
           <UnifiedCatalogView key={selectedActorRef} mode="actors" initialPersonRef={selectedActorRef}
             refresh={catalogRefresh} onStartFeed={startCatalogFeed}
             onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
@@ -454,9 +512,17 @@ export function App() {
           <WorkDetailView
             workId={selectedWorkId}
             busy={busy}
+            backLabel={RETURN_LABELS[detailReturnView]}
             onBack={closeWorkDetail}
             onOpenWork={openWorkDetail}
             report={setMessage}
+            onToggleWant={async (workId, wanted) => {
+              await run(`want-${workId}`, async () => {
+                const next = await api.setWantList(workId, wanted);
+                setPrefs(next);
+                setMessage(wanted ? "已加入想看" : "已移出想看", false);
+              }, "none");
+            }}
             onSelectGenreTag={(id, name) => {
               navigateToFilteredWorks({ tags: [id] }, `已筛选标签：${name ?? id}`, true);
             }}
@@ -567,6 +633,7 @@ export function App() {
               busy={busy}
               report={setMessage}
               onChanged={setPrefs}
+              onOpenWork={openWorkDetail}
             />
           </Suspense>
         )}
@@ -633,6 +700,12 @@ export function App() {
           </Suspense>
         )}
       </main>
+      {toast && (
+        <div className={toast.isError ? "status-toast is-error" : "status-toast"} role="status" aria-live="polite">
+          <span>{toast.text}</span>
+          <button type="button" className="ghost" aria-label="关闭提示" onClick={() => setToast(null)}>×</button>
+        </div>
+      )}
     </div>
   );
 }

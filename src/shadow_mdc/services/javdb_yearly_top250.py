@@ -12,14 +12,13 @@ import json
 import logging
 import re
 import sqlite3
-import time
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..normalize_code import normalize_code, to_comparison_key
+from ..normalize_code import normalize_code
 from .javranking_client import SearchVideo
 
 logger = logging.getLogger(__name__)

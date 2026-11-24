@@ -7,6 +7,7 @@ import { OfflineDownloadDialog, offlineDirectoryLabel, offlineTaskLabel } from "
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api, appUrl } from "../api";
+import { copyToClipboard } from "../lib/clipboard";
 import { hideBrokenImage, mediaUrl } from "../lib/mediaUrl";
 import { StatusBadges } from "../components/StatusBadges";
 import { useWorkPage } from "../hooks/useWorkPage";
@@ -123,20 +124,18 @@ function visibleIdentities(items: WorkDetail["identities"]) {
 }
 
 async function copyText(value: string, label: string, report?: (message: string) => void) {
-  try {
-    await navigator.clipboard.writeText(value);
-    report?.(`已复制${label}`);
-  } catch {
-    report?.(`复制${label}失败`);
-  }
+  const ok = await copyToClipboard(value);
+  report?.(ok ? `已复制${label}` : `复制${label}失败`);
 }
 
 
 export function WorkDetailView(props: {
   workId: string;
   busy: string | null;
+  backLabel?: string;
   onBack: () => void;
   onOpenWork: (workId: string) => void;
+  onToggleWant?: (workId: string, wanted: boolean) => void | Promise<void>;
   onSave: (workId: string, payload: {
     title?: string;
     actors?: string[];
@@ -165,9 +164,19 @@ export function WorkDetailView(props: {
   const [playerSources, setPlayerSources] = useState<PlayerSource[]>([]);
   const [playerTitle, setPlayerTitle] = useState("");
   const [playerBusy, setPlayerBusy] = useState(false);
+  const [samplesBusy, setSamplesBusy] = useState(false);
   const [titleMode, setTitleMode] = useState<LangMode>("translated");
   const [plotMode, setPlotMode] = useState<LangMode>("translated");
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!playerOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [playerOpen]);
 
   useEffect(() => {
     setTitleMode("translated");
@@ -250,6 +259,16 @@ export function WorkDetailView(props: {
     return parts.length ? parts.join(" · ") : null;
   }, [work]);
 
+  const bestMagnetHash = useMemo(() => {
+    const magnets = work?.magnets ?? [];
+    if (magnets.length === 0) return null;
+    return [...magnets].sort((a, b) => {
+      const score = (m: typeof a) =>
+        (m.has_subtitle ? 4 : 0) + (m.hd ? 2 : 0) + Math.min((m.size_bytes ?? 0) / 1e12, 1);
+      return score(b) - score(a);
+    })[0]?.info_hash ?? null;
+  }, [work?.magnets]);
+
   function startOnlinePlayback() {
     if (!work) return;
 
@@ -260,6 +279,7 @@ export function WorkDetailView(props: {
                       const preferred = resolved.chosen || resolved.preferred;
                       const list = (resolved.sources ?? []).map((s) => ({
                         mime_type: s.mime_type,
+                        subtitle_url: s.subtitle_url,
                         version_id: s.version_id,
                         source_id: s.source_id,
                         kind: s.kind,
@@ -293,20 +313,22 @@ export function WorkDetailView(props: {
                         );
                         return;
                       }
-                      window.alert("暂无可用片源（需配置 Emby 或本地 playback-sites）");
+                      props.report?.("暂无可用片源（无法找到已配置的 Emby 或本地 playback-sites 片源）");
                     } catch (err) {
-                      window.alert(err instanceof Error ? err.message : String(err));
+                      props.report?.(`播放解析失败：${err instanceof Error ? err.message : String(err)}`);
                     } finally {
                       setPlayerBusy(false);
                     }
                   })();
   }
 
+  const backText = props.backLabel ?? "← 返回影片列表";
+
   if (loading && !work) {
     return (
       <section className="work-page">
         <div className="work-page-toolbar">
-          <button type="button" className="ghost" onClick={props.onBack}>← 返回影片列表</button>
+          <button type="button" className="ghost" onClick={props.onBack}>{backText}</button>
         </div>
         <p className="muted">正在加载作品详情…</p>
       </section>
@@ -317,7 +339,7 @@ export function WorkDetailView(props: {
     return (
       <section className="work-page">
         <div className="work-page-toolbar">
-          <button type="button" className="ghost" onClick={props.onBack}>← 返回影片列表</button>
+          <button type="button" className="ghost" onClick={props.onBack}>{backText}</button>
         </div>
         <div className="empty">
           <div>!</div>
@@ -344,9 +366,17 @@ export function WorkDetailView(props: {
     <section className="work-page">
       <div className="work-page-toolbar">
         <button type="button" className="ghost work-page-back" onClick={props.onBack}>
-          ← 返回影片列表
+          {backText}
         </button>
         <div className="work-page-toolbar-actions">
+          {props.onToggleWant && (
+            <button
+              type="button"
+              className={work.want_list ? "active" : "ghost"}
+              disabled={props.busy === `want-${work.id}`}
+              onClick={() => void props.onToggleWant?.(work.id, !work.want_list)}
+            >{work.want_list ? "取消想看" : "想看"}</button>
+          )}
           <button
             type="button"
             className="secondary"
@@ -362,8 +392,10 @@ export function WorkDetailView(props: {
           <button
             type="button"
             className="ghost"
+            disabled={samplesBusy}
             onClick={() => {
               void (async () => {
+                setSamplesBusy(true);
                 try {
                   const result = await api.generateWorkSamples(work.id);
                   await reload(work.id);
@@ -371,11 +403,13 @@ export function WorkDetailView(props: {
                     `样本：网页 ${result.web_downloaded}，本地补帧 ${result.local_generated}，合计 ${result.sample_count}`
                   );
                 } catch (error) {
-                  props.report?.(error instanceof Error ? error.message : String(error));
+                  props.report?.(`生成样本帧失败：${error instanceof Error ? error.message : String(error)}`);
+                } finally {
+                  setSamplesBusy(false);
                 }
               })();
             }}
-          >生成样本帧</button>
+          >{samplesBusy ? "生成样本帧中…" : "生成样本帧"}</button>
           <button
             type="button"
             className={editOpen ? "secondary" : "ghost"}
@@ -607,13 +641,14 @@ export function WorkDetailView(props: {
                     target="_blank"
                     rel="noopener noreferrer"
                     className="sample-thumb"
+                    aria-label={`查看样本图 ${index + 1}`}
                     onClick={(event) => {
                       if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
                       event.preventDefault();
                       setLightboxIndex(index);
                     }}
                   >
-                    <img src={appUrl(url) ?? url} alt="" loading="lazy" decoding="async" />
+                    <img src={appUrl(url) ?? url} alt={`样本图 ${index + 1}`} loading="lazy" decoding="async" />
                   </a>
                 ))}
               </div>
@@ -657,9 +692,13 @@ export function WorkDetailView(props: {
                 className="secondary"
                 onClick={() => {
                   void (async () => {
-                    const url = await api.workEmbyLink(work.id);
-                    if (url) window.open(url, "_blank", "noopener,noreferrer");
-                    else window.alert("尚未配置 Emby/Jellyfin 地址");
+                    try {
+                      const url = await api.workEmbyLink(work.id);
+                      if (url) window.open(url, "_blank", "noopener,noreferrer");
+                      else props.report?.("无法打开：尚未配置 Emby/Jellyfin 地址");
+                    } catch (error) {
+                      props.report?.(`读取 Emby 链接失败：${error instanceof Error ? error.message : String(error)}`);
+                    }
                   })();
                 }}
               >打开 Emby</button>
@@ -672,12 +711,6 @@ export function WorkDetailView(props: {
               : (
                 <div className="magnet-list">
                   {(work.magnets ?? []).map((magnet) => {
-                    const magnets = work.magnets ?? [];
-                    const bestHash = [...magnets].sort((a, b) => {
-                      const score = (m: typeof a) =>
-                        (m.has_subtitle ? 4 : 0) + (m.hd ? 2 : 0) + Math.min((m.size_bytes ?? 0) / 1e12, 1);
-                      return score(b) - score(a);
-                    })[0]?.info_hash;
                     const offline = offlineTasks.find((task) =>
                       task.magnet_id === magnet.id
                       || (task.info_hash && magnet.info_hash
@@ -693,7 +726,7 @@ export function WorkDetailView(props: {
                           + (magnet.size_bytes
                             ? ` · ${(magnet.size_bytes / (1024 ** 3)).toFixed(2)} GiB`
                             : "")
-                          + (bestHash && magnet.info_hash === bestHash ? " · 推荐" : "")}
+                          + (bestMagnetHash && magnet.info_hash === bestMagnetHash ? " · 推荐" : "")}
                       </span>
                       <small className="muted">{magnet.provider}</small>
                       {offline && (
@@ -704,7 +737,7 @@ export function WorkDetailView(props: {
                       <button
                         type="button"
                         className="ghost"
-                        onClick={() => void navigator.clipboard.writeText(magnet.uri)}
+                        onClick={() => void copyText(magnet.uri, "磁力链接", props.report)}
                       >复制</button>
                       <button
                         type="button"
@@ -826,7 +859,7 @@ export function WorkDetailView(props: {
               <div className="work-detail-actions">
                 <button
                   type="button"
-                  disabled={props.busy === `edit-${work.id}`}
+                  disabled={props.busy === `edit-${work.id}` || props.busy === `locks-${work.id}`}
                   onClick={() => {
                     void (async () => {
                       await props.onSave(work.id, {
@@ -837,6 +870,11 @@ export function WorkDetailView(props: {
                         tags: tags.split(/[,，]/).map((item) => item.trim()).filter(Boolean),
                         plot: plot.trim() || null
                       });
+                      const currentLocks = [...(work.field_locks ?? [])].sort().join(",");
+                      const draftLocks = [...locks].sort().join(",");
+                      if (currentLocks !== draftLocks) {
+                        await props.onLocks(work.id, locks);
+                      }
                       await reload(work.id);
                     })();
                   }}
@@ -940,7 +978,18 @@ export function WorkDetailView(props: {
         </div>
       </div>
       {playerOpen && playerSources.length > 0 ? (
-        <div className="in-app-player-portal" role="dialog" aria-modal="true" aria-label="在线播放">
+        <div
+          className="in-app-player-portal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="在线播放"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setPlayerOpen(false);
+              setPlayerSources([]);
+            }
+          }}
+        >
           <InAppPlayer
             playbackKey={`work:${props.workId}`}
             title={playerTitle}

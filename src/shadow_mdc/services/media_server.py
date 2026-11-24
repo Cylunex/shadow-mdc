@@ -123,7 +123,6 @@ class MediaServerStore:
 
 
 async def refresh_media_server(settings: MediaServerSettings, client: httpx.AsyncClient) -> str:
-    connector = MediaServerConnector(settings=settings, client=client)
     # Full library refresh via empty path fallback.
     if not settings.enabled:
         return "disabled"

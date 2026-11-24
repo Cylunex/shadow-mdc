@@ -32,7 +32,17 @@ export function CatalogFeedView({ initial, onState, onClose, onOpenWork }: Props
     const controller = new AbortController();
     setLoading(true); setSources([]); setError("");
     api.workPlayResolve(current.id, controller.signal).then(result => {
-      if (!controller.signal.aborted) setSources(result.sources);
+      if (controller.signal.aborted) return;
+      const preferred = result.chosen || result.preferred;
+      const list = [...result.sources];
+      if (preferred?.url) {
+        const idx = list.findIndex(item => item.url === preferred.url);
+        if (idx > 0) {
+          const [hit] = list.splice(idx, 1);
+          if (hit) list.unshift(hit);
+        }
+      }
+      setSources(list);
     }).catch(e => { if (!controller.signal.aborted) setError(String(e)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
@@ -44,6 +54,26 @@ export function CatalogFeedView({ initial, onState, onClose, onOpenWork }: Props
     currentIndex.current = next;
     onState({ ...initial, items, nextCursor: cursor, index: next });
   }
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) {
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      } else if (event.key === "ArrowDown" || event.key === "ArrowRight" || event.key === "j") {
+        event.preventDefault();
+        move(1);
+      } else if (event.key === "ArrowUp" || event.key === "ArrowLeft" || event.key === "k") {
+        event.preventDefault();
+        move(-1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
   async function more() {
     if (!cursor || loadingMore) return;
     setLoadingMore(true); setError("");
@@ -79,10 +109,15 @@ export function CatalogFeedView({ initial, onState, onClose, onOpenWork }: Props
         Date.now() - lastGesture.current < 700) return;
       lastGesture.current = Date.now(); move(e.deltaY > 0 ? 1 : -1);
     }}>
-    <header><button onClick={onClose}>返回筛选结果</button><span>{index + 1} / {items.length}</span></header>
+    <header><button type="button" className="ghost" onClick={onClose}>← 返回筛选结果</button><span className="muted">{index + 1} / {items.length}</span></header>
     {current && <>
-      <h1>{current.title}</h1>
-      <p>{current.year ?? "年份待补"} · {current.actors.join(" / ")}</p>
+      <div className="catalog-feed-title-row">
+        <div>
+          <h1>{current.title}</h1>
+          <p className="muted">{[current.code, current.year ?? "年份待补", current.actors.join(" / ")].filter(Boolean).join(" · ")}</p>
+        </div>
+        <button type="button" className="secondary" onClick={() => onOpenWork(current.id)}>作品详情</button>
+      </div>
       {loading ? <p role="status">正在读取播放来源…</p> : sources.length > 0 ? <InAppPlayer
         key={current.id} title={current.title} playbackKey={"work:" + current.id} sources={sources}
         onRefreshSource={async source => {
@@ -91,13 +126,12 @@ export function CatalogFeedView({ initial, onState, onClose, onOpenWork }: Props
             item.version_id === source.version_id) ?? null;
         }}
         onClose={onClose} onReport={setError}
-      /> : <p>暂无已配置的播放来源，可查看作品详情。</p>}
-      <button onClick={() => onOpenWork(current.id)}>作品详情</button>
+      /> : <p className="muted">暂无已配置的播放来源，可查看作品详情。</p>}
     </>}
     {error && <p role="alert">{error}</p>}
-    <footer><button disabled={index === 0} onClick={() => move(-1)}>上一部</button>
-      <button disabled={index >= items.length - 1} onClick={() => move(1)}>下一部</button>
-      {cursor && <button disabled={loadingMore} onClick={() => void more()}>{loadingMore ? "正在追加…" : "继续加载同一筛选"}</button>}
+    <footer><button type="button" className="ghost" disabled={index === 0} onClick={() => move(-1)}>上一部</button>
+      <button type="button" className="ghost" disabled={index >= items.length - 1} onClick={() => move(1)}>下一部</button>
+      {cursor && <button type="button" className="secondary" disabled={loadingMore} onClick={() => void more()}>{loadingMore ? "正在追加…" : "继续加载同一筛选"}</button>}
     </footer>
   </section>;
 }

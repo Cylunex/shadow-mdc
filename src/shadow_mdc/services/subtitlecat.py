@@ -252,21 +252,34 @@ class SubtitleCatFetcher:
             logger.debug("subtitlecat cache write failed: %s", exc)
 
     # -- http ------------------------------------------------------------------
+    def close(self) -> None:
+        with self._lock:
+            client = self.client
+            self.client = None
+        if client is not None:
+            client.close()
+
+    def __enter__(self) -> SubtitleCatFetcher:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
     def _get(self, url: str, params: dict[str, str] | None = None) -> httpx.Response:
         with self._lock:
             wait = self.min_interval_seconds - (time.monotonic() - self._last_request)
             if wait > 0:
                 time.sleep(wait)
             self._last_request = time.monotonic()
-        client = self.client
-        if client is None:
-            client = httpx.Client(
-                timeout=self.timeout_seconds,
-                proxy=self.proxy_url or None,
-                follow_redirects=True,
-                headers={"User-Agent": self.user_agent},
-            )
-            self.client = client
+            client = self.client
+            if client is None:
+                client = httpx.Client(
+                    timeout=self.timeout_seconds,
+                    proxy=self.proxy_url or None,
+                    follow_redirects=True,
+                    headers={"User-Agent": self.user_agent},
+                )
+                self.client = client
         response = client.get(url, params=params, timeout=self.timeout_seconds)
         response.raise_for_status()
         return response

@@ -207,7 +207,13 @@ def person(
     references = session.get(CatalogPersonReference, key)
     candidate = references.person_id if references else key
     candidate = _root(candidate, lambda person_id: session.get(CatalogPersonRecord, person_id))
-    catalog = profiles if profiles is not None else people(session, private=private)
+    if profiles is None:
+        targeted = people(session, private=private, root_ids={candidate})
+        if targeted:
+            return targeted[0]
+        catalog = people(session, private=private)
+    else:
+        catalog = profiles
     found = next((item for item in catalog if item.id == candidate), None)
     if found is None:
         name = key.removeprefix("jav:").removeprefix("nj:")

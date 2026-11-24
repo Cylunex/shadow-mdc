@@ -110,6 +110,10 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   const [saveName, setSaveName] = useState("");
   const [workRetry, setWorkRetry] = useState(0);
   const [facetRetry, setFacetRetry] = useState(0);
+  const [composing, setComposing] = useState(false);
+  const [qDraft, setQDraft] = useState("");
+  const [actorComposing, setActorComposing] = useState(false);
+  const [actorQDraft, setActorQDraft] = useState("");
   const patch = (value: Partial<Filters>) => setFilters(previous => ({ ...previous, ...value }));
   const availability = effectiveAvailability(filters);
   const wanted = effectiveWanted(filters);
@@ -131,16 +135,17 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       }).catch(e => { if (!controller.signal.aborted) setError(String(e)); });
     return () => controller.abort();
   }, [activePersonRef, revision, refresh]);
-  useEffect(() => { if (!showingWorks) return; try {
+  useEffect(() => { if (!showingWorks || Boolean(initialPersonRef)) return; try {
       const url = new URL(window.location.href);
       applyCatalogFiltersToUrl(url, filters);
       if (url.href !== window.location.href) history.replaceState(history.state, "", url);
-    } catch { /* Navigation can remain usable if history updates are blocked. */ } }, [filters, showingWorks]);
+    } catch { /* Navigation can remain usable if history updates are blocked. */ } }, [filters, showingWorks, initialPersonRef]);
   useEffect(() => {
+    if (initialPersonRef) return;
     const restore = () => setFilters(readCatalogFilters(window.location.search));
     window.addEventListener("popstate", restore);
     return () => window.removeEventListener("popstate", restore);
-  }, []);
+  }, [initialPersonRef]);
   const waitingForPerson = Boolean(initialPersonRef && initialPersonRef !== resolvedRef);
   useEffect(() => {
     if (waitingForPerson || !showingWorks) { setLoading(false); return; }
@@ -158,7 +163,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       return () => { controller.abort(); cancelAnimationFrame(frame); };
     }
     setLoading(true);
-    if (loadedFilters.current !== filters) {
+    if (loadedFilters.current === null) {
       setRows([]); setCursor(null); setTotal(0);
     }
     function loadWorks() {
@@ -224,7 +229,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     <div className="catalog-heading">
     <div><h1>{mode === "actors" ? selectedPerson?.name ?? "演员库" : "作品库"}</h1>
     <p className="muted">{showingWorks ? `${total} 部作品` : people ? `${people.total} 位演员 · 查看档案与参演作品` : "演员档案与参演作品"}</p></div>
-    {showingWorks && onStartFeed && <button disabled={rows.length === 0 || loading} onClick={() => {
+    {showingWorks && onStartFeed && <button type="button" disabled={rows.length === 0 || loading} onClick={() => {
       try { sessionStorage.setItem("mdc:catalog-return", JSON.stringify({
         filters, rows, cursor, total, scroll: window.scrollY, at: Date.now()
       })); } catch { /* Storage is optional. */ }
@@ -235,9 +240,9 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     {actions.message && <p role="status">{actions.message}</p>}
     {error && <p role="alert">{error}</p>}
     {workError && <div className="catalog-error" role="alert"><span>{workError}</span>
-      <button className="ghost" disabled={loading} onClick={() => appendFailed ? void more() : setWorkRetry(value => value + 1)}>重试作品</button></div>}
+      <button type="button" className="ghost" disabled={loading} onClick={() => appendFailed ? void more() : setWorkRetry(value => value + 1)}>重试作品</button></div>}
     {facetError && <div className="catalog-error" role="alert"><span>{facetError}</span>
-      <button className="ghost" onClick={() => setFacetRetry(value => value + 1)}>重试统计</button></div>}
+      <button type="button" className="ghost" onClick={() => setFacetRetry(value => value + 1)}>重试统计</button></div>}
     {mode === "actors" && <>
       {!initialPersonRef && <>
         <div className="catalog-people-search" ref={actorHeading}>
@@ -246,19 +251,26 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
         </select>
         <label><input type="checkbox" checked={actorBrowsing.followed}
           onChange={e => setActorBrowsing(previous => ({ ...previous, followed: e.target.checked, page: 1 }))} />仅已关注</label>
-        <input id="shadow-mdc-search" aria-label="搜索演员与别名" placeholder="演员、别名" value={actorBrowsing.search} maxLength={300}
-          onChange={e => setActorBrowsing(previous => ({ ...previous, search: e.target.value, page: 1 }))} />
-        {(actorBrowsing.search || actorBrowsing.followed) && <button className="ghost"
+        <input id="shadow-mdc-search" aria-label="搜索演员与别名" placeholder="演员、别名"
+          value={actorComposing ? actorQDraft : actorBrowsing.search} maxLength={300}
+          onCompositionStart={() => { setActorQDraft(actorBrowsing.search); setActorComposing(true); }}
+          onCompositionEnd={e => { setActorComposing(false); setActorBrowsing(previous => ({ ...previous, search: e.currentTarget.value, page: 1 })); }}
+          onChange={e => {
+            const nextValue = e.target.value;
+            if (actorComposing) setActorQDraft(nextValue);
+            else setActorBrowsing(previous => ({ ...previous, search: nextValue, page: 1 }));
+          }} />
+        {(actorBrowsing.search || actorBrowsing.followed) && <button type="button" className="ghost"
           onClick={() => setActorBrowsing(previous => ({ ...previous, search: "", followed: false, page: 1 }))}>清除演员筛选</button>}
         </div>
         {peopleLoading && <p role="status">正在读取人物…</p>}
         {peopleError && <div className="catalog-error" role="alert"><span>{peopleError.message}</span>
-          <button className="ghost" disabled={peopleLoading} onClick={() => void retryPeople()}>重试演员</button></div>}
+          <button type="button" className="ghost" disabled={peopleLoading} onClick={() => void retryPeople()}>重试演员</button></div>}
         {people && <Pagination {...actorPagination} />}
         {!peopleLoading && people?.items.length === 0 && <div className="empty"><h2>没有匹配的演员</h2>
           <p>试试姓名或别名，或关闭“仅已关注”。</p></div>}
         <div className="actor-grid" aria-label="演员列表" aria-busy={peopleLoading}>{people?.items.map(p =>
-          <button key={p.id} className="actor-card" onClick={() => onOpenActor(p.id)}>
+          <button type="button" key={p.id} className="actor-card" onClick={() => onOpenActor(p.id)}>
             <CoverImage src={appUrl(p.image_url) ?? ""} /><strong>{p.name}</strong>
             {p.same_name && <span>档案 {p.id.slice(-6)}</span>}
             {p.aliases.length > 0 && <span className="actor-card-aliases" title={p.aliases.join(" / ")}>{p.aliases.join(" / ")}</span>}
@@ -266,16 +278,33 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
           </button>)}</div>
         {people && people.total > actorBrowsing.pageSize && <Pagination {...actorPagination} position="底部" />}
       </>}
-      {selectedPerson && <article><h2>{selectedPerson.name}</h2><p>{selectedPerson.biography}</p>
-        {selectedPerson.x_handle && <a href={"https://x.com/" + encodeURIComponent(selectedPerson.x_handle)}
-          target="_blank" rel="noreferrer">X · {selectedPerson.x_handle}</a>}
-        <CatalogPersonActions person={selectedPerson} actions={actions} />
-        <p>常合作演员</p>{selectedPerson.collaborators?.map(other => <button key={other.id}
-          onClick={() => patch({ actors: [selectedPerson.id, other.id], actors_all: true })}>{other.name} · {other.count}</button>)}
-        <p>合作机构</p>{selectedPerson.organizations?.map(other => <button key={other.id}
-          onClick={() => patch({ actors: [selectedPerson.id], organizations: [other.id] })}>{other.name} · {other.count}</button>)}
-        <p>参演系列</p>{selectedPerson.series?.map(other => <button key={other.id}
-          onClick={() => patch({ actors: [selectedPerson.id], series: [other.id] })}>{other.name} · {other.count}</button>)}
+      {selectedPerson && <article className="catalog-actor-hero">
+        <div className="catalog-actor-portrait">
+          <CoverImage src={appUrl(selectedPerson.image_url) ?? ""} />
+        </div>
+        <div className="catalog-actor-meta">
+          <h2>{selectedPerson.name}</h2>
+          {(selectedPerson.aliases ?? []).length > 0 && <p className="actor-page-aliases">别名：{(selectedPerson.aliases ?? []).join(" / ")}</p>}
+          {selectedPerson.biography && <p className="catalog-actor-bio">{selectedPerson.biography}</p>}
+          {selectedPerson.x_handle && <a className="x-handle-link" href={"https://x.com/" + encodeURIComponent(selectedPerson.x_handle)}
+            target="_blank" rel="noreferrer">X · {selectedPerson.x_handle}</a>}
+          <CatalogPersonActions person={selectedPerson} actions={actions} />
+          {Boolean(selectedPerson.collaborators?.length) && <div className="catalog-actor-rel-group">
+            <small>常合作演员</small>
+            {selectedPerson.collaborators?.map(other => <button type="button" className="display-tag-chip" key={other.id}
+              onClick={() => patch({ actors: [selectedPerson.id, other.id], actors_all: true })}>{other.name} · {other.count}</button>)}
+          </div>}
+          {Boolean(selectedPerson.organizations?.length) && <div className="catalog-actor-rel-group">
+            <small>合作机构</small>
+            {selectedPerson.organizations?.map(other => <button type="button" className="display-tag-chip" key={other.id}
+              onClick={() => patch({ actors: [selectedPerson.id], organizations: [other.id] })}>{other.name} · {other.count}</button>)}
+          </div>}
+          {Boolean(selectedPerson.series?.length) && <div className="catalog-actor-rel-group">
+            <small>参演系列</small>
+            {selectedPerson.series?.map(other => <button type="button" className="display-tag-chip" key={other.id}
+              onClick={() => patch({ actors: [selectedPerson.id], series: [other.id] })}>{other.name} · {other.count}</button>)}
+          </div>}
+        </div>
       </article>}
       <CatalogPeopleEditor key={selectedPerson?.id} person={selectedPerson} onSaved={() => {
         try { sessionStorage.removeItem("mdc:catalog-return"); } catch { /* Storage is optional. */ }
@@ -284,10 +313,21 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     </>}
     {showingWorks && <>
     <div className="catalog-search">
-      <input id="shadow-mdc-search" value={filters.q} maxLength={200} aria-label="检索作品" placeholder="片名、番号、演员、片商" onChange={e => patch({ q: e.target.value })} />
-      <button className="ghost" aria-expanded={showFilters} onClick={() => setShowFilters(value => !value)}>{showFilters ? "收起筛选" : "分类与筛选"}</button>
+      <input id="shadow-mdc-search" value={composing ? qDraft : filters.q} maxLength={200} aria-label="检索作品"
+        placeholder="片名、番号、演员、片商"
+        onCompositionStart={() => { setQDraft(filters.q); setComposing(true); }}
+        onCompositionEnd={e => { setComposing(false); patch({ q: e.currentTarget.value }); }}
+        onChange={e => {
+          const nextValue = e.target.value;
+          if (composing) setQDraft(nextValue);
+          else patch({ q: nextValue });
+        }} />
+      <button type="button" className="ghost" aria-expanded={showFilters} onClick={() => setShowFilters(value => !value)}>{showFilters ? "收起筛选" : "分类与筛选"}</button>
     </div>
     {showFilters && <div className="works-extra-filters">
+      <label>地区<select aria-label="筛选地区分类" value={filters.category ?? "all"} onChange={e => patch({ category: e.target.value as Filters["category"] })}>
+        <option value="all">全部地区</option><option value="Japan">JAV</option><option value="China">国产</option><option value="Korea">韩国</option><option value="Europe">欧美</option><option value="Other">其他</option>
+      </select></label>
       <Suspense fallback={<label>资料待补<select disabled><option>正在加载…</option></select></label>}>
         <MetadataGapFilter filters={filters} revision={revision} refresh={refresh}
           onSelect={missing_metadata => patch({ missing_metadata })} />
@@ -308,7 +348,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
         <option value="">全部时长</option><option value="custom" hidden>自定义时长</option>{DURATION_OPTIONS.map(option => <option key={option.id} value={option.id}>
           {option.name} · {facets.durations?.find(facet => facet.id === option.id)?.count ?? 0}</option>)}
       </select></label>
-      <button className="ghost" aria-expanded={showMore} onClick={() => setShowMore(value => !value)}>{showMore ? "收起更多筛选" : "更多筛选"}</button>
+      <button type="button" className="ghost" aria-expanded={showMore} onClick={() => setShowMore(value => !value)}>{showMore ? "收起更多筛选" : "更多筛选"}</button>
       {CLASSIFICATION_KEYS.filter(field => field !== "types" || showMore).map(field => <label key={field}>{CLASSIFICATION_NAMES[field]}<select
         aria-label={`筛选${CLASSIFICATION_NAMES[field]}`} value=""
         onChange={event => { if (event.target.value) patch({ [field]: [...new Set([...filters[field], event.target.value])] }); }}>
@@ -325,29 +365,29 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       <select aria-label="排除标签" value="" onChange={e => { if (e.target.value) patch({ exclude_tags: [...new Set([...filters.exclude_tags, e.target.value])] }); }}>
         <option value="">排除某标签</option>{(facets.tags ?? []).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
       </select>
-      <button onClick={() => setFilters({ ...empty, actors: selectedPerson ? [selectedPerson.id] : [] })}>清除条件</button>
+      <button type="button" onClick={() => setFilters({ ...empty, actors: selectedPerson ? [selectedPerson.id] : [] })}>清除条件</button>
     </div>}
     <div className="active-filter-chips">
-      {filters.category && filters.category !== "all" && <button onClick={() => patch({ category: "all" })}>{({ Japan: "JAV", China: "国产", Korea: "韩国", Europe: "欧美", Other: "其他" })[filters.category]} ×</button>}
-      {filters.missing_metadata && <button onClick={() => patch({ missing_metadata: undefined })}>
+      {filters.category && filters.category !== "all" && <button type="button" className="active-filter-chip" onClick={() => patch({ category: "all" })}>{({ Japan: "JAV", China: "国产", Korea: "韩国", Europe: "欧美", Other: "其他" })[filters.category]} ×</button>}
+      {filters.missing_metadata && <button type="button" className="active-filter-chip" onClick={() => patch({ missing_metadata: undefined })}>
         {metadataGapNames[filters.missing_metadata]} ×</button>}
-      {filters.collection && <button onClick={() => patch({ collection: "" })}>{filters.collection} ×</button>}
-      {filters.actor_name && <button onClick={() => patch({ actor_name: "" })}>{filters.actor_name} ×</button>}
-      {filters.studio_name && <button onClick={() => patch({ studio_name: "" })}>{filters.studio_name} ×</button>}
-      {filters.series_name && <button onClick={() => patch({ series_name: "" })}>系列：{filters.series_name} ×</button>}
-      {(["series", "labels", "platforms"] as const).flatMap(field => filters[field].map(id => <button key={`${field}:${id}`}
+      {filters.collection && <button type="button" className="active-filter-chip" onClick={() => patch({ collection: "" })}>{filters.collection} ×</button>}
+      {filters.actor_name && <button type="button" className="active-filter-chip" onClick={() => patch({ actor_name: "" })}>{filters.actor_name} ×</button>}
+      {filters.studio_name && <button type="button" className="active-filter-chip" onClick={() => patch({ studio_name: "" })}>{filters.studio_name} ×</button>}
+      {filters.series_name && <button type="button" className="active-filter-chip" onClick={() => patch({ series_name: "" })}>系列：{filters.series_name} ×</button>}
+      {(["series", "labels", "platforms"] as const).flatMap(field => filters[field].map(id => <button type="button" className="active-filter-chip" key={`${field}:${id}`}
         onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{({ series: "系列", labels: "厂牌", platforms: "发布平台" })[field]}：{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
-      {filters.tags.map(id => <button key={"tag:" + id} onClick={() => patch({ tags: filters.tags.filter(t => t !== id) })}>{facets.tags?.find(tag => matchesTag(tag, id))?.name ?? id} ×</button>)}
-      {(["genres", "subtitle_languages"] as const).flatMap(field => filters[field].map(id => <button key={field + id}
+      {filters.tags.map(id => <button type="button" className="active-filter-chip" key={"tag:" + id} onClick={() => patch({ tags: filters.tags.filter(t => t !== id) })}>{facets.tags?.find(tag => matchesTag(tag, id))?.name ?? id} ×</button>)}
+      {(["genres", "subtitle_languages"] as const).flatMap(field => filters[field].map(id => <button type="button" className="active-filter-chip" key={field + id}
         onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{field === "genres" ? "题材" : "历史字幕"}：{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
       {([...CLASSIFICATION_KEYS, "organizations"] as const).flatMap(field => filters[field].map(id =>
-        <button key={field + id} onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
-      {(filters.year_from || filters.unknown_year) && <button onClick={() => patch({ year_from: undefined, year_to: undefined, unknown_year: false })}>{filters.unknown_year ? "年份待补" : filters.year_from === filters.year_to ? filters.year_from : `${filters.year_from}–${filters.year_to}`} ×</button>}
-      {(filters.duration_min !== undefined || filters.duration_max !== undefined || filters.unknown_duration) && <button onClick={() => patch(EMPTY_DURATION)}>{durationLabel(filters)} ×</button>}
-      {availability !== "all" && <button onClick={() => patch({ status: "all", availability: "all", wanted })}>{({ emby: "已关联 Emby", files: "有关联文件", metadata: "仅资料", undownloaded: "无关联文件" })[availability]} ×</button>}
-      {wanted !== undefined && <button onClick={() => patch({ status: "all", availability, wanted: undefined })}>{wanted ? "想看" : "未标记想看"} ×</button>}
-      {filters.exclude_tags.map(id => <button key={id}
-      onClick={() => patch({ exclude_tags: filters.exclude_tags.filter(t => t !== id) })}>排除 {facets.tags?.find(tag => matchesTag(tag, id))?.name ?? id} ×</button>)}{filters.actors.map(id => <button key={id} onClick={() => patch({ actors: filters.actors.filter(a => a !== id) })}>{actorNames?.[id] ?? id} ×</button>)}</div>
+        <button type="button" className="active-filter-chip" key={field + id} onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
+      {(filters.year_from || filters.unknown_year) && <button type="button" className="active-filter-chip" onClick={() => patch({ year_from: undefined, year_to: undefined, unknown_year: false })}>{filters.unknown_year ? "年份待补" : filters.year_from === filters.year_to ? filters.year_from : `${filters.year_from}–${filters.year_to}`} ×</button>}
+      {(filters.duration_min !== undefined || filters.duration_max !== undefined || filters.unknown_duration) && <button type="button" className="active-filter-chip" onClick={() => patch(EMPTY_DURATION)}>{durationLabel(filters)} ×</button>}
+      {availability !== "all" && <button type="button" className="active-filter-chip" onClick={() => patch({ status: "all", availability: "all", wanted })}>{({ emby: "已关联 Emby", files: "有关联文件", metadata: "仅资料", undownloaded: "无关联文件" })[availability]} ×</button>}
+      {wanted !== undefined && <button type="button" className="active-filter-chip" onClick={() => patch({ status: "all", availability, wanted: undefined })}>{wanted ? "想看" : "未标记想看"} ×</button>}
+      {filters.exclude_tags.map(id => <button type="button" className="active-filter-chip" key={id}
+      onClick={() => patch({ exclude_tags: filters.exclude_tags.filter(t => t !== id) })}>排除 {facets.tags?.find(tag => matchesTag(tag, id))?.name ?? id} ×</button>)}{filters.actors.filter(id => id !== selectedPerson?.id).map(id => <button type="button" className="active-filter-chip" key={id} onClick={() => patch({ actors: filters.actors.filter(a => a !== id) })}>{actorNames?.[id] ?? id} ×</button>)}</div>
     <div className="catalog-controls">
     <CatalogTags tags={facets.tags ?? []} selected={filters.tags} preview={false}
       onToggle={id => {
@@ -365,7 +405,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     <CatalogOrganizations works={rows} onFilter={(id, role) => patch({ organizations: [id], organization_role: role ?? "" })} />
     <CatalogSeriesEditor works={rows} onFilter={id => patch({ series: [id], collection: "", series_name: "" })} />
     <CatalogPlaylists works={rows} onOpenWork={openWork} filters={filters} onApplyFilters={value => setFilters({ ...empty, ...value })} />
-    <details><summary>保存的筛选</summary>{saved.map(item => <button key={item.name} disabled={migratingSaved} onClick={() => setFilters(filtersSchema.parse(item.filters))}>{item.name}</button>)}<input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="筛选名称" /><button disabled={migratingSaved} onClick={save}>保存到本机</button></details>
+    <details><summary>保存的筛选</summary>{saved.map(item => <button type="button" key={item.name} disabled={migratingSaved} onClick={() => setFilters(filtersSchema.parse(item.filters))}>{item.name}</button>)}<input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="筛选名称" /><button type="button" disabled={migratingSaved} onClick={save}>保存到本机</button></details>
     </div></details>
     </div>
     {loading && !workError && !error && <p role="status">正在读取…</p>}
@@ -376,7 +416,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     })} onSelect={openWork} busy={actions.busy} onToggleWant={actions.toggleWant}
       onRefresh={actions.refreshWork} onFilterCast={name => patch({ actor_name: name })}
       onFilterStudio={name => patch({ studio_name: name })}
-      actions={<button className="ghost" onClick={() => setEditing(row)}>编辑分类</button>} />)}</div>
+      actions={<button type="button" className="ghost" onClick={() => setEditing(row)}>编辑分类</button>} />)}</div>
     {editing && <TaxonomyEditor key={editing.id} work={editing} onClose={() => setEditing(null)} onSaved={() => {
       sessionStorage.removeItem("mdc:catalog-return"); setEditing(null); setRevision(value => value + 1);
     }} />}
@@ -384,7 +424,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     {!loading && !workError && rows.length === 0 && <p>没有符合条件的作品，可移除部分条件后再试。</p>}
     <div className="catalog-load-more">
       <span className="muted" role="status">已显示 {rows.length} / {total} 部作品</span>
-      {cursor ? <button disabled={loading} onClick={() => void more()}>{loading ? "正在加载…" : "加载下一页"}</button>
+      {cursor ? <button type="button" disabled={loading} onClick={() => void more()}>{loading ? "正在加载…" : "加载下一页"}</button>
         : !loading && rows.length > 0 && !workError && <span className="muted">已显示全部作品</span>}
     </div>
     </>}

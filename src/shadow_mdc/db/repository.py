@@ -7,7 +7,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, delete, event, exists, func, literal, or_, select, text
+from sqlalchemy import Engine, create_engine, delete, event, exists, func, literal, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, load_only, sessionmaker
@@ -16,7 +16,14 @@ from ..actress_aliases import merge_actor_names
 from ..catalog_series import migrate_series, sync_field_series, sync_nfo_series, work_series_names
 from ..classification import category_for_family
 from ..collection_names import normalize_collection_name
-from ..domain import IdentityHints, MatchEvidence, MediaTechnicalInfo, NfoDetails, ProviderRecord, ScoredCandidate
+from ..domain import (
+    IdentityHints,
+    MatchEvidence,
+    MediaTechnicalInfo,
+    NfoDetails,
+    ProviderRecord,
+    ScoredCandidate,
+)
 from ..enums import (
     TERMINAL_TASK_STATUSES,
     AssetState,
@@ -38,7 +45,9 @@ from .classification_migration import migrate_classifications
 from .models import (
     Actor,
     Base,
+    CatalogPersonCredit,
     CatalogWorkOrganization,
+    CatalogWorkSeries,
     Collection,
     ExternalIdentity,
     JobCheckpoint,
@@ -47,16 +56,20 @@ from .models import (
     MatchCandidateRow,
     MatchFeedback,
     MediaAsset,
+    MediaEmbyBinding,
     OrganizeJournalRecord,
     PanOfflineTask,
     SourceSnapshot,
     TaskRun,
     Work,
     WorkActor,
+    WorkClassification,
     WorkCollection,
     WorkMagnet,
+    WorkTaxonomy,
     utc_now,
 )
+from .people_index_schema import init_people_index
 
 LOCKABLE_WORK_FIELDS = frozenset(
     {
@@ -88,7 +101,9 @@ _JAV_ACTOR_PROVIDER_PRIORITY = {
     "avsox": 8,
     "freejavbt": 100,
 }
-from .people_index_schema import init_people_index
+TRUSTED_JAV_ACTOR_SOURCES = frozenset(
+    provider for provider, priority in _JAV_ACTOR_PROVIDER_PRIORITY.items() if priority < 100
+)
 
 
 _SQLITE_CONNECTION_PRAGMAS: tuple[str, ...] = (
@@ -927,11 +942,29 @@ class Repository:
         return code_work is None or code_work.id == work.id
 
     def delete_work(self, work_id: str) -> bool:
-        """Delete a work and rely on FK CASCADE for dependent rows."""
+        """Delete a work and explicitly clean dependent rows (SQLite FK cascade is off by default)."""
 
         work = self.get_work(work_id)
         if work is None:
             return False
+        self._session.execute(
+            update(MediaAsset).where(MediaAsset.work_id == work_id).values(work_id=None)
+        )
+        for model in (
+            ExternalIdentity,
+            WorkActor,
+            WorkMagnet,
+            WorkCollection,
+            SourceSnapshot,
+            PanOfflineTask,
+            MediaEmbyBinding,
+            WorkTaxonomy,
+            WorkClassification,
+            CatalogWorkOrganization,
+            CatalogWorkSeries,
+            CatalogPersonCredit,
+        ):
+            self._session.execute(delete(model).where(model.work_id == work_id))
         self._session.delete(work)
         self._session.flush()
         return True
@@ -1021,7 +1054,7 @@ class Repository:
         name index are now loaded once and reused.
         """
 
-        works = self.list_works()
+        works = list(self._session.scalars(select(Work).options(load_only(Work.id, Work.actors))))
         if not works:
             return
         links_by_work: dict[str, dict[str, WorkActor]] = {}
@@ -1277,6 +1310,9 @@ class Repository:
                     stale.unlink(missing_ok=True)
             shutil.copy2(source, target)
             selected["local_path"] = str(target)
+        for stale_thumb in work_root.glob("thumb.*"):
+            if stale_thumb.resolve() != target.resolve():
+                stale_thumb.unlink(missing_ok=True)
         selected["kind"] = "poster"
         selected["preferred"] = True
         updated: list[dict[str, object]] = [selected]
@@ -1317,9 +1353,17 @@ class Repository:
         identity = self._session.scalar(
             select(ExternalIdentity).where(
                 ExternalIdentity.provider == provider,
+                ExternalIdentity.kind == IdentityKind.PROVIDER_ID.value,
                 ExternalIdentity.normalized_value == normalized,
             )
         )
+        if identity is None:
+            identity = self._session.scalar(
+                select(ExternalIdentity).where(
+                    ExternalIdentity.provider == provider,
+                    ExternalIdentity.normalized_value == normalized,
+                )
+            )
         if identity is None:
             return None
         return self.get_work(identity.work_id)
@@ -2331,13 +2375,32 @@ class Repository:
                 select(WorkActor).where(WorkActor.actor_id == keep.id)
             )
         }
-        for row in list(
+        drop_links = list(
             self._session.scalars(select(WorkActor).where(WorkActor.actor_id == drop.id))
-        ):
+        )
+        affected_work_ids = {row.work_id for row in drop_links}
+        for row in drop_links:
             if row.work_id in keep_links:
                 self._session.delete(row)
                 continue
             row.actor_id = keep.id
+        if affected_work_ids:
+            drop_names = {
+                name.casefold()
+                for name in [drop.name, *(drop.aliases or [])]
+                if name and name.strip()
+            }
+            for work in self._session.scalars(select(Work).where(Work.id.in_(affected_work_ids))):
+                rewritten: list[str] = []
+                seen_names: set[str] = set()
+                for actor_name in work.actors or []:
+                    replacement = keep.name if actor_name.casefold() in drop_names else actor_name
+                    folded = replacement.casefold()
+                    if replacement and folded not in seen_names:
+                        rewritten.append(replacement)
+                        seen_names.add(folded)
+                if rewritten != list(work.actors or []):
+                    work.actors = rewritten
         aliases = list(keep.aliases or [])
         seen = {item.casefold() for item in aliases}
         for alias in [drop.name, *(drop.aliases or [])]:
@@ -2345,6 +2408,7 @@ class Repository:
             if alias and key not in seen and key != keep.name.casefold():
                 aliases.append(alias)
                 seen.add(key)
+        keep.aliases = aliases
         if not keep.image_url and drop.image_url:
             keep.image_url = drop.image_url
         if not keep.x_handle and drop.x_handle:

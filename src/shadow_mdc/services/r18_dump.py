@@ -10,8 +10,9 @@ import gzip
 import logging
 import re
 import sqlite3
+import threading
 import unicodedata
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -543,7 +544,7 @@ def validate_dump_db(
 
 @dataclass(slots=True)
 class VideoMatch:
-    row: sqlite3.Row | None
+    row: Mapping[str, Any] | None
     ambiguous: tuple[str, ...] = ()  # "content_id/service_code" candidates on >1 hit
 
 
@@ -625,6 +626,7 @@ class R18DumpStore:
 
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._lock = threading.RLock()
         self._connection = sqlite3.connect(
             f"file:{self.path}?mode=ro",
             uri=True,
@@ -635,7 +637,8 @@ class R18DumpStore:
         self.last_ambiguous: tuple[str, ...] = ()
 
     def close(self) -> None:
-        self._connection.close()
+        with self._lock:
+            self._connection.close()
 
     def __enter__(self) -> R18DumpStore:
         return self
@@ -644,8 +647,9 @@ class R18DumpStore:
         self.close()
 
     def meta(self) -> dict[str, str]:
-        rows = self._connection.execute("SELECT key, value FROM meta").fetchall()
-        return {str(row["key"]): str(row["value"]) for row in rows}
+        with self._lock:
+            rows = self._connection.execute("SELECT key, value FROM meta").fetchall()
+            return {str(row["key"]): str(row["value"]) for row in rows}
 
     def _has_fold_column(self) -> bool:
         if self._fold is None:
@@ -671,6 +675,10 @@ class R18DumpStore:
         return resolve_service_duplicates(rows)
 
     def match_video(self, code: str) -> VideoMatch:
+        with self._lock:
+            return self._match_video_locked(code)
+
+    def _match_video_locked(self, code: str) -> VideoMatch:
         code = nfkc(code)
         # Remaster markers (HD/AI/H): probe base 番号 for dvd_id rows, then
         # marker-aware content_id candidates (re-appended folded marker).
@@ -710,7 +718,7 @@ class R18DumpStore:
         self.last_ambiguous = ()
         return VideoMatch(None)
 
-    def find_video_row(self, code: str) -> sqlite3.Row | None:
+    def find_video_row(self, code: str) -> Mapping[str, Any] | None:
         return self.match_video(code).row
 
     def _sibling_content_id_candidates(self, code: str, *, sample: int = 200) -> list[str]:

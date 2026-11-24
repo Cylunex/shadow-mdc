@@ -195,7 +195,7 @@ function PlayerSession({
   });
   const [status, setStatus] = useState<"idle" | "loading" | "playing" | "error">("idle");
   const [errorText, setErrorText] = useState<string | null>(null);
-  const [muted, setMuted] = useState(true);
+  const [muted, setMuted] = useState(() => Boolean(embedded));
   const [subtitlesShown, setSubtitlesShown] = useState(true);
   const triedRef = useRef<Set<number>>(new Set(playable.length ? [index] : []));
   const resumeAtRef = useRef(0);
@@ -284,7 +284,19 @@ function PlayerSession({
             hls.attachMedia(video);
             hls.on(Hls.Events.MANIFEST_PARSED || "hlsManifestParsed", () => {
               if (signal.aborted) return;
-              if (autoPlay) void video.play().catch(() => {
+              if (autoPlay) void video.play().catch(async () => {
+                if (signal.aborted) return;
+                if (!video.muted) {
+                  video.muted = true;
+                  setMuted(true);
+                  try {
+                    await video.play();
+                    onReport?.("浏览器限制自动有声播放，已静音启动");
+                    return;
+                  } catch {
+                    /* fall through */
+                  }
+                }
                 if (!signal.aborted) setStatus("idle");
               });
               else setStatus("idle");
@@ -302,7 +314,19 @@ function PlayerSession({
         } else {
           video.src = mediaUrl;
         }
-        if (autoPlay) await video.play().catch(() => {
+        if (autoPlay) await video.play().catch(async () => {
+          if (signal.aborted) return;
+          if (!video.muted) {
+            video.muted = true;
+            setMuted(true);
+            try {
+              await video.play();
+              onReport?.("浏览器限制自动有声播放，已静音启动");
+              return;
+            } catch {
+              /* fall through */
+            }
+          }
           if (!signal.aborted) setStatus("idle");
         });
         else setStatus("idle");
@@ -363,6 +387,18 @@ function PlayerSession({
     };
   }, [tryFailover]);
 
+  useEffect(() => {
+    if (embedded || !onClose) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [embedded, onClose]);
+
   const switchSource = (next: number) => {
     if (next === index || next < 0 || next >= playable.length) return;
     const sameVersion = playable[next]?.version_id === playable[index]?.version_id;
@@ -396,6 +432,16 @@ function PlayerSession({
         <div className="in-app-player-chrome">
           <div className="in-app-player-title">{title || current?.label || "在线播放"}</div>
           <div className="in-app-player-actions">
+            {current?.kind === "local" && current.subtitle_url ? (
+              <button
+                type="button"
+                className={subtitlesShown ? "secondary" : "ghost"}
+                aria-pressed={subtitlesShown}
+                onClick={() => setSubtitlesShown((value) => !value)}
+              >
+                {subtitlesShown ? "隐藏字幕" : "显示字幕"}
+              </button>
+            ) : null}
             <button type="button" className="ghost" onClick={() => setMuted((m) => !m)}>
               {muted ? "取消静音" : "静音"}
             </button>

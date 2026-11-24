@@ -219,6 +219,9 @@ class PanOfflinePoller:
         self._maintenance_task = None
         if self._owns_notifier:
             await self._notifier.stop()
+        close_fn = getattr(self._subtitles, "close", None)
+        if callable(close_fn):
+            close_fn()
 
     async def _loop(self) -> None:
         while not self._stop.is_set():

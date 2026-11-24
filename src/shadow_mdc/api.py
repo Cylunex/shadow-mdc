@@ -146,8 +146,8 @@ from .api_models import (
     WorkOfflineRequest,
     WorkOut,
     WorkPosterPreferRequest,
-    WorkRelatedOut,
     WorkRefreshRequest,
+    WorkRelatedOut,
     WorkSampleGenerateOut,
     WorkSearchOut,
     WorkTagFacetOut,
@@ -169,7 +169,7 @@ from .db.models import (
     Work,
     utc_now,
 )
-from .db.repository import LOCKABLE_WORK_FIELDS, Database, Repository
+from .db.repository import LOCKABLE_WORK_FIELDS, TRUSTED_JAV_ACTOR_SOURCES, Database, Repository
 from .domain import (
     FileOperation,
     IdentityHints,
@@ -192,9 +192,11 @@ from .enums import (
 from .identity import IdentityAliasRules, build_identity_hints, extract_code, normalize_identity_value
 from .intake_core import select_metadata_providers
 from .matching import normalize_title, rank_candidates, score_candidate
+from .media import directory_index
 from .media.artwork import (
     ArtworkDownloadResult,
     ArtworkStore,
+    ensure_list_thumbnail,
     package_portrait,
     resolve_work_display_image,
     resolve_work_display_images,
@@ -205,8 +207,8 @@ from .media.nfo_import import apply_nfo_locked_fields, nfo_provider_record, pars
 from .media.organize_journal import JournalEntry, OrganizeJournal, UndoReport, undo_entries
 from .media.organizer import Organizer, plan_move_cleanup
 from .media.parts import find_subtitles, part_group_key
-from .media.subtitle_validation import srt_to_webvtt
 from .media.screenshots import capture_screenshot
+from .media.subtitle_validation import srt_to_webvtt
 from .media_api import build_media_router
 from .normalize_code import is_format_equivalent
 from .providers import (
@@ -399,6 +401,7 @@ from .services.task_events import TaskEventHub
 from .services.translation import (
     GoogleTitleTranslator,
     TranslationCache,
+    WorkTranslator,
     build_translation_backends,
 )
 from .services.tvbox import TvBoxService, tvbox_proxy_routes
@@ -422,7 +425,6 @@ from .tags import (
     use_registry,
     work_matches_tags,
 )
-
 from .tvbox_api import build_tvbox_feed_router, build_tvbox_router
 
 
@@ -433,7 +435,7 @@ class Runtime:
     tag_dictionary: TagDictionaryStore
     http: httpx.AsyncClient
     providers: ProviderRegistry
-    translator: object
+    translator: WorkTranslator
     alias_store: IdentityAliasStore
     actor_store: ActorCatalogStore
     non_jav_actor_store: NonJavActorCatalogStore
@@ -486,7 +488,8 @@ def _http_client(settings: Settings, *, max_connections: int) -> httpx.AsyncClie
         proxy=settings.proxy_url,
         limits=httpx.Limits(
             max_connections=max_connections,
-            max_keepalive_connections=0,
+            max_keepalive_connections=min(max_connections, 8),
+            keepalive_expiry=30.0,
         ),
     )
 
@@ -2012,7 +2015,9 @@ def get_organize_journal(task_id: str, repo: Repo) -> OrganizeJournalOut:
 
 
 @app.post("/api/organize/runs/{task_id}/undo", response_model=UndoReport)
-def undo_organize_run(task_id: str, repo: Repo, payload: OrganizeUndoRequest | None = None) -> UndoReport:
+def undo_organize_run(
+    task_id: str, request: Request, repo: Repo, payload: OrganizeUndoRequest | None = None,
+) -> UndoReport:
     """Reverse an organize run. ``dry_run`` (default true) only previews the steps."""
 
     options = payload or OrganizeUndoRequest()
@@ -2036,6 +2041,7 @@ def undo_organize_run(task_id: str, repo: Repo, payload: OrganizeUndoRequest | N
             status="succeeded" if report.errors == 0 and report.skipped == 0 else "partial",
             summary={"journal_id": record.id, **record.undo_summary},
         )
+        _invalidate_library_caches(runtime(request).response_cache)
     return report
 
 
@@ -2288,7 +2294,7 @@ def reset_provider_health(request: Request, provider: str | None = None) -> Prov
 
 
 @app.patch("/api/actors/{actor_id}", response_model=ActorSummaryOut)
-def patch_actor(actor_id: str, payload: ActorXHandleEdit, repo: Repo) -> ActorSummaryOut:
+def patch_actor(actor_id: str, payload: ActorXHandleEdit, request: Request, repo: Repo) -> ActorSummaryOut:
     actor = repo.get_actor(actor_id)
     if actor is None:
         raise HTTPException(status_code=404, detail="actor not found")
@@ -2297,6 +2303,7 @@ def patch_actor(actor_id: str, payload: ActorXHandleEdit, repo: Repo) -> ActorSu
     except XHandleError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     repo.update_actor_x_handle(actor, handle)
+    _invalidate_library_caches(runtime(request).response_cache)
     handle = sanitize_stored_x_handle(actor.x_handle)
     return ActorSummaryOut(
         id=actor.id,
@@ -2308,7 +2315,7 @@ def patch_actor(actor_id: str, payload: ActorXHandleEdit, repo: Repo) -> ActorSu
 
 
 @app.post("/api/actors/merge", response_model=ActorSummaryOut)
-def merge_actors_endpoint(payload: ActorMergeRequest, repo: Repo) -> ActorSummaryOut:
+def merge_actors_endpoint(payload: ActorMergeRequest, request: Request, repo: Repo) -> ActorSummaryOut:
     try:
         actor = repo.merge_actors(
             keep_actor_id=payload.keep_actor_id,
@@ -2318,6 +2325,7 @@ def merge_actors_endpoint(payload: ActorMergeRequest, repo: Repo) -> ActorSummar
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _invalidate_library_caches(runtime(request).response_cache)
     handle = sanitize_stored_x_handle(getattr(actor, "x_handle", None))
     return ActorSummaryOut(
         id=actor.id,
@@ -4759,7 +4767,14 @@ def prefer_work_poster(
         repo.prefer_work_poster(work, artwork_index=payload.artwork_index)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _work_detail_out(repo, work, data_dir=runtime(request).settings.data_dir)
+    preferred_local = work.artwork[0].get("local_path") if work.artwork else None
+    if isinstance(preferred_local, str) and preferred_local:
+        poster_path = Path(preferred_local)
+        directory_index.invalidate(poster_path.parent)
+        ensure_list_thumbnail(poster_path.parent, poster_path)
+    app_runtime = runtime(request)
+    _invalidate_library_caches(app_runtime.response_cache)
+    return _work_detail_out(repo, work, data_dir=app_runtime.settings.data_dir)
 
 
 _FALLBACK_QUOTA: dict[int, RescrapeQuota] = {}
@@ -4853,14 +4868,15 @@ async def translate_work_titles(
     repo: Repo,
 ) -> BulkTranslateOut:
     works = repo.list_works()
-    selected = works[: payload.limit]
+    translator = runtime(request).translator
+    candidates = [work for work in works if translator.work_needs_translation(work)]
+    selected = candidates[: payload.limit]
     translated = 0
     skipped = 0
     failed = 0
     errors: list[str] = []
-    translator = runtime(request).translator
     for work in selected:
-        result = await translator.translate_work(repo, work)
+        result = await translator.translate_work(repo, work, retry_failed_only=True)
         if result.status == "translated":
             translated += 1
         elif result.status == "skipped":
@@ -4868,6 +4884,7 @@ async def translate_work_titles(
         else:
             failed += 1
             errors.append(f"{work.primary_code or work.id}: {result.detail or 'translation failed'}")
+    remaining = max(0, len(candidates) - len(selected))
     task = repo.create_task_run(kind="translate:title", scope="works")
     repo.finish_task_run(
         task,
@@ -4877,7 +4894,7 @@ async def translate_work_titles(
             "translated": translated,
             "skipped": skipped,
             "failed": failed,
-            "remaining": max(0, len(works) - len(selected)),
+            "remaining": remaining,
         },
     )
     if translated:
@@ -4887,7 +4904,7 @@ async def translate_work_titles(
         translated=translated,
         skipped=skipped,
         failed=failed,
-        remaining=max(0, len(works) - len(selected)),
+        remaining=remaining,
         errors=tuple(errors[:20]),
     )
 
@@ -4903,18 +4920,20 @@ def work_nfo(work_id: str, repo: Repo) -> Response:
 
 
 @app.get("/api/subtitles/subtitlecat", response_model=SubtitleLookupOut)
-def subtitlecat_lookup(code: str) -> SubtitleLookupOut:
+def subtitlecat_lookup(code: str, request: Request) -> SubtitleLookupOut:
     """Read-only dry run: best SubtitleCat zh subtitle for a 番号 (nothing is written)."""
 
     cleaned = code.strip()
     if not cleaned or len(cleaned) > 64:
         raise HTTPException(status_code=422, detail="code required")
-    fetcher = Settings().subtitlecat_fetcher()
+    fetcher = runtime(request).settings.subtitlecat_fetcher()
     fetcher.min_interval_seconds = 0
     try:
         pick = fetcher.lookup(cleaned)
     except httpx.HTTPError as exc:
         return SubtitleLookupOut(code=cleaned, found=False, error=f"{type(exc).__name__}: {exc}"[:300])
+    finally:
+        fetcher.close()
     if pick is None:
         return SubtitleLookupOut(code=cleaned, found=False)
     return SubtitleLookupOut(
@@ -4939,8 +4958,7 @@ def work_artwork_file(work_id: str, kind: str, request: Request, repo: Repo) -> 
     return FileResponse(
         path,
         media_type=media_type or "application/octet-stream",
-        headers={"Cache-Control": "private, no-cache" if kind == "package-portrait"
-                 else "public, max-age=604800, immutable"},
+        headers={"Cache-Control": "private, no-cache"},
     )
 
 
@@ -4976,9 +4994,24 @@ async def download_work_artwork(work_id: str, request: Request, repo: Repo) -> A
                 "failed": result.failed,
             },
         )
+    _invalidate_library_caches(app_runtime.response_cache)
     return result
 
 
+
+
+def _work_has_uncached_remote_artwork(work: Work) -> bool:
+    return any(
+        isinstance(item, dict)
+        and isinstance(item.get("url"), str)
+        and str(item["url"]).startswith(("http://", "https://"))
+        and not (
+            isinstance(item.get("local_path"), str)
+            and item.get("local_path")
+            and Path(str(item["local_path"])).is_file()
+        )
+        for item in (work.artwork or [])
+    )
 
 
 @app.post("/api/works/artwork/backfill", response_model=ArtworkBackfillOut)
@@ -4990,7 +5023,9 @@ async def backfill_recent_artwork(
     """Cheap optional backfill: download covers for recent works still on remote URLs."""
 
     app_runtime = runtime(request)
-    works = repo.list_works()[:limit]
+    all_works = repo.list_works()
+    eligible = [work for work in all_works if _work_has_uncached_remote_artwork(work)]
+    works = eligible[:limit] if eligible else all_works[:limit]
     scanned = 0
     downloaded = 0
     cached = 0
@@ -4998,18 +5033,7 @@ async def backfill_recent_artwork(
     actors_localized = 0
     for work in works:
         scanned += 1
-        needs = any(
-            isinstance(item, dict)
-            and isinstance(item.get("url"), str)
-            and str(item["url"]).startswith(("http://", "https://"))
-            and not (
-                isinstance(item.get("local_path"), str)
-                and item.get("local_path")
-                and Path(str(item["local_path"])).is_file()
-            )
-            for item in (work.artwork or [])
-        )
-        if needs:
+        if _work_has_uncached_remote_artwork(work):
             result, local_paths = await ArtworkStore(
                 app_runtime.settings.data_dir / "artwork",
                 app_runtime.http,
@@ -5289,6 +5313,8 @@ async def generate_library_screenshots(
             "failed": failed,
         },
     )
+    if generated:
+        _invalidate_library_caches(runtime(request).response_cache)
     return ScreenshotGenerateOut(
         attempted=attempted,
         generated=generated,
@@ -5363,6 +5389,7 @@ def organize_apply(
         )
     except (ValueError, FileExistsError, OSError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _invalidate_library_caches(runtime(request).response_cache)
     return PlanOut.model_validate(plan.model_dump())
 
 
@@ -5416,6 +5443,7 @@ async def organize_library_apply(
     organizer = Organizer(repo)
     journal = OrganizeJournal(trash_dir=runtime(request).settings.data_dir / "organize-trash" / task.id)
     succeeded = 0
+    succeeded_items: list[LibraryPlanItem] = []
     errors: list[str] = []
     completed_work_ids: set[str] = set()
     for item in plan_items:
@@ -5440,6 +5468,7 @@ async def organize_library_apply(
                 journal=journal,
             )
             succeeded += 1
+            succeeded_items.append(item)
             completed_work_ids.add(item.work.id)
         except (ValueError, FileExistsError, OSError) as exc:
             if len(errors) < 100:
@@ -5448,12 +5477,14 @@ async def organize_library_apply(
     refresh_ok = 0
     refresh_fail = 0
     app_runtime = runtime(request)
+    if succeeded:
+        _invalidate_library_caches(app_runtime.response_cache)
     media_settings = app_runtime.media_server_store.load()
-    if media_settings.enabled and succeeded:
+    if media_settings.enabled and succeeded_items:
         # Path-only incremental notify through the durable, batched queue — never
         # a full Library/Refresh after an incremental change.
         refreshed_paths: list[str] = []
-        for item in plan_items[:succeeded]:
+        for item in succeeded_items:
             # After move, asset.path may already be updated.
             key = str(Path(item.asset.path).parent)
             if key not in refreshed_paths:
@@ -6122,18 +6153,7 @@ def _strict_jav_organize_candidate(
     if len("".join(character for character in title_remainder if character.isalnum())) < 4:
         return False
     invalid_actor_names = {"unknown", "uncategorized", "未知", "未分类", "未分類"}
-    trusted_actor_sources = {
-        "fanza",
-        "jav321",
-        "mgstage",
-        "javlibrary",
-        "r18dev",
-        "javdb",
-        "javbus",
-        "airav",
-        "avsox",
-    }
-    if str((work.field_sources or {}).get("actors", "")) not in trusted_actor_sources:
+    if str((work.field_sources or {}).get("actors", "")) not in TRUSTED_JAV_ACTOR_SOURCES:
         return False
     valid_actors = [
         actor.strip()

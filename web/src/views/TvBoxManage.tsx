@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { appUrl } from "../api";
+import { copyToClipboard } from "../lib/clipboard";
 import { tvboxRequest, type TvBoxGroup, type TvBoxSite } from "./tvboxApi";
 
 type Binding = { needs_rotation?: boolean; id: string; name: string; group_id: string | null; revoked: boolean; expires_at: string | null };
@@ -23,7 +24,7 @@ export function TvBoxManage({ sites, groups, onImport, allowHttp }: {
   const [bindingGroup, setBindingGroup] = useState("");
   const [bindingDays, setBindingDays] = useState("");
   const [issued, setIssued] = useState<Issued>();
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"" | "multi" | "single">("");
   const revisions = useQuery({
     queryKey: ["tvbox", "revisions", siteHistory], enabled: Boolean(siteHistory),
     queryFn: ({ signal }) => tvboxRequest<{ id: string; created_at: string }[]>(
@@ -50,7 +51,7 @@ export function TvBoxManage({ sites, groups, onImport, allowHttp }: {
     mutationFn: ({ path, method, data }: { path: string; method: string; data?: unknown }) =>
       tvboxRequest<Partial<Issued>>(path, method, data),
     onSuccess: async (reply) => {
-      if (reply.path) { setIssued(reply as Issued); setCopied(false); }
+      if (reply.path) { setIssued(reply as Issued); setCopied(""); }
       await cache.invalidateQueries({ queryKey: ["tvbox"] });
     },
   });
@@ -172,10 +173,15 @@ export function TvBoxManage({ sites, groups, onImport, allowHttp }: {
       {link && <div className="tvbox-subscription-link">
         <label>多仓订阅地址<input readOnly value={link} onFocus={(event) => event.target.select()} /></label>
         <button className="ghost" type="button" onClick={() =>
-          void navigator.clipboard.writeText(link).then(() => setCopied(true), () => setCopied(false))
-        }>{copied ? "已复制" : "复制多仓地址"}</button>
+          void copyToClipboard(link).then((ok) => setCopied(ok ? "multi" : ""))
+        }>{copied === "multi" ? "已复制" : "复制多仓地址"}</button>
         <label>单仓订阅地址<input readOnly value={link.replace(/store\.json$/, "sites.json")} onFocus={(event) => event.target.select()} /></label>
-        <button className="ghost" type="button" onClick={() => setIssued(undefined)}>收起地址</button>
+        <div className="tvbox-actions">
+          <button className="ghost" type="button" onClick={() =>
+            void copyToClipboard(link.replace(/store\.json$/, "sites.json")).then((ok) => setCopied(ok ? "single" : ""))
+          }>{copied === "single" ? "已复制" : "复制单仓地址"}</button>
+          <button className="ghost" type="button" onClick={() => setIssued(undefined)}>收起地址</button>
+        </div>
       </div>}
       <ul className="tvbox-manage-list">{subscriptions.data?.map((binding) => {
         const expired = binding.expires_at !== null && Date.parse(binding.expires_at) <= Date.now();

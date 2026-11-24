@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { TagTerm } from "../lib/tagDictionary";
 import { queryClient } from "../query/client";
@@ -9,7 +9,18 @@ import { tagPathLabel, tagTreeRows } from "../lib/tagTree";
 export function TagManagement({ onSaved }: { onSaved?: () => void } = {}) {
   const [open, setOpen] = useState(false);
   const [q, setQuery] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
+  const [composing, setComposing] = useState(false);
   const [offset, setOffset] = useState(0);
+  useEffect(() => {
+    if (composing) return;
+    if (!q.trim()) {
+      setDebouncedQ(q);
+      return;
+    }
+    const timer = window.setTimeout(() => setDebouncedQ(q), 180);
+    return () => window.clearTimeout(timer);
+  }, [q, composing]);
   const [selected, setSelected] = useState<TagTerm | null>(null);
   const [saved, setSaved] = useState<TagTerm | null>(null);
   const [name, setName] = useState("");
@@ -20,7 +31,7 @@ export function TagManagement({ onSaved }: { onSaved?: () => void } = {}) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const result = useQuery({ ...resources.tagDictionary(q, offset), enabled: open }, queryClient);
+  const result = useQuery({ ...resources.tagDictionary(debouncedQ, offset), enabled: open }, queryClient);
   const tree = useQuery({ ...resources.tagTree(), enabled: open }, queryClient);
   const rows = useMemo(() => tagTreeRows(tree.data?.nodes ?? []), [tree.data]);
   const paths = useMemo(() => new Map(rows.map(row => [row.node.id, tagPathLabel(row)])), [rows]);
@@ -55,6 +66,8 @@ export function TagManagement({ onSaved }: { onSaved?: () => void } = {}) {
     <summary>标签字典</summary>
     {open && <div className="catalog-tools">
       <label>查找标签<input aria-label="查找标签词条" value={q} maxLength={300}
+        onCompositionStart={() => setComposing(true)}
+        onCompositionEnd={event => { setComposing(false); setQuery(event.currentTarget.value); setOffset(0); }}
         onChange={event => { setQuery(event.target.value); setOffset(0); }} /></label>
       {result.isPending ? <p role="status">正在读取标签字典…</p> : result.error ? <p role="alert">标签字典读取失败
         <button type="button" onClick={() => void result.refetch()}>重试</button></p>

@@ -179,12 +179,9 @@ def page_cards(
 def web_cards(
     session: Session, query: str, sort: Literal["works", "name"], offset: int, limit: int,
 ) -> tuple[list[PersonCard], int]:
-    where = """
-        WHERE :query='' OR instr(mdc_casefold(p.name), :query)>0 OR EXISTS (
-            SELECT 1 FROM json_each(p.aliases) WHERE instr(mdc_casefold(value), :query)>0
-        )
-    """
-    params = {"query": query, "offset": offset, "limit": limit}
+    folded_query = fold_name(query) if query else ""
+    where = "WHERE :query='' OR instr(p.search, :query)>0"
+    params = {"query": folded_query, "offset": offset, "limit": limit}
     total = int(session.execute(text(
         f"SELECT count(*) FROM mdc_people_cards p {where}"
     ), params).scalar_one())
@@ -195,7 +192,7 @@ def web_cards(
         SELECT p.id,p.name,p.aliases,p.works,p.revision,p.portrait_url, EXISTS (
             SELECT 1 FROM mdc_people_cards other WHERE other.name=p.name AND other.id<>p.id
         ) FROM mdc_people_cards p {where}
-        ORDER BY {order} mdc_casefold(p.name), p.id LIMIT :limit OFFSET :offset
+        ORDER BY {order} p.sort_name, p.id LIMIT :limit OFFSET :offset
     """), params)
     return [
         PersonCard(id=key, name=name, aliases=json.loads(aliases)[:2], work_count=works,

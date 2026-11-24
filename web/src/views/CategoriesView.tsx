@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import { appUrl } from "../api";
 import { CoverImage } from "../components/CoverImage";
@@ -23,6 +23,8 @@ type Props = {
 export function CategoriesView({ onOpenTag, report }: Props) {
   const [browsing, setBrowsing] = useSessionState("mdc:category-browsing", browsingSchema, defaults);
   const { query, onlyWithWorks, sort, pageSize } = browsing;
+  const [composing, setComposing] = useState(false);
+  const [queryDraft, setQueryDraft] = useState("");
   const heading = useRef<HTMLDivElement>(null);
   const result = useQuery(resources.categories(), queryClient);
   const knownIds = new Set((result.data?.categories ?? []).map(item => item.id ?? item.slug));
@@ -70,12 +72,19 @@ export function CategoriesView({ onOpenTag, report }: Props) {
         <span className="muted">{loading ? "正在读取分类…" : `${visible.length} / ${result.data?.categories.length ?? 0} 个分类`}</span>
       </div><p className="muted">高层节点可展开浏览下级，也可查看该节点及全部下级的作品。</p></div>
     </div>
-    {crumbs.length > 0 && <nav aria-label="标签层级"><button className="ghost" onClick={() => browse(null)}>全部标签</button>
-      {crumbs.map(node => <button key={node.id} className="ghost" onClick={() => browse(node.id)}>{node.name}</button>)}
-      {parent && <button onClick={() => onOpenTag(parent.id ?? parent.label, parent.label)}>查看此节点全部作品</button>}
+    {crumbs.length > 0 && <nav aria-label="标签层级"><button type="button" className="ghost" onClick={() => browse(null)}>全部标签</button>
+      {crumbs.map(node => <button type="button" key={node.id} className="ghost" onClick={() => browse(node.id)}>{node.name}</button>)}
+      {parent && <button type="button" onClick={() => onOpenTag(parent.id ?? parent.label, parent.label)}>查看此节点全部作品</button>}
     </nav>}
     <div className="categories-toolbar">
-      <input id="shadow-mdc-search" value={query} onChange={event => setBrowsing(previous => ({ ...previous, query: event.target.value, page: 1 }))}
+      <input id="shadow-mdc-search" value={composing ? queryDraft : query}
+        onCompositionStart={() => { setQueryDraft(query); setComposing(true); }}
+        onCompositionEnd={event => { setComposing(false); setBrowsing(previous => ({ ...previous, query: event.currentTarget.value, page: 1 })); }}
+        onChange={event => {
+          const nextValue = event.target.value;
+          if (composing) setQueryDraft(nextValue);
+          else setBrowsing(previous => ({ ...previous, query: nextValue, page: 1 }));
+        }}
         placeholder="分类名称、别名…" aria-label="搜索分类" maxLength={200} />
       <select aria-label="分类排序" value={sort} onChange={event => setBrowsing(previous => ({
         ...previous, sort: event.target.value as typeof sort, page: 1,
@@ -84,11 +93,11 @@ export function CategoriesView({ onOpenTag, report }: Props) {
       </select>
       <label className="categories-toggle"><input type="checkbox" checked={onlyWithWorks}
         onChange={event => setBrowsing(previous => ({ ...previous, onlyWithWorks: event.target.checked, page: 1 }))} />仅显示有作品</label>
-      {filtered && <button className="ghost" onClick={() => setBrowsing(previous => ({ ...previous, query: "", onlyWithWorks: false, page: 1 }))}>清除筛选</button>}
+      {filtered && <button type="button" className="ghost" onClick={() => setBrowsing(previous => ({ ...previous, query: "", onlyWithWorks: false, page: 1 }))}>清除筛选</button>}
     </div>
     {result.error && <div className="catalog-error" role="alert">
       <span>分类加载失败：{result.error.message}</span>
-      <button className="ghost" disabled={result.isFetching} onClick={() => void result.refetch()}>重试分类</button>
+      <button type="button" className="ghost" disabled={result.isFetching} onClick={() => void result.refetch()}>重试分类</button>
     </div>}
     {loading ? <div className="skeleton-grid" aria-busy="true" aria-label="分类加载中">
       {Array.from({ length: 8 }, (_, index) => <div className="skeleton-card" key={index}>
@@ -107,7 +116,7 @@ export function CategoriesView({ onOpenTag, report }: Props) {
             {!item.image_url && <span className="category-cover-label" aria-hidden="true">{item.label}</span>}
           </div>
           <div className="category-meta"><strong>{item.label}</strong><span className="category-count">{item.work_count} 部作品</span></div>
-        </button>{nestedIds.has(item.id ?? item.slug) && <button className="ghost" onClick={() => onOpenTag(item.id ?? item.label, item.label)}>
+        </button>{nestedIds.has(item.id ?? item.slug) && <button type="button" className="ghost" onClick={() => onOpenTag(item.id ?? item.label, item.label)}>
           查看全部 {item.work_count} 部作品</button>}</div>)}
       </div>}
       {visible.length > pageSize && <Pagination {...pagination} position="底部" />}

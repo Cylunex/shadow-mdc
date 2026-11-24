@@ -191,15 +191,39 @@ class WorkTranslator:
         self._target_language = target_language
         self._translate_plot = translate_plot
 
-    async def translate_work(self, repository: Repository, work: Work) -> TranslationResult:
+    async def translate_work(
+        self,
+        repository: Repository,
+        work: Work,
+        *,
+        retry_failed_only: bool = False,
+    ) -> TranslationResult:
         """Translate title (and plot when enabled). Return first translated result for counters."""
 
         fields: tuple[str, ...] = ("title", "plot") if self._translate_plot else ("title",)
-        results = await self.translate_fields(repository, work, fields=fields)
+        results = await self.translate_fields(
+            repository, work, fields=fields, retry_failed_only=retry_failed_only
+        )
         for result in results:
             if result.status == "translated":
                 return result
         return results[0]
+
+    def work_needs_translation(self, work: Work) -> bool:
+        """Return whether ``work`` has at least one untranslated field eligible for translation."""
+
+        if not self._enabled:
+            return False
+        sources = work.field_sources or {}
+        fields: tuple[str, ...] = ("title", "plot") if self._translate_plot else ("title",)
+        for field_name in fields:
+            provider = str(sources.get(field_name, ""))
+            if provider in {"local-manual", "local-path"} or provider.startswith("translation:"):
+                continue
+            source = _field_source_text(work, field_name)
+            if source and needs_translation(source, work.family):
+                return True
+        return False
 
     async def translate_fields(
         self,

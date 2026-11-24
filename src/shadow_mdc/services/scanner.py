@@ -1,7 +1,7 @@
 import os
 import shutil
-from dataclasses import dataclass
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
@@ -11,6 +11,7 @@ from ..db.repository import Repository
 from ..domain import MediaTechnicalInfo
 from ..enums import ContentFamily, MediaCategory, QueryMode, RecognitionScope
 from ..identity import IdentityAliasRules, build_identity_hints
+from ..media import directory_index
 from ..media.artwork import ensure_list_thumbnail
 from ..media.nfo_import import (
     NfoImporter,
@@ -548,6 +549,7 @@ def _adopt_sibling_artwork(
         destination = work_root / f"{kind}{suffix}"
         if not destination.is_file():
             shutil.copy2(source, destination)
+            directory_index.invalidate(work_root)
             changed = True
         ensure_list_thumbnail(work_root, destination)
         already = any(

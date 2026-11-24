@@ -181,8 +181,10 @@ describe("page load request budget", () => {
     expect(container.querySelector(".actor-grid")?.textContent).toContain("Second");
     await act(async () => container.querySelector<HTMLButtonElement>(".actor-card")!.click());
     expect(container.textContent).toContain("Full biography");
+    expect(window.location.search).toBe("?view=actors&actor=Second");
     await act(async () => [...container.querySelectorAll("button")]
       .find(button => button.textContent === "返回演员库")!.click());
+    expect(window.location.search).toBe("?view=actors");
     expect(container.querySelector(".actor-grid")?.textContent).toContain("Second");
     expect(container.querySelector('[aria-current="page"]')?.textContent).toBe("2");
   });

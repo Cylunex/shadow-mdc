@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { appUrl } from "../api";
-import { queryClient, queryKeys } from "../query/client";
+import { invalidateCatalogEntity, queryClient, queryKeys } from "../query/client";
 import type { Filters } from "./UnifiedCatalogView";
 import { organizationKindSchema, organizationRoleSchema, type OrganizationKind, type OrganizationRole } from "../lib/catalogTypes";
 
@@ -57,7 +57,9 @@ export async function catalogRequest<T>(path: string, method = "GET", body?: unk
     const error = await response.json().catch(() => ({}));
     throw new Error(error.detail ?? "操作失败（" + response.status + "）");
   }
-  return response.status === 204 ? undefined as T : response.json() as Promise<T>;
+  const result = response.status === 204 ? undefined as T : await (response.json() as Promise<T>);
+  if (method !== "GET" && invalidateCatalogEntity) void invalidateCatalogEntity();
+  return result;
 }
 
 export function usePeopleCards(q: string, sort: string, followed: boolean, offset: number, enabled: boolean,
@@ -168,17 +170,28 @@ export function CatalogPeopleEditor({ person, onSaved }: {
     openEditor({ id: "", ref: "", refs: [], name: "", aliases: [], biography: "", image_url: "",
       notes: "", favorite: false, blacklist: false, groups: [], match_names: [], work_ids: [], revision: 1 });
   }
-  return <section>
+  useEffect(() => {
+    if (!editing) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busy) {
+        event.preventDefault();
+        setEditing(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editing, busy]);
+  return <section className="catalog-people-editor-bar">
     {error && <p role="alert">{error}</p>}
-    <button onClick={create}>新增演员档案</button>
+    <button type="button" className="ghost" onClick={create}>新增演员档案</button>
     {person && <>
-      <button disabled={busy} onClick={() => void run(async () => {
+      <button type="button" className={person.favorite ? "secondary" : "ghost"} disabled={busy} onClick={() => void run(async () => {
         await catalogRequest("people/" + person.id + "/preference", "PUT", {
           favorite: !person.favorite, blacklist: person.blacklist
         });
       })}>{person.favorite ? "取消关注" : "关注"}</button>
-      <button onClick={() => openEditor(person)}>编辑 {person.name} 的资料</button>
-      <label>上传头像<input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy}
+      <button type="button" className="ghost" onClick={() => openEditor(person)}>编辑 {person.name} 的资料</button>
+      <label className="upload-button">上传头像<input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy}
         onChange={event => { const file = event.target.files?.[0]; if (!file) return; void run(async () => {
           const response = await fetch(appUrl("/api/catalog/people/" + person.id + "/image?revision=" + person.revision)!, { method: "POST", body: file });
           if (!response.ok) throw new Error("头像上传失败，请刷新资料后重试");
@@ -186,7 +199,7 @@ export function CatalogPeopleEditor({ person, onSaved }: {
 
       <details><summary>维护参演或执导关联</summary>
         <input value={workQuery} onChange={e => setWorkQuery(e.target.value)} placeholder="搜索要关联的作品" />
-        <button disabled={busy} onClick={() => {
+        <button type="button" className="secondary" disabled={busy} onClick={() => {
           setBusy(true);
           catalogRequest<{ items: { id: string; title: string }[] }>("works/query", "POST", { q: workQuery })
             .then(page => setWorkOptions(page.items)).catch(e => setError(String(e))).finally(() => setBusy(false));
@@ -197,12 +210,12 @@ export function CatalogPeopleEditor({ person, onSaved }: {
         <select value={creditRole} onChange={e => setCreditRole(e.target.value)}>
           <option value="actor">出演</option><option value="director">执导</option>
         </select>
-        <button disabled={busy || !creditWork} onClick={() => void run(async () => {
+        <button type="button" className="secondary" disabled={busy || !creditWork} onClick={() => void run(async () => {
           await catalogRequest("people/" + person.id + "/works", "PUT", {
             work_id: creditWork, role: creditRole, included: true, revision: person.revision
           });
         })}>保存关联</button>
-        <button disabled={busy || !creditWork} onClick={() => void run(async () => {
+        <button type="button" className="ghost" disabled={busy || !creditWork} onClick={() => void run(async () => {
           await catalogRequest("people/" + person.id + "/works", "PUT", {
             work_id: creditWork, role: creditRole, included: false, revision: person.revision
           });
@@ -210,7 +223,7 @@ export function CatalogPeopleEditor({ person, onSaved }: {
       </details>
       <PersonPicker label="合并到" exclude={person.id} onSelect={setTarget} />
       {target && <span>{target.name} · {target.id.slice(-6)}</span>}
-      <button disabled={busy || !target} onClick={() => void run(async () => {
+      <button type="button" className="ghost" disabled={busy || !target} onClick={() => void run(async () => {
         if (!target || !window.confirm("确认将“" + person.name + "”合并到“" + target.name + "”？原档案和旧引用会保留，可从记录撤销。")) return false;
         await catalogRequest("people-merge", "POST", { target_id: target.id, source_id: person.id,
           target_revision: target.revision, source_revision: person.revision });
@@ -220,11 +233,11 @@ export function CatalogPeopleEditor({ person, onSaved }: {
       {showMerges && mergesQuery.error && <p role="alert">{mergesQuery.error.message}</p>}
       {showMerges && merges.map(item => <div key={item.id}>
       <span>{mergeNames?.[item.target_id] ?? "人物档案"} · {item.undone ? "已撤销" : "已合并"}</span>
-      {!item.undone && <button disabled={busy} onClick={() => void run(async () => {
+      {!item.undone && <button type="button" className="ghost" disabled={busy} onClick={() => void run(async () => {
         await catalogRequest("people-merges/" + item.id + "/undo", "POST");
       })}>撤销合并</button>}
     </div>)}</details>
-    {editing && <div className="genre-sheet-backdrop"><form className="genre-sheet" role="dialog" aria-modal="true" aria-label="编辑演员资料"
+    {editing && <div className="genre-sheet-backdrop" onClick={event => { if (event.target === event.currentTarget && !busy) setEditing(null); }}><form className="genre-sheet" role="dialog" aria-modal="true" aria-label="编辑演员资料"
       onSubmit={event => { event.preventDefault(); void run(async () => {
         await catalogRequest(editing.id ? "people/" + editing.id : "people", editing.id ? "PUT" : "POST", {
           name: editing.name, aliases: split(aliasesText), biography: editing.biography,

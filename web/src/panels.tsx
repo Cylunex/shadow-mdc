@@ -2,6 +2,7 @@ import { CoverImage } from "./components/CoverImage";
 import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import { api, appUrl } from "./api";
+import { copyToClipboard } from "./lib/clipboard";
 import { hideBrokenImage, mediaUrl } from "./lib/mediaUrl";
 import { XHandleLink } from "./components/XHandleLink";
 import type { NonJavActorEditPayload, OrganizePayload } from "./api";
@@ -361,10 +362,7 @@ function JavActors({ actors, prefs, onActorTags, busy, onOpenWork, onOpenActor }
         onOpenWork={onOpenWork}
         onOpenAll={() => onOpenActor(javActorRef(actor))}
         onCopyCode={(code) => {
-          void navigator.clipboard.writeText(code).then(
-            () => undefined,
-            () => undefined
-          );
+          void copyToClipboard(code);
         }}
       />
     </article>
@@ -590,7 +588,7 @@ function NonJavActorsManager(props: {
                   onOpenWork={props.onOpenWork}
                   onOpenAll={() => props.onOpenActor(nonJavActorRef(actor))}
                   onCopyCode={(code) => {
-                    void navigator.clipboard.writeText(code).catch(() => undefined);
+                    void copyToClipboard(code);
                   }}
                 />
               </>

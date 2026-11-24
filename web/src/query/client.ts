@@ -47,6 +47,8 @@ async function invalidateGroups(groups: ReadonlySet<string>): Promise<void> {
   void queryClient.invalidateQueries(filters);
 }
 export const invalidateLibrary = (): Promise<void> => invalidateGroups(libraryGroups);
+export const invalidateCatalogEntity = (): Promise<void> =>
+  invalidateGroups(new Set(["detail", "related", "actor-works", "actors", "non-jav-actors", "categories", "person-cards"]));
 
 /** Successful API mutations share the same invalidation path as background tasks. */
 export async function invalidateMutation(path: string): Promise<void> {
@@ -71,6 +73,10 @@ export async function invalidateMutation(path: string): Promise<void> {
     await invalidateGroups(new Set(["offline", "offline-list", "pipeline"]));
     return;
   }
+  if (/^\/api\/works\/[^/]+\/magnets(\/[^/]+)?$/.test(path)) {
+    await invalidateGroups(new Set(["detail"]));
+    return;
+  }
   await invalidateLibrary();
   void queryClient.invalidateQueries({ queryKey: queryKeys.libraries });
   void queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
@@ -79,7 +85,9 @@ export async function invalidateMutation(path: string): Promise<void> {
 // Time-based GC alone can retain many distinct details during fast browsing.
 queryClient.getQueryCache().subscribe((event) => {
   if (event.type !== "updated") return;
-  const inactive = queryClient.getQueryCache().getAll()
+  const all = queryClient.getQueryCache().getAll();
+  if (all.length <= 96) return;
+  const inactive = all
     .filter((query) => query.getObserversCount() === 0 && query.state.fetchStatus === "idle")
     .sort((a, b) => a.state.dataUpdatedAt - b.state.dataUpdatedAt);
   for (const query of inactive.slice(0, Math.max(0, inactive.length - 96))) {

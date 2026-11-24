@@ -146,7 +146,6 @@ def studio_for_code(code: str) -> str | None:
         "MIRD": "MOODYZ",
         "MIGD": "MOODYZ",
         "IPTD": "IdeaPocket",
-        "IPZ": "IdeaPocket",
         "PGD": "Premium",
         "PJD": "Premium",
         "STAR": "SOD Create",
@@ -158,7 +157,6 @@ def studio_for_code(code: str) -> str | None:
         "PPSD": "OPPAI",
         "EBOD": "E-BODY",
         "TYOD": "乱丸",
-        "JUFD": "Fitch",
     }
     return mapping.get(prefix)
 

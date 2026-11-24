@@ -1,6 +1,7 @@
 import { CoverImage } from "./CoverImage";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, appUrl } from "../api";
+import { copyToClipboard } from "../lib/clipboard";
 import type {
   DiscoverItem,
   JavRankingList,
@@ -57,7 +58,10 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
   const [jrList, setJrList] = useState<JavRankingList | null>(null);
   const [jrSeeding, setJrSeeding] = useState(false);
   const [jrLoaded, setJrLoaded] = useState(false);
+  const requestRef = useRef<AbortController | null>(null);
   const blocked = loading || busy === "discover" || jrSeeding;
+
+  useEffect(() => () => requestRef.current?.abort(), []);
 
   const jrGroups = useMemo(() => {
     const curatedVideos = jrSections.filter((item) => item.kind === "curated-videos");
@@ -70,26 +74,35 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
 
   const latestYearSlug = jrGroups.top250[0]?.slug ?? null;
 
-  async function withLoading(action: () => Promise<void>) {
+  async function withLoading(action: (signal: AbortSignal) => Promise<void>) {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
     try {
-      await action();
+      await action(controller.signal);
     } catch (error) {
-      report(error instanceof Error ? error.message : String(error));
+      if (!controller.signal.aborted) {
+        report(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      setLoading(false);
+      if (requestRef.current === controller) {
+        setLoading(false);
+      }
     }
   }
 
-  async function loadBrowse(nextList = list, nextPage = page) {
-    const result = await api.discoverBrowse({ provider: "javdb", list: nextList, page: nextPage });
+  async function loadBrowse(nextList = list, nextPage = page, signal?: AbortSignal) {
+    const result = await api.discoverBrowse({ provider: "javdb", list: nextList, page: nextPage }, signal);
+    if (signal?.aborted) return;
     setItems(result.items);
     setMulti(null);
     report(`发现浏览 ${result.items.length} 条（不写入作品库）`);
   }
 
-  async function loadJavRankingSections(forceRefresh = false, preferredSlug?: string) {
-    const result = await api.javrankingSections(forceRefresh);
+  async function loadJavRankingSections(forceRefresh = false, preferredSlug?: string, signal?: AbortSignal) {
+    const result = await api.javrankingSections(forceRefresh, signal);
+    if (signal?.aborted) return;
     setJrSections(result.sections);
     setJrLoaded(true);
     const top250 = result.sections
@@ -105,7 +118,8 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
       result.sections[0]?.slug;
     if (preferred) {
       setJrSlug(preferred);
-      const detail = await api.javrankingList(preferred, forceRefresh);
+      const detail = await api.javrankingList(preferred, forceRefresh, signal);
+      if (signal?.aborted) return;
       setJrList(detail);
       setJrSections((current) => current.map((item) => item.slug === detail.section.slug ? detail.section : item));
       report(`榜单分区 ${result.sections.length} · 当前 ${detail.items.length} 条（只读）`);
@@ -115,32 +129,34 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
     }
   }
 
-  async function loadJavRankingList(slug: string, forceRefresh = false) {
+  async function loadJavRankingList(slug: string, forceRefresh = false, signal?: AbortSignal) {
     setJrSlug(slug);
-    const detail = await api.javrankingList(slug, forceRefresh);
+    const detail = await api.javrankingList(slug, forceRefresh, signal);
+    if (signal?.aborted) return;
     setJrList(detail);
     setJrSections((current) => current.map((item) => item.slug === detail.section.slug ? detail.section : item));
     report(`「${detail.section.title}」${detail.items.length} 条（只读）`);
   }
 
   useEffect(() => {
-    void withLoading(() => loadJavRankingSections(false, "most-awarded-videos"));
+    void withLoading((signal) => loadJavRankingSections(false, "most-awarded-videos", signal));
     // Mount: default open 神作.
   }, []);
 
-  async function ensureJrThen(action: () => Promise<void>) {
+  async function ensureJrThen(signal: AbortSignal, action: () => Promise<void>) {
     if (!jrLoaded) {
-      await loadJavRankingSections(false);
+      await loadJavRankingSections(false, undefined, signal);
     }
-    await action();
+    if (!signal.aborted) await action();
   }
 
   async function loadSearch(event: FormEvent) {
     event.preventDefault();
     if (!query.trim()) return;
-    await withLoading(async () => {
+    await withLoading(async (signal) => {
       setTab("browse");
-      const result = await api.discoverMultiSearch(query.trim(), true);
+      const result = await api.discoverMultiSearch(query.trim(), true, signal);
+      if (signal.aborted) return;
       setMulti(result);
       setItems([]);
       setSelectedMagnets({});
@@ -194,12 +210,8 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
   }
 
   async function copyText(value: string, label: string) {
-    try {
-      await navigator.clipboard.writeText(value);
-      report(`已复制${label}`);
-    } catch {
-      report(`复制${label}失败`);
-    }
+    const ok = await copyToClipboard(value);
+    report(ok ? `已复制${label}` : `复制${label}失败`);
   }
 
   function toggleMagnet(magnet: MagnetLink) {
@@ -256,13 +268,13 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
           disabled={blocked}
           onClick={() => {
             setTab("awards");
-            void withLoading(() =>
-              ensureJrThen(async () => {
+            void withLoading((signal) =>
+              ensureJrThen(signal, async () => {
                 const slug =
                   jrGroups.curatedVideos[0]?.slug ||
                   jrSections.find((s) => s.slug === "most-awarded-videos")?.slug ||
                   "most-awarded-videos";
-                await loadJavRankingList(slug);
+                await loadJavRankingList(slug, false, signal);
               })
             );
           }}
@@ -276,13 +288,13 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
           disabled={blocked}
           onClick={() => {
             setTab("awards");
-            void withLoading(() =>
-              ensureJrThen(async () => {
+            void withLoading((signal) =>
+              ensureJrThen(signal, async () => {
                 const slug =
                   jrGroups.curatedActors[0]?.slug ||
                   jrSections.find((s) => s.slug === "most-awarded-actors")?.slug ||
                   "most-awarded-actors";
-                await loadJavRankingList(slug);
+                await loadJavRankingList(slug, false, signal);
               })
             );
           }}
@@ -296,10 +308,10 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
           disabled={blocked}
           onClick={() => {
             setTab("yearly");
-            void withLoading(() =>
-              ensureJrThen(async () => {
+            void withLoading((signal) =>
+              ensureJrThen(signal, async () => {
                 const slug = latestYearSlug || jrGroups.top250[0]?.slug;
-                if (slug) await loadJavRankingList(slug);
+                if (slug) await loadJavRankingList(slug, false, signal);
               })
             );
           }}
@@ -313,7 +325,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
           disabled={blocked}
           onClick={() => {
             setTab("browse");
-            void withLoading(() => loadBrowse(list, page));
+            void withLoading((signal) => loadBrowse(list, page, signal));
           }}
         >
           发现浏览
@@ -327,7 +339,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
               type="button"
               className="secondary"
               disabled={blocked}
-              onClick={() => void withLoading(() => loadJavRankingSections(true, jrSlug))}
+              onClick={() => void withLoading((signal) => loadJavRankingSections(true, jrSlug, signal))}
             >
               刷新榜单缓存
             </button>
@@ -358,7 +370,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
                       type="button"
                       className={jrSlug === section.slug ? "active" : "ghost"}
                       disabled={blocked}
-                      onClick={() => void withLoading(() => loadJavRankingList(section.slug))}
+                      onClick={() => void withLoading((signal) => loadJavRankingList(section.slug, false, signal))}
                     >
                       {section.title} · {section.item_count}
                     </button>
@@ -374,7 +386,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
                       type="button"
                       className={jrSlug === section.slug ? "active" : "ghost"}
                       disabled={blocked}
-                      onClick={() => void withLoading(() => loadJavRankingList(section.slug))}
+                      onClick={() => void withLoading((signal) => loadJavRankingList(section.slug, false, signal))}
                     >
                       {section.title} · {section.item_count}
                     </button>
@@ -400,7 +412,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
                     className={jrSlug === section.slug ? "active" : "ghost"}
                     disabled={blocked || (section.item_count ?? 0) === 0}
                     title={section.title}
-                    onClick={() => void withLoading(() => loadJavRankingList(section.slug))}
+                    onClick={() => void withLoading((signal) => loadJavRankingList(section.slug, false, signal))}
                   >
                     {section.year ?? section.title}
                     <span className="chip-count">{section.item_count || "—"}</span>
@@ -528,9 +540,9 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
               className="danger-solid"
               disabled={blocked}
               onClick={() => {
-                void withLoading(async () => {
-                  await loadBrowse(list, page);
-                  report("榜单已刷新");
+                void withLoading(async (signal) => {
+                  await loadBrowse(list, page, signal);
+                  if (!signal.aborted) report("榜单已刷新");
                 });
               }}
             >
@@ -545,7 +557,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
                 onClick={() => {
                   setList(entry.value);
                   setPage(1);
-                  void withLoading(() => loadBrowse(entry.value, 1));
+                  void withLoading((signal) => loadBrowse(entry.value, 1, signal));
                 }}
               >
                 {entry.label}
@@ -556,7 +568,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
               className="secondary"
               disabled={blocked}
               onClick={() => {
-                void withLoading(() => loadBrowse(list, page));
+                void withLoading((signal) => loadBrowse(list, page, signal));
               }}
             >
               刷新列表
@@ -568,7 +580,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
               onClick={() => {
                 const next = Math.max(1, page - 1);
                 setPage(next);
-                void withLoading(() => loadBrowse(list, next));
+                void withLoading((signal) => loadBrowse(list, next, signal));
               }}
             >
               上一页
@@ -579,7 +591,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
               onClick={() => {
                 const next = page + 1;
                 setPage(next);
-                void withLoading(() => loadBrowse(list, next));
+                void withLoading((signal) => loadBrowse(list, next, signal));
               }}
             >
               下一页
