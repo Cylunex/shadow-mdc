@@ -51,6 +51,8 @@ from .openlist import build_openlist_d_url
 from .pan import PanSettings, RemoteVideo, SourceFingerprint
 
 SIDECAR_NAME = ".shadow-strm.json"
+_RECONCILE_MAX_MISSING = 100
+_RECONCILE_MIN_FOR_MAJORITY = 5
 _EXPORT_LOCK = RLock()
 _export_revision = 0
 _export_changes: deque[tuple[int, Path]] = deque(maxlen=4096)
@@ -163,6 +165,7 @@ class ReconcileResult:
     removed: list[Path] = field(default_factory=list)
     kept: int = 0
     unknown: int = 0
+    deferred: int = 0
     # Incremental cleanup inside managed folders: .strm not listed in the sidecar.
     orphan_strm_removed: list[Path] = field(default_factory=list)
 
@@ -936,9 +939,12 @@ async def reconcile_deleted(
     root: Path,
     exists: Callable[[str], Awaitable[bool | None]],
     *, source_scope: str | None = None,
+    source_is_current: Callable[[], bool] | None = None,
 ) -> ReconcileResult:
-    """Reconcile fully missing sources against the last successful publication."""
+    """Plan cleanup for fully missing sources, then apply it only for a normal batch."""
     result = ReconcileResult()
+    missing: list[tuple[Path, dict[str, object]]] = []
+    present = 0
     for directory in list(iter_export_dirs(root)):
         if not _is_within(directory, root):
             continue
@@ -952,12 +958,28 @@ async def reconcile_deleted(
             result.unknown += 1
             continue
         states = [await exists(entry.file_id) for entry in entries]
+        if any(state is None for state in states) or payload.get("pending"):
+            result.unknown += 1
+        elif payload.get("version") != 2:
+            result.kept += 1
+        elif any(states):
+            present += 1
+            result.kept += 1
+        else:
+            missing.append((directory, payload))
+
+    count = len(missing)
+    if count > _RECONCILE_MAX_MISSING or (count >= _RECONCILE_MIN_FOR_MAJORITY and count > present):
+        result.deferred = count
+        return result
+    if source_is_current is not None and not source_is_current():
+        result.unknown += count
+        return result
+
+    for directory, payload in missing:
         with _EXPORT_LOCK:
-            if any(state is None for state in states) or payload != _sidecar(directory) or payload.get("pending"):
+            if not _is_within(directory, root) or payload != _sidecar(directory):
                 result.unknown += 1
-                continue
-            if any(states):
-                result.kept += 1
                 continue
             deleted = cleanup_generated_export_files(directory, str(payload.get("code", "")))
             if not deleted:

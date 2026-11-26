@@ -1986,6 +1986,9 @@ async def subtitle_backfill_stop(request: Request) -> BackfillStatus:
     return await runtime(request).subtitle_backfill.stop()
 
 
+_organize_undo_lock = Lock()
+
+
 def _journal_out(record: OrganizeJournalRecord) -> OrganizeJournalOut:
     entries = [JournalEntry.model_validate(item) for item in record.entries or []]
     return OrganizeJournalOut(
@@ -1997,7 +2000,7 @@ def _journal_out(record: OrganizeJournalRecord) -> OrganizeJournalOut:
         undone_at=record.undone_at,
         entry_count=len(entries),
         entries=entries,
-        undo_summary=dict(record.undo_summary or {}),
+        undo_summary={key: value for key, value in (record.undo_summary or {}).items() if key != "report"},
     )
 
 
@@ -2016,32 +2019,43 @@ def get_organize_journal(task_id: str, repo: Repo) -> OrganizeJournalOut:
 
 @app.post("/api/organize/runs/{task_id}/undo", response_model=UndoReport)
 def undo_organize_run(
-    task_id: str, request: Request, repo: Repo, payload: OrganizeUndoRequest | None = None,
+    task_id: str, request: Request, payload: OrganizeUndoRequest | None = None,
 ) -> UndoReport:
-    """Reverse an organize run. ``dry_run`` (default true) only previews the steps."""
+    """Preview or reverse an organize run, replaying the saved result on retry."""
 
     options = payload or OrganizeUndoRequest()
-    record = repo.get_organize_journal_for_task(task_id) or repo.get_organize_journal(task_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="no undo journal for this organize run")
-    if record.undone_at is not None and not options.dry_run:
-        raise HTTPException(status_code=409, detail="organize run was already undone")
-    entries = [JournalEntry.model_validate(item) for item in record.entries or []]
-    report = undo_entries(entries, dry_run=options.dry_run)
-    if not options.dry_run:
+    state = runtime(request)
+    # Keep the lock through commit so concurrent retries can read the first result.
+    with _organize_undo_lock, state.database.session() as session:
+        repo = Repository(session)
+        record = repo.get_organize_journal_for_task(task_id) or repo.get_organize_journal(task_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="no undo journal for this organize run")
+        if record.undone_at is not None and not options.dry_run:
+            summary = record.undo_summary or {}
+            saved = summary.get("report")
+            if saved is not None:
+                return UndoReport.model_validate(saved)
+            # Older runs saved only the three counters.
+            return UndoReport.model_validate({"dry_run": False, **summary})
+        entries = [JournalEntry.model_validate(item) for item in record.entries or []]
+        report = undo_entries(entries, dry_run=options.dry_run)
+        if options.dry_run:
+            return report
         for asset_id, original in report.restored_assets.items():
             asset = repo.get_asset(asset_id)
             if asset is not None and original:
                 repo.update_asset_path(asset, original)
         record.undone_at = utc_now()
-        record.undo_summary = {"done": report.done, "skipped": report.skipped, "errors": report.errors}
+        counts = {"done": report.done, "skipped": report.skipped, "errors": report.errors}
+        record.undo_summary = {**counts, "report": report.model_dump(mode="json")}
         undo_task = repo.create_task_run(kind="organize:undo", scope=record.task_id)
         repo.finish_task_run(
             undo_task,
             status="succeeded" if report.errors == 0 and report.skipped == 0 else "partial",
-            summary={"journal_id": record.id, **record.undo_summary},
+            summary={"journal_id": record.id, **counts},
         )
-        _invalidate_library_caches(runtime(request).response_cache)
+    _invalidate_library_caches(state.response_cache)
     return report
 
 

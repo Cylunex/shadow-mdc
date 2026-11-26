@@ -18,7 +18,7 @@ import pytest
 
 from shadow_mdc.actress_aliases import ActressNameMap, actor_identity_forms, merge_actor_names
 from shadow_mdc.db.models import WorkMagnet
-from shadow_mdc.db.repository import Database, Repository
+from shadow_mdc.db.repository import Database, Repository, _merge_reviews
 from shadow_mdc.dmm_ids import content_id_candidates, known_content_id_prefixes
 from shadow_mdc.domain import IdentityHints
 from shadow_mdc.enums import QueryMode
@@ -32,6 +32,7 @@ from shadow_mdc.providers.javdb_api import (
     SIGNATURE_PREFIX,
     SIGNATURE_SUFFIX,
     JavDBApiAuthRequired,
+    JavDBApiError,
     JavDBAppApi,
     female_actor_names,
     parse_magnets,
@@ -40,8 +41,8 @@ from shadow_mdc.providers.javdb_api import (
     parse_reviews,
     sign,
 )
-from shadow_mdc.db.repository import _merge_reviews
 from shadow_mdc.providers.mgstage import MgstageProvider, mgstage_product_candidates
+from shadow_mdc.providers.sukebei import SukebeiClient
 from shadow_mdc.services.daily_chart_seed import collect_browse_pages
 from shadow_mdc.services.discover import DiscoverService, javdb_movie_id_from_url, parse_javdb_list
 from shadow_mdc.services.pan import FILE_GONE_CODES, PanApiError, _check_api_ok, api_error_code
@@ -335,6 +336,45 @@ def _discover_with(api_handler, html_handler) -> tuple[DiscoverService, list[htt
     api = JavDBAppApi(api_client, hosts=("https://api.test",))
     javdb = JavDBProvider(html_client, "https://javdb.test")
     return DiscoverService(ProviderRegistry([]), javdb, None, javdb_api=api), [api_client, html_client]
+
+
+async def test_magnet_cooldowns_keep_javdb_web_app_and_sukebei_independent() -> None:
+    app_status = 200
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        calls.append(host)
+        if host == "javdb.test":
+            return httpx.Response(429, headers={"Retry-After": "60"})
+        if host == "app.test":
+            if app_status == 429:
+                return httpx.Response(429, headers={"Retry-After": "30"})
+            return httpx.Response(200, json=_json_fixture("javdb_api_magnets.json"))
+        return httpx.Response(200, text="<html></html>")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        web = JavDBProvider(client, "https://javdb.test")
+        api = JavDBAppApi(client, hosts=("https://app.test", "https://app-backup.test"))
+        sukebei = SukebeiClient(client, "https://sukebei.test")
+        discover = DiscoverService(ProviderRegistry([]), web, javdb_api=api, sukebei=sukebei)
+        for movie_id in ("one", "two"):
+            assert await discover.list_magnets(provider="javdb", external_id=movie_id)
+        assert calls == ["javdb.test", "app.test", "app.test"]
+
+        app_status = 429
+        with pytest.raises(JavDBApiError, match="429"):
+            await discover.list_magnets(provider="javdb", external_id="three")
+        with pytest.raises(ProviderError, match="javdb_app: cooldown"):
+            await discover.list_magnets(provider="javdb", external_id="four")
+        assert calls.count("app.test") == 3
+        assert "app-backup.test" not in calls
+
+        assert await discover.list_magnets(provider="sukebei", external_id="SONE-118") == ()
+        request_count = calls.count("sukebei.test")
+        assert request_count > 0
+        assert await discover.list_magnets(provider="sukebei", external_id="SONE-119") == ()
+        assert calls.count("sukebei.test") > request_count
 
 
 def test_browse_rankings_prefers_app_api(tmp_path: Path) -> None:

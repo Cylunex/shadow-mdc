@@ -1789,6 +1789,9 @@ class PanService:
         """Serialize local tracking for a download identity across catalog works."""
         return self._submission_lock(f"local:{digest}")
 
+    def offline_work_enqueue_lock(self, work_id: str) -> asyncio.Lock:
+        return self._submission_lock(f"work:{work_id}")
+
     async def submit_offline_url(
         self,
         url: str,

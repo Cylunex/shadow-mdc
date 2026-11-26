@@ -302,6 +302,13 @@ async def _process_one(
             stats.record(work_id, None, "error", "work not found")
             return False
         primary_code = work.primary_code
+        existing = repo.find_retained_pan_offline_task(work_id) if directory_id is None else None
+        if existing is not None:
+            stats.skipped_existing += 1
+            stats.record(
+                work_id, primary_code, "skipped", "offline task already running/done", task_id=existing.id
+            )
+            return False
         magnets = list(repo.list_work_magnets(work_id))
         lookup = _javdb_lookup(repo, work_id) if not magnets else None
 
@@ -362,22 +369,14 @@ async def _process_one(
             stats.hunting += 1
             stats.record(work_id, primary_code, "hunting", "no untried suitable magnet")
             return touched
-        existing = repo.find_pan_offline_by_hash(work_id, best.info_hash)
-        if directory_id is None and existing is not None and existing.status in {
-            "running", "done", "completed",
-        }:
-            stats.skipped_existing += 1
-            stats.record(
-                work_id, primary_code, "skipped", "offline task already running/done", task_id=existing.id
-            )
-            return touched
 
     touched = True
     with database.session() as session:
         repo = Repository(session)
         try:
             result = await enqueue_work_offline(
-                repo, pan, work_id, magnet_id=best.id, directory_id=directory_id
+                repo, pan, work_id, magnet_id=best.id, directory_id=directory_id,
+                retain_work_task=directory_id is None,
             )
         except OfflineEnqueueError as exc:
             stats.errors.append(f"{work_id}: {exc.message}")
@@ -404,7 +403,7 @@ async def _process_one(
             "seed auto-offline enqueued work=%s code=%s hash=%s created=%s",
             work_id,
             primary_code,
-            best.info_hash[:12],
+            result.task.info_hash[:12],
             result.created,
         )
     return touched

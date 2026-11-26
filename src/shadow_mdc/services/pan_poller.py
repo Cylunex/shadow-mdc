@@ -1070,7 +1070,11 @@ class PanOfflinePoller:
                     status = await exists(file_id)
                     return status if self._pan.source_fingerprint() == source else None
 
-                result = await reconcile_deleted(Path(cfg.strm_output_root), check_source, source_scope=export_source_scope(source))
+                result = await reconcile_deleted(
+                    Path(cfg.strm_output_root), check_source,
+                    source_scope=export_source_scope(source),
+                    source_is_current=lambda: self._pan.source_fingerprint() == source,
+                )
             finally:
                 self.maintenance.running = None
         if result.removed:
@@ -1085,9 +1089,14 @@ class PanOfflinePoller:
             "removed": [str(path) for path in result.removed][:50],
             "kept": result.kept,
             "unknown": result.unknown,
+            "deferred": result.deferred,
             "orphan_strm_removed": [str(path) for path in result.orphan_strm_removed][:50],
             "orphan_strm_removed_count": len(result.orphan_strm_removed),
         }
+        if result.deferred:
+            logger.warning(
+                "STRM reconcile deferred cleanup of %d possibly missing export folders", result.deferred,
+            )
         self._save_state()
         return result
 

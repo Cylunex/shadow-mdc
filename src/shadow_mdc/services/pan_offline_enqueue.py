@@ -87,6 +87,7 @@ async def enqueue_work_offline(
     url: str | None = None,
     directory_id: str | None = None,
     auto_select: bool = False,
+    retain_work_task: bool = False,
 ) -> OfflineEnqueueResult:
     """Submit one magnet/url to 115 via pan reconcile and persist a local task row."""
 
@@ -139,9 +140,17 @@ async def enqueue_work_offline(
     )
     work_code = work.primary_code
     repo._session.commit()
-    async with pan.offline_enqueue_lock(info_hash_hint or resolved_url):
+    async with (
+        pan.offline_work_enqueue_lock(work_id),
+        pan.offline_enqueue_lock(info_hash_hint or resolved_url),
+    ):
         if pan.backend() != backend:
             raise OfflineEnqueueError("离线后端已切换。请重新选择目录", status_code=409)
+        if retain_work_task and (retained := repo.find_retained_pan_offline_task(work_id)) is not None:
+            return OfflineEnqueueResult(
+                task=retained, created=False, reused_running=retained.status == "running",
+                reused_completed=retained.status != "running",
+            )
         if info_hash_hint:
             existing = repo.find_pan_offline_by_hash(work_id, info_hash_hint)
             matching = existing

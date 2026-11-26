@@ -214,7 +214,8 @@ async def test_watch_run_once_enqueues_offline_for_want_work(
         monkeypatch.setattr(pan, "status", lambda: {"connected": True, "configured": True})
         monkeypatch.setattr(pan, "submit_offline_url", AsyncMock(side_effect=fake_submit))
 
-        status = await app.state.runtime.subscription_watch_poller.service.run_once()
+        service = app.state.runtime.subscription_watch_poller.service
+        status = await service.run_once()
         assert status.enabled is True
         assert status.last_targets >= 1
         assert status.last_submitted >= 1
@@ -225,6 +226,30 @@ async def test_watch_run_once_enqueues_offline_for_want_work(
             assert len(tasks) >= 1
             assert tasks[0].info_hash == "C" * 40
             assert tasks[0].directory_id == "dir-1"
+            # A higher-ranked candidate appears after the first download starts.
+            saved_work = repo.get_work(work_id)
+            assert saved_work is not None
+            repo.save_work_magnets(
+                saved_work,
+                [{
+                    "uri": "magnet:?xt=urn:btih:" + "D" * 40,
+                    "info_hash": "D" * 40,
+                    "name": "AUTO-001",
+                    "has_subtitle": True,
+                    "hd": True,
+                    "size_bytes": 2_000_000_000,
+                }],
+                provider="javdb",
+            )
+
+        service._state.save(status.model_copy(update={"checked_at": {work_id: "2026-01-01T00:00:00+00:00"}}))
+        again = await service.run_once()
+        assert again.last_queued == 1
+        assert again.last_submitted == 0
+        pan.submit_offline_url.assert_awaited_once()
+        with app.state.runtime.database.session() as session:
+            tasks = Repository(session).list_pan_offline_tasks(work_id=work_id)
+            assert [task.info_hash for task in tasks] == ["C" * 40]
 
         settings = client.get("/api/pan/settings")
         assert settings.status_code == 200

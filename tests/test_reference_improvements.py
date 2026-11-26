@@ -236,10 +236,10 @@ async def test_retry_after_stops_immediate_retries_and_transport_fallback(
 
 def test_retry_after_accepts_http_dates_and_ignores_invalid_values() -> None:
     deadline = format_datetime(datetime.now(UTC) + timedelta(seconds=60), usegmt=True)
-    delay = providers_module._retry_after_seconds(deadline)
+    delay = providers_module.retry_after_seconds(deadline)
     assert delay is not None and 58 < delay <= 60
     for invalid in ("NaN", "inf", "not a date"):
-        assert providers_module._retry_after_seconds(invalid) is None
+        assert providers_module.retry_after_seconds(invalid) is None
 
 
 @pytest.mark.asyncio

@@ -1548,6 +1548,18 @@ class Repository:
             )
         )
 
+    def find_retained_pan_offline_task(self, work_id: str) -> PanOfflineTask | None:
+        """Find the work's in-progress or completed download for automatic selection."""
+        return self._session.scalar(
+            select(PanOfflineTask)
+            .where(
+                PanOfflineTask.work_id == work_id,
+                PanOfflineTask.status.in_(("running", "done", "completed")),
+            )
+            .order_by((PanOfflineTask.status == "running").desc(), PanOfflineTask.created_at.desc())
+            .limit(1)
+        )
+
     def openlist_export_candidates(self, path: str) -> list[str]:
         """STRM locations for tasks whose confirmed remote result could contain a file."""
 

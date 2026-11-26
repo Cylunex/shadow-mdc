@@ -6,13 +6,17 @@ local Work/asset state, and only create Work when the user explicitly seeds.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import time
+from collections.abc import Awaitable, Callable
 from datetime import date
 from pathlib import Path
 from typing import Literal, NamedTuple
 from urllib.parse import quote, urlparse
 
+import httpx
 from pydantic import BaseModel, ConfigDict
 from selectolax.parser import HTMLParser
 
@@ -22,11 +26,11 @@ from ..domain import IdentityHints, ProviderRecord
 from ..enums import ContentFamily, LibraryPresence, MediaCategory, QueryMode
 from ..identity import extract_code
 from ..media.magnets import MagnetLink
-from ..providers.base import ProviderRegistry
+from ..providers.base import ProviderCooldown, ProviderError, ProviderRegistry
 from ..providers.fanza import FanzaProvider
 from ..providers.html import absolute, parse_date
 from ..providers.javdb import JavDBProvider
-from ..providers.javdb_api import JavDBApiMovie, JavDBAppApi, RankingPeriod, RankingZone
+from ..providers.javdb_api import JavDBApiError, JavDBApiMovie, JavDBAppApi, RankingPeriod, RankingZone
 from ..providers.sukebei import SukebeiClient
 from .r18_dump import R18DumpStore
 
@@ -214,6 +218,8 @@ class DiscoverService:
         self._javdb = javdb
         self._fanza = fanza
         self._javdb_api = javdb_api
+        self._magnet_cooldown = ProviderCooldown()
+        self._magnet_locks = {source: asyncio.Lock() for source in ("javdb", "javdb_app", "sukebei")}
         self._r18_dump_path = Path(r18_dump_path) if r18_dump_path is not None else None
         self._r18_store: R18DumpStore | None = None
 
@@ -472,20 +478,24 @@ class DiscoverService:
     def sukebei_available(self) -> bool:
         return self._sukebei is not None
 
-    async def list_magnets(self, *, provider: str, external_id: str, source_url: str | None = None) -> tuple[MagnetLink, ...]:
+    async def list_magnets(
+        self, *, provider: str, external_id: str, source_url: str | None = None,
+    ) -> tuple[MagnetLink, ...]:
         if provider == "sukebei":
             if self._sukebei is None:
                 raise ValueError("magnets are not available for provider: sukebei")
             # external_id is the work code (e.g. SSIS-001).
-            return await self._sukebei.magnets(external_id)
+            return await self._call_magnet_source("sukebei", self._sukebei.magnets, external_id)
         if provider != "javdb" or (self._javdb is None and self._javdb_api is None):
             raise ValueError(f"magnets are not available for provider: {provider}")
         html_error: Exception | None = None
         html_magnets: tuple[MagnetLink, ...] = ()
         if self._javdb is not None:
             try:
-                html_magnets = await self._javdb.magnets(source_url or external_id)
-            except Exception as exc:  # noqa: BLE001 - app API fallback below
+                html_magnets = await self._call_magnet_source(
+                    "javdb", self._javdb.magnets, source_url or external_id,
+                )
+            except Exception as exc:
                 html_error = exc
         if html_magnets or self._javdb_api is None:
             if html_error is not None:
@@ -502,11 +512,42 @@ class DiscoverService:
             return ()
         try:
             # App API carries explicit cnsub/hd flags and file counts.
-            return await self._javdb_api.magnets(movie_id)
+            return await self._call_magnet_source("javdb_app", self._javdb_api.magnets, movie_id)
         except Exception:
-            if html_error is not None:
+            if html_error is not None and not (
+                isinstance(html_error, ProviderError) and html_error.reason == "cooldown"
+            ):
                 raise html_error from None
             raise
+
+    async def _call_magnet_source(
+        self, source: str, fetch: Callable[[str], Awaitable[tuple[MagnetLink, ...]]], query: str,
+    ) -> tuple[MagnetLink, ...]:
+        async with self._magnet_locks[source]:
+            remaining = self._magnet_cooldown.remaining(source, time.monotonic())
+            if remaining is not None:
+                raise ProviderError(source, "cooldown", f"retry_in={remaining}s")
+            try:
+                magnets = await fetch(query)
+            except ProviderError as exc:
+                reason = exc.reason
+                if (
+                    reason == "http" and isinstance(exc.__cause__, httpx.HTTPStatusError)
+                    and exc.__cause__.response.status_code >= 500
+                ):
+                    reason = "network"
+                self._magnet_cooldown.record_failure(source, reason, retry_after=exc.retry_after_seconds)
+                raise
+            except JavDBApiError as exc:
+                if exc.status == 429 or (exc.status == 503 and exc.retry_after is not None):
+                    self._magnet_cooldown.record_failure(source, "rate_limited", retry_after=exc.retry_after)
+                elif exc.status == 403:
+                    self._magnet_cooldown.record_failure(source, "blocked", retry_after=exc.retry_after)
+                elif exc.transport_failure or (exc.status is not None and exc.status >= 500):
+                    self._magnet_cooldown.record_failure(source, "network")
+                raise
+            self._magnet_cooldown.clear(source)
+            return magnets
 
     async def _fetch_record(
         self,

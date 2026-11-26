@@ -833,6 +833,8 @@ export function SettingsView({ libraries, busy, run, report }: Props) {
                   {" · "}孤儿 {pipeline.stages.strm.orphan_strm_files}
                   {pipeline.stages.strm.maintenance_running ? ` · 维护中 ${pipeline.stages.strm.maintenance_running}` : ""}
                   {pipeline.stages.strm.config_errors.length > 0 ? ` · 配置问题 ${pipeline.stages.strm.config_errors.length}` : ""}
+                  {!!pipeline.stages.strm.last_reconcile?.deferred &&
+                    ` · 删除熔断，已保留 ${pipeline.stages.strm.last_reconcile.deferred} 个待复核目录`}
                 </small>
               </div>
               <div className="magnet-row">

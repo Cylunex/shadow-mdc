@@ -29,6 +29,7 @@ from ..domain import Artwork, ProviderRecord, ReviewHighlight
 from ..enums import ContentFamily
 from ..identity import extract_code
 from ..media.magnets import MagnetLink, magnet_quality_flags
+from .base import retry_after_seconds
 
 # Precomputed in the app from access key "30820" + CONST_PREFIX/CONST_SUFFIX
 # (JavDB.apk 1.9.28). Only the timestamp changes per request.
@@ -101,10 +102,15 @@ def zone_code(zone: str) -> int:
 class JavDBApiError(RuntimeError):
     """The app API answered ``success: 0`` or a non-JSON / HTTP error body."""
 
-    def __init__(self, message: str, *, action: str | None = None, status: int | None = None) -> None:
+    def __init__(
+        self, message: str, *, action: str | None = None, status: int | None = None,
+        transport_failure: bool = False, retry_after: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.action = action
         self.status = status
+        self.transport_failure = transport_failure
+        self.retry_after = retry_after
 
 
 class JavDBApiAuthRequired(JavDBApiError):
@@ -433,7 +439,9 @@ class JavDBAppApi:
             headers["authorization"] = f"Bearer {self._token}"
         return headers
 
-    async def get_json(self, path: str, params: Mapping[str, str] | None = None) -> dict[str, Any]:
+    async def get_json(
+        self, path: str, params: Mapping[str, str] | None = None, *, respect_rate_limit: bool = False,
+    ) -> dict[str, Any]:
         """Signed GET; returns the envelope ``data`` object. Tries each host on transport errors."""
 
         query = dict(self._public)
@@ -447,10 +455,21 @@ class JavDBAppApi:
                     f"{host}{path}", params=query, headers=self._headers(), follow_redirects=False,
                 )
             except httpx.HTTPError as exc:
-                last_error = JavDBApiError(f"{host}: {type(exc).__name__}: {exc}".strip())
+                last_error = JavDBApiError(
+                    f"{host}: {type(exc).__name__}: {exc}".strip(),
+                    transport_failure=not isinstance(exc, httpx.PoolTimeout),
+                )
                 continue
             if response.status_code >= 500 or response.status_code in {403, 429}:
-                last_error = JavDBApiError(f"{host}: HTTP {response.status_code}", status=response.status_code)
+                retry_after = retry_after_seconds(response.headers.get("Retry-After"))
+                last_error = JavDBApiError(
+                    f"{host}: HTTP {response.status_code}", status=response.status_code,
+                    retry_after=retry_after,
+                )
+                if respect_rate_limit and (
+                    response.status_code == 429 or (response.status_code == 503 and retry_after is not None)
+                ):
+                    raise last_error
                 continue
             if response.is_redirect:
                 last_error = JavDBApiError(f"{host}: unexpected redirect", status=response.status_code)
@@ -561,7 +580,7 @@ class JavDBAppApi:
         return record.model_copy(update={"reviews": highlights})
 
     async def magnets(self, movie_id: str) -> tuple[MagnetLink, ...]:
-        data = await self.get_json(f"/api/v1/movies/{movie_id.strip()}/magnets")
+        data = await self.get_json(f"/api/v1/movies/{movie_id.strip()}/magnets", respect_rate_limit=True)
         return parse_magnets(data)
 
     def movie_url(self, movie_id: str) -> str:

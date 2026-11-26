@@ -279,6 +279,26 @@ def test_reconcile_removes_only_definitively_gone(tmp_path: Path) -> None:
     assert result.unknown == 1 and result.kept == 2 and root.is_dir()
 
 
+def test_reconcile_defers_entire_missing_batch_then_checks_sources_again(tmp_path: Path) -> None:
+    settings = _relay_settings(tmp_path)
+    exports = [
+        export_work(settings=settings, code=f"ABC-{index}", videos=[_video(str(index), "a.mp4")])
+        for index in range(5)
+    ]
+    online: set[str] = set()
+
+    async def exists(file_id: str) -> bool:
+        return file_id in online
+
+    deferred = asyncio.run(reconcile_deleted(tmp_path, exists))
+    assert deferred.deferred == 5 and not deferred.removed
+    assert all(export.strm_paths[0].is_file() for export in exports)
+    online.update(("1", "2", "3", "4"))
+    clean = asyncio.run(reconcile_deleted(tmp_path, exists))
+    assert clean.deferred == 0 and clean.removed == [exports[0].directory]
+    assert all(export.strm_paths[0].is_file() for export in exports[1:])
+
+
 def test_reexport_and_reconcile_preserve_manual_files(tmp_path: Path) -> None:
     settings = _relay_settings(tmp_path)
     initial = export_work(settings=settings, code="ABC-123", videos=[_video("one", "ABC-123.mp4")])

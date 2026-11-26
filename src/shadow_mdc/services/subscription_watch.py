@@ -218,13 +218,6 @@ def _javdb_lookup(repo: Repository, work_id: str) -> tuple[str, str | None] | No
     return snap.external_id, source_url
 
 
-def _work_needs_offline(repo: Repository, work_id: str, magnet: WorkMagnet) -> bool:
-    existing = repo.find_pan_offline_by_hash(work_id, magnet.info_hash)
-    if existing is None:
-        return True
-    return existing.status not in {"running", "done", "completed"}
-
-
 class SubscriptionWatchService:
     """One tick: resolve targets, refresh magnets, optionally enqueue 115 offline."""
 
@@ -398,6 +391,9 @@ class SubscriptionWatchService:
             work = repo.get_work(work_id)
             if work is None:
                 return False
+            if repo.find_retained_pan_offline_task(work_id) is not None:
+                stats.queued += 1
+                return False
             primary_code = work.primary_code
             magnets = list(repo.list_work_magnets(work_id))
             lookup = _javdb_lookup(repo, work_id) if not magnets else None
@@ -448,9 +444,6 @@ class SubscriptionWatchService:
                 # New magnets can revive the watch; exhausted attempts cannot.
                 stats.hunting += 1
                 return touched
-            if not _work_needs_offline(repo, work_id, best):
-                stats.queued += 1
-                return touched
 
         if not pan_ready:
             stats.hunting += 1
@@ -466,7 +459,9 @@ class SubscriptionWatchService:
         with self._database.session() as session:
             repo = Repository(session)
             try:
-                result = await enqueue_work_offline(repo, self._pan, work_id, magnet_id=best.id)
+                result = await enqueue_work_offline(
+                    repo, self._pan, work_id, magnet_id=best.id, retain_work_task=True,
+                )
             except OfflineEnqueueError as exc:
                 stats.errors.append(f"{work_id}: {exc.message}")
                 logger.info(
@@ -479,12 +474,12 @@ class SubscriptionWatchService:
                 stats.hunting += 1
                 return touched
             stats.queued += 1
-            if result.created or not result.reused_running:
+            if result.action == "submitted":
                 stats.submitted += 1
             logger.info(
                 "subscription watch offline enqueued work=%s hash=%s created=%s",
                 work_id,
-                best.info_hash[:12],
+                result.task.info_hash[:12],
                 result.created,
             )
         return touched

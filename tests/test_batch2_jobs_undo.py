@@ -255,7 +255,40 @@ def test_organize_move_then_one_click_undo(tmp_path: Path, monkeypatch: pytest.M
         assert not any(path.is_file() for path in target_dir.rglob("*"))
         assert Path(client.get("/api/assets").json()[0]["path"]) == source.resolve()
         again = client.post(f"/api/organize/runs/{task['id']}/undo", json={"dry_run": False})
-        assert again.status_code == 409
+        assert again.status_code == 200 and again.json() == undone
+        runs = client.get("/api/tasks").json()
+        assert len([run for run in runs if run["kind"] == "organize:undo"]) == 1
+
+
+def test_organize_undo_replays_partial_and_legacy_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _env(tmp_path, monkeypatch, "undo.db")
+    with TestClient(app) as client:
+        with app.state.runtime.database.session() as session:
+            repo = Repository(session)
+            task = repo.create_task_run(kind="organize:move", scope="test")
+            missing = JournalEntry(action=ReverseAction.DELETE_CREATED, path=str(tmp_path / "absent"))
+            journal = repo.add_organize_journal(
+                task_id=task.id, library_id=None, mode="move", entries=[missing.model_dump(mode="json")],
+            )
+            journal_id = journal.id
+            url = f"/api/organize/runs/{journal_id}/undo"
+
+        first = client.post(url, json={"dry_run": False})
+        assert first.status_code == 200 and first.json()["skipped"] == 1
+        Path(missing.path).touch()
+        assert client.post(url, json={"dry_run": False}).json() == first.json()
+        assert Path(missing.path).is_file()
+
+        with app.state.runtime.database.session() as session:
+            record = Repository(session).get_organize_journal(journal_id)
+            assert record is not None
+            record.undo_summary = {"done": 0, "skipped": 1, "errors": 0}
+
+        legacy = client.post(url, json={"dry_run": False})
+        assert legacy.status_code == 200 and legacy.json()["skipped"] == 1
+        assert legacy.json()["steps"] == [] and Path(missing.path).is_file()
 
 
 def test_backfill_api_requires_enable_and_reports_status(

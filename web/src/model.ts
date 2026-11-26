@@ -990,7 +990,7 @@ export const panPipelineSchema = z.object({
       truncated: z.boolean().optional(),
       maintenance_running: z.string().nullable().optional(),
       last_reconcile_at: z.string().nullable().optional(),
-      last_reconcile: z.record(z.string(), z.unknown()).optional().nullable(),
+      last_reconcile: z.object({ deferred: z.number().optional() }).passthrough().optional().nullable(),
       last_rewrite_at: z.string().nullable().optional(),
       last_rematerialize_at: z.string().nullable().optional()
     }).passthrough(),

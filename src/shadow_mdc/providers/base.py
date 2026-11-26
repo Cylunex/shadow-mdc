@@ -192,7 +192,7 @@ class HttpProvider:
                 raise ProviderError(provider, reason, _http_error_detail(exc, attempt + 1)) from exc
             except httpx.HTTPStatusError as exc:
                 code = exc.response.status_code
-                retry_after = _retry_after_seconds(exc.response.headers.get("Retry-After"))
+                retry_after = retry_after_seconds(exc.response.headers.get("Retry-After"))
                 if code == 429 or (code == 503 and retry_after is not None):
                     raise ProviderError(
                         provider,
@@ -231,7 +231,7 @@ class HttpProvider:
 _HOP_HEADERS = frozenset({"host", "content-length", "accept-encoding", "connection", "user-agent", "cookie"})
 
 
-def _retry_after_seconds(value: str | None) -> float | None:
+def retry_after_seconds(value: str | None) -> float | None:
     if value is None:
         return None
     try:
@@ -265,6 +265,49 @@ def _http_error_detail(exc: httpx.HTTPError, attempts: int) -> str:
     return f"{type(exc).__name__}: {message}; attempts={attempts}"
 
 
+@dataclass
+class ProviderHealth:
+    failures: int = 0
+    retry_after: float = 0
+
+
+class ProviderCooldown:
+    """Process-local health and backoff for independent provider channels."""
+
+    def __init__(self, *, failure_threshold: int = 4, cooldown_seconds: float = 300) -> None:
+        self._failure_threshold = failure_threshold
+        self._cooldown_seconds = cooldown_seconds
+        self._health: dict[str, ProviderHealth] = {}
+
+    def health(self, provider: str) -> ProviderHealth | None:
+        return self._health.get(provider)
+
+    def remaining(self, provider: str, now: float) -> int | None:
+        health = self.health(provider)
+        if health is not None and health.retry_after > now:
+            return max(1, round(health.retry_after - now))
+        return None
+
+    def clear(self, provider: str | None = None) -> int:
+        if provider is None:
+            count = len(self._health)
+            self._health.clear()
+            return count
+        return int(self._health.pop(provider, None) is not None)
+
+    def record_failure(self, provider: str, reason: str, *, retry_after: float | None = None) -> None:
+        if reason not in {"blocked", "connect_timeout", "network", "timeout", "rate_limited"}:
+            return
+        health = self._health.setdefault(provider, ProviderHealth())
+        health.failures += 1
+        if reason in {"rate_limited", "blocked"}:
+            health.retry_after = time.monotonic() + max(
+                0.25, retry_after if retry_after is not None else self._cooldown_seconds
+            )
+        elif health.failures >= self._failure_threshold:
+            health.retry_after = time.monotonic() + self._cooldown_seconds
+
+
 class ProviderRegistry:
     def __init__(
         self,
@@ -281,14 +324,14 @@ class ProviderRegistry:
         if max_concurrent_calls < 1 or max_concurrent_per_provider < 1:
             raise ValueError("provider concurrency must be positive")
         self._providers = {provider.descriptor.id: provider for provider in providers}
-        self._failure_threshold = failure_threshold
-        self._cooldown_seconds = cooldown_seconds
+        self._cooldown = ProviderCooldown(
+            failure_threshold=failure_threshold, cooldown_seconds=cooldown_seconds,
+        )
         self._call_slots = asyncio.Semaphore(max_concurrent_calls)
         self._provider_slots = {
             key: asyncio.Semaphore(max_concurrent_per_provider) for key in self._providers
         }
         self._call_timeout_seconds = call_timeout_seconds
-        self._health: dict[str, _ProviderHealth] = {}
 
     def descriptors(self) -> tuple[ProviderDescriptor, ...]:
         return tuple(
@@ -346,13 +389,13 @@ class ProviderRegistry:
         active: list[Provider] = []
         failures: list[ProviderFailure] = []
         for provider in eligible:
-            health = self._health.get(provider.descriptor.id)
-            if health is not None and health.retry_after > now:
+            remaining = self._cooldown.remaining(provider.descriptor.id, now)
+            if remaining is not None:
                 failures.append(
                     ProviderFailure(
                         provider=provider.descriptor.id,
                         reason="cooldown",
-                        detail=f"retry_in={max(1, round(health.retry_after - now))}s",
+                        detail=f"retry_in={remaining}s",
                     )
                 )
             else:
@@ -368,17 +411,17 @@ class ProviderRegistry:
                         await slots.enter_async_context(self._provider_slots[provider.descriptor.id])
                         await slots.enter_async_context(self._call_slots)
                     # A preceding call may have opened the circuit while we queued.
-                    health = self._health.get(provider.descriptor.id)
-                    if health is not None and health.retry_after > time.monotonic():
+                    remaining = self._cooldown.remaining(provider.descriptor.id, time.monotonic())
+                    if remaining is not None:
                         return [], ProviderFailure(
                             provider=provider.descriptor.id,
                             reason="cooldown",
-                            detail=f"retry_in={max(1, round(health.retry_after - time.monotonic()))}s",
+                            detail=f"retry_in={remaining}s",
                         )
                     started = True
                     async with asyncio.timeout(self._call_timeout_seconds):
                         records = await provider.search(hints)
-                self._health.pop(provider.descriptor.id, None)
+                self._cooldown.clear(provider.descriptor.id)
                 return records, None
             except ProviderError as exc:
                 self._record_failure(exc)
@@ -418,48 +461,21 @@ class ProviderRegistry:
         now = time.monotonic()
         rows: list[dict[str, object]] = []
         for provider in sorted(self._providers.values(), key=lambda item: item.descriptor.id):
-            health = self._health.get(provider.descriptor.id)
-            retry_in = None
-            cooling = False
-            failures = 0
-            if health is not None:
-                failures = health.failures
-                if health.retry_after > now:
-                    cooling = True
-                    retry_in = max(1, round(health.retry_after - now))
+            health = self._cooldown.health(provider.descriptor.id)
+            retry_in = self._cooldown.remaining(provider.descriptor.id, now)
             rows.append(
                 {
                     "provider": provider.descriptor.id,
                     "configured": provider.descriptor.configured,
-                    "failures": failures,
-                    "cooldown": cooling,
+                    "failures": health.failures if health is not None else 0,
+                    "cooldown": retry_in is not None,
                     "retry_in_seconds": retry_in,
                 }
             )
         return rows
 
     def clear_cooldown(self, provider_id: str | None = None) -> int:
-        if provider_id is None:
-            count = len(self._health)
-            self._health.clear()
-            return count
-        return 1 if self._health.pop(provider_id, None) is not None else 0
+        return self._cooldown.clear(provider_id)
 
     def _record_failure(self, error: ProviderError) -> None:
-        if error.reason not in {"blocked", "connect_timeout", "network", "timeout", "rate_limited"}:
-            return
-        health = self._health.setdefault(error.provider, _ProviderHealth())
-        health.failures += 1
-        if error.reason in {"rate_limited", "blocked"}:
-            delay = error.retry_after_seconds
-            health.retry_after = time.monotonic() + max(
-                0.25, delay if delay is not None else self._cooldown_seconds
-            )
-        elif health.failures >= self._failure_threshold:
-            health.retry_after = time.monotonic() + self._cooldown_seconds
-
-
-@dataclass
-class _ProviderHealth:
-    failures: int = 0
-    retry_after: float = 0
+        self._cooldown.record_failure(error.provider, error.reason, retry_after=error.retry_after_seconds)
