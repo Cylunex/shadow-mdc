@@ -380,7 +380,15 @@ Docker 镜像已经包含 `ffmpeg`；直接在 Windows/macOS/Linux 本地运行�
 `r18dump` 的字段来源与排序。配置路径省略时使用本地 SQLite。
 
 远程模式下，404 表示未命中。503 和连接故障会限时重试一次，随后由现有多来源流程继续。远程服务负责刷新转储。
-本地周更脚本在远程模式下退出。已有作品可在 MDC 按需重刮。
+本地周更脚本在远程模式下退出。已有作品可在 MDC 按需重刮，也可批量预览补全。
+
+    python scripts/enrich_from_r18_dump.py --dry-run --limit 100
+    python scripts/enrich_from_r18_dump.py --codes SSIS-001,SONE-118
+
+脚本使用同一个私有配置，通过 `POST /videos/batch` 每次最多查询 100 个番号，分批写回已有作品的空字段，
+并保留人工字段。返回记录与查询番号冲突时，该条计入冲突结果。打开 `--dry-run` 时只查询和统计。
+连接或服务故障重试后仍失败时，脚本退出并报告已完成批次，
+已提交的补全可以安全重跑。需要使用本地转储时，可通过 `--sqlite` 指定文件。
 
 JavDB **短评**经移动端 App API（``/api/v1/movies/{id}/reviews``）刮入本地 ``work.reviews``，详情页「精选评价」直接展示，不嵌外站。新刮/刷新作品会自动带上；已有库可用 ``scripts/backfill_javdb_reviews.py --code SSNI-806`` 补写，或对单部 ``POST /api/works/{id}/refresh`` 重刮。片源里的 JavDB 镜像仅作外站深链备用，与短评落库无关。
 

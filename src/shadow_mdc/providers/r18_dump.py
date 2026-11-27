@@ -6,13 +6,23 @@ import asyncio
 import logging
 import queue
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    SecretStr,
+    StrictBool,
+    ValidationError,
+    field_validator,
+)
 
 from ..config import Settings
 from ..domain import IdentityHints, ProviderDescriptor, ProviderRecord
@@ -24,6 +34,8 @@ from ..services.r18_dump import PROVIDER_ID, R18DumpStore
 from .base import ProviderError
 
 logger = logging.getLogger(__name__)
+
+R18_BATCH_LIMIT = 100
 
 
 class R18DumpWorker:
@@ -153,8 +165,6 @@ class R18DumpProvider:
             self._store.close()
             self._store = None
 
-
-
     async def aclose(self) -> None:
         await asyncio.to_thread(self.shutdown, self._worker_join_seconds)
 
@@ -165,6 +175,7 @@ class R18ServiceConfig(BaseModel):
     base_url: HttpUrl
     token: SecretStr
     attempt_timeout_seconds: float = Field(default=2.5, ge=0.1, le=10)
+    batch_timeout_seconds: float = Field(default=15.0, ge=0.1, le=60)
 
     @field_validator("base_url")
     @classmethod
@@ -182,6 +193,22 @@ class R18ServiceConfig(BaseModel):
         return token
 
 
+@dataclass(frozen=True)
+class R18BatchMatch:
+    record: ProviderRecord | None
+    identity_conflict: bool = False
+
+
+class _R18BatchItem(BaseModel):
+    query: str
+    found: StrictBool
+    record: ProviderRecord | None
+
+
+class _R18BatchResponse(BaseModel):
+    results: list[_R18BatchItem] = Field(max_length=R18_BATCH_LIMIT)
+
+
 class R18ServiceProvider:
     """Look up the imported dump over a private HTTP connection."""
 
@@ -189,6 +216,7 @@ class R18ServiceProvider:
         self, config: R18ServiceConfig, *, transport: httpx.AsyncBaseTransport | None = None
     ) -> None:
         self._attempt_timeout = config.attempt_timeout_seconds
+        self._batch_timeout = config.batch_timeout_seconds
         self._client = httpx.AsyncClient(
             base_url=str(config.base_url),
             headers={"Authorization": f"Bearer {config.token.get_secret_value()}"},
@@ -210,44 +238,89 @@ class R18ServiceProvider:
         code, family = extract_code(hints.code or hints.term)
         if code is None or family is not ContentFamily.JAV or code.startswith("FC2-"):
             return []
+        response = await self._request("GET", "lookup", params={"q": code})
+        if response.status_code == 404:
+            return []
+        self._require_success(response)
+        try:
+            record = ProviderRecord.model_validate_json(response.content)
+        except ValidationError:
+            raise ProviderError(PROVIDER_ID, "invalid_response", "expected a ProviderRecord") from None
+        if not self._record_matches(record, code):
+            raise ProviderError(PROVIDER_ID, "invalid_response", "record identity does not match the lookup")
+        return [record]
+
+    async def search_batch(self, codes: Sequence[str]) -> tuple[R18BatchMatch, ...]:
+        """Look up canonical JAV codes, returning one result per input in the same order."""
+        if isinstance(codes, str) or not 1 <= len(codes) <= R18_BATCH_LIMIT:
+            raise ValueError("R18 batch requires 1 to 100 JAV codes")
+        requested = tuple(codes)
+        for code in requested:
+            parsed, family = extract_code(code)
+            if parsed != code or family is not ContentFamily.JAV or code.startswith("FC2-"):
+                raise ValueError("R18 batch requires canonical JAV codes")
+        response = await self._request("POST", "videos/batch", codes=requested)
+        self._require_success(response)
+        try:
+            batch = _R18BatchResponse.model_validate_json(response.content)
+        except ValidationError:
+            raise ProviderError(PROVIDER_ID, "invalid_response", "expected a batch of R18 records") from None
+        if tuple(item.query for item in batch.results) != requested:
+            raise ProviderError(PROVIDER_ID, "invalid_response", "batch results do not match requested order")
+        matches: list[R18BatchMatch] = []
+        for item in batch.results:
+            if item.found != (item.record is not None):
+                raise ProviderError(PROVIDER_ID, "invalid_response", "batch hit flag and record disagree")
+            if item.record is not None and not self._record_matches(item.record, item.query):
+                matches.append(R18BatchMatch(None, identity_conflict=True))
+            else:
+                matches.append(R18BatchMatch(item.record))
+        return tuple(matches)
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str] | None = None,
+        codes: tuple[str, ...] | None = None,
+    ) -> httpx.Response:
+        timeout = self._batch_timeout if codes is not None else self._attempt_timeout
+        request_timeout = httpx.Timeout(timeout, connect=min(timeout, 5.0))
         for attempt in range(2):
             try:
-                async with asyncio.timeout(self._attempt_timeout):
-                    response = await self._client.get("lookup", params={"q": code})
+                async with asyncio.timeout(timeout):
+                    response = await self._client.request(
+                        method, path, params=params, json={"codes": codes} if codes is not None else None,
+                        timeout=request_timeout,
+                    )
             except (TimeoutError, httpx.TimeoutException):
                 error = ProviderError(PROVIDER_ID, "timeout", "R18 service request deadline exceeded")
             except httpx.HTTPError as exc:
                 error = ProviderError(PROVIDER_ID, "network", type(exc).__name__)
             else:
                 if response.status_code != 503:
-                    return self._parse_response(response, code)
+                    return response
                 error = ProviderError(PROVIDER_ID, "network", "service not ready (HTTP 503)")
             if attempt == 0:
                 await asyncio.sleep(0.15)
         raise error
 
     @staticmethod
-    def _parse_response(response: httpx.Response, code: str) -> list[ProviderRecord]:
+    def _require_success(response: httpx.Response) -> None:
         status = response.status_code
-        if status == 404:
-            return []
         if status in {401, 403}:
             raise ProviderError(PROVIDER_ID, "authentication", f"HTTP {status}")
         if status != 200:
             raise ProviderError(PROVIDER_ID, "http", f"HTTP {status}")
-        try:
-            record = ProviderRecord.model_validate_json(response.content)
-        except ValidationError:
-            raise ProviderError(PROVIDER_ID, "invalid_response", "expected a ProviderRecord") from None
-        lookup_key = to_comparison_key(strip_remaster_marker(code))
-        result_key = to_comparison_key(strip_remaster_marker(record.code)) if record.code else None
-        if (
-            record.provider != PROVIDER_ID
-            or record.family is not ContentFamily.JAV
-            or result_key != lookup_key
-        ):
-            raise ProviderError(PROVIDER_ID, "invalid_response", "record identity does not match the lookup")
-        return [record]
+
+    @staticmethod
+    def _record_matches(record: ProviderRecord, code: str) -> bool:
+        if record.provider != PROVIDER_ID or record.family is not ContentFamily.JAV or not record.code:
+            return False
+        return to_comparison_key(strip_remaster_marker(record.code)) == to_comparison_key(
+            strip_remaster_marker(code)
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()

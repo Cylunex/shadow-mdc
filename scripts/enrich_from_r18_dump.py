@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fill JAV catalog gaps from the offline r18.dev SQLite dump.
+"""Fill JAV catalog gaps from the R18 service or a local dump.
 
 Strictly update-only — never creates works. Uses ``Repository.merge_provider_into_work``
 on existing catalog candidates only.
@@ -14,9 +14,11 @@ Example::
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,8 +30,10 @@ from shadow_mdc.db.models import Work  # noqa: E402
 from shadow_mdc.db.repository import Database, Repository  # noqa: E402
 from shadow_mdc.enums import ContentFamily  # noqa: E402
 from shadow_mdc.identity import extract_code  # noqa: E402
+from shadow_mdc.providers.r18_dump import R18ServiceProvider, build_r18_provider  # noqa: E402
 from shadow_mdc.services.actress_names import normalize_actress_key  # noqa: E402
 from shadow_mdc.services.r18_dump import R18DumpStore  # noqa: E402
+from shadow_mdc.services.r18_service_enrich import enrich_existing_jav_from_service  # noqa: E402
 
 TRACK_FIELDS = (
     "title",
@@ -86,6 +90,31 @@ def _work_year(work: Work) -> int | None:
     return int(work.release_date.year)
 
 
+async def _enrich_from_service(settings: Settings, arguments: argparse.Namespace) -> int:
+    requested = [extract_code(value.strip()) for value in arguments.codes.split(",") if value.strip()]
+    if arguments.codes and (
+        not requested or any(
+            code is None or family is not ContentFamily.JAV or code.startswith("FC2-")
+            for code, family in requested
+        )
+    ):
+        print("invalid --codes; expected recognized JAV codes", file=sys.stderr)
+        return 2
+    codes = frozenset(code for code, _ in requested if code is not None)
+    provider = build_r18_provider(settings)
+    assert isinstance(provider, R18ServiceProvider)
+    try:
+        outcome = await enrich_existing_jav_from_service(
+            Database(settings.database_url), provider, codes=codes, year=arguments.year,
+            limit=arguments.limit, offset=arguments.offset, dry_run=arguments.dry_run,
+            commit_every=arguments.commit_every,
+        )
+    finally:
+        await provider.aclose()
+    print(json.dumps(asdict(outcome), ensure_ascii=False, indent=2))
+    return 1 if outcome.error else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=None)
@@ -101,6 +130,8 @@ def main() -> int:
     parser.add_argument("--commit-every", type=int, default=50)
     parser.add_argument("--update-actress-aliases", action="store_true")
     arguments = parser.parse_args()
+    if arguments.limit < 0 or arguments.offset < 0 or arguments.commit_every < 1:
+        parser.error("--limit and --offset must be nonnegative and --commit-every must be positive")
 
     updates: dict[str, object] = {}
     if arguments.data_dir is not None:
@@ -110,9 +141,13 @@ def main() -> int:
     settings = Settings()
     if updates:
         settings = settings.model_copy(update=updates)
+    if settings.r18_service_config is not None and arguments.sqlite is None:
+        if arguments.include_complete or arguments.update_actress_aliases:
+            parser.error("--include-complete and --update-actress-aliases require --sqlite in service mode")
+        return asyncio.run(_enrich_from_service(settings, arguments))
     settings.ensure_directories()
 
-    sqlite_path = arguments.sqlite or (settings.data_dir / "r18-dumps" / "r18_dump.db")
+    sqlite_path = arguments.sqlite or settings.resolved_r18_dump_db()
     if not sqlite_path.is_file():
         print(f"r18 dump sqlite missing: {sqlite_path}", file=sys.stderr)
         print("Run scripts/import_r18_dump.py first.", file=sys.stderr)

@@ -422,6 +422,30 @@ def _merge_plot_fields(
         work.plot = incoming
         sources["plot"] = provider
 
+def missing_provider_fields(work: Work) -> frozenset[str]:
+    """Return vacant catalog fields that a metadata provider may fill."""
+    present = {
+        "title": bool((work.title or "").strip()),
+        "original_title": bool((work.original_title or "").strip()),
+        "release_date": work.release_date is not None,
+        "runtime_seconds": bool(work.runtime_seconds),
+        "studio": bool((work.studio or "").strip()),
+        "label": bool((work.label or "").strip()),
+        "series": bool((work.series or "").strip()),
+        "plot": bool((work.plot or "").strip()),
+        "original_plot": bool((work.original_plot or "").strip()),
+        "actors": bool(_named_actor_list(work.actors)),
+        "directors": bool(work.directors),
+        "tags": bool(work.tags),
+        "artwork": bool(work.artwork),
+    }
+    sources = work.field_sources or {}
+    return frozenset(
+        name for name, filled in present.items()
+        if not filled and not _field_locked(work, name) and sources.get(name) not in {"manual", "local-manual"}
+    )
+
+
 class Repository:
     def __init__(self, session: Session):
         self._session = session
@@ -921,10 +945,15 @@ class Repository:
         *,
         overwrite: bool = False,
         ranked_cast: bool = False,
+        only_missing: bool = False,
     ) -> Work:
         """Fill/merge provider fields into an existing work — never creates rows."""
 
-        self._merge_provider_record(work, record, overwrite=overwrite, ranked_cast=ranked_cast)
+        if only_missing and overwrite:
+            raise ValueError("cannot overwrite fields in a gap fill")
+        self._merge_provider_record(
+            work, record, overwrite=overwrite, ranked_cast=ranked_cast, only_missing=only_missing
+        )
         self._add_record_identities(work, record)
         self._upsert_snapshot(work, record)
         self.sync_work_collections(work)
@@ -2000,54 +2029,71 @@ class Repository:
         *,
         overwrite: bool = True,
         ranked_cast: bool = False,
+        only_missing: bool = False,
     ) -> None:
         sources = dict(work.field_sources or {})
-        if not _field_locked(work, "title") and (overwrite or not work.title):
+        missing = missing_provider_fields(work) if only_missing else frozenset()
+
+        def can_write(field: str, default: bool = True) -> bool:
+            return field in missing if only_missing else default and not _field_locked(work, field)
+
+        if can_write("title", overwrite or not work.title):
             work.title = record.title
             sources["title"] = record.provider
         if (
             record.original_title
-            and not _field_locked(work, "original_title")
-            and (overwrite or not work.original_title)
+            and can_write("original_title", overwrite or not work.original_title)
         ):
             work.original_title = record.original_title
             sources["original_title"] = record.provider
-        if record.code and (overwrite or not work.primary_code):
+        if not only_missing and record.code and (overwrite or not work.primary_code):
             work.primary_code = record.code
             sources["primary_code"] = record.provider
-        if record.family.value != "unknown" and (overwrite or work.family == "unknown"):
+        if not only_missing and record.family.value != "unknown" and (overwrite or work.family == "unknown"):
             work.family = record.family.value
             sources["family"] = record.provider
         category = record.category
         if category is MediaCategory.OTHER:
             category = category_for_family(record.family)
-        if category is not MediaCategory.OTHER and (overwrite or work.category == MediaCategory.OTHER.value):
+        if (
+            not only_missing and category is not MediaCategory.OTHER
+            and (overwrite or work.category == MediaCategory.OTHER.value)
+        ):
             work.category = category.value
             sources["category"] = record.provider
         if (
             record.release_date
-            and not _field_locked(work, "release_date")
-            and (overwrite or work.release_date is None)
+            and can_write("release_date", overwrite or work.release_date is None)
         ):
             work.release_date = record.release_date
             sources["release_date"] = record.provider
         if (
             record.runtime_seconds
-            and not _field_locked(work, "runtime_seconds")
-            and (overwrite or work.runtime_seconds is None)
+            and can_write("runtime_seconds", overwrite or work.runtime_seconds is None)
         ):
             work.runtime_seconds = record.runtime_seconds
             sources["runtime_seconds"] = record.provider
-        if record.studio and not _field_locked(work, "studio") and (overwrite or not work.studio):
+        if record.studio and can_write("studio", overwrite or not work.studio):
             work.studio = record.studio
             sources["studio"] = record.provider
-        if record.label and not _field_locked(work, "label") and (overwrite or not work.label):
+        if record.label and can_write("label", overwrite or not work.label):
             work.label = record.label
             sources["label"] = record.provider
-        if record.series and not _field_locked(work, "series") and (overwrite or not work.series):
+        if record.series and can_write("series", overwrite or not work.series):
             work.series = record.series
             sources["series"] = record.provider
-        if record.plot and not _field_locked(work, "plot"):
+        if only_missing:
+            synopsis = (record.plot or "").strip()
+            if synopsis and "plot" in missing:
+                work.plot = synopsis
+                sources["plot"] = record.provider
+            if (
+                synopsis and "original_plot" in missing
+                and (record.language == "ja" or _looks_japanese(synopsis))
+            ):
+                work.original_plot = synopsis
+                sources["original_plot"] = record.provider
+        elif record.plot and can_write("plot"):
             _merge_plot_fields(
                 work,
                 record.plot,
@@ -2056,12 +2102,12 @@ class Repository:
                 overwrite=overwrite,
             )
 
-        if not _field_locked(work, "actors"):
+        if can_write("actors"):
             current_named = _named_actor_list(work.actors)
             incoming_named = _named_actor_list(record.actors)
             actor_source = str(sources.get("actors", ""))
             # Absent / blank cast is not evidence — never wipe named or manual credits.
-            if ranked_cast:
+            if ranked_cast or only_missing:
                 if incoming_named and (overwrite or not current_named):
                     work.actors = merge_actor_names([], incoming_named, replace=True)
                     sources["actors"] = record.provider
@@ -2083,17 +2129,21 @@ class Repository:
                     sources["actors"] = record.provider
                 elif incoming_priority == current_priority:
                     work.actors = merge_actor_names([], incoming_named, replace=True)
-        if record.directors:
+        if record.directors and (not only_missing or "directors" in missing):
             work.directors = _merge_unique(work.directors, record.directors, replace=overwrite)
-        if record.tags and not _field_locked(work, "tags"):
+            if only_missing:
+                sources["directors"] = record.provider
+        if record.tags and can_write("tags"):
             work.tags = _merge_unique(work.tags, record.tags, replace=overwrite)
-            if overwrite or "tags" not in sources:
+            if only_missing or overwrite or "tags" not in sources:
                 sources["tags"] = record.provider
             if overwrite:
                 self._merge_filename_tags(work, (asset.path for asset in self.list_assets_for_work(work.id)))
-        if record.artwork:
+        if record.artwork and (not only_missing or "artwork" in missing):
             if not work.artwork:
                 work.artwork = _merge_artwork(work.artwork, record, replace=False)
+                if only_missing:
+                    sources["artwork"] = record.provider
             else:
                 # Keep first cover/poster set; still attach new sample stills from providers.
                 samples = tuple(item for item in record.artwork if item.kind == "sample")
@@ -2103,13 +2153,13 @@ class Repository:
                         record.model_copy(update={"artwork": samples}),
                         replace=False,
                     )
-        if record.rating is not None and (overwrite or work.rating_value is None):
+        if not only_missing and record.rating is not None and (overwrite or work.rating_value is None):
             work.rating_value = float(record.rating)
             work.rating_max = float(record.rating_max) if record.rating_max is not None else None
             work.rating_count = int(record.rating_count) if record.rating_count is not None else None
             work.rating_source = record.provider
             sources["rating"] = record.provider
-        if record.reviews:
+        if not only_missing and record.reviews:
             work.reviews = _merge_reviews(list(work.reviews or []), record.reviews, replace=overwrite)
             if overwrite or "reviews" not in sources:
                 sources["reviews"] = record.provider
