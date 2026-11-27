@@ -71,6 +71,7 @@ from .models import (
     utc_now,
 )
 from .people_index_schema import init_people_index
+from .tag_index import initialize_tag_index
 
 LOCKABLE_WORK_FIELDS = frozenset(
     {
@@ -201,6 +202,8 @@ class Database:
                     "ALTER TABLE catalog_person_merges ADD COLUMN "
                     "previous_revisions JSON NOT NULL DEFAULT '{}'"
                 )
+        with self.engine.begin() as connection:
+            initialize_tag_index(connection)
         with self.engine.begin() as connection:
             init_people_index(connection)
             for prefix, tables in (

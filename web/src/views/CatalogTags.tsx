@@ -5,12 +5,13 @@ type Tag = TreeNode & { count: number; group?: string };
 const PAGE_SIZE = 48;
 const fold = (text: string) => text.normalize("NFKC").trim().toLowerCase();
 
-export function matchesTag(tag: Tag, value: string): boolean {
+export function matchesTag(tag: TreeNode, value: string): boolean {
+  if (tag.id === value) return true;
   return [tag.id, tag.name, ...(tag.aliases ?? []), ...(tag.redirect_ids ?? [])].some(alias => fold(alias) === fold(value));
 }
 
-export function CatalogTags({ tags, selected, preview, onToggle }: {
-  tags: Tag[]; selected: string[]; preview: boolean; onToggle: (id: string) => void;
+export function CatalogTags({ tags, selected, preview, onToggle, onOpenChange, loading }: {
+  tags: Tag[]; selected: string[]; preview: boolean; onToggle: (id: string) => void; onOpenChange?: (open: boolean) => void; loading?: boolean;
 }) {
   const [search, setSearch] = useState("");
   const [limit, setLimit] = useState(PAGE_SIZE);
@@ -35,8 +36,8 @@ export function CatalogTags({ tags, selected, preview, onToggle }: {
         className={isSelected(tag) ? "active" : "ghost"}
         aria-pressed={isSelected(tag)} onClick={() => onToggle(tag.id)}>{tag.name} · {tag.count}</button>)}
     </div>}
-    <details className="catalog-tags">
-    <summary>标签树 · {tags.length}</summary>
+    <details className="catalog-tags" onToggle={event => onOpenChange?.(event.currentTarget.open)}>
+    <summary>标签树{tags.length > 0 ? ` · ${tags.length}` : ""}</summary>
     <input aria-label="搜索分类标签" placeholder="搜索标签及其上级" value={search}
       onChange={event => { setSearch(event.target.value); setLimit(PAGE_SIZE); }} />
     <ul className="catalog-tag-tree" aria-label="标签树">
@@ -53,7 +54,8 @@ export function CatalogTags({ tags, selected, preview, onToggle }: {
           onClick={() => onToggle(node.id)}>{node.name} · {node.count}</button>
       </li>)}
     </ul>
-    {visible.length === 0 && <span>没有匹配的标签</span>}
+    {loading && <span role="status">正在读取标签统计…</span>}
+    {!loading && visible.length === 0 && <span>没有匹配的标签</span>}
     {visible.length > limit && <button className="ghost" onClick={() => setLimit(value => value + PAGE_SIZE)}>
       更多标签（{limit} / {visible.length}）</button>}
   </details></>;

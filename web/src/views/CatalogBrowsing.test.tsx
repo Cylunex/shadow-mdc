@@ -245,6 +245,9 @@ it("migrates local saved classifications once under StrictMode", async () => {
 
 it("keeps a legacy tag selection readable and removes it when toggling the new ID", async () => {
   window.history.replaceState({}, "", "/?tag=Amateur");
+  vi.mocked(api.categories).mockResolvedValue({ categories: [
+    { ...categories[0]!, id: "tag:amateur", label: "爱好者", aliases: ["Amateur"] },
+  ] });
   const fetch = vi.fn(async (url: string, init?: RequestInit) => new Response(JSON.stringify(
     url.endsWith("/facets") ? { tags: [{ id: "tag:amateur", name: "爱好者", aliases: ["素人", "Amateur"], count: 1 }] }
     : { items: [], next_cursor: null, total: 0, filters: JSON.parse(String(init?.body)) },
@@ -252,12 +255,32 @@ it("keeps a legacy tag selection readable and removes it when toggling the new I
   vi.stubGlobal("fetch", fetch);
   await act(async () => root.render(<UnifiedCatalogView mode="works" onOpenWork={vi.fn()} onOpenActor={vi.fn()} />));
   expect(container.querySelector(".active-filter-chips")?.textContent).toContain("爱好者 ×");
+  expect(fetch.mock.calls.some(([url]) => url.endsWith("/facets"))).toBe(false);
+  await act(async () => {
+    const details = container.querySelector<HTMLDetailsElement>("details.catalog-tags")!;
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+  });
   const tag = container.querySelector<HTMLButtonElement>('[aria-pressed="true"]')!;
   await act(async () => tag.click());
   expect(new URLSearchParams(window.location.search).has("tag")).toBe(false);
   await act(async () => container.querySelector<HTMLButtonElement>('button[aria-pressed]')!.click());
   expect(new URLSearchParams(window.location.search).get("tag")).toBe("tag:amateur");
   expect(container.querySelector(".active-filter-chips")?.textContent).toContain("爱好者 ×");
+});
+
+it("shows a Chinese raw tag while the dictionary loads and queries by its unchanged ID", async () => {
+  const id = "raw:" + encodeURIComponent("图书馆");
+  window.history.replaceState({}, "", "/?" + new URLSearchParams({ tag: id, exclude: id }));
+  vi.mocked(api.categories).mockReturnValue(new Promise(() => {}));
+  const fetch = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({ items: [], total: 0, next_cursor: null }));
+  vi.stubGlobal("fetch", fetch);
+  await act(async () => root.render(<UnifiedCatalogView mode="works" onOpenWork={vi.fn()} onOpenActor={vi.fn()} />));
+  expect(container.querySelector(".active-filter-chips")?.textContent).toBe("图书馆 ×排除 图书馆 ×");
+  const calls = fetch.mock.calls;
+  expect(calls.some(([url]) => url.endsWith("/facets"))).toBe(false);
+  const query = calls.find(([url]) => url.endsWith("/works/query"))!;
+  expect(JSON.parse(String(query[1]?.body))).toMatchObject({ tags: [id], exclude_tags: [id] });
 });
 
 it("opens a metadata gap from its count and clears it from the work list", async () => {

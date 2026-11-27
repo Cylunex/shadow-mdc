@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { api, appUrl } from "../api";
@@ -54,6 +55,8 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   const [appendFailed, setAppendFailed] = useState(false);
   const [facetError, setFacetError] = useState("");
   const [showFilters, setShowFilters] = useState(false);
+  const [showTags, setShowTags] = useState(false);
+  const [loadingFacets, setLoadingFacets] = useState(false);
   const [showMore, setShowMore] = useState(false);
   const [actorBrowsing, setActorBrowsing] = useSessionState("mdc:actor-browsing", actorBrowsingSchema, actorDefaults);
   const actorHeading = useRef<HTMLDivElement>(null);
@@ -109,6 +112,21 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
   const [revision, setRevision] = useState(0);
   const actions = useCatalogActions(() => setRevision(value => value + 1));
   const showingWorks = mode !== "actors" || Boolean(initialPersonRef);
+  const categoryQuery = useQuery({ ...resources.categories(), enabled: showingWorks &&
+    (filters.tags.length > 0 || filters.exclude_tags.length > 0) }, queryClient);
+  function tagLabel(id: string) {
+    const facet = facets.tags?.find(tag => matchesTag(tag, id));
+    if (facet) return facet.name;
+    const category = categoryQuery.data?.categories.find(item =>
+      matchesTag({ id: item.id ?? item.slug, name: item.label, aliases: item.aliases }, id));
+    if (category) return category.label;
+    const origin = window.history.state?.categoryReturn;
+    if (origin?.id === id && typeof origin.label === "string") return origin.label;
+    if (id.startsWith("raw:")) {
+      try { return decodeURIComponent(id.slice(4)); } catch { return id.slice(4); }
+    }
+    return id.startsWith("tag:") ? id.slice(4) : id;
+  }
   const [saveName, setSaveName] = useState("");
   const [workRetry, setWorkRetry] = useState(0);
   const [facetRetry, setFacetRetry] = useState(0);
@@ -185,14 +203,18 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     const timer = setTimeout(loadWorks, 180);
     return () => { clearTimeout(timer); controller.abort(); };
   }, [filters, revision, refresh, waitingForPerson, showingWorks, workRetry]);
+  const needFacets = showFilters || showTags || ([...CLASSIFICATION_KEYS, "organizations", "series",
+    "labels", "platforms", "genres", "subtitle_languages"] as const).some(field => filters[field].length > 0);
   useEffect(() => {
-    if (!showingWorks || waitingForPerson) return;
+    if (!showingWorks || waitingForPerson || !needFacets) return;
     const controller = new AbortController();
     setFacetError("");
+    setLoadingFacets(true);
     const load = () => {
       void request<Record<string, Facet[]>>("facets", filters, controller.signal)
         .then(values => { if (!controller.signal.aborted) setFacets(values); })
-        .catch(e => { if (!controller.signal.aborted) setFacetError("分类统计读取失败 · " + String(e)); });
+        .catch(e => { if (!controller.signal.aborted) setFacetError("分类统计读取失败 · " + String(e)); })
+        .finally(() => { if (!controller.signal.aborted) setLoadingFacets(false); });
     };
     if (filters === initialFilters.current) {
       load();
@@ -200,7 +222,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     }
     const timer = setTimeout(load, 180);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [facetRetry, filters, revision, refresh, showingWorks, waitingForPerson]);
+  }, [facetRetry, filters, revision, refresh, showingWorks, waitingForPerson, needFacets]);
   const loadingMore = useRef(false);
   const hasCurrentRows = loadedFilters.current === filters;
   async function more() {
@@ -247,7 +269,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
     {error && <p role="alert">{error}</p>}
     {workError && <div className="catalog-error" role="alert"><span>{workError}</span>
       <button type="button" className="ghost" disabled={loading} onClick={() => appendFailed ? void more() : setWorkRetry(value => value + 1)}>重试作品</button></div>}
-    {facetError && <div className="catalog-error" role="alert"><span>{facetError}</span>
+    {needFacets && facetError && <div className="catalog-error" role="alert"><span>{facetError}</span>
       <button type="button" className="ghost" onClick={() => setFacetRetry(value => value + 1)}>重试统计</button></div>}
     {personError && <div className="catalog-error" role="alert"><span>{personError}</span>
       <button className="ghost" onClick={() => setPersonRetry(value => value + 1)}>重试演员资料</button></div>}
@@ -390,7 +412,7 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       {filters.series_name && <button type="button" className="active-filter-chip" onClick={() => patch({ series_name: "" })}>系列：{filters.series_name} ×</button>}
       {(["series", "labels", "platforms"] as const).flatMap(field => filters[field].map(id => <button type="button" className="active-filter-chip" key={`${field}:${id}`}
         onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{({ series: "系列", labels: "厂牌", platforms: "发布平台" })[field]}：{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
-      {filters.tags.map(id => <button type="button" className="active-filter-chip" key={"tag:" + id} onClick={() => patch({ tags: filters.tags.filter(t => t !== id) })}>{facets.tags?.find(tag => matchesTag(tag, id))?.name ?? id} ×</button>)}
+      {filters.tags.map(id => <button type="button" className="active-filter-chip" key={"tag:" + id} onClick={() => patch({ tags: filters.tags.filter(t => t !== id) })}>{tagLabel(id)} ×</button>)}
       {(["genres", "subtitle_languages"] as const).flatMap(field => filters[field].map(id => <button type="button" className="active-filter-chip" key={field + id}
         onClick={() => patch({ [field]: filters[field].filter(value => value !== id) })}>{field === "genres" ? "题材" : "历史字幕"}：{facets[field]?.find(value => value.id === id)?.name ?? id} ×</button>))}
       {([...CLASSIFICATION_KEYS, "organizations"] as const).flatMap(field => filters[field].map(id =>
@@ -400,9 +422,9 @@ export function UnifiedCatalogView({ mode, onOpenWork, onOpenActor, initialPerso
       {availability !== "all" && <button type="button" className="active-filter-chip" onClick={() => patch({ status: "all", availability: "all", wanted })}>{({ emby: "已关联 Emby", files: "有关联文件", metadata: "仅资料", undownloaded: "无关联文件" })[availability]} ×</button>}
       {wanted !== undefined && <button type="button" className="active-filter-chip" onClick={() => patch({ status: "all", availability, wanted: undefined })}>{wanted ? "想看" : "未标记想看"} ×</button>}
       {filters.exclude_tags.map(id => <button type="button" className="active-filter-chip" key={id}
-      onClick={() => patch({ exclude_tags: filters.exclude_tags.filter(t => t !== id) })}>排除 {facets.tags?.find(tag => matchesTag(tag, id))?.name ?? id} ×</button>)}{filters.actors.filter(id => id !== selectedPerson?.id).map(id => <button type="button" className="active-filter-chip" key={id} onClick={() => patch({ actors: filters.actors.filter(a => a !== id) })}>{actorNames?.[id] ?? id} ×</button>)}</div>
+      onClick={() => patch({ exclude_tags: filters.exclude_tags.filter(t => t !== id) })}>排除 {tagLabel(id)} ×</button>)}{filters.actors.filter(id => id !== selectedPerson?.id).map(id => <button type="button" className="active-filter-chip" key={id} onClick={() => patch({ actors: filters.actors.filter(a => a !== id) })}>{actorNames?.[id] ?? id} ×</button>)}</div>
     <div className="catalog-controls">
-    <CatalogTags tags={facets.tags ?? []} selected={filters.tags} preview={false}
+    <CatalogTags tags={facets.tags ?? []} selected={filters.tags} preview={false} onOpenChange={setShowTags} loading={loadingFacets && needFacets}
       onToggle={id => {
         const tag = facets.tags?.find(value => value.id === id);
         const selected = tag ? filters.tags.some(value => matchesTag(tag, value)) : filters.tags.includes(id);

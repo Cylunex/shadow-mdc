@@ -164,6 +164,8 @@ describe("page load request budget", () => {
     expect(fetch.mock.calls.some(([url]) => url.includes("/people"))).toBe(false);
     expect(api.libraryPrefs).toHaveBeenCalledTimes(1);
     expect(api.tasks).not.toHaveBeenCalled();
+    expect(fetch.mock.calls.some(([url]) => url.endsWith("/facets"))).toBe(false);
+    await act(async () => [...container.querySelectorAll("button")].find(b => b.textContent === "分类与筛选")!.click());
     await act(async () => facets.resolve(new Response(null, { status: 502 })));
     expect(container.querySelector(".work-grid")?.textContent).toContain("Paged work");
     expect(container.textContent).toContain("分类统计读取失败");

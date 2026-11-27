@@ -66,6 +66,7 @@ from .db.models import (
     WorkCollection,
     WorkTaxonomy,
 )
+from .db.tag_index import work_tags
 from .media.artwork import resolve_work_display_images
 from .services.actor_images import actor_images, valid_key
 from .services.catalog_classifications import classification_rows, validate_selection, work_classifications
@@ -574,10 +575,12 @@ def build_catalog_router(
             ids = set.intersection(*groups) if filters.actors_all else set.union(*groups)
             statement = statement.where(Work.id.in_(ids))
         if filters.tags or filters.exclude_tags or filters.genres:
-            # SQLite json_each avoids materializing every work in Python.
+            spellings = select(work_tags.c.raw).distinct().cte().prefix_with("MATERIALIZED")
+
             def tagged(tag: str) -> ColumnElement[bool]:
-                values = func.json_each(Work.tags).table_valued("value")
-                return exists(select(1).select_from(values).where(func.mdc_tag_matches(values.c.value, tag)))
+                matches = select(spellings.c.raw).where(func.mdc_tag_matches(spellings.c.raw, tag))
+                return Work.id.in_(select(work_tags.c.work_id).where(work_tags.c.raw.in_(matches)))
+
             predicates = [tagged(tag) for tag in filters.tags]
             if predicates:
                 statement = (statement.where(*predicates) if filters.tags_all
@@ -1005,14 +1008,16 @@ def build_catalog_router(
                 decades[str(int(value) // 10 * 10) if value != "unknown" else value] += count
             tag_filters = filters if filters.tags_all else filters.model_copy(update={"tags": []})
             tag_base = matching(tag_filters).subquery()
-            tag_rows = func.json_each(tag_base.c.tags).table_valued("value")
-            ancestors = func.json_each(func.mdc_tag_tree_ids(tag_rows.c.value)).table_valued("value")
-            identity = ancestors.c.value
+            spellings = select(work_tags.c.raw).distinct().cte().prefix_with("MATERIALIZED")
+            ancestors = func.json_each(func.mdc_tag_tree_ids(spellings.c.raw)).table_valued("value")
+            paths = select(spellings.c.raw, ancestors.c.value.label("identity")).select_from(
+                spellings.join(ancestors, true()),
+            ).cte().prefix_with("MATERIALIZED")
             tags = list(session.execute(
-                select(identity, func.min(tag_rows.c.value), func.count(func.distinct(tag_base.c.id)))
-                .select_from(tag_base).join(tag_rows, true()).join(ancestors, true())
-                .where(identity.is_not(None))
-                .group_by(identity),
+                select(paths.c.identity, func.min(paths.c.raw), func.count(func.distinct(work_tags.c.work_id)))
+                .select_from(paths.join(work_tags, work_tags.c.raw == paths.c.raw)
+                             .join(tag_base, tag_base.c.id == work_tags.c.work_id))
+                .group_by(paths.c.identity),
             ))
             tag_counts = {key: count for key, _raw, count in tags}
             tag_facets = {

@@ -513,7 +513,7 @@ export function App() {
         {view === "categories" && <CategoriesView report={setMessage}
           onOpenTag={(id, name) => {
             const href = window.location.pathname + window.location.search + window.location.hash;
-            window.history.pushState({ categoryReturn: { href, label: name ?? id, steps: 1 } }, "", categoryWorksHref(id));
+            window.history.pushState({ categoryReturn: { href, id, label: name ?? id, steps: 1 } }, "", categoryWorksHref(id));
             setView("works");
             setMessage(`正在查看分类：${name ?? id}`, false);
             requestAnimationFrame(() => window.scrollTo(0, 0));
