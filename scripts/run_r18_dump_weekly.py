@@ -100,6 +100,9 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings()
     if updates:
         settings = settings.model_copy(update=updates)
+    if settings.r18_service_config is not None:
+        logger.info("R18 service is configured; local weekly maintenance skipped")
+        return 0
     settings.ensure_directories()
 
     if not settings.r18_dump_refresh_enabled and not arguments.force:

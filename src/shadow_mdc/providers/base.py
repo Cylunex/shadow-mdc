@@ -338,6 +338,10 @@ class ProviderRegistry:
             sorted((provider.descriptor for provider in self._providers.values()), key=lambda item: item.id)
         )
 
+    def is_configured(self, provider_id: str) -> bool:
+        provider = self._providers.get(provider_id)
+        return provider is not None and provider.descriptor.configured
+
     def select_ids(self, selection: ProviderSelection | None) -> tuple[str, ...] | None:
         """Translate the API selector to a registry allowlist."""
 

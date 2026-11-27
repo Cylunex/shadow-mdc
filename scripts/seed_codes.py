@@ -71,19 +71,18 @@ async def _run(arguments: argparse.Namespace) -> int:
     javdb = JavDBProvider(client, settings.javdb_base_url, settings.request_retries)
     fanza = FanzaProvider(client, settings.fanza_base_url, settings.request_retries)
     providers = ProviderRegistry([fanza, javdb], max_concurrent_calls=4)
-    dump_path = settings.resolved_r18_dump_db()
     javdb_api = build_javdb_app_api(settings, client)
     javdb.bind_app_api(javdb_api)
     discover = DiscoverService(
         providers,
         javdb,
         fanza,
-        r18_dump_path=dump_path,
+        r18_settings=settings,
         javdb_api=javdb_api,
         sukebei=SukebeiClient(client, retries=settings.request_retries),
     )
     if not discover.r18_fallback_available:
-        print(f"note: r18 dump not found at {dump_path}; offline fallback disabled", file=sys.stderr)
+        print("note: R18 dump source unavailable", file=sys.stderr)
 
     results: list[dict[str, object]] = []
     try:
@@ -133,7 +132,7 @@ async def _run(arguments: argparse.Namespace) -> int:
             if offline_stats is not None:
                 print("auto-offline: " + json.dumps(offline_stats.as_dict(), ensure_ascii=False), file=sys.stderr)
     finally:
-        discover.close()
+        await discover.aclose()
         await client.aclose()
 
     print(json.dumps(results, ensure_ascii=False, indent=2))

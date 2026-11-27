@@ -1,0 +1,5 @@
+{
+  "base_url": "https://r18.example.com",
+  "token": "REPLACE_WITH_R18_SERVICE_TOKEN",
+  "attempt_timeout_seconds": 2.5
+}

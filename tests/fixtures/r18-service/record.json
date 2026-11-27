@@ -1,0 +1,11 @@
+{
+  "provider": "r18dump",
+  "external_id": "fixture00123",
+  "code": "FIXTURE-123",
+  "title": "Fixture title",
+  "family": "jav",
+  "release_date": "2026-11-24",
+  "runtime_seconds": 3600,
+  "actors": ["Fixture performer"],
+  "artwork": [{"url": "https://images.example.com/fixture.jpg", "kind": "poster"}]
+}

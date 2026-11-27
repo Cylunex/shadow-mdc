@@ -229,12 +229,12 @@ from .providers import (
     PaipanconProvider,
     ProviderRegistry,
     R18DevProvider,
-    R18DumpProvider,
     ThePornDBProvider,
 )
 from .providers.base import LOCAL_METADATA_PROVIDER_IDS, SearchBatch
 from .providers.impersonate import set_default_proxy
 from .providers.javdb_api import build_javdb_app_api
+from .providers.r18_dump import build_r18_provider
 from .providers.sukebei import SukebeiClient
 from .services.actor_catalog import (
     ActorCatalogStore,
@@ -534,10 +534,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _http_client(settings, max_connections=settings.identify_concurrency + 2) for _ in range(17)
     )
     source_clients = iter(provider_clients)
+    r18_provider = build_r18_provider(settings)
     providers = ProviderRegistry(
         [
             R18DevProvider(next(source_clients), settings.r18dev_base_url, settings.request_retries),
-            R18DumpProvider(settings.resolved_r18_dump_db()),
+            r18_provider,
             FanzaProvider(next(source_clients), settings.fanza_base_url, settings.request_retries),
             JavLibraryProvider(next(source_clients), settings.javlibrary_base_url, settings.request_retries),
             MgstageProvider(next(source_clients), settings.mgstage_base_url, settings.request_retries),
@@ -610,7 +611,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         providers,
         javdb_provider if isinstance(javdb_provider, JavDBProvider) else None,
         fanza_provider if isinstance(fanza_provider, FanzaProvider) else None,
-        r18_dump_path=settings.resolved_r18_dump_db(),
         javdb_api=javdb_api,
         sukebei=SukebeiClient(client, retries=settings.request_retries),
     )
@@ -727,16 +727,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app_runtime.library_workers_stopping.set()
         await asyncio.gather(*app_runtime.library_workers.values())
         await app.state.runtime.subtitle_backfill.shutdown()
-        # Signal + join the r18 dump worker thread (bounded) before closing stores.
-        for dump_provider in providers._providers.values():
-            if isinstance(dump_provider, R18DumpProvider):
-                await asyncio.to_thread(
-                    dump_provider.shutdown, settings.r18_dump_worker_join_seconds
-                )
-        discover_service.close()
         await subscription_watch_poller.stop()
         await pan_poller.stop()
         await pan_service.aclose()
+        await r18_provider.aclose()
         await asyncio.gather(client.aclose(), *(source.aclose() for source in provider_clients))
 
 

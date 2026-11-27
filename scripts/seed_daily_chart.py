@@ -140,7 +140,7 @@ async def _run(arguments: argparse.Namespace) -> int:
         [javdb, fanza],
         max_concurrent_calls=settings.provider_concurrency,
     )
-    if not settings.resolved_r18_dump_db().is_file():
+    if settings.r18_service_config is None and not settings.resolved_r18_dump_db().is_file():
         print(
             f"note: r18 dump not found at {settings.resolved_r18_dump_db()}; "
             "offline intake fallback disabled",
@@ -152,7 +152,7 @@ async def _run(arguments: argparse.Namespace) -> int:
         providers,
         javdb,
         fanza,
-        r18_dump_path=settings.resolved_r18_dump_db(),
+        r18_settings=settings,
         javdb_api=javdb_api,
         sukebei=SukebeiClient(client, retries=settings.request_retries),
     )
@@ -189,7 +189,7 @@ async def _run(arguments: argparse.Namespace) -> int:
             else:
                 offline_stats = None
     finally:
-        discover.close()
+        await discover.aclose()
         await client.aclose()
 
     summary = {

@@ -123,7 +123,7 @@ async def _run(arguments: argparse.Namespace) -> int:
         providers,
         javdb,
         fanza,
-        r18_dump_path=settings.resolved_r18_dump_db(),
+        r18_settings=settings,
         javdb_api=javdb_api,
     )
 
@@ -166,7 +166,7 @@ async def _run(arguments: argparse.Namespace) -> int:
             status = "ok" if entry.get("ok") else entry.get("error")
             print(f"  seed {code}: {status}")
     finally:
-        discover.close()
+        await discover.aclose()
         await client.aclose()
 
     ok = sum(1 for r in results if r.get("ok"))

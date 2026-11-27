@@ -76,7 +76,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-
             rt.providers, "search", AsyncMock(return_value=SearchBatch(records=(_record(),), failures=()))
         )
         monkeypatch.setattr(rt.discover, "list_magnets", AsyncMock(return_value=_magnets()))
-        monkeypatch.setattr(rt.discover, "r18_record", lambda code: None)
+        monkeypatch.setattr(rt.discover, "r18_record", AsyncMock(return_value=None))
 
         async def fake_seed(repo: Repository, **kwargs: object):  # type: ignore[no-untyped-def]
             from shadow_mdc.services.discover import DiscoverSeedResult
@@ -401,7 +401,7 @@ def test_magnet_inspect_known_code_with_poster(client: TestClient, monkeypatch: 
     monkeypatch.setattr(
         rt.discover,
         "r18_record",
-        lambda code: _record(code, with_cover=True) if code == "SSIS-123" else None,
+        AsyncMock(return_value=_record("SSIS-123", with_cover=True)),
     )
     magnet = _magnet_uri(HASH_MAG, dn="ssis123-4k-C")
     out = client.post(

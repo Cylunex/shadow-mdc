@@ -97,7 +97,7 @@ async def _run(arguments: argparse.Namespace) -> int:
         providers,
         javdb,
         fanza,
-        r18_dump_path=settings.resolved_r18_dump_db(),
+        r18_settings=settings,
         javdb_api=javdb_api,
     )
 
@@ -119,6 +119,7 @@ async def _run(arguments: argparse.Namespace) -> int:
                 list_slug=arguments.list,
             )
     finally:
+        await discover.aclose()
         await client.aclose()
 
     summary = {

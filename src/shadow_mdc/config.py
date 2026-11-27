@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     jav321_base_url: str = "https://www.jav321.com"
     r18dev_base_url: str = "https://r18.dev"
     r18_dump_db: Path | None = None  # offline dump SQLite; default data_dir/r18-dumps/r18_dump.db
+    r18_service_config: Path | None = None  # private JSON; when set, replaces local dump lookups
     # Weekly NAS job (scripts/nas/r18_dump_weekly.sh): stop API → refresh dump → enrich → start.
     # Keep disabled until a manual run succeeds; cron expression is documentary for CRON_TZ crontab.
     r18_dump_refresh_enabled: bool = False

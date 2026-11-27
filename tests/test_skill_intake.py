@@ -64,7 +64,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         monkeypatch.setattr(
             runtime.providers, "search", AsyncMock(return_value=SearchBatch(records=(record(),), failures=()))
         )
-        monkeypatch.setattr(runtime.discover, "r18_record", lambda code: None)
+        monkeypatch.setattr(runtime.discover, "r18_record", AsyncMock(return_value=None))
         monkeypatch.setattr(
             runtime.discover,
             "list_magnets",

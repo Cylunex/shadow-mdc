@@ -374,6 +374,14 @@ Docker 镜像已经包含 `ffmpeg`；直接在 Windows/macOS/Linux 本地运行�
 和 FreeJavBT 元数据；FC2 会额外查询 FC2Club、FC2Hub、官方 FC2 Contents Market 与 Paipancon。站点受到地区限制、Cloudflare、登录或临时网络故障时，
 来源诊断会单独标记失败，其他来源仍继续工作。所有来源只查询番号、文本或用户指定 URL，不使用截图或图片反搜。
 
+`r18dump` 可以使用本地 SQLite 或私有 R18 转储服务。将 [示例配置](dev/r18-service.example.json)
+复制为仅运行账户可读的 `r18-service.local.json`，填写地址和令牌，再用
+`SHADOW_MDC_R18_SERVICE_CONFIG` 指定配置文件路径。服务查询通过直连发送 Bearer 认证，命中后沿用
+`r18dump` 的字段来源与排序。配置路径省略时使用本地 SQLite。
+
+远程模式下，404 表示未命中。503 和连接故障会限时重试一次，随后由现有多来源流程继续。远程服务负责刷新转储。
+本地周更脚本在远程模式下退出。已有作品可在 MDC 按需重刮。
+
 JavDB **短评**经移动端 App API（``/api/v1/movies/{id}/reviews``）刮入本地 ``work.reviews``，详情页「精选评价」直接展示，不嵌外站。新刮/刷新作品会自动带上；已有库可用 ``scripts/backfill_javdb_reviews.py --code SSNI-806`` 补写，或对单部 ``POST /api/works/{id}/refresh`` 重刮。片源里的 JavDB 镜像仅作外站深链备用，与短评落库无关。
 
 作品首次正式识别后会缓存公开图片；也可点击“缓存图片”，整理预览会补齐尚未下载的图片。图片按作品独立存入

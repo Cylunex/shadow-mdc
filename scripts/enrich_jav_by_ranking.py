@@ -397,7 +397,7 @@ async def _run(arguments: argparse.Namespace) -> int:
     javdb = next((p for p in providers._providers.values() if isinstance(p, JavDBProvider)), None)
     fanza = next((p for p in providers._providers.values() if isinstance(p, FanzaProvider)), None)
     discover = DiscoverService(
-        providers, javdb, fanza, r18_dump_path=settings.resolved_r18_dump_db()
+        providers, javdb, fanza, r18_settings=settings
     )
 
     backends = build_translation_backends(
@@ -570,6 +570,7 @@ async def _run(arguments: argparse.Namespace) -> int:
                     flush=True,
                 )
     finally:
+        await discover.aclose()
         await client.aclose()
         for item in provider_clients:
             await item.aclose()

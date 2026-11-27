@@ -136,7 +136,7 @@ def test_seed_falls_back_to_r18_dump_when_online_empty(tmp_path: Path) -> None:
         again = asyncio.run(discover.seed(repo, provider="fanza", code="ABF-387"))
         assert again.created is False
         assert again.work_id == result.work_id
-    discover.close()
+    asyncio.run(discover.aclose())
 
 
 def test_seed_without_dump_degrades_to_lookup_error(tmp_path: Path) -> None:
@@ -155,7 +155,7 @@ def test_seed_fallback_can_be_disabled(tmp_path: Path) -> None:
         asyncio.run(
             discover.seed(Repository(session), provider="fanza", code="START-634", allow_r18_fallback=False)
         )
-    discover.close()
+    asyncio.run(discover.aclose())
 
 
 def test_javdb_rankings_url_uses_current_format() -> None:

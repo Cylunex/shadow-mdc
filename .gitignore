@@ -35,3 +35,6 @@ data/playback-sites*.json
 services/swipefeed/data/sessions.json
 services/swipefeed/data/site-settings.json
 !services/swipefeed/data/site-settings.example.json
+
+# R18 service URL and bearer token
+**/r18-service.local.json

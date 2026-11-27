@@ -20,19 +20,21 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 from selectolax.parser import HTMLParser
 
+from ..config import Settings
 from ..db.models import Work
 from ..db.repository import Repository
 from ..domain import IdentityHints, ProviderRecord
 from ..enums import ContentFamily, LibraryPresence, MediaCategory, QueryMode
 from ..identity import extract_code
 from ..media.magnets import MagnetLink
-from ..providers.base import ProviderCooldown, ProviderError, ProviderRegistry
+from ..providers.base import ProviderCooldown, ProviderError, ProviderRegistry, SearchBatch
 from ..providers.fanza import FanzaProvider
 from ..providers.html import absolute, parse_date
 from ..providers.javdb import JavDBProvider
 from ..providers.javdb_api import JavDBApiError, JavDBApiMovie, JavDBAppApi, RankingPeriod, RankingZone
+from ..providers.r18_dump import R18DumpProvider, R18ServiceProvider, build_r18_provider
 from ..providers.sukebei import SukebeiClient
-from .r18_dump import R18DumpStore
+from .r18_dump import PROVIDER_ID as R18_PROVIDER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +212,7 @@ class DiscoverService:
         fanza: FanzaProvider | None = None,
         *,
         r18_dump_path: Path | None = None,
+        r18_settings: Settings | None = None,
         javdb_api: JavDBAppApi | None = None,
         sukebei: SukebeiClient | None = None,
     ):
@@ -220,43 +223,32 @@ class DiscoverService:
         self._javdb_api = javdb_api
         self._magnet_cooldown = ProviderCooldown()
         self._magnet_locks = {source: asyncio.Lock() for source in ("javdb", "javdb_app", "sukebei")}
-        self._r18_dump_path = Path(r18_dump_path) if r18_dump_path is not None else None
-        self._r18_store: R18DumpStore | None = None
+        self._owned_r18: R18DumpProvider | R18ServiceProvider | None = None
+        if r18_settings is not None:
+            self._owned_r18 = build_r18_provider(r18_settings)
+        elif r18_dump_path is not None:
+            self._owned_r18 = R18DumpProvider(db_path=r18_dump_path)
+        self._r18_registry = ProviderRegistry([self._owned_r18]) if self._owned_r18 else providers
 
     @property
     def r18_fallback_available(self) -> bool:
-        return self._r18_dump_path is not None and self._r18_dump_path.is_file()
+        return self._r18_registry.is_configured(R18_PROVIDER_ID)
 
-    def r18_record(self, code: str | None) -> ProviderRecord | None:
-        """Public read-only r18 dump lookup (None when dump missing / no match)."""
-
-        return self._r18_fallback_record(code)
-
-    def _r18_fallback_record(self, code: str | None) -> ProviderRecord | None:
-        """Build a record from the offline r18 dump (intake create path only)."""
-
+    async def r18_search(self, code: str | None) -> SearchBatch:
         if not code or not self.r18_fallback_available:
-            return None
-        parsed, family = extract_code(code)
-        if parsed is None or family is not ContentFamily.JAV or parsed.startswith("FC2-"):
-            return None
-        if self._r18_store is None:
-            assert self._r18_dump_path is not None
-            try:
-                self._r18_store = R18DumpStore(self._r18_dump_path)
-            except Exception as exc:  # noqa: BLE001 - degrade to "no fallback"
-                logger.warning("r18 dump unavailable: %s", type(exc).__name__)
-                return None
-        try:
-            return self._r18_store.build_record(parsed)
-        except Exception as exc:  # noqa: BLE001 - corrupt/locked dump must not break intake
-            logger.warning("r18 dump lookup failed for %s: %s", parsed, type(exc).__name__)
-            return None
+            return SearchBatch(records=(), failures=())
+        return await self._r18_registry.search(
+            IdentityHints(mode=QueryMode.CODE, term=code, code=code, family=ContentFamily.JAV),
+            provider_ids=(R18_PROVIDER_ID,),
+        )
 
-    def close(self) -> None:
-        if self._r18_store is not None:
-            self._r18_store.close()
-            self._r18_store = None
+    async def r18_record(self, code: str | None) -> ProviderRecord | None:
+        batch = await self.r18_search(code)
+        return next(iter(batch.records), None)
+
+    async def aclose(self) -> None:
+        if self._owned_r18 is not None:
+            await self._owned_r18.aclose()
 
     async def browse(
         self,
@@ -398,20 +390,22 @@ class DiscoverService:
         code: str | None = None,
         allow_r18_fallback: bool = True,
     ) -> DiscoverSeedResult:
-        fallback: str | None = None
         try:
             record = await self._fetch_record(
                 provider=provider,
                 external_id=external_id,
                 source_url=source_url,
                 code=code,
+                include_r18_fallback=allow_r18_fallback and self._owned_r18 is None,
             )
         except LookupError:
-            dump_record = self._r18_fallback_record(code) if allow_r18_fallback else None
+            if not allow_r18_fallback or self._owned_r18 is None or provider == R18_PROVIDER_ID:
+                raise
+            dump_record = await self.r18_record(code)
             if dump_record is None:
                 raise
             record = dump_record
-            fallback = "r18dump"
+        fallback = R18_PROVIDER_ID if record.provider == R18_PROVIDER_ID and provider != R18_PROVIDER_ID else None
         existing = repo.find_work_by_code(record.code) if record.code else None
         created = existing is None
         work = repo.upsert_provider_record(record, overwrite=False)
@@ -556,6 +550,7 @@ class DiscoverService:
         external_id: str | None,
         source_url: str | None,
         code: str | None = None,
+        include_r18_fallback: bool = True,
     ) -> ProviderRecord:
         # FANZA detail pages are often geo/age gated from HTML; prefer code/cid.
         if provider == "fanza" and code:
@@ -605,7 +600,11 @@ class DiscoverService:
             if api_record is not None:
                 return api_record
         if not batch.records:
-            batch = await self._providers.search(hints)
+            other_ids = tuple(
+                source for source in self._providers.eligible_ids(hints)
+                if source != provider and (include_r18_fallback or source != R18_PROVIDER_ID)
+            )
+            batch = await self._providers.search(hints, provider_ids=other_ids)
         if not batch.records:
             raise LookupError("no provider records for discover seed/detail")
         preferred = next((item for item in batch.records if item.provider == provider), batch.records[0])

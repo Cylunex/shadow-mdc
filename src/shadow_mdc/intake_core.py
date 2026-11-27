@@ -42,7 +42,8 @@ from .media.magnets import (
     rank_magnets,
 )
 from .media.parts import find_subtitles
-from .providers.base import ProviderRegistry, ProviderSelection, normalize_provider_selection
+from .providers.base import ProviderRegistry, ProviderSelection, SearchBatch, normalize_provider_selection
+from .services.discover import DiscoverService
 from .services.offline_recovery import project_offline
 from .services.openlist import magnet_display_name
 from .services.pan import PanService
@@ -53,6 +54,7 @@ from .services.pan_offline_enqueue import (
     resolve_offline_directory,
 )
 from .services.post_ingest import translate_after_ingest
+from .services.r18_dump import PROVIDER_ID as R18_PROVIDER_ID
 from .services.seed_auto_offline import enqueue_seeded_offline
 
 logger = logging.getLogger(__name__)
@@ -801,20 +803,31 @@ async def intake_metadata(
     selection = normalize_provider_selection(providers)
     selected = select_metadata_providers(app_runtime.providers, selection)
     work = repo.find_work_by_code(normalized)
-    record = app_runtime.discover.r18_record(normalized)
+    hints = _jav_hints(normalized)
+    batch = SearchBatch(records=(), failures=())
+    dump = SearchBatch(records=(), failures=())
+    if selection is None or selection is False:
+        dump = await app_runtime.discover.r18_search(normalized)
+        if selection is None and not dump.records and work is None:
+            others = tuple(
+                provider_id for provider_id in app_runtime.providers.eligible_ids(hints)
+                if provider_id != R18_PROVIDER_ID
+            )
+            batch = await app_runtime.providers.search(hints, provider_ids=others)
+    else:
+        batch = await app_runtime.providers.search(hints, provider_ids=selected)
+
+    record = next(
+        (item for item in (*dump.records, *batch.records) if item.provider == R18_PROVIDER_ID), None
+    )
     out = MetadataOut(
         code=normalized,
         in_catalog=work is not None,
         work_id=work.id if work is not None else None,
         r18dump=brief_from_record(record) if record is not None else None,
+        providers=[brief_from_record(item.record) for item in rank_candidates(hints, batch.records)[:5]],
+        failures=[f"{item.provider}: {item.reason}" for item in (*dump.failures, *batch.failures)],
     )
-    if selection is not False and (selection is not None or (record is None and work is None)):
-        hints = _jav_hints(normalized)
-        batch = await app_runtime.providers.search(hints, provider_ids=selected)
-        out.providers = [
-            brief_from_record(item.record) for item in rank_candidates(hints, batch.records)[:5]
-        ]
-        out.failures = [f"{item.provider}: {item.reason}" for item in batch.failures]
     if work is not None:
         out.providers.insert(0, brief_from_work(work))
     return out
@@ -869,10 +882,16 @@ async def intake_offline_add(payload: OfflineAddRequest, request: Request, repo:
     if payload.dry_run:
         metadata = state.metadata
         if metadata is None:
-            record = app_runtime.discover.r18_record(code) if payload.providers is None else None
+            record = await app_runtime.discover.r18_record(code) if payload.providers is None else None
             if record is None:
                 hints = _jav_hints(code)
-                batch = await app_runtime.providers.search(hints, provider_ids=selected)
+                provider_ids = selected
+                if payload.providers is None:
+                    provider_ids = tuple(
+                        provider_id for provider_id in app_runtime.providers.eligible_ids(hints)
+                        if provider_id != R18_PROVIDER_ID
+                    )
+                batch = await app_runtime.providers.search(hints, provider_ids=provider_ids)
                 record = next(
                     (item.record for item in rank_candidates(hints, batch.records)
                      if item.decision is MatchDecision.ACCEPT),
@@ -1019,14 +1038,8 @@ def analyze_magnet(
     magnet: str,
     title: str | None = None,
     code: str | None = None,
-    r18_lookup: Any | None = None,
 ) -> MagnetInspectOut:
-    """Structured magnet analysis without submitting offline (shared by inspect + dry_run).
-
-    ``r18_lookup`` is an optional ``(code) -> ProviderRecord | None`` (e.g. discover.r18_record)
-    used for brief metadata / poster when the code is known but not yet in the catalog.
-    Preview may be absent — never invents a poster.
-    """
+    """Analyze the magnet and its local catalog state without submitting anything."""
 
     raw = magnet.strip()
     if not raw.lower().startswith("magnet:?"):
@@ -1112,15 +1125,6 @@ def analyze_magnet(
     )
     presence = LibraryPresence.from_flags(in_catalog=work is not None, has_media=bool(has_media))
 
-    if meta is None and resolved_code is not None and callable(r18_lookup):
-        record = r18_lookup(resolved_code)
-        if record is not None:
-            meta = brief_from_record(record)
-            preview = preview or meta.cover
-            notes.append("metadata from r18 dump")
-            if display_title.startswith("magnet-") and meta.title:
-                display_title = meta.title
-
     if meta is None and resolved_code is None:
         meta = MetadataBrief(
             title=display_title,
@@ -1149,20 +1153,30 @@ def analyze_magnet(
     )
 
 
+async def _with_r18_magnet_metadata(
+    inspected: MagnetInspectOut, discover: DiscoverService
+) -> MagnetInspectOut:
+    if inspected.metadata is not None or inspected.code is None:
+        return inspected
+    record = await discover.r18_record(inspected.code)
+    if record is not None:
+        meta = brief_from_record(record)
+        inspected.metadata = meta
+        inspected.preview_url = inspected.preview_url or meta.cover
+        inspected.message += "; metadata from r18 dump"
+        if inspected.title and inspected.title.startswith("magnet-") and meta.title:
+            inspected.title = meta.title
+    return inspected
+
+
 @router.post("/magnet/inspect", response_model=MagnetInspectOut)
-def intake_magnet_inspect(
+async def intake_magnet_inspect(
     payload: MagnetInspectRequest, request: Request, repo: IntakeRepo
 ) -> MagnetInspectOut:
-    """Parse/analyze a magnet URI without submitting offline. Preview may be absent."""
-
+    """Parse/analyze a magnet URI without submitting offline."""
     discover = _core().runtime(request).discover
-    return analyze_magnet(
-        repo,
-        magnet=payload.magnet,
-        title=payload.title,
-        code=payload.code,
-        r18_lookup=discover.r18_record,
-    )
+    inspected = analyze_magnet(repo, magnet=payload.magnet, title=payload.title, code=payload.code)
+    return await _with_r18_magnet_metadata(inspected, discover)
 
 
 @router.post("/offline/magnet", response_model=OfflineAddOut)
@@ -1192,21 +1206,15 @@ async def intake_offline_add_magnet(
         magnet=magnet,
         title=payload.title,
         code=payload.code,
-        r18_lookup=app_runtime.discover.r18_record,
     )
     dedup = _hash_dedup_out(repo, info_hash=info_hash, magnet=magnet, dry_run=payload.dry_run, dn=dn)
     if dedup is not None:
         _check_existing_job_target(dedup.job, backend, target if payload.directory_id is not None else None)
         if payload.dry_run:
-            dedup.inspect = inspected
+            dedup.inspect = await _with_r18_magnet_metadata(inspected, app_runtime.discover)
         return dedup
 
-    code: str | None = None
-    if payload.code and payload.code.strip():
-        code = normalize_code_or_422(payload.code)
-    if code is None:
-        code = _try_extract_code(payload.title, dn)
-
+    code = inspected.code
     if code is not None:
         # Reuse the existing code-based offline path with magnet override.
         return await intake_offline_add(

@@ -131,7 +131,7 @@ async def _run(arguments: argparse.Namespace) -> int:
         providers,
         javdb,
         fanza,
-        r18_dump_path=settings.resolved_r18_dump_db(),
+        r18_settings=settings,
         javdb_api=javdb_api,
         sukebei=SukebeiClient(client, retries=settings.request_retries),
     )
@@ -148,7 +148,7 @@ async def _run(arguments: argparse.Namespace) -> int:
             data_dir=settings.data_dir,
         )
     finally:
-        discover.close()
+        await discover.aclose()
         await client.aclose()
 
     payload = {"day": day.isoformat(), "work_ids": work_ids, **stats.as_dict()}

@@ -349,7 +349,7 @@ async def _run(arguments: argparse.Namespace) -> int:
         None,
     )
     discover = DiscoverService(
-        providers, javdb, fanza, r18_dump_path=settings.resolved_r18_dump_db()
+        providers, javdb, fanza, r18_settings=settings
     )
 
     backends = build_translation_backends(
@@ -471,6 +471,7 @@ async def _run(arguments: argparse.Namespace) -> int:
             after_map = index_works(Repository(session))
             summary["after"] = completeness_stats(after_map, entries)
     finally:
+        await discover.aclose()
         await client.aclose()
         for item in provider_clients:
             await item.aclose()
