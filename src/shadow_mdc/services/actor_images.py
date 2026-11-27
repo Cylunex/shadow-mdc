@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 REMOTE_PREFIX = "remote-"
 LOCAL_ROUTE = "/api/actor-images/"
 LAZY_ROUTE = "/api/actor-images/remote/"
+NON_JAV_ROUTE = "/api/non-jav-actor-images/"
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 FAILURE_TTL_SECONDS = 30 * 60.0
 _KEY_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -86,6 +87,10 @@ class ActorImageCache:
             return None
         cleaned = url.strip()
         if not is_remote_url(cleaned):
+            for route in (LOCAL_ROUTE, NON_JAV_ROUTE):
+                filename = cleaned.removeprefix(route)
+                if filename != cleaned and "/" not in filename and self._dir is not None:
+                    return cleaned if (self._dir / filename).is_file() else None
             return cleaned
         key = remote_key(cleaned)
         self._index[key] = cleaned

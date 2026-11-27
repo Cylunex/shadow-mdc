@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 MAX_SITES = 100
 MAX_CONFIGS = 32
 MAX_PAGE = 500
+POSTER_CACHE_BYTES = 32 * 1024 * 1024
+POSTER_CACHE_ENTRIES = 128
 JsonRecord = dict[str, object]
 # Match strings before comments and commas, so URLs and string literals are kept intact.
 _JSONC = re.compile(r'"(?:\\.|[^"\\])*"|//[^\r\n]*|/\*[\s\S]*?\*/')
@@ -405,8 +407,11 @@ class TvBoxService:
         self.proxy_routes = proxy_routes or {}
         self.browser_streams = BrowserStreams()
         self._posters: OrderedDict[tuple[str, str], tuple[float, str, str]] = OrderedDict()
+        self._poster_images: OrderedDict[tuple[str, str], tuple[float, bytes, str, str]] = OrderedDict()
         self._updates = asyncio.Lock()
         self._requests = asyncio.Semaphore(8)
+        self._site_checks = asyncio.Semaphore(4)
+        self._image_requests = asyncio.Semaphore(4)
         self._imports: dict[str, asyncio.Task[ImportResult]] = {}
 
     def submit_import(
@@ -502,7 +507,7 @@ class TvBoxService:
 
     async def _check(self, source: SiteInput) -> list[Category]:
         proxy = self.proxy_routes.get(identity(source.endpoint))
-        async with self._requests, asyncio.timeout(22):
+        async with self._site_checks, self._requests, asyncio.timeout(22):
             payload = await SiteCatalog(source, [], proxy).fetch()
             candidates = payload.get("class")
             categories: list[Category] = []
@@ -873,9 +878,15 @@ class TvBoxService:
         return card
 
     async def image(self, site_id: str, item_id: str) -> tuple[bytes, str]:
+        key = (site_id, item_id)
         catalog = self._catalog(site_id)
-        async with self._requests:
-            cached = self._posters.get((site_id, item_id))
+        image = self._poster_images.pop(key, None)
+        if image and image[0] > monotonic() and image[3] in catalog.allowed:
+            self._poster_images[key] = image
+            return image[1], image[2]
+        async with self._image_requests:
+            catalog = self._catalog(site_id)
+            cached = self._posters.get(key)
             if cached and cached[0] > monotonic() and cached[2] in catalog.allowed:
                 _, poster, category = cached
             else:
@@ -884,12 +895,24 @@ class TvBoxService:
                 category = row.type_id
             if not poster:
                 raise LookupError("没有封面")
-            response = await download(
-                urljoin(catalog.site.endpoint, poster),
-                allow_http=catalog.site.allow_http, proxy=catalog.proxy,
-            )
-        if category not in self._catalog(site_id).allowed:
-            raise LookupError("分类已变更")
-        if response.mime in ("image/jpeg", "image/png", "image/webp", "image/gif"):
+            try:
+                response = await download(
+                    urljoin(catalog.site.endpoint, poster),
+                    allow_http=catalog.site.allow_http, proxy=catalog.proxy,
+                )
+            except TvBoxError as exc:
+                logger.warning(
+                    "TVBox poster fetch failed site=%s proxy=%s error=%s cause=%s",
+                    site_id, catalog.proxy is not None, exc, type(exc.__cause__).__name__,
+                )
+                raise
+            if category not in self._catalog(site_id).allowed:
+                raise LookupError("分类已变更")
+            if response.mime not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
+                raise LookupError("封面格式不受支持")
+            self._poster_images[key] = (monotonic() + 300, response.body, response.mime, category)
+            cache_bytes = sum(len(entry[1]) for entry in self._poster_images.values())
+            while len(self._poster_images) > POSTER_CACHE_ENTRIES or cache_bytes > POSTER_CACHE_BYTES:
+                _, removed = self._poster_images.popitem(last=False)
+                cache_bytes -= len(removed[1])
             return response.body, response.mime
-        raise LookupError("封面格式不受支持")

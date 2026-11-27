@@ -5584,7 +5584,9 @@ def _non_jav_actor_out(
         groups=actor.groups,
         categories=actor.categories,
         match_names=actor.match_names,
-        image_url=(f"/api/non-jav-actor-images/{actor.image_file}" if actor.image_file is not None else None),
+        image_url=actor_image_display_url(
+            f"/api/non-jav-actor-images/{actor.image_file}" if actor.image_file is not None else None,
+        ),
         x_handle=handle,
         x_url=x_profile_url(handle),
         biography=actor.biography,

@@ -921,6 +921,8 @@ class OpenListService:
                     digest, existing.id, adopted=True, message="adopted finished task",
                     already_exists=existing.already_exists,
                 )
+        if url.lower().startswith("ed2k://") and cfg.tool in OPENLIST_TOOLS_HINT:
+            raise PanNotConfiguredError("当前 115 离线工具不支持 ed2k。请改用受支持的链接")
         try:
             tasks = await client.add_offline_download(
                 [url], path=target_path, tool=cfg.tool, delete_policy=cfg.delete_policy

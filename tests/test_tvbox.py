@@ -29,6 +29,8 @@ def test_import_and_play_without_relay(tmp_path: Path, monkeypatch: pytest.Monke
             return Download(url, "application/json", raw)
         if path == "/offline":
             raise TvBoxError("上游连接失败或超时")
+        if path == "/poster.jpg":
+            return Download(url, "image/jpeg", b"poster")
         if path == "/stream":
             if "ep" in query:
                 return Download(url, "text/html", b"<html>browser player</html>")
@@ -43,7 +45,7 @@ def test_import_and_play_without_relay(tmp_path: Path, monkeypatch: pytest.Monke
             return Download(url, "video/mp2t", b"\x47" + bytes(187))
         if path == "/cms":
             rows: list[dict[str, object]] = [
-                {"vod_id": "00/演示", "vod_name": "示例剧", "type_id": 1},
+                {"vod_id": "00/演示", "vod_name": "示例剧", "type_id": 1, "vod_pic": "/poster.jpg"},
                 {"vod_id": "hidden", "vod_name": "未分组", "type_id": 99},
             ]
             if "ids" in query:
@@ -101,6 +103,10 @@ def test_import_and_play_without_relay(tmp_path: Path, monkeypatch: pytest.Monke
         [item] = page["items"]
         assert item["title"] == "示例剧"
         item_path = f"{path}/items/{item['id']}"
+        for _ in range(2):
+            poster = client.get(item_path + "/image", headers=headers)
+            assert poster.status_code == 200 and poster.content == b"poster"
+        assert sum(url.endswith("/poster.jpg") for url in calls) == 1
         detail = client.get(item_path, headers=headers).json()
         assert detail["overview"] == "示例剧简介"
         assert len(detail["episodes"]) == 3

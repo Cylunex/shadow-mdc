@@ -443,7 +443,12 @@ def test_actor_image_display_url_and_lazy_localize(tmp_path: Path) -> None:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
             cache = ActorImageCache(tmp_path / "actor-images", http=http, url_source=lambda: [cdn])
             assert cache.display_url(None) is None
+            assert cache.display_url("/api/actor-images/x.jpg") is None
+            assert cache.display_url("/api/non-jav-actor-images/x.jpg") is None
+            (tmp_path / "actor-images").mkdir()
+            (tmp_path / "actor-images" / "x.jpg").write_bytes(b"fixture")
             assert cache.display_url("/api/actor-images/x.jpg") == "/api/actor-images/x.jpg"
+            assert cache.display_url("/api/non-jav-actor-images/x.jpg") == "/api/non-jav-actor-images/x.jpg"
             key = remote_key(cdn)
             assert cache.display_url(cdn) == f"/api/actor-images/remote/{key}"
             # Fresh instance (restart): key resolved via the catalog URL source.
