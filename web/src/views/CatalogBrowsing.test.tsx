@@ -84,31 +84,42 @@ it("does not save old cards or use their cursor with a new filter", async () => 
   expect(container.querySelector(".work-grid")?.textContent).toContain("新结果");
 });
 
-it("bounds category cards, remembers the page, and resets it when changing page size", async () => {
+it("paginates root categories, remembers the page, and resets it when changing page size", async () => {
   await act(async () => root.render(<CategoriesView onOpenTag={vi.fn()} />));
-  expect(container.querySelectorAll(".category-card")).toHaveLength(24);
+  expect(container.querySelectorAll(".category-works")).toHaveLength(24);
   await act(async () => button("下一页分类").click());
-  expect(container.querySelector(".category-card strong")?.textContent).toBe("分类 24");
+  expect(container.querySelector(".category-works strong")?.textContent).toBe("分类 24");
   await act(async () => root.render(null));
   await act(async () => root.render(<CategoriesView onOpenTag={vi.fn()} />));
-  expect(container.querySelector(".category-card strong")?.textContent).toBe("分类 24");
+  expect(container.querySelector(".category-works strong")?.textContent).toBe("分类 24");
   await change("分类每页数量", "96");
-  expect(container.querySelectorAll(".category-card")).toHaveLength(60);
+  expect(container.querySelectorAll(".category-works")).toHaveLength(60);
   expect(container.querySelector('[aria-current="page"]')?.textContent).toBe("1");
   expect(api.categories).toHaveBeenCalledTimes(1);
+});
+
+it("keeps all descendants on their root category's page", async () => {
+  const child = { ...categories[0]!, slug: "child", label: "子类", parent_id: "tag-23" };
+  vi.mocked(api.categories).mockResolvedValue({ categories: [child, ...categories.slice(0, 25)] });
+  await act(async () => root.render(<CategoriesView onOpenTag={vi.fn()} />));
+  expect(container.querySelectorAll(".category-tree > li")).toHaveLength(24);
+  expect(container.querySelector(".category-tree > li:last-child ul strong")?.textContent).toBe("子类");
+  await act(async () => button("下一页分类").click());
+  expect(container.querySelectorAll(".category-works")).toHaveLength(1);
+  expect(container.querySelector(".category-works strong")?.textContent).toBe("分类 24");
 });
 
 it("searches category aliases, sorts counts, and clears an empty filter locally", async () => {
   await act(async () => root.render(<CategoriesView onOpenTag={vi.fn()} />));
   await change("分类排序", "count");
-  expect(container.querySelector(".category-card strong")?.textContent).toBe("分类 59");
+  expect(container.querySelector(".category-works strong")?.textContent).toBe("分类 59");
   await change("搜索分类", "alias-0");
-  expect(container.querySelectorAll(".category-card")).toHaveLength(1);
+  expect(container.querySelectorAll(".category-works")).toHaveLength(1);
   await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
   expect(container.textContent).toContain("没有匹配的分类");
   expect(container.textContent).not.toContain("scripts/");
   await act(async () => button("清除筛选").click());
-  expect(container.querySelectorAll(".category-card")).toHaveLength(24);
+  expect(container.querySelectorAll(".category-works")).toHaveLength(24);
   expect(api.categories).toHaveBeenCalledTimes(1);
 });
 
@@ -118,7 +129,7 @@ it("retries a failed category load without claiming the catalog is empty", async
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("分类加载失败");
   expect(container.textContent).not.toContain("暂无分类");
   await act(async () => button("重试分类").click());
-  expect(container.querySelectorAll(".category-card")).toHaveLength(24);
+  expect(container.querySelectorAll(".category-works")).toHaveLength(24);
 });
 
 it("opens a category by its stable ID while displaying its name", async () => {
@@ -127,34 +138,50 @@ it("opens a category by its stable ID while displaying its name", async () => {
     { ...categories[0]!, id: "tag:amateur", label: "爱好者", aliases: ["素人", "Amateur"] },
   ] });
   await act(async () => root.render(<CategoriesView onOpenTag={open} />));
-  await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
+  await act(async () => container.querySelector<HTMLButtonElement>(".category-works")!.click());
   expect(open).toHaveBeenCalledWith("tag:amateur", "爱好者");
 });
 
-it("browses high-level tag nodes and opens either their whole subtree or a leaf", async () => {
+it("expands branches in place, opens works at any level, and remembers the tree", async () => {
   const open = vi.fn();
-  const nodes = [{ id: "clothing", name: "服饰" }, { id: "stockings", name: "丝袜" }, { id: "black", name: "黑丝" }];
-  vi.mocked(api.categories).mockResolvedValue({ categories: nodes.map((node, index) => ({
-    ...categories[0]!, id: node.id, label: node.name, work_count: 3,
-    parent_id: index ? nodes[index - 1]!.id : null, path: nodes.slice(0, index + 1),
+  const nodes = [
+    { id: "root", label: "年代", parent_id: null },
+    { id: "period", label: "现代", parent_id: "root" },
+    { id: "recent", label: "近年", parent_id: "period" },
+    { id: "region", label: "地区", parent_id: null },
+    { id: "asia", label: "亚洲", parent_id: "region" },
+  ];
+  vi.mocked(api.categories).mockResolvedValue({ categories: nodes.map(node => ({
+    ...categories[0]!, ...node, aliases: [node.id + "-alias"], work_count: 3,
   })) });
-  await act(async () => root.render(<CategoriesView onOpenTag={open} />));
-  expect(container.querySelectorAll(".category-card")).toHaveLength(1);
-  expect(container.querySelector(".category-card strong")?.textContent).toBe("服饰");
-  await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
+  const labels = () => [...container.querySelectorAll(".category-works strong")].map(el => el.textContent);
+  const render = () => root.render(<CategoriesView onOpenTag={open} />);
+  await act(async () => render());
+  expect(labels()).toEqual(["年代", "现代", "地区", "亚洲"]);
+  await act(async () => button("展开现代").click());
+  await act(async () => button("收起地区").click());
+  expect(labels()).toEqual(["年代", "现代", "近年", "地区"]);
   expect(open).not.toHaveBeenCalled();
-  expect(container.querySelector(".category-card strong")?.textContent).toBe("丝袜");
-  await act(async () => button("查看此节点全部作品").click());
-  expect(open).toHaveBeenCalledWith("clothing", "服饰");
-  await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
-  expect(container.querySelector(".category-card strong")?.textContent).toBe("黑丝");
-  await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
-  expect(open).toHaveBeenLastCalledWith("black", "黑丝");
-  await act(async () => button("全部标签").click());
-  expect(container.querySelector(".category-card strong")?.textContent).toBe("服饰");
+  await act(async () => container.querySelector<HTMLButtonElement>('[title="查看「年代」的作品"]')!.click());
+  expect(open).toHaveBeenLastCalledWith("root", "年代");
+  await act(async () => container.querySelector<HTMLButtonElement>('[title="查看「近年」的作品"]')!.click());
+  expect(open).toHaveBeenLastCalledWith("recent", "近年");
+  await act(async () => root.render(null));
+  await act(async () => render());
+  expect(labels()).toEqual(["年代", "现代", "近年", "地区"]);
+  await act(async () => button("全部收起").click());
+  expect(labels()).toEqual(["年代", "地区"]);
+  await change("搜索分类", "recent-alias");
+  expect(labels()).toEqual(["年代", "现代", "近年"]);
+  expect(container.querySelector(".category-tree > li > ul > li > ul strong")?.textContent).toBe("近年");
+  await act(async () => button("清除筛选").click());
+  expect(labels()).toEqual(["年代", "地区"]);
+  await act(async () => button("全部展开").click());
+  expect(labels()).toEqual(["年代", "现代", "近年", "地区", "亚洲"]);
+  expect(api.categories).toHaveBeenCalledOnce();
 });
 
-it("keeps the category page as a tag gallery with covers and stable tag navigation", async () => {
+it("keeps the category page as a tag tree with covers and stable tag navigation", async () => {
   sessionStorage.setItem("mdc:category-browsing", JSON.stringify({ dimension: "contents", query: "", onlyWithWorks: false, sort: "featured", page: 1, pageSize: 24 }));
   const open = vi.fn();
   vi.mocked(api.categories).mockResolvedValue({ categories: [
@@ -164,9 +191,9 @@ it("keeps the category page as a tag gallery with covers and stable tag navigati
   expect(api.categories).toHaveBeenCalledOnce();
   expect(api.classifications).not.toHaveBeenCalled();
   expect(container.querySelector('[aria-label="分类维度"]')).toBeNull();
-  expect(container.querySelector(".category-card strong")?.textContent).toBe("素人");
-  expect(container.querySelector(".category-card img")?.getAttribute("src")).toBe("/api/category-covers/amateur.jpg");
-  await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
+  expect(container.querySelector(".category-works strong")?.textContent).toBe("素人");
+  expect(container.querySelector(".category-works img")?.getAttribute("src")).toBe("/api/category-covers/amateur.jpg");
+  await act(async () => container.querySelector<HTMLButtonElement>(".category-works")!.click());
   expect(open).toHaveBeenCalledWith("tag:amateur", "素人");
 });
 

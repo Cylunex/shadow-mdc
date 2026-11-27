@@ -1127,7 +1127,7 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 }
 
 
-/* —— Categories grid (PH-style dense cards) —— */
+/* Category browsing */
 .categories-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -1154,77 +1154,6 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   cursor: pointer;
   user-select: none;
 }
-.category-grid {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
-  margin-top: 8px;
-}
-.category-card {
-  display: flex;
-  flex-direction: column;
-  padding: 0;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  overflow: hidden;
-  text-align: left;
-  color: inherit;
-  transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
-}
-.category-card:hover {
-  transform: translateY(-2px);
-  border-color: #2f8f84;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, .35);
-}
-.category-cover {
-  position: relative;
-  aspect-ratio: 16 / 10;
-  background: linear-gradient(145deg, #1a3034, #0c1214 55%, #14322e);
-  overflow: hidden;
-}
-.category-cover img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.category-cover-fallback {
-  width: 100%;
-  height: 100%;
-  background:
-    radial-gradient(80% 70% at 30% 20%, rgba(45, 212, 191, .28), transparent 60%),
-    linear-gradient(145deg, #1e2c31, #101719);
-}
-.category-count {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  background: rgba(8, 16, 14, .78);
-  border: 1px solid rgba(45, 212, 191, .35);
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 999px;
-}
-.category-meta {
-  padding: 10px 12px 12px;
-}
-.category-meta strong {
-  display: block;
-  font-size: 14px;
-  font-weight: 650;
-  letter-spacing: -.01em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-@media (max-width: 720px) {
-  .category-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
-}
-
-
 /* —— Rankings yearly TOP250 polish —— */
 .rank-tabs {
   gap: 8px;
@@ -1529,50 +1458,6 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   font-size: 11px;
 }
 
-.categories-view .category-grid,
-.category-grid {
-  display: grid;
-  gap: 14px;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-}
-.category-card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  overflow: hidden;
-  transition: border-color .15s ease, transform .15s ease;
-  box-shadow: var(--card-shadow);
-  cursor: pointer;
-  padding: 0;
-  text-align: left;
-  color: inherit;
-  display: grid;
-}
-.category-card:hover {
-  border-color: rgba(45,212,191,.5);
-  transform: translateY(-2px);
-}
-.category-card .category-cover {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 10;
-  background: #0c1214;
-  overflow: hidden;
-}
-.category-card .category-cover img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.category-card .category-meta {
-  padding: 10px 12px 12px;
-  display: grid;
-  gap: 4px;
-}
-.category-card strong { font-size: 14px; }
-.category-card small { color: var(--muted); font-size: 11px; }
-
 .subscription-card, .queue-card {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -1792,7 +1677,7 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .cover-frame[data-crop="front"] .cover-main { object-fit: cover; object-position: right center; }
 .cover-frame[data-crop="front"] .cover-bg { opacity: 0; }
 .work:hover .cover-main, .discover-card:hover .cover-main, .actor-page-work-card:hover .cover-main,
-.work-related-card:hover .cover-main, .category-card:hover .cover-main, .actor-work:hover .cover-main {
+.work-related-card:hover .cover-main, .actor-work:hover .cover-main {
   transform: scale(1.04); filter: brightness(1.06);
 }
 /* Landscape card slots site-wide */
@@ -1800,7 +1685,6 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .dense-rank-card .poster { width: 200px; min-height: 0; aspect-ratio: 16 / 9; align-self: start; }
 .work-related-poster { width: 220px; height: auto; aspect-ratio: 16 / 9; }
 .actor-work-poster { position: relative; aspect-ratio: 16 / 9; min-height: 0; overflow: hidden; }
-.category-cover { position: relative; }
 .work-page-cover { position: relative; width: 100%; aspect-ratio: 16 / 10; border-radius: 14px; overflow: hidden; border: 1px solid #243035; }
 .work-page-front { position: relative; width: 100%; aspect-ratio: 2 / 3; max-width: 200px; border-radius: 10px; overflow: hidden; border: 1px solid #243035; }
 .score-chip, .code-chip, .rank-badge, .in-library-badge, .want-badge { z-index: 2; }
@@ -1835,10 +1719,6 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .in-library-badge, .want-badge { font-size: 10px; padding: 1px 6px; }
 .actor-page-work-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)) !important; gap: 18px; }
 .actor-page-work-meta span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-.category-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)) !important; gap: 14px; }
-.category-cover { aspect-ratio: 16 / 9; }
-.category-meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.category-meta .category-count { position: static; background: none; color: var(--muted); font-size: 12px; padding: 0; }
 .work-related-card { flex: 0 0 300px !important; }
 .work-related-poster { width: 300px !important; height: auto !important; aspect-ratio: 16 / 9; }
 .work-related-meta span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
@@ -1851,7 +1731,7 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   .work-page-hero { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
-  .work-grid, .dense-rank-grid, .actor-page-work-grid, .category-grid { grid-template-columns: 1fr !important; }
+  .work-grid, .dense-rank-grid, .actor-page-work-grid { grid-template-columns: 1fr !important; }
   .work-related-card { flex-basis: 78vw !important; }
   .work-related-poster { width: 100% !important; }
 }
@@ -2730,11 +2610,26 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .category-heading-title > span { font-size: 13px; }
 .categories-view .categories-toolbar { justify-content: flex-start; }
 .categories-view .categories-toolbar > input { flex: 1; min-width: min(240px, 100%); }
-.categories-view .category-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)) !important; }
-.categories-view .category-meta { display: flex; justify-content: space-between; align-items: center; min-width: 0; }
-.categories-view .category-count { border: 0; white-space: nowrap; }
-.categories-view .category-cover .cover-frame { position: absolute; inset: 0; width: 100%; height: 100%; }
-.category-cover-label { position: absolute; inset: 0; display: grid; place-items: center; padding: 12px; color: var(--accent); font-size: 24px; font-weight: 600; }
+.category-tree-actions { display: flex; gap: 6px; }
+.category-tree, .category-tree ul { list-style: none; margin: 0; padding: 0; }
+.category-tree { display: grid; gap: 8px; margin-block: 16px; }
+.category-tree > li { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 2px 8px; }
+.category-tree-row { display: flex; align-items: center; min-width: 0; }
+.category-tree-row:hover, .category-tree-row:focus-within { background: var(--panel-2); border-radius: 8px; }
+.category-tree-row .category-disclosure, .category-guide {
+  display: grid; place-items: center; flex: 0 0 36px; height: 40px; padding: 0;
+  background: transparent; color: var(--accent); font-size: 16px;
+}
+.category-guide { color: var(--muted); }
+.category-works {
+  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; min-height: 44px;
+  background: transparent; color: inherit; padding: 6px; text-align: start;
+}
+.category-works strong { overflow-wrap: anywhere; font-size: 14px; }
+.category-works > span { margin-inline-start: auto; color: var(--muted); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.category-tree > li > .category-tree-row strong { font-size: 16px; }
+.category-tree .category-thumbnail { position: relative; inset: auto; flex: 0 0 44px; height: 28px; border-radius: 4px; }
+.category-tree-row button:not(:disabled):hover { transform: none; color: var(--accent); }
 .unified-catalog .catalog-people-search { scroll-margin-top: 90px; }
 .unified-catalog .actor-card { min-width: 0; }
 .unified-catalog .actor-card strong, .unified-catalog .actor-card-aliases { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2745,9 +2640,6 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   .catalog-page-buttons { order: 2; flex-basis: 100%; flex-wrap: wrap; }
   .catalog-page-jump { order: 3; }
   .catalog-pagination { gap: 10px; }
-  .categories-view .category-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 10px; }
-  .categories-view .category-meta { display: grid; gap: 4px; padding: 10px; }
-  .category-cover-label { font-size: 18px; }
   .unified-catalog .catalog-search { grid-template-columns: minmax(0, 1fr); }
 }
 
@@ -2766,9 +2658,6 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .catalog-tag-tree li { display: flex; align-items: start; gap: 6px; margin: 4px 0; min-width: 0; }
 .catalog-tag-tree .catalog-tag-expand { flex: 0 0 26px; width: 26px; min-height: 30px; padding: 4px; }
 .catalog-tag-tree li > button:not(.catalog-tag-expand) { text-align: start; white-space: normal; overflow-wrap: anywhere; min-width: 0; }
-.category-tile { min-width: 0; }
-.category-tile .category-card { width: 100%; }
-.categories-view nav[aria-label="标签层级"] { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 12px; }
 .tvbox-view { --tvbox-accent: #74d9c9; display: grid; gap: 1rem; max-width: 1560px; margin: 0 auto; padding-bottom: 2rem; }
 .tvbox-view h1, .tvbox-view h2, .tvbox-view p { margin: 0; }
 .tvbox-header, .tvbox-toolbar, .tvbox-filters, .tvbox-actions, .tvbox-categories { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; }

@@ -208,10 +208,10 @@ describe("page load request budget", () => {
   it("opens categories as a separate list and applies the chosen tag to works", async () => {
     window.history.replaceState({}, "", "/?view=categories&q=old&genre=old");
     await act(async () => root.render(<App />));
-    expect(container.querySelector(".category-grid")?.textContent).toContain("Fixture tag");
+    expect(container.querySelector(".category-tree")?.textContent).toContain("Fixture tag");
     expect(container.querySelector(".work-grid")).toBeNull();
     expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith("/works/query"))).toBe(false);
-    await act(async () => container.querySelector<HTMLButtonElement>(".category-card")!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".category-works")!.click());
     expect(container.querySelector(".work-grid")).not.toBeNull();
     const params = new URLSearchParams(window.location.search);
     expect(params.get("tag")).toBe("Fixture tag");
@@ -222,7 +222,7 @@ describe("page load request budget", () => {
       window.history.replaceState({}, "", "/?view=categories");
       window.dispatchEvent(new PopStateEvent("popstate"));
     });
-    expect(container.querySelector(".category-grid")).not.toBeNull();
+    expect(container.querySelector(".category-tree")).not.toBeNull();
   });
 
   it("does not download the library until the local swipe feed is selected", async () => {
