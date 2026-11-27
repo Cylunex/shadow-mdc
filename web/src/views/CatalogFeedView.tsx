@@ -16,6 +16,8 @@ export function CatalogFeedView({ initial, onState, onClose, onOpenWork }: Props
   const currentIndex = useRef(index);
   const [sources, setSources] = useState<PlayerSource[]>([]);
   const [error, setError] = useState("");
+  const [sourceError, setSourceError] = useState("");
+  const [sourceRetry, setSourceRetry] = useState(0);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const active = useRef(true);
@@ -30,7 +32,7 @@ export function CatalogFeedView({ initial, onState, onClose, onOpenWork }: Props
   useEffect(() => {
     if (!current) return;
     const controller = new AbortController();
-    setLoading(true); setSources([]); setError("");
+    setLoading(true); setSources([]); setError(""); setSourceError("");
     api.workPlayResolve(current.id, controller.signal).then(result => {
       if (controller.signal.aborted) return;
       const preferred = result.chosen || result.preferred;
@@ -43,10 +45,10 @@ export function CatalogFeedView({ initial, onState, onClose, onOpenWork }: Props
         }
       }
       setSources(list);
-    }).catch(e => { if (!controller.signal.aborted) setError(String(e)); })
+    }).catch(e => { if (!controller.signal.aborted) setSourceError(String(e)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [current?.id]);
+  }, [current?.id, sourceRetry]);
   function move(delta: number) {
     const next = index + delta;
     if (next < 0 || next >= items.length) return;
@@ -126,7 +128,8 @@ export function CatalogFeedView({ initial, onState, onClose, onOpenWork }: Props
             item.version_id === source.version_id) ?? null;
         }}
         onClose={onClose} onReport={setError}
-      /> : <p className="muted">暂无已配置的播放来源，可查看作品详情。</p>}
+      /> : sourceError ? <p role="alert">{sourceError} <button type="button" className="ghost"
+        onClick={() => setSourceRetry(value => value + 1)}>重试播放来源</button></p> : <p className="muted">暂无已配置的播放来源，可查看作品详情。</p>}
     </>}
     {error && <p role="alert">{error}</p>}
     <footer><button type="button" className="ghost" disabled={index === 0} onClick={() => move(-1)}>上一部</button>

@@ -9,7 +9,6 @@ import { TopNav, type AppView } from "./components/TopNav";
 import type { Asset, Candidate, LibraryPrefs, TaskRun } from "./model";
 import { Inbox } from "./panels";
 import { UnifiedCatalogView, type CatalogFeedStart } from "./views/UnifiedCatalogView";
-import { WorkDetailView } from "./views/WorkDetailView";
 import { CategoriesView } from "./views/CategoriesView";
 import type { SwipeLibrarySnapshot } from "./views/SwipeFeedView";
 import {
@@ -37,6 +36,7 @@ function readActorRefFromUrl(): string | null {
   }
 }
 
+const WorkDetailView = lazy(() => import("./views/WorkDetailView").then(module => ({ default: module.WorkDetailView })));
 const TvBoxView = lazy(() => import("./views/TvBoxView").then((module) => ({ default: module.TvBoxView })));
 
 const APP_VIEWS: ReadonlySet<string> = new Set([
@@ -502,13 +502,14 @@ export function App() {
         {view === "categories" && <CategoriesView report={setMessage}
           onOpenTag={(id, name) => navigateToFilteredWorks({ tags: [id] }, `正在查看分类：${name ?? id}`)} />}
         {view === "actor-detail" && selectedActorRef && <>
-          <button type="button" className="ghost" onClick={closeActorDetail}>返回演员库</button>
+          <button type="button" className="ghost" onClick={closeActorDetail}>{detailReturnView === "works" ? "返回作品库" : "返回演员库"}</button>
           <UnifiedCatalogView key={selectedActorRef} mode="actors" initialPersonRef={selectedActorRef}
             refresh={catalogRefresh} onStartFeed={startCatalogFeed}
             onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
         </>}
 
         {view === "work-detail" && selectedWorkId && (
+          <Suspense fallback={<p className="muted" role="status">正在打开作品详情…</p>}>
           <WorkDetailView
             key={selectedWorkId}
             workId={selectedWorkId}
@@ -578,6 +579,7 @@ export function App() {
               }, "works");
             }}
           />
+          </Suspense>
         )}
 
         {view === "tvbox" && (

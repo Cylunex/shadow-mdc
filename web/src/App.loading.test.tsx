@@ -202,7 +202,7 @@ describe("page load request budget", () => {
       .find(button => button.textContent === "返回演员库")!.click());
     expect(window.location.search).toBe("?view=actors");
     expect(container.querySelector(".actor-grid")?.textContent).toContain("Second");
-    expect(container.querySelector('[aria-current="page"]')?.textContent).toBe("2");
+    expect(container.querySelector('.catalog-pagination [aria-current="page"]')?.textContent).toBe("2");
   });
 
   it("opens categories as a separate list and applies the chosen tag to works", async () => {

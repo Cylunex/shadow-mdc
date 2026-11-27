@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { z } from "zod";
+import { useSessionState } from "../hooks/useSessionState";
 import { api } from "../api";
 import type { LibraryPrefs, SubscriptionWatchStatus } from "../model";
 import { queryClient } from "../query/client";
@@ -13,9 +15,13 @@ type Props = {
   onOpenWork?: (workId: string) => void;
 };
 
+const queueLabels: Record<string, string> = { pending: "待处理", accepted: "已接受", dismissed: "已忽略" };
+const queueFilterSchema = z.enum(["pending", "accepted", "dismissed", "all"]);
+const tabSchema = z.enum(["subs", "queue"]);
+
 export function SubscriptionsView({ prefs, busy, report, onChanged, onOpenWork }: Props) {
   useQuery(resources.prefs(), queryClient);
-  const [tab, setTab] = useState<"subs" | "queue">("subs");
+  const [tab, setTab] = useSessionState("mdc:subscription-tab", tabSchema, "subs");
   const [actorKey, setActorKey] = useState("");
   const [actorName, setActorName] = useState("");
   const [keyTouched, setKeyTouched] = useState(false);
@@ -23,31 +29,14 @@ export function SubscriptionsView({ prefs, busy, report, onChanged, onOpenWork }
   const [maxCast, setMaxCast] = useState(3);
   const [localBusy, setLocalBusy] = useState<string | null>(null);
   const [watchStatus, setWatchStatus] = useState<SubscriptionWatchStatus | null>(null);
-  const [fadingIds, setFadingIds] = useState<Record<string, true>>({});
-  const [localQueue, setLocalQueue] = useState(prefs.queue);
-  const fadeTimers = useRef<number[]>([]);
+  const [queueFilter, setQueueFilter] = useSessionState("mdc:queue-filter", queueFilterSchema, "pending");
   const blocked = Boolean(busy || localBusy);
-
-  useEffect(() => () => {
-    fadeTimers.current.forEach((timer) => window.clearTimeout(timer));
-    fadeTimers.current = [];
-  }, []);
-
   useEffect(() => {
-    void api.subscriptionWatchStatus().then(setWatchStatus).catch(() => setWatchStatus(null));
+    let active = true;
+    void api.subscriptionWatchStatus().then(value => { if (active) setWatchStatus(value); })
+      .catch(() => { if (active) setWatchStatus(null); });
+    return () => { active = false; };
   }, [prefs]);
-
-  useEffect(() => {
-    // Keep scroll position: merge server queue under any in-flight fade removals.
-    setLocalQueue((current) => {
-      const fading = new Set(Object.keys(fadingIds));
-      if (fading.size === 0) return prefs.queue;
-      const serverIds = new Set(prefs.queue.map((item) => item.id));
-      const kept = current.filter((item) => fading.has(item.id) || serverIds.has(item.id));
-      const extras = prefs.queue.filter((item) => !kept.some((row) => row.id === item.id));
-      return [...kept.filter((item) => serverIds.has(item.id) || fading.has(item.id)), ...extras];
-    });
-  }, [prefs.queue, fadingIds]);
 
   async function runLocal(key: string, action: () => Promise<void>) {
     setLocalBusy(key);
@@ -64,34 +53,10 @@ export function SubscriptionsView({ prefs, busy, report, onChanged, onOpenWork }
     () => prefs.subscriptions.filter((item) => item.enabled).length,
     [prefs.subscriptions]
   );
-  const pendingQueue = useMemo(
-    () => localQueue.filter((item) => item.status === "pending"),
-    [localQueue]
-  );
-
-  async function dismissQueueItem(itemId: string, status: "accepted" | "dismissed") {
-    setFadingIds((current) => ({ ...current, [itemId]: true }));
-    // Optimistic remove after a short fade; refill keeps remaining rows in place.
-    const timer = window.setTimeout(() => {
-      fadeTimers.current = fadeTimers.current.filter((entry) => entry !== timer);
-      setLocalQueue((current) => current.filter((item) => item.id !== itemId));
-      setFadingIds((current) => {
-        const next = { ...current };
-        delete next[itemId];
-        return next;
-      });
-    }, 180);
-    fadeTimers.current.push(timer);
-    try {
-      const next = await api.patchQueueItem(itemId, status);
-      onChanged(next);
-    } catch (error) {
-      fadeTimers.current.forEach((entry) => window.clearTimeout(entry));
-      fadeTimers.current = [];
-      setFadingIds({});
-      setLocalQueue(prefs.queue);
-      report(error instanceof Error ? error.message : String(error));
-    }
+  const pendingCount = prefs.queue.filter(item => item.status === "pending").length;
+  const visibleQueue = prefs.queue.filter(item => queueFilter === "all" || item.status === queueFilter);
+  function dismissQueueItem(itemId: string, status: "accepted" | "dismissed") {
+    return runLocal(itemId, async () => onChanged(await api.patchQueueItem(itemId, status)));
   }
 
   async function submit(event: FormEvent) {
@@ -121,7 +86,7 @@ export function SubscriptionsView({ prefs, busy, report, onChanged, onOpenWork }
         <div>
           <p className="eyebrow">ACTOR TRACKING</p>
           <h1>订阅</h1>
-          <p className="muted">{enabledCount} 位演员正在被追踪 · 队列待审 {pendingQueue.length}</p>
+          <p className="muted">{enabledCount} 位演员正在被追踪 · 队列待审 {pendingCount}</p>
           {watchStatus && (
             <p className="muted">
               自动盯磁链：{watchStatus.enabled ? "开" : "关"}
@@ -167,11 +132,11 @@ export function SubscriptionsView({ prefs, busy, report, onChanged, onOpenWork }
       </div>
 
       <div className="sub-tabs">
-        <button type="button" className={tab === "subs" ? "active warm" : ""} onClick={() => setTab("subs")}>
+        <button type="button" aria-pressed={tab === "subs"} className={tab === "subs" ? "active warm" : ""} onClick={() => setTab("subs")}>
           演员订阅
         </button>
-        <button type="button" className={tab === "queue" ? "active warm" : ""} onClick={() => setTab("queue")}>
-          影片队列 ({pendingQueue.length})
+        <button type="button" aria-pressed={tab === "queue"} className={tab === "queue" ? "active warm" : ""} onClick={() => setTab("queue")}>
+          影片队列 ({pendingCount})
         </button>
       </div>
 
@@ -197,7 +162,7 @@ export function SubscriptionsView({ prefs, busy, report, onChanged, onOpenWork }
               }}
               placeholder="稳定键（留空默认同姓名）"
             />
-            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} required />
+            <input type="date" aria-label="订阅起始日期" value={startDate} onChange={(e) => setStartDate(e.target.value)} required />
             <label className="inline-field">
               <span>人数 ≤</span>
               <input type="number" min={1} max={50} value={maxCast} onChange={(e) => setMaxCast(Number(e.target.value) || 3)} />
@@ -223,7 +188,7 @@ export function SubscriptionsView({ prefs, busy, report, onChanged, onOpenWork }
                   <div className="subscription-actions">
                     <button
                       type="button"
-                      className="ghost"
+                      className="ghost" disabled={blocked}
                       onClick={() => {
                         void runLocal(`toggle-${sub.actor_key}`, async () => {
                           const next = await api.upsertSubscription({ ...sub, enabled: !sub.enabled });
@@ -236,7 +201,7 @@ export function SubscriptionsView({ prefs, busy, report, onChanged, onOpenWork }
                     </button>
                     <button
                       type="button"
-                      className="danger ghost"
+                      className="danger ghost" disabled={blocked}
                       onClick={() => {
                         void runLocal(`remove-${sub.actor_key}`, async () => {
                           const next = await api.removeSubscription(sub.actor_key);
@@ -256,21 +221,26 @@ export function SubscriptionsView({ prefs, busy, report, onChanged, onOpenWork }
       )}
 
       {tab === "queue" && (
-        localQueue.length === 0 ? (
+        prefs.queue.length === 0 ? (
           <div className="empty"><div>▤</div><h2>影片队列为空</h2><p>扫描订阅后，符合条件的作品会出现在这里供复核。手动下载类任务不会写入订阅。</p></div>
         ) : (
           <div className="queue-list">
-            {localQueue.map((item) => (
+            <label>队列状态 <select value={queueFilter} onChange={event => setQueueFilter(queueFilterSchema.parse(event.target.value))}>
+              <option value="pending">待处理 ({pendingCount})</option><option value="accepted">已接受</option>
+              <option value="dismissed">已忽略</option><option value="all">全部记录</option>
+            </select></label>
+            {visibleQueue.length === 0 && <p className="muted">当前状态没有影片。</p>}
+            {visibleQueue.map((item) => (
               <article
                 key={item.id}
-                className={fadingIds[item.id] ? "queue-card queue-card--fading" : "queue-card"}
+                className="queue-card" aria-busy={localBusy === item.id}
               >
                 {(() => {
                   const queuedWorkId = item.work_id;
                   return (
                     <>
                       <div>
-                        <span className="pill">{item.status}</span>
+                        <span className="pill">{queueLabels[item.status] ?? item.status}</span>
                         {queuedWorkId && onOpenWork ? (
                           <button
                             type="button"
@@ -291,8 +261,8 @@ export function SubscriptionsView({ prefs, busy, report, onChanged, onOpenWork }
                         )}
                         {item.status === "pending" && (
                           <>
-                            <button type="button" className="secondary" disabled={blocked || Boolean(fadingIds[item.id])} onClick={() => void dismissQueueItem(item.id, "accepted")}>接受</button>
-                            <button type="button" className="ghost" disabled={blocked || Boolean(fadingIds[item.id])} onClick={() => void dismissQueueItem(item.id, "dismissed")}>忽略</button>
+                            <button type="button" className="secondary" disabled={blocked} onClick={() => void dismissQueueItem(item.id, "accepted")}>接受</button>
+                            <button type="button" className="ghost" disabled={blocked} onClick={() => void dismissQueueItem(item.id, "dismissed")}>忽略</button>
                           </>
                         )}
                       </div>

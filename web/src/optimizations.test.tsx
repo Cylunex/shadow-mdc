@@ -128,6 +128,22 @@ describe("frontend UX optimizations", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("restores the selected queue status when returning from a work", async () => {
+    const prefs = libraryPrefsSchema.parse({ queue: ["pending", "accepted"].map(status => ({
+      id: status, title: status, actor_key: "actor", actor_name: "演员", status, created_at: "",
+    })) });
+    const render = () => root.render(<SubscriptionsView prefs={prefs} busy={null} report={vi.fn()} onChanged={vi.fn()} />);
+    await act(async () => render());
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent?.includes("影片队列"))!.click());
+    expect(container.querySelector(".queue-card h2")?.textContent).toBe("pending");
+    const filter = container.querySelector("select")!;
+    await act(async () => { filter.value = "accepted"; filter.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => root.render(null));
+    await act(async () => render());
+    expect(container.querySelector("select")?.value).toBe("accepted");
+    expect(container.querySelector(".queue-card h2")?.textContent).toBe("accepted");
+  });
+
   it("syncs full multi-character actorName into actorKey until manually edited and opens queued work detail", async () => {
     const onOpenWork = vi.fn();
     const prefs = libraryPrefsSchema.parse({

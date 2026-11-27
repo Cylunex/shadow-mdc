@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useRef } from "react";
 
 export type AppView = "actors" | "actor-detail" | "works" | "work-detail" | "categories" | "rankings" | "swipe" | "tvbox" | "subscriptions" | "tasks" | "settings";
 
@@ -21,6 +21,17 @@ type Props = {
 };
 
 export const TopNav = memo(function TopNav({ view, onChange, badges }: Props) {
+  const current = view === "work-detail" ? "works" : view === "actor-detail" ? "actors" : view;
+  const nav = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const bar = nav.current;
+    const item = bar?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!bar || !item || bar.scrollWidth <= bar.clientWidth) return;
+    const bounds = bar.getBoundingClientRect();
+    const active = item.getBoundingClientRect();
+    if (active.left < bounds.left) bar.scrollLeft += active.left - bounds.left;
+    else if (active.right > bounds.right) bar.scrollLeft += active.right - bounds.right;
+  }, [current]);
   return (
     <header className="top-nav">
       <div className="top-nav-brand">
@@ -30,14 +41,15 @@ export const TopNav = memo(function TopNav({ view, onChange, badges }: Props) {
           <small>local-first</small>
         </div>
       </div>
-      <nav className="top-nav-items" aria-label="主导航">
+      <nav ref={nav} className="top-nav-items" aria-label="主导航">
         {ITEMS.map((item) => {
           const count = badges?.[item.id];
           return (
             <button
               key={item.id}
               type="button"
-              className={(view === item.id || (view === "work-detail" && item.id === "works") || (view === "actor-detail" && item.id === "actors")) ? "top-nav-item active" : "top-nav-item"}
+              aria-current={current === item.id ? "page" : undefined}
+              className={current === item.id ? "top-nav-item active" : "top-nav-item"}
               onClick={() => onChange(item.id)}
             >
               <span className="top-nav-icon" aria-hidden>{item.icon}</span>
@@ -50,10 +62,6 @@ export const TopNav = memo(function TopNav({ view, onChange, badges }: Props) {
           );
         })}
       </nav>
-      <div className="live-pill" title="服务已连接">
-        <span className="live-dot" />
-        LIVE
-      </div>
     </header>
   );
 });

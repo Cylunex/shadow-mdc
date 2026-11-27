@@ -772,7 +772,7 @@ button.danger { border-color: #6d3333; color: #ffb1b1; }
 /* —— Top navigation / product polish —— */
 .top-nav {
   position: sticky; top: 0; z-index: 40;
-  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 16px;
+  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 16px;
   padding: 16px clamp(20px, 3.5vw, 48px);
   background: rgba(10, 14, 16, 0.82); backdrop-filter: blur(14px);
   border-bottom: 1px solid rgba(45, 212, 191, 0.12);
@@ -805,12 +805,6 @@ button.danger { border-color: #6d3333; color: #ffb1b1; }
   background: #ef4444; color: white; border-radius: 999px; font-size: 11px; font-style: normal;
   min-width: 18px; padding: 1px 6px; line-height: 1.4;
 }
-.live-pill {
-  display: inline-flex; align-items: center; gap: 8px; border: 1px solid #1f3a36;
-  border-radius: 999px; padding: 6px 12px; color: #5eead4; font-size: 11px; letter-spacing: .12em;
-}
-.live-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 10px #22c55e; }
-
 .status-bar {
   display: flex; justify-content: space-between; align-items: center; gap: 12px;
   background: rgba(14, 23, 20, 0.9); border: 1px solid #1d392a; border-radius: 12px;
@@ -912,7 +906,7 @@ button.active { background: var(--accent); color: #042f2e; }
 .meta-pills .off { color: #fca5a5; }
 .subscription-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 
-.settings-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); margin-bottom: 18px; }
+.settings-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); margin-bottom: 18px; }
 .settings-card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px; }
 .roadmap-note { color: #fbbf24; font-size: 12px; line-height: 1.5; }
 .magnet-panel-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
@@ -1829,13 +1823,6 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 }
 
 
-.queue-card--fading {
-  opacity: 0;
-  transform: translateY(-4px);
-  transition: opacity 160ms ease, transform 160ms ease;
-  pointer-events: none;
-}
-
 .works-status-filters {
   display: flex;
   flex-wrap: wrap;
@@ -2549,7 +2536,7 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
 .unified-catalog .actor-card { display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 12px; text-align: left; color: inherit; }
 .unified-catalog .actor-card > span { color: var(--muted); font-size: 13px; line-height: 1.5; }
 .unified-catalog .works-extra-filters { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
-.unified-catalog .catalog-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+.unified-catalog .catalog-search { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; }
 .unified-catalog .works-extra-filters > label { display: flex; gap: 8px; align-items: center; color: var(--muted); }
 .unified-catalog .catalog-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
 .unified-catalog .catalog-heading h1 { font-size: 28px; margin: 0; letter-spacing: -.035em; }
@@ -2640,7 +2627,8 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   .catalog-page-buttons { order: 2; flex-basis: 100%; flex-wrap: wrap; }
   .catalog-page-jump { order: 3; }
   .catalog-pagination { gap: 10px; }
-  .unified-catalog .catalog-search { grid-template-columns: minmax(0, 1fr); }
+  .unified-catalog .catalog-search { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .unified-catalog .catalog-search > input { grid-column: 1 / -1; min-width: 0; }
 }
 
 .taxonomy-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
@@ -2884,6 +2872,11 @@ a.javranking-badge:hover { border-color: #6ec8b8; color: #fff; }
   font-size: 11.5px;
   color: #c5d4da;
 }
+.settings-view, .settings-view .alias-editor { grid-template-columns: minmax(0, 1fr); }
+.settings-view .settings-card { min-width: 0; overflow-wrap: anywhere; }
+.settings-view :is(input, select, textarea) { min-width: 0; max-width: 100%; }
+.settings-view .organizer-actions { flex-wrap: wrap; }
+.settings-view .organizer-actions > label { flex-wrap: wrap; min-width: 0; max-width: 100%; }
 .settings-section-tabs {
   display: flex;
   flex-wrap: wrap;

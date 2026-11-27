@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { z } from "zod";
+import { useSessionState } from "../hooks/useSessionState";
 import { api } from "../api";
 import { queryClient } from "../query/client";
 import { resources } from "../query/resources";
@@ -17,10 +19,10 @@ type Props = {
   report: (message: string) => void;
 };
 
-type SettingsSection = "all" | "pan" | "library" | "scraping";
+const sectionSchema = z.enum(["all", "pan", "library", "scraping"]);
 
 export function SettingsView({ libraries, busy, run, report }: Props) {
-  const [section, setSection] = useState<SettingsSection>("all");
+  const [section, setSection] = useSessionState("mdc:settings-section", sectionSchema, "all");
   const [pan, setPan] = useState<PanStatus | null>(null);
   const [panError, setPanError] = useState<string | null>(null);
   const [panSettings, setPanSettings] = useState<PanSettings | null>(null);

@@ -46,7 +46,7 @@ export function CatalogTags({ tags, selected, preview, onToggle }: {
         {hasChildren && !query && <button className="ghost catalog-tag-expand" aria-label={`${isExpanded(node.id) ? "收起" : "展开"}${node.name}`}
           aria-expanded={isExpanded(node.id)} onClick={() => {
             setExpanded(previous => ({ ...previous, [node.id]: !(previous[node.id] ?? selectedAncestors.has(node.id)) }));
-            setLimit(PAGE_SIZE);
+
           }}>{isExpanded(node.id) ? "▾" : "▸"}</button>}
         {!hasChildren && <span className="catalog-tag-expand" aria-hidden="true" />}
         <button className={isSelected(node) ? "active" : "ghost"} aria-pressed={isSelected(node)}

@@ -156,6 +156,13 @@ export function WorkDetailView(props: {
 }) {
   const { detail, related, offlineTasks, setOfflineTasks, loadError, loading, reload } = useWorkPage(props.workId);
   const [editOpen, setEditOpen] = useState(false);
+  const editHeading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (editOpen) {
+      editHeading.current?.focus({ preventScroll: true });
+      editHeading.current?.scrollIntoView?.({ block: "center" });
+    }
+  }, [editOpen]);
   const [offlineMagnet, setOfflineMagnet] = useState<{ workId: string; id: string; name: string } | null>(null);
   const [playerOpen, setPlayerOpen] = useState(false);
   const [playerSources, setPlayerSources] = useState<PlayerSource[]>([]);
@@ -346,6 +353,7 @@ export function WorkDetailView(props: {
           <div>!</div>
           <h2>无法打开作品</h2>
           <p>{loadError ?? "作品不存在或已被删除"}</p>
+          {loadError && <button type="button" className="ghost" onClick={() => void reload(props.workId)}>重试作品详情</button>}
         </div>
       </section>
     );
@@ -370,6 +378,16 @@ export function WorkDetailView(props: {
           {backText}
         </button>
         <div className="work-page-toolbar-actions">
+          <select aria-label="跳至作品详情章节" value="" onChange={event => {
+            const heading = document.getElementById(event.currentTarget.value);
+            heading?.focus({ preventScroll: true });
+            heading?.scrollIntoView?.({ block: "center" });
+          }}>
+            <option value="">跳至章节…</option>
+            <option value="work-plot">简介</option><option value="work-samples">片段图片</option>
+            <option value="work-reviews">精选评价</option><option value="work-magnets">磁力链接</option>
+            <option value="work-assets">关联资产</option><option value="work-credits">制作与作品归属</option>
+          </select>
           {props.onToggleWant && (
             <button
               type="button"
@@ -413,7 +431,7 @@ export function WorkDetailView(props: {
           >{samplesBusy ? "生成样本帧中…" : "生成样本帧"}</button>
           <button
             type="button"
-            className={editOpen ? "secondary" : "ghost"}
+            aria-expanded={editOpen} className={editOpen ? "secondary" : "ghost"}
             onClick={() => setEditOpen((current) => !current)}
           >{editOpen ? "收起编辑" : "编辑"}</button>
         </div>
@@ -608,7 +626,7 @@ export function WorkDetailView(props: {
         <div className="work-page-body">
           <section className="work-page-section plot-bilingual">
             <div className="section-head-row">
-              <h2>简介</h2>
+              <h2 id="work-plot" tabIndex={-1}>简介</h2>
               <LangToggle
                 mode={plotMode}
                 onChange={setPlotMode}
@@ -630,7 +648,7 @@ export function WorkDetailView(props: {
           </section>
 
           <section className="work-page-section sample-gallery">
-            <h2>片段图片 {(work.sample_urls ?? []).length > 0 ? `(${(work.sample_urls ?? []).length})` : ""}</h2>
+            <h2 id="work-samples" tabIndex={-1}>片段图片 {(work.sample_urls ?? []).length > 0 ? `(${(work.sample_urls ?? []).length})` : ""}</h2>
             {(work.sample_urls ?? []).length === 0 ? (
               <p className="muted">暂无样本帧。可点上方「生成样本帧」尝试抓取。</p>
             ) : (
@@ -665,7 +683,7 @@ export function WorkDetailView(props: {
           </section>
 
           <section className="work-page-section review-highlights">
-            <h2>精选评价 {(work.reviews ?? []).length > 0 ? `(${(work.reviews ?? []).length})` : ""}</h2>
+            <h2 id="work-reviews" tabIndex={-1}>精选评价 {(work.reviews ?? []).length > 0 ? `(${(work.reviews ?? []).length})` : ""}</h2>
             {(work.reviews ?? []).length === 0 ? (
               <p className="muted">暂无短评摘录</p>
             ) : (
@@ -687,7 +705,7 @@ export function WorkDetailView(props: {
 
           <section className="work-page-section magnet-panel">
             <div className="magnet-panel-head">
-              <h2>磁力链接 ({(work.magnets ?? []).length})</h2>
+              <h2 id="work-magnets" tabIndex={-1}>磁力链接 ({(work.magnets ?? []).length})</h2>
               <button
                 type="button"
                 className="secondary"
@@ -814,7 +832,7 @@ export function WorkDetailView(props: {
 
           {editOpen && (
             <section className="work-page-section work-page-edit">
-              <h2>编辑字段</h2>
+              <h2 ref={editHeading} tabIndex={-1}>编辑字段</h2>
               <label>
                 <span>标题 <small>来源 {sourceOf(work, "title")}</small></span>
                 <input value={title} onChange={(event) => setTitle(event.target.value)} />
@@ -915,7 +933,7 @@ export function WorkDetailView(props: {
           )}
 
           <section className="work-page-section work-page-aux">
-            <h2>关联资产 ({work.assets.length})</h2>
+            <h2 id="work-assets" tabIndex={-1}>关联资产 ({work.assets.length})</h2>
             {work.assets.length === 0
               ? <p className="muted">暂无本地媒体文件</p>
               : (
@@ -928,7 +946,7 @@ export function WorkDetailView(props: {
           </section>
 
           <section className="work-page-section work-page-aux">
-            <h2>制作与作品归属</h2>
+            <h2 id="work-credits" tabIndex={-1}>制作与作品归属</h2>
             <dl>
               <MetaRow label="机构署名" empty={!(work.collections ?? []).some(item => item.kind !== "series")}>
                 {(work.collections ?? []).filter(item => item.kind !== "series").map(item =>

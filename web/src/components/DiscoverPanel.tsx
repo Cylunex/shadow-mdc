@@ -1,3 +1,5 @@
+import { z } from "zod";
+import { useSessionState } from "../hooks/useSessionState";
 import { CoverImage } from "./CoverImage";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, appUrl } from "../api";
@@ -20,14 +22,26 @@ type Props = {
   onToggleWant?: (workId: string, wanted: boolean) => void | Promise<void>;
 };
 
-type RankTab = "awards" | "yearly" | "browse";
+const rankingState = z.object({
+  tab: z.enum(["awards", "actors", "yearly", "browse"]), slug: z.string(),
+  list: z.enum(["latest", "rankings_daily", "rankings_weekly", "rankings_monthly"]),
+  page: z.number().int().positive(), term: z.string(),
+});
+type RankTab = Exclude<z.infer<typeof rankingState>["tab"], "browse">;
 
-const LISTS: ReadonlyArray<{ value: string; label: string }> = [
+const LISTS = [
   { value: "latest", label: "最新" },
   { value: "rankings_daily", label: "日榜" },
   { value: "rankings_weekly", label: "周榜" },
   { value: "rankings_monthly", label: "月榜" }
-];
+] as const;
+
+function sectionsForTab(sections: JavRankingSection[], tab: RankTab) {
+  const kind = { awards: "curated-videos", actors: "curated-actors", yearly: "top250-year" }[tab];
+  const choices = sections.filter(section => section.kind === kind);
+  if (tab === "yearly") choices.sort((a, b) => (b.year ?? 0) - (a.year ?? 0));
+  return choices;
+}
 
 function stateLabel(state: DiscoverItem["state"] | string | null | undefined): string {
   if (state === "in_library") return "已有本地媒体";
@@ -45,34 +59,24 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
     if (!wantListIds) return new Set<string>();
     return wantListIds instanceof Set ? wantListIds : new Set(wantListIds);
   }, [wantListIds]);
-  const [tab, setTab] = useState<RankTab>("awards");
-  const [list, setList] = useState("latest");
-  const [page, setPage] = useState(1);
-  const [query, setQuery] = useState("");
+  const [browsing, setBrowsing] = useSessionState<z.infer<typeof rankingState>>("mdc:rankings", rankingState, {
+    tab: "awards", slug: "most-awarded-videos", list: "latest", page: 1, term: "",
+  });
+  const { tab, slug: jrSlug, list, page, term } = browsing;
+  const [query, setQuery] = useState(term);
   const [items, setItems] = useState<DiscoverItem[]>([]);
   const [multi, setMulti] = useState<MultiSiteSearch | null>(null);
   const [selectedMagnets, setSelectedMagnets] = useState<Record<string, MagnetLink>>({});
   const [loading, setLoading] = useState(false);
   const [jrSections, setJrSections] = useState<JavRankingSection[]>([]);
-  const [jrSlug, setJrSlug] = useState<string>("most-awarded-videos");
   const [jrList, setJrList] = useState<JavRankingList | null>(null);
   const [jrSeeding, setJrSeeding] = useState(false);
-  const [jrLoaded, setJrLoaded] = useState(false);
   const requestRef = useRef<AbortController | null>(null);
   const blocked = loading || busy === "discover" || jrSeeding;
 
   useEffect(() => () => requestRef.current?.abort(), []);
 
-  const jrGroups = useMemo(() => {
-    const curatedVideos = jrSections.filter((item) => item.kind === "curated-videos");
-    const curatedActors = jrSections.filter((item) => item.kind === "curated-actors");
-    const top250 = [...jrSections.filter((item) => item.kind === "top250-year")].sort(
-      (a, b) => (b.year ?? 0) - (a.year ?? 0)
-    );
-    return { curatedVideos, curatedActors, top250 };
-  }, [jrSections]);
-
-  const latestYearSlug = jrGroups.top250[0]?.slug ?? null;
+  const choices = useMemo(() => tab === "browse" ? [] : sectionsForTab(jrSections, tab), [jrSections, tab]);
 
   async function withLoading(action: (signal: AbortSignal) => Promise<void>) {
     requestRef.current?.abort();
@@ -92,76 +96,58 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
     }
   }
 
-  async function loadBrowse(nextList = list, nextPage = page, signal?: AbortSignal) {
-    const result = await api.discoverBrowse({ provider: "javdb", list: nextList, page: nextPage }, signal);
-    if (signal?.aborted) return;
-    setItems(result.items);
+  async function loadBrowse(nextList: typeof list, nextPage: number, signal: AbortSignal) {
+    setBrowsing(previous => ({ ...previous, tab: "browse", list: nextList, page: nextPage, term: "" }));
+    setQuery("");
     setMulti(null);
-    report(`发现浏览 ${result.items.length} 条（不写入作品库）`);
+    setItems([]);
+    const result = await api.discoverBrowse({ provider: "javdb", list: nextList, page: nextPage }, signal);
+    if (signal.aborted) return;
+    setItems(result.items);
+    report(`发现浏览 ${result.items.length} 条`);
   }
 
-  async function loadJavRankingSections(forceRefresh = false, preferredSlug?: string, signal?: AbortSignal) {
-    const result = await api.javrankingSections(forceRefresh, signal);
-    if (signal?.aborted) return;
-    setJrSections(result.sections);
-    setJrLoaded(true);
-    const top250 = result.sections
-      .filter((item) => item.kind === "top250-year")
-      .sort((a, b) => (b.year ?? 0) - (a.year ?? 0));
-    const top250Ready = top250.filter((item) => (item.item_count ?? 0) > 0);
-    const preferred =
-      (preferredSlug && result.sections.find((item) => item.slug === preferredSlug)?.slug) ||
-      result.sections.find((item) => item.slug === jrSlug)?.slug ||
-      (preferredSlug?.startsWith("javdb-top250") ? top250Ready[0]?.slug : undefined) ||
-      result.sections.find((item) => item.slug === "most-awarded-videos")?.slug ||
-      top250Ready[0]?.slug ||
-      result.sections[0]?.slug;
-    if (preferred) {
-      setJrSlug(preferred);
-      const detail = await api.javrankingList(preferred, forceRefresh, signal);
-      if (signal?.aborted) return;
-      setJrList(detail);
-      setJrSections((current) => current.map((item) => item.slug === detail.section.slug ? detail.section : item));
-      report(`榜单分区 ${result.sections.length} · 当前 ${detail.items.length} 条（只读）`);
-    } else {
-      setJrList(null);
-      report("暂无可用榜单分区");
+  async function loadRanking(nextTab: RankTab, preferred: string, signal: AbortSignal, refresh = false) {
+    setBrowsing(previous => ({ ...previous, tab: nextTab, slug: preferred }));
+    setJrList(null);
+    let sections = jrSections;
+    if (!sections.length || refresh) {
+      const result = await api.javrankingSections(refresh, signal);
+      if (signal.aborted) return;
+      sections = result.sections;
+      setJrSections(sections);
     }
+    const options = sectionsForTab(sections, nextTab);
+    const available = nextTab === "yearly" ? options.filter(section => section.item_count > 0) : options;
+    const selected = available.find(section => section.slug === preferred) ?? available[0];
+    if (!selected) return;
+    setBrowsing(previous => ({ ...previous, slug: selected.slug }));
+    const detail = await api.javrankingList(selected.slug, refresh, signal);
+    if (signal.aborted) return;
+    setJrList(detail);
+    setJrSections(current => current.map(section => section.slug === selected.slug ? detail.section : section));
+    report(`「${detail.section.title}」${detail.items.length} 条`);
   }
 
-  async function loadJavRankingList(slug: string, forceRefresh = false, signal?: AbortSignal) {
-    setJrSlug(slug);
-    const detail = await api.javrankingList(slug, forceRefresh, signal);
-    if (signal?.aborted) return;
-    setJrList(detail);
-    setJrSections((current) => current.map((item) => item.slug === detail.section.slug ? detail.section : item));
-    report(`「${detail.section.title}」${detail.items.length} 条（只读）`);
+  async function searchCode(value: string, signal: AbortSignal) {
+    setBrowsing(previous => ({ ...previous, tab: "browse", term: value }));
+    setMulti(null);
+    setItems([]);
+    setSelectedMagnets({});
+    const result = await api.discoverMultiSearch(value, true, signal);
+    if (signal.aborted) return;
+    setMulti(result);
+    report(`多源番号搜索 ${result.hits.length} 条命中`);
   }
 
   useEffect(() => {
-    void withLoading((signal) => loadJavRankingSections(false, "most-awarded-videos", signal));
-    // Mount: default open 神作.
+    void withLoading(signal => tab !== "browse" ? loadRanking(tab, jrSlug, signal)
+      : term ? searchCode(term, signal) : loadBrowse(list, page, signal));
   }, []);
 
-  async function ensureJrThen(signal: AbortSignal, action: () => Promise<void>) {
-    if (!jrLoaded) {
-      await loadJavRankingSections(false, undefined, signal);
-    }
-    if (!signal.aborted) await action();
-  }
-
-  async function loadSearch(event: FormEvent) {
+  function loadSearch(event: FormEvent) {
     event.preventDefault();
-    if (!query.trim()) return;
-    await withLoading(async (signal) => {
-      setTab("browse");
-      const result = await api.discoverMultiSearch(query.trim(), true, signal);
-      if (signal.aborted) return;
-      setMulti(result);
-      setItems([]);
-      setSelectedMagnets({});
-      report(`多源番号搜索 ${result.hits.length} 条命中`);
-    });
+    if (query.trim()) void withLoading(signal => searchCode(query.trim(), signal));
   }
 
   async function seedItem(item: DiscoverItem) {
@@ -200,7 +186,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
       report(
         `补入库完成：新建 ${result.seeded_count} · 跳过 ${result.skipped_count} · 失败 ${result.failure_count}`
       );
-      await loadJavRankingList(section.slug, true);
+      if (tab !== "browse") await withLoading(signal => loadRanking(tab, section.slug, signal, true));
       await onSeeded();
     } catch (error) {
       report(error instanceof Error ? error.message : String(error));
@@ -241,7 +227,6 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
     });
   }
 
-  const showAwards = tab === "awards";
   const showYearly = tab === "yearly";
   const showBrowse = tab === "browse";
 
@@ -250,96 +235,27 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
       <div className="panel-header">
         <div>
           <h1>榜单</h1>
-          <p className="muted">神作 TOP100、演员战力、年榜 TOP250（2008+）、发现浏览；浏览本身不写作品库。</p>
+          <p className="muted">点击已入库的作品可打开详情。</p>
         </div>
       </div>
-      <div className="discover-banner">
-        <strong>发现 ≠ 作品库</strong>
-        <p>
-          这里浏览/搜索远程目录与榜单，不会因为打开列表就写入作品。只有你主动「建档元数据」或「补入库」时，才会写入本地索引。
-          磁力仅供复制与本地保存，不下载、不提交网盘离线。
-        </p>
-      </div>
-
       <div className="discover-toolbar rank-tabs">
-        <button
-          type="button"
-          className={showAwards && (jrSlug === "most-awarded-videos" || jrList?.section.kind === "curated-videos") ? "active" : "ghost"}
-          disabled={blocked}
-          onClick={() => {
-            setTab("awards");
-            void withLoading((signal) =>
-              ensureJrThen(signal, async () => {
-                const slug =
-                  jrGroups.curatedVideos[0]?.slug ||
-                  jrSections.find((s) => s.slug === "most-awarded-videos")?.slug ||
-                  "most-awarded-videos";
-                await loadJavRankingList(slug, false, signal);
-              })
-            );
-          }}
-        >
-          神作 TOP100
-          {jrGroups.curatedVideos[0]?.revision ? ` · ${jrGroups.curatedVideos[0].item_count}` : ""}
-        </button>
-        <button
-          type="button"
-          className={showAwards && jrList?.section.kind === "curated-actors" ? "active" : "ghost"}
-          disabled={blocked}
-          onClick={() => {
-            setTab("awards");
-            void withLoading((signal) =>
-              ensureJrThen(signal, async () => {
-                const slug =
-                  jrGroups.curatedActors[0]?.slug ||
-                  jrSections.find((s) => s.slug === "most-awarded-actors")?.slug ||
-                  "most-awarded-actors";
-                await loadJavRankingList(slug, false, signal);
-              })
-            );
-          }}
-        >
-          演员战力
-          {jrGroups.curatedActors[0] ? ` · ${jrGroups.curatedActors.length}榜` : ""}
-        </button>
-        <button
-          type="button"
-          className={showYearly ? "active" : "ghost"}
-          disabled={blocked}
-          onClick={() => {
-            setTab("yearly");
-            void withLoading((signal) =>
-              ensureJrThen(signal, async () => {
-                const slug = latestYearSlug || jrGroups.top250[0]?.slug;
-                if (slug) await loadJavRankingList(slug, false, signal);
-              })
-            );
-          }}
-        >
-          年榜 TOP250
-          {jrGroups.top250.length ? ` · ${jrGroups.top250.length}年` : ""}
-        </button>
-        <button
-          type="button"
-          className={showBrowse ? "active" : "ghost"}
-          disabled={blocked}
-          onClick={() => {
-            setTab("browse");
-            void withLoading((signal) => loadBrowse(list, page, signal));
-          }}
-        >
+        {([["awards", "神作 TOP100"], ["actors", "演员战力"], ["yearly", "年榜 TOP250"]] as const).map(([value, label]) =>
+          <button key={value} type="button" className={tab === value ? "active" : "ghost"} aria-pressed={tab === value}
+            disabled={blocked} onClick={() => void withLoading(signal => loadRanking(value, jrSlug, signal))}>{label}</button>)}
+        <button type="button" className={showBrowse ? "active" : "ghost"} aria-pressed={showBrowse}
+          disabled={blocked} onClick={() => void withLoading(signal => loadBrowse(list, page, signal))}>
           发现浏览
         </button>
       </div>
 
-      {(showAwards || showYearly) && (
+      {!showBrowse && (
         <div className="javranking-panel">
           <div className="discover-toolbar">
             <button
               type="button"
               className="secondary"
               disabled={blocked}
-              onClick={() => void withLoading((signal) => loadJavRankingSections(true, jrSlug, signal))}
+              onClick={() => void withLoading((signal) => loadRanking(tab, jrSlug, signal, true))}
             >
               刷新榜单缓存
             </button>
@@ -356,63 +272,29 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
             )}
           </div>
 
-          {showAwards && (
-            <>
-              <div className="javranking-section-block">
-                <h3>神作 TOP100</h3>
-                <div className="discover-toolbar wrap">
-                  {jrGroups.curatedVideos.length === 0 && !loading && (
-                    <p className="muted">暂无神作榜数据</p>
-                  )}
-                  {jrGroups.curatedVideos.map((section) => (
-                    <button
-                      key={section.id}
-                      type="button"
-                      className={jrSlug === section.slug ? "active" : "ghost"}
-                      disabled={blocked}
-                      onClick={() => void withLoading((signal) => loadJavRankingList(section.slug, false, signal))}
-                    >
-                      {section.title} · {section.item_count}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="javranking-section-block">
-                <h3>演员战力</h3>
-                <div className="discover-toolbar wrap">
-                  {jrGroups.curatedActors.map((section) => (
-                    <button
-                      key={section.id}
-                      type="button"
-                      className={jrSlug === section.slug ? "active" : "ghost"}
-                      disabled={blocked}
-                      onClick={() => void withLoading((signal) => loadJavRankingList(section.slug, false, signal))}
-                    >
-                      {section.title} · {section.item_count}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
+          {!showYearly && choices.length > 1 && <div className="discover-toolbar wrap" aria-label="榜单分区">
+            {choices.map(section => <button key={section.id} type="button"
+              className={jrSlug === section.slug ? "active" : "ghost"} aria-pressed={jrSlug === section.slug}
+              disabled={blocked} onClick={() => void withLoading(signal => loadRanking(tab, section.slug, signal))}>
+              {section.title} · {section.item_count}
+            </button>)}
+          </div>}
 
           {showYearly && (
             <div className="javranking-section-block">
-              <h3>年榜 TOP250 · {jrGroups.top250.length} 个年份</h3>
+              <h3>年榜 TOP250 · {choices.length} 个年份</h3>
               <div className="year-chip-bar sticky-year-bar">
-                {jrGroups.top250.length === 0 && !loading && (
-                  <p className="muted">暂无年榜；请在 box 运行 export_javdb_yearly_top250.py 后 rsync 到 NAS</p>
+                {choices.length === 0 && !loading && (
+                  <p className="muted">暂无年榜数据</p>
                 )}
-                {[...jrGroups.top250]
-                  .sort((a, b) => (a.year ?? 0) - (b.year ?? 0))
-                  .map((section) => (
+                {choices.map((section) => (
                   <button
                     key={section.id}
                     type="button"
                     className={jrSlug === section.slug ? "active" : "ghost"}
                     disabled={blocked || (section.item_count ?? 0) === 0}
                     title={section.title}
-                    onClick={() => void withLoading((signal) => loadJavRankingList(section.slug, false, signal))}
+                    onClick={() => void withLoading((signal) => loadRanking(tab, section.slug, signal))}
                   >
                     {section.year ?? section.title}
                     <span className="chip-count">{section.item_count || "—"}</span>
@@ -449,7 +331,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
                     else if (!linked && item.code && onFilterByCode) onFilterByCode(item.code);
                   }}
                   onKeyDown={(event) => {
-                    if (event.key !== "Enter" && event.key !== " ") return;
+                    if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
                     event.preventDefault();
                     if (linked && item.work_id && onOpenWork) onOpenWork(item.work_id);
                     else if (!linked && item.code && onFilterByCode) onFilterByCode(item.code);
@@ -535,19 +417,6 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
       {showBrowse && (
         <>
           <div className="discover-toolbar">
-            <button
-              type="button"
-              className="danger-solid"
-              disabled={blocked}
-              onClick={() => {
-                void withLoading(async (signal) => {
-                  await loadBrowse(list, page, signal);
-                  if (!signal.aborted) report("榜单已刷新");
-                });
-              }}
-            >
-              更新榜单
-            </button>
             {LISTS.map((entry) => (
               <button
                 key={entry.value}
@@ -555,8 +424,6 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
                 className={list === entry.value ? "active" : "ghost"}
                 disabled={blocked}
                 onClick={() => {
-                  setList(entry.value);
-                  setPage(1);
                   void withLoading((signal) => loadBrowse(entry.value, 1, signal));
                 }}
               >
@@ -568,29 +435,29 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
               className="secondary"
               disabled={blocked}
               onClick={() => {
-                void withLoading((signal) => loadBrowse(list, page, signal));
+                void withLoading(signal => term ? searchCode(term, signal) : loadBrowse(list, page, signal));
               }}
             >
-              刷新列表
+              刷新结果
             </button>
             <button
               type="button"
               className="ghost"
-              disabled={page <= 1}
+              disabled={blocked || page <= 1 || Boolean(term)}
               onClick={() => {
                 const next = Math.max(1, page - 1);
-                setPage(next);
                 void withLoading((signal) => loadBrowse(list, next, signal));
               }}
             >
               上一页
             </button>
+            {!term && <span className="muted">第 {page} 页</span>}
             <button
               type="button"
               className="ghost"
+              disabled={blocked || Boolean(term) || items.length === 0}
               onClick={() => {
                 const next = page + 1;
-                setPage(next);
                 void withLoading((signal) => loadBrowse(list, next, signal));
               }}
             >
@@ -602,8 +469,10 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="多源搜索番号，例如 SONE-118"
+              aria-label="搜索番号" placeholder="输入番号"
             />
+            {term && <button type="button" className="ghost" disabled={blocked}
+              onClick={() => void withLoading(signal => loadBrowse(list, page, signal))}>返回列表</button>}
             <button type="submit" disabled={!query.trim() || blocked}>
               多源搜索
             </button>
@@ -681,7 +550,7 @@ export function DiscoverPanel({ busy, report, onSeeded, onOpenWork, onFilterByCo
           {!multi && (
             <div className="discover-grid">
               {items.length === 0 ? (
-                <p className="empty-detail">{loading ? "正在拉取榜单…" : "选择榜单或搜索后显示远程结果。这些条目不属于作品库。"}</p>
+                <p className="empty-detail">{loading ? "正在拉取榜单…" : "当前页没有结果。"}</p>
               ) : (
                 items.map((item) => (
                   <article key={`${item.provider}-${item.external_id}`} className="discover-card">

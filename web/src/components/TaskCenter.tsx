@@ -15,6 +15,11 @@ type Props = {
   onTasksSnapshot?: (tasks: TaskRun[]) => void;
 };
 
+const STATUS_LABELS: Record<string, string> = {
+  running: "进行中", cancel_requested: "正在取消", succeeded: "已完成", partial: "部分完成",
+  failed: "失败", cancelled: "已取消", interrupted: "已中断", paused: "已暂停",
+};
+
 const SUMMARY_LABELS: Record<string, string> = {
   scanned: "扫描",
   discovered: "新发现",
@@ -45,6 +50,7 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
   const [replayLoading, setReplayLoading] = useState(false);
   const live = useTaskUpdates({ enabled: autoRefresh, onChanged, onTasksSnapshot });
   const [kindFilter, setKindFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [offlineFilter, setOfflineFilter] = useState("all");
   const [offlineAction, setOfflineAction] = useState<string | null>(null);
   const [taskAction, setTaskAction] = useState<string | null>(null);
@@ -54,7 +60,8 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
     task.status === offlineFilter || (offlineFilter === "done" && task.status === "completed"));
 
   const kinds = useMemo(() => ["all", ...Array.from(new Set(tasks.map((task) => task.kind))).sort()], [tasks]);
-  const visible = useMemo(() => kindFilter === "all" ? tasks : tasks.filter((task) => task.kind === kindFilter), [tasks, kindFilter]);
+  const visible = tasks.filter(task => (kindFilter === "all" || task.kind === kindFilter)
+    && (statusFilter === "all" || task.status === statusFilter));
 
   async function controlOffline(id: string, action: "cancel" | "next") {
     setOfflineAction(id);
@@ -147,12 +154,20 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
             {kinds.map((kind) => <option key={kind} value={kind}>{kind === "all" ? "全部类型" : kind}</option>)}
           </select>
         </label>
-        <small className="muted">手动下载类任务只进进度，不写入订阅。</small>
+        <label>状态
+          <select aria-label="按任务状态筛选" value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>
+            <option value="all">全部状态</option>
+            {Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </label>
         <label>
           <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
           实时同步进行中的任务{live ? "（SSE）" : "（轮询回退）"}
         </label>
       </div>
+      {visible.length === 0 && <p className="muted">没有符合当前筛选的运行记录。
+        <button type="button" className="ghost" onClick={() => { setKindFilter("all"); setStatusFilter("all"); }}>清除筛选</button>
+      </p>}
       <div className="task-list">
         {visible.map((task) => {
           const summary = task.summary || {};
@@ -165,7 +180,7 @@ export function TaskCenter({ tasks, busy, onChanged, report, onTasksSnapshot }: 
           return (
             <article key={task.id}>
               <div>
-                <span className={`task-state ${task.status}`}>{task.status}</span>
+                <span className={`task-state ${task.status}`}>{STATUS_LABELS[task.status] ?? task.status}</span>
                 <h2>{task.kind}</h2>
                 <p>{task.scope}</p>
                 {task.error && <p className="task-error-banner" role="alert">{task.error}</p>}

@@ -62,6 +62,25 @@ it("commits a Chinese actor search when composition ends in StrictMode", async (
   expect(JSON.parse(sessionStorage.getItem("mdc:actor-browsing")!).search).toBe("演员");
 });
 
+it("retries the actor profile before showing the actor's works", async () => {
+  let attempts = 0;
+  const fetch = vi.fn(async (url: string) => {
+    if (url.endsWith("/people/fixture")) {
+      if (++attempts === 1) return new Response(null, { status: 503 });
+      return Response.json({ id: "fixture", ref: "fixture", name: "演员示例", aliases: [], groups: [], work_ids: [], match_names: [] });
+    }
+    return Response.json(url.endsWith("/facets") ? {} : { items: [], total: 0, next_cursor: null });
+  });
+  vi.stubGlobal("fetch", fetch);
+  await act(async () => root.render(<UnifiedCatalogView mode="actors" initialPersonRef="fixture"
+    onOpenActor={vi.fn()} onOpenWork={vi.fn()} />));
+  expect(container.querySelector(".work-grid")).toBeNull();
+  expect(fetch.mock.calls.some(([url]) => url.endsWith("/works/query"))).toBe(false);
+  await act(async () => button("重试演员资料").click());
+  expect(container.querySelector("h1")?.textContent).toBe("演员示例");
+  expect(container.querySelector(".work-grid")).not.toBeNull();
+});
+
 it("does not save old cards or use their cursor with a new filter", async () => {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith("/facets")) return new Response("{}");

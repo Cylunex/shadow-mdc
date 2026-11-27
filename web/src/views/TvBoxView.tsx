@@ -127,7 +127,9 @@ function TvBoxWatch({ card, history, favorite, onFavorite, onBack, onPlay }: {
               disabled={Boolean(pending)}>{saved?.line === chosenLine ? "继续播放" : "立即播放"}</button>}
             {detail.data && episodes.length === 0 && <p>暂无可用线路</p>}</div>
         </div>}
-        {(detail.error || error) && <p role="alert" className="tvbox-error">{detail.error?.message || error}</p>}
+        {detail.error && <p role="alert" className="tvbox-error">{detail.error.message} <button className="ghost"
+          disabled={detail.isFetching} onClick={() => void detail.refetch()}>重试分集</button></p>}
+        {error && <p role="alert" className="tvbox-error">{error}</p>}
         {detail.data?.overview && <p className="tvbox-overview">{detail.data.overview}</p>}
       </div>
       {lines.length > 0 && <aside className="tvbox-surface tvbox-episodes">
@@ -289,9 +291,13 @@ export function TvBoxView() {
           <button type="button" className="ghost" disabled={retry.isPending} onClick={() => retry.mutate(site)}>重试</button>
         </li>)}
     </ul>}
-    {[upload.error, job.error, retry.error, sites.error, categories.error, items.error]
+    {([[sites, "站点"], [groups, "仓库"], [categories, "分类"], [items, "影片"]] as const).map(([resource, label]) =>
+      resource.isError && resource.isEnabled && <p role="alert" className="tvbox-error" key={label}>{resource.error.message} <button
+        type="button" className="ghost" disabled={resource.isFetching} onClick={() => void resource.refetch()}>重试{label}</button></p>)}
+    {[upload.error, job.error, retry.error]
       .filter(Boolean).map((problem, index) => <p role="alert" className="tvbox-error" key={index}>{problem?.message}</p>)}
     {management && <TvBoxManage sites={sites.data ?? []} groups={groups.data ?? []} onImport={setJobId} allowHttp={allowHttp} />}
+    {sites.isPending && <p role="status">正在读取影视站点…</p>}
     {active.length > 0 && !management && <>
       <div className="tvbox-toolbar">
         <div className="tvbox-actions" aria-label="影视目录">
