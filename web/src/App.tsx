@@ -9,7 +9,7 @@ import { TopNav, type AppView } from "./components/TopNav";
 import type { Asset, Candidate, LibraryPrefs, TaskRun } from "./model";
 import { Inbox } from "./panels";
 import { UnifiedCatalogView, type CatalogFeedStart } from "./views/UnifiedCatalogView";
-import { CategoriesView } from "./views/CategoriesView";
+import { CategoriesView, categoryWorksHref } from "./views/CategoriesView";
 import type { SwipeLibrarySnapshot } from "./views/SwipeFeedView";
 import {
   patchWorksFilters,
@@ -94,8 +94,12 @@ function writeDetailToUrl(
   const next = `${url.pathname}${url.search}${url.hash}`;
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   if (next === current) return;
-  if (mode === "replace") window.history.replaceState({ workId, actorRef }, "", next);
-  else window.history.pushState({ workId, actorRef }, "", next);
+  const source = window.history.state?.categoryReturn;
+  const state = { workId, actorRef, ...(source && {
+    categoryReturn: { ...source, steps: source.steps + (mode === "push" ? 1 : 0) }
+  }) };
+  if (mode === "replace") window.history.replaceState(state, "", next);
+  else window.history.pushState(state, "", next);
 }
 
 function applyWorksFilterPatch(
@@ -496,11 +500,24 @@ export function App() {
           </button>
         </div>
 
+        {view === "works" && window.history.state?.categoryReturn && <div className="category-return">
+          <a href={window.history.state.categoryReturn.href} onClick={event => {
+            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            event.preventDefault();
+            window.history.go(-window.history.state.categoryReturn.steps);
+          }}>← 返回分类目录</a><span aria-hidden="true">/</span><strong>{window.history.state.categoryReturn.label}</strong>
+        </div>}
         {(view === "actors" || view === "works") && (
           <UnifiedCatalogView key={view} mode={view} refresh={catalogRefresh} onStartFeed={startCatalogFeed} onOpenWork={openWorkDetail} onOpenActor={openActorDetail} />
         )}
         {view === "categories" && <CategoriesView report={setMessage}
-          onOpenTag={(id, name) => navigateToFilteredWorks({ tags: [id] }, `正在查看分类：${name ?? id}`)} />}
+          onOpenTag={(id, name) => {
+            const href = window.location.pathname + window.location.search + window.location.hash;
+            window.history.pushState({ categoryReturn: { href, label: name ?? id, steps: 1 } }, "", categoryWorksHref(id));
+            setView("works");
+            setMessage(`正在查看分类：${name ?? id}`, false);
+            requestAnimationFrame(() => window.scrollTo(0, 0));
+          }} />}
         {view === "actor-detail" && selectedActorRef && <>
           <button type="button" className="ghost" onClick={closeActorDetail}>{detailReturnView === "works" ? "返回作品库" : "返回演员库"}</button>
           <UnifiedCatalogView key={selectedActorRef} mode="actors" initialPersonRef={selectedActorRef}

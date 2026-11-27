@@ -218,10 +218,14 @@ describe("page load request budget", () => {
     expect(params.has("view")).toBe(false);
     expect(params.has("genre")).toBe(false);
     expect(params.has("q")).toBe(false);
+    const back = container.querySelector<HTMLAnchorElement>(".category-return a")!;
+    expect(back.getAttribute("href")).toBe("/?view=categories&q=old&genre=old");
     await act(async () => {
-      window.history.replaceState({}, "", "/?view=categories");
-      window.dispatchEvent(new PopStateEvent("popstate"));
+      const popped = new Promise(resolve => window.addEventListener("popstate", resolve, { once: true }));
+      back.click();
+      await popped;
     });
+    expect(window.history.state.categoryFocus).toBe("fixture-tag");
     expect(container.querySelector(".category-tree")).not.toBeNull();
   });
 

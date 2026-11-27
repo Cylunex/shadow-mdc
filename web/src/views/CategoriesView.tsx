@@ -13,9 +13,10 @@ import { resources } from "../query/resources";
 const browsingSchema = z.object({
   query: z.string(), onlyWithWorks: z.boolean(), sort: z.enum(["featured", "count", "name"]),
   page: z.number().int().min(1), pageSize: z.union([z.literal(24), z.literal(48), z.literal(96)]),
+  group: z.string().default(""),
   expanded: z.array(z.string()).nullable().default(null),
 });
-const defaults: z.infer<typeof browsingSchema> = { query: "", onlyWithWorks: false, sort: "featured", page: 1, pageSize: 24, expanded: null };
+const defaults: z.infer<typeof browsingSchema> = { query: "", onlyWithWorks: false, sort: "featured", page: 1, pageSize: 24, expanded: null, group: "" };
 
 type Props = {
   onOpenTag: (id: string, name?: string) => void;
@@ -51,12 +52,26 @@ function categoryTree(categories: CategoryItem[], query: string, onlyWithWorks: 
   return { roots, matches, parents: [...branches.values()].filter(branch => branch.children.length) };
 }
 
+export function categoryWorksHref(tag: string) {
+  return `?${new URLSearchParams({ tag })}`;
+}
+
 export function CategoriesView({ onOpenTag, report }: Props) {
   const [browsing, setBrowsing] = useSessionState("mdc:category-browsing", browsingSchema, defaults);
   const { query, onlyWithWorks, sort, pageSize } = browsing;
   const [composing, setComposing] = useState(false);
   const [queryDraft, setQueryDraft] = useState("");
   const heading = useRef<HTMLDivElement>(null);
+  const section = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const nav = document.querySelector(".top-nav");
+    if (!nav || typeof ResizeObserver === "undefined") return;
+    const update = () => section.current?.style.setProperty("--category-offset", `${nav.getBoundingClientRect().height + 8}px`);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(nav);
+    return () => observer.disconnect();
+  }, []);
   const result = useQuery(resources.categories(), queryClient);
   const loading = result.isPending;
   useEffect(() => {
@@ -78,7 +93,24 @@ export function CategoriesView({ onOpenTag, report }: Props) {
   useEffect(() => {
     if (result.data && page !== browsing.page) setBrowsing(previous => ({ ...previous, page }));
   }, [result.data, page, browsing.page, setBrowsing]);
-  const items = roots.slice((page - 1) * pageSize, page * pageSize);
+  const group = !search && roots.find(branch => branch.key === browsing.group);
+  const restored = useRef(false);
+  useEffect(() => {
+    const key = window.history.state?.categoryFocus;
+    if (!result.data || restored.current || typeof key !== "string") return;
+    const link = document.getElementById(`category-link-${key}`);
+    if (!link) return;
+    restored.current = true;
+    link.focus({ preventScroll: true });
+    link.scrollIntoView?.({ block: "center" });
+  }, [result.data]);
+  function selectGroup(key: string) {
+    const next = new Set(expanded);
+    if (key) next.add(key);
+    setBrowsing(previous => ({ ...previous, group: key, page: 1, expanded: [...next] }));
+    heading.current?.scrollIntoView?.({ block: "start" });
+  }
+  const items = group ? [group] : roots.slice((page - 1) * pageSize, page * pageSize);
   function changePage(next: number) {
     setBrowsing(previous => ({ ...previous, page: next }));
     heading.current?.scrollIntoView?.({ block: "start" });
@@ -89,24 +121,32 @@ export function CategoriesView({ onOpenTag, report }: Props) {
     onPageSizeChange: (size: number) => setBrowsing(previous => ({ ...previous, page: 1, pageSize: size as 24 | 48 | 96 })),
   };
   const filtered = Boolean(search || onlyWithWorks);
-  function renderBranch({ item, key, children }: CategoryBranch, depth: number) {
+  function renderBranch({ item, key, children }: CategoryBranch) {
     const open = Boolean(search) || expanded.has(key);
-    return <li key={key}>
-      <div className="category-tree-row" style={{ paddingInlineStart: `min(${Math.min(depth, 8) * 18}px, 20vw)` }}>
+    const tag = item.id ?? item.label;
+    return <li key={key} className={open && children.length ? "category-open" : undefined}>
+      <div className="category-tree-row">
         {children.length > 0 && !search
           ? <button type="button" className="category-disclosure" aria-expanded={open}
-              aria-label={`${open ? "收起" : "展开"}${item.label}`} onClick={() => toggle(key)}>{open ? "▾" : "▸"}</button>
-          : <span className="category-guide" aria-hidden="true">{children.length ? "▾" : depth ? "└" : ""}</span>}
-        <button type="button" className="category-works" onClick={() => onOpenTag(item.id ?? item.label, item.label)}
-          title={`查看「${item.label}」的作品`}>
+              aria-label={`${open ? "收起" : "展开"}${item.label}`} onClick={() => toggle(key)}><i aria-hidden="true" /></button>
+          : <span className="category-guide" aria-hidden="true" />}
+        <a className="category-works" id={`category-link-${key}`} href={categoryWorksHref(tag)}
+          title={`查看「${item.label}」的作品`} onClick={event => {
+            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            event.preventDefault();
+            window.history.replaceState({ ...window.history.state, categoryFocus: key }, "");
+            onOpenTag(tag, item.label);
+          }}>
           {item.image_url && <CoverImage className="category-thumbnail" src={appUrl(item.image_url) ?? ""} />}
-          <strong>{item.label}</strong><span>{item.work_count} 部作品</span>
-        </button>
+          <strong>{item.label}</strong>
+          <span className="category-count">{item.work_count.toLocaleString()} 部<span className="category-word">作品</span></span>
+          <span className="category-arrow" aria-hidden="true">→</span>
+        </a>
       </div>
-      {open && children.length > 0 && <ul>{children.map(child => renderBranch(child, depth + 1))}</ul>}
+      {open && children.length > 0 && <ul>{children.map(renderBranch)}</ul>}
     </li>;
   }
-  return <section className="panel-section categories-view">
+  return <section className="panel-section categories-view" ref={section}>
     <div className="catalog-heading" ref={heading}>
       <div><p className="eyebrow">CATEGORIES</p><div className="category-heading-title"><h1>分类浏览</h1>
         <span className="muted">{loading ? "正在读取分类…" : `${filtered ? `匹配 ${matches} / ` : ""}${result.data?.categories.length ?? 0} 个分类`}</span>
@@ -145,15 +185,29 @@ export function CategoriesView({ onOpenTag, report }: Props) {
       <span>分类加载失败：{result.error.message}</span>
       <button type="button" className="ghost" disabled={result.isFetching} onClick={() => void result.refetch()}>重试分类</button>
     </div>}
-    {loading ? <p className="muted" role="status">正在读取分类树…</p> : result.data && <>
-      {roots.length > defaults.pageSize && <Pagination {...pagination} />}
-      {roots.length === 0 ? <div className="empty">
-        <h2>{filtered ? "没有匹配的分类" : "暂无分类"}</h2>
-        <p>{filtered ? "试试其他关键词，或清除筛选查看全部分类。" : "作品入库后，可在这里按分类浏览。"}</p>
-      </div> : <ul className="category-tree" aria-label="分类树" aria-busy={result.isFetching}>
-        {items.map(branch => renderBranch(branch, 0))}
-      </ul>}
-      {roots.length > pageSize && <Pagination {...pagination} position="底部" />}
-    </>}
+    {loading ? <p className="muted" role="status">正在读取分类树…</p> : result.data &&
+      <div className={`category-layout${roots.length > 1 && !search ? " with-directory" : ""}`}>
+        {roots.length > 1 && !search && <div className="category-directory">
+          <div className="category-directory-heading"><strong>分类目录</strong><span>{roots.length}</span></div>
+          <select aria-label="定位主分类" value={group ? group.key : ""} onChange={e => selectGroup(e.target.value)}>
+            <option value="">全部分类</option>
+            {roots.map(({ key, item }) => <option key={key} value={key}>{item.label}</option>)}
+          </select>
+          <nav aria-label="主分类目录">
+            <button type="button" aria-pressed={!group} onClick={() => selectGroup("")}>全部分类</button>
+            {roots.map(({ key, item }) => <button type="button" key={key} aria-pressed={Boolean(group && group.key === key)}
+              onClick={() => selectGroup(key)}>{item.label}</button>)}
+          </nav>
+        </div>}
+        <div className="category-results">
+          {roots.length === 0 ? <div className="empty">
+            <h2>{filtered ? "没有匹配的分类" : "暂无分类"}</h2>
+            <p>{filtered ? "试试其他关键词，或清除筛选查看全部分类。" : "作品入库后，可在这里按分类浏览。"}</p>
+          </div> : <ul className="category-tree" aria-label="分类树" aria-busy={result.isFetching}>
+            {items.map(renderBranch)}
+          </ul>}
+          {!group && roots.length > defaults.pageSize && <Pagination {...pagination} />}
+        </div>
+    </div>}
   </section>;
 }

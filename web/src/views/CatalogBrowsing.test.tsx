@@ -151,6 +151,19 @@ it("retries a failed category load without claiming the catalog is empty", async
   expect(container.querySelectorAll(".category-works")).toHaveLength(24);
 });
 
+it("opens a group beyond the current page and preserves it during global search", async () => {
+  await act(async () => root.render(<CategoriesView onOpenTag={vi.fn()} />));
+  await change("定位主分类", "tag-59");
+  expect(container.querySelectorAll(".category-works")).toHaveLength(1);
+  expect(container.querySelector(".category-works strong")?.textContent).toBe("分类 59");
+  await change("搜索分类", "alias-0");
+  expect(container.querySelector(".category-works strong")?.textContent).toBe("分类 0");
+  await change("搜索分类", "");
+  expect(container.querySelector(".category-works strong")?.textContent).toBe("分类 59");
+  await act(async () => button("全部分类").click());
+  expect(container.querySelectorAll(".category-works")).toHaveLength(24);
+});
+
 it("opens a category by its stable ID while displaying its name", async () => {
   const open = vi.fn();
   vi.mocked(api.categories).mockResolvedValue({ categories: [
